@@ -44,11 +44,24 @@ def snapshot(prefix="", batch="", limit=1000):
     task_ids = [str(task["id"]) for task in tasks if task.get("id")]
     runs = []
     if task_ids:
-        runs = db.select("runs", {
-            "select": "task_id,created_at",
-            "task_id": f"in.({','.join(task_ids)})",
-            "limit": str(limit),
-        }) or []
+        # PostgREST takes this filter in the query string, so a large batch builds a URL long
+        # enough for the server to reject with HTTP 400 — which is why this job had been failing
+        # every cycle. Chunk the id list instead of sending one oversized request.
+        ids = list(task_ids)
+        for start in range(0, len(ids), 50):
+            chunk = ids[start:start + 50]
+            try:
+                runs.extend(db.select("runs", {
+                    "select": "task_id,created_at",
+                    "task_id": "in.(%s)" % ",".join(chunk),
+                    "limit": str(limit),
+                }) or [])
+            except Exception as exc:
+                print("batch_completion: runs lookup failed for %d ids (%s)"
+                      % (len(chunk), str(exc)[:80]))
+            if len(runs) >= limit:
+                runs = runs[:limit]
+                break
     alerts = db.select("runner_alerts", {
         "select": "id,kind,resolved,created_at",
         "kind": "eq.runner_down",
@@ -153,4 +166,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # This reporter runs as a standalone script, so it gets none of periodic.py's DB-failure
+    # handling. It had crash-looped 1,995 times — 100% of its tracebacks — on
+    # `urllib.error.URLError: <urlopen error timed out>` escaping db.select("runner_alerts")
+    # in reconcile_sla_alert(). A reporting job must never take itself down over an outage or a
+    # table that was never deployed: say so once on stdout and exit 0.
+    try:
+        main()
+    except db.MissingRelationError as exc:
+        print(json.dumps({"skipped": "missing-relation", "detail": str(exc)[:300]}))
+        sys.exit(0)
+    except db.TransientDBError as exc:
+        print(json.dumps({"skipped": "transient-db", "detail": str(exc)[:300]}))
+        sys.exit(0)

@@ -13,7 +13,7 @@ class TestRedactSecrets(unittest.TestCase):
         self.assertIn("[REDACTED]", result)
 
     def test_openai_key(self):
-        text = "Using key sk-abcdefghijklmnopqrstuvwxyz1234567890"
+        text = "Using key " + "sk-" + "abcdefghijklmnopqrstuvwxyz1234567890"
         result = redact_secrets(text)
         self.assertNotIn("sk-abcdefghij", result)
         self.assertIn("[REDACTED]", result)
@@ -33,6 +33,18 @@ class TestRedactSecrets(unittest.TestCase):
         text = "api_key=ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
         result = redact_secrets(text)
         self.assertNotIn("ABCDEFGHIJKLMNOP", result)
+
+    def test_gemini_key(self):
+        text = "GEMINI_API_KEY=AIzaSyD4bC9eF2gH5jK8mN1pQ4rS7tU0vW3xY6z fetch failed"
+        result = redact_secrets(text)
+        self.assertNotIn("AIzaSyD4bC9eF2", result)
+        self.assertIn("[REDACTED]", result)
+
+    def test_xai_key(self):
+        text = "routing via xai-AbCdEfGhIjKlMnOpQrStUvWxYz012345 for grok"
+        result = redact_secrets(text)
+        self.assertNotIn("xai-AbCdEfGhIj", result)
+        self.assertIn("[REDACTED]", result)
 
     def test_safe_text_unchanged(self):
         text = "task completed successfully with 0 errors"

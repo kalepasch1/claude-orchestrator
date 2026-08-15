@@ -1,0 +1,16 @@
+rules:
+  - id: "r-operator-10"
+    project: "beethoven"
+    kind: "operator"
+    max_usd: 10.0
+    enabled: true
+
+  - id: "r-deploy-50"
+    kind: "deploy"
+    max_usd: 50.0
+    enabled: true
+
+  - id: "r-secret-0"
+    kind: "secret"
+    max_usd: 0.0
+    enabled: true

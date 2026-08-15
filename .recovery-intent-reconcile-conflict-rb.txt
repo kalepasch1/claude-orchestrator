@@ -1,0 +1,4 @@
+recovery-intent: reconcile-conflict-rb
+template: a8050cb9795b
+intent: affected agent allocated audit branch carries clean cleanly commit complete conflict conflicted default delete deliver detail evidence fa5a31393f8abf4fdadfe041a8da6db9f23f48abfeba2639267c73402fadd2ca fingerprint focused follow force found heads implementation isolated master merge needs newest newly normal overwrite paths reconciliation recovered reset resolve sweep taking tests through train treat unique unknown worktree
+base: master

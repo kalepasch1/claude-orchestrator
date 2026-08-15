@@ -1,5 +1,13 @@
+import importlib.util
+import os
+import sys
 import time
-import runner
+
+RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, RUNNER_DIR)
+_SPEC = importlib.util.spec_from_file_location("orchestrator_runner_main", os.path.join(RUNNER_DIR, "runner.py"))
+runner = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(runner)
 
 def test_long_trains_have_execution_leases_independent_of_cadence():
     assert runner._JOB_INTERVAL["merge_train.py"] == 60

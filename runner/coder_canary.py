@@ -98,7 +98,10 @@ def _historical_prompt(project_id):
 
 
 def run(limit_per_coder=2):
-    if os.environ.get("ORCH_CODER_CANARIES", "true").lower() not in ("1", "true", "yes", "on"):
+    # Default flipped to OFF: synthetic routing-sample canaries are self-directed work that
+    # never reaches a user. Machinery kept intact; set ORCH_CODER_CANARIES=1 to restore.
+    import self_work_gate
+    if not self_work_gate.allow_generator("ORCH_CODER_CANARIES", "coder_canary.run"):
         return {"queued": 0, "reason": "disabled"}
     try:
         import drain_policy

@@ -127,20 +127,32 @@ def test_default_project_for_dropbox_hyphen_to_space_variant():
     text = "We need to update Apparently Law components"
     projects = {"apparently": {}, "apparently-law": {}, "beethoven": {}}
 
-    result = intake_watcher._default_project_for_dropbox(text, "apparently-law", projects)
-    # The text says "Apparently Law" (space), not "apparently-law" (hyphen)
-    # Variant matching should convert one to match the other
-    matches = [name for name in projects if name and any(
-        v and v in text.lower() for v in {
-            name.lower(),
-            name.replace("-", " "),
-            name.replace("_", " "),
-            name.replace("-", ""),
-            name.replace("_", "")
-        }
-    )]
-    assert "apparently-law" in matches, \
-        "Hyphenated project name should match space-separated text via variant"
+    # Signature is (text, projects_by_name, filename=None). This call used to pass a
+    # stray project name in the second slot, so `projects` landed on `filename` and the
+    # test died in os.path.basename(dict) with a TypeError — it never reached an
+    # assertion. It also asserted against a local re-implementation of the variant
+    # matching rather than the function's own output, so even once it ran it could not
+    # have caught a regression in _default_project_for_dropbox.
+    result = intake_watcher._default_project_for_dropbox(text, projects)
+
+    # The text says "Apparently Law" (space), not "apparently-law" (hyphen); variant
+    # matching bridges the separator, and the longest match wins over the 'apparently'
+    # prefix.
+    assert result == "apparently-law", \
+        f"Hyphenated project name should match space-separated text via variant, got {result!r}"
+
+
+def test_default_project_for_dropbox_filename_beats_prose():
+    """An explicit PROMPT-<project>-*.md filename outranks the prose heuristic."""
+    import intake_watcher
+
+    text = "We need to update Apparently Law components"
+    projects = {"apparently": {}, "apparently-law": {}, "beethoven": {}}
+
+    result = intake_watcher._default_project_for_dropbox(
+        text, projects, filename="PROMPT-beethoven-backlog-blitz.md")
+    assert result == "beethoven", \
+        f"filename project should win over prose mention, got {result!r}"
 
 
 def test_default_project_for_dropbox_underscore_variant():
@@ -243,7 +255,10 @@ def test_merge_train_repo_lock_parameters():
     import merge_train
     import inspect
 
-    source = inspect.getsource(merge_train.train_run)
+    # Inspect the implementation, not the lease wrapper. `train_run` only takes the
+    # cross-train lease and delegates; the repo_lock.hold() call this guard exists to
+    # protect lives in `_train_run_unleased`.
+    source = inspect.getsource(merge_train._train_run_unleased)
 
     # Verify the correct parameter usage
     # The fix changed: with repo_lock.hold(repo_path, timeout=300, priority=True)
@@ -260,6 +275,27 @@ def test_merge_train_repo_lock_parameters():
     # Check that we can actually import and call it
     assert hasattr(merge_train.repo_lock, 'hold'), \
         "repo_lock module must be imported and hold() must exist"
+
+
+def test_merge_train_no_shadowed_train_run():
+    """`train_run` must be defined exactly once — a second def hides the implementation.
+
+    Regression: merge_train.py carried two top-level `def train_run` with an
+    `_train_run_unleased = train_run` alias between them. Runtime behaviour was fine, but
+    `inspect.getsource(merge_train.train_run)` then returned the lease wrapper, so
+    test_merge_train_repo_lock_parameters stopped inspecting the code it guards.
+    """
+    import ast
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "merge_train.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read())
+    names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    assert names.count("train_run") == 1, \
+        f"train_run must be defined once, found {names.count('train_run')}"
+    assert names.count("_train_run_unleased") == 1, \
+        "_train_run_unleased must be a real def, not an alias to a shadowed function"
 
 
 def test_merge_train_train_run_executable():

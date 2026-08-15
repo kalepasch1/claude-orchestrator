@@ -30,8 +30,19 @@ import os, sys, json, hashlib, re, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-MAX_BATCH_SIZE = int(os.environ.get("ORCH_FUSION_MAX_BATCH", "5"))
-MAX_FUSED_PROMPT_LEN = int(os.environ.get("ORCH_FUSION_MAX_PROMPT", "8000"))
+def _env_int(name, default):
+    """Fail-soft int env read — a typo in .env must not stop fusion."""
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except Exception:
+        return default
+
+
+MAX_BATCH_SIZE = _env_int("ORCH_FUSION_MAX_BATCH", 10)
+#: Small same-repo mechanical work is what fusion is FOR: those tasks each cost
+#: a whole session to rediscover the same module. Target 5-10 per session.
+MIN_MECHANICAL_BATCH = _env_int("ORCH_FUSION_MIN_MECH_BATCH", 5)
+MAX_FUSED_PROMPT_LEN = _env_int("ORCH_FUSION_MAX_PROMPT", 24000)
 FUSION_ENABLED = os.environ.get("ORCH_BATCH_FUSION", "true").lower() in ("true", "1", "yes")
 
 # Task kinds that can be fused together
@@ -42,6 +53,11 @@ COMPATIBLE_KINDS = {
     frozenset({"test"}),
     frozenset({"recovery"}),
 }
+
+#: Kinds cheap enough that same-repo tasks fuse on repo alone. Everything else
+#: still has to prove shared context via file overlap — fusing two unrelated
+#: feature tasks just makes one confused session instead of two clear ones.
+MECHANICAL_KINDS = frozenset({"mechanical", "config"})
 
 
 def _kinds_compatible(kind_a, kind_b):
@@ -81,6 +97,44 @@ def _file_overlap(files_a, files_b):
     return len(intersection) / len(union) if union else 0
 
 
+def _even_chunks(items, chunk_count):
+    """Split `items` into `chunk_count` consecutive, near-equal groups.
+
+    Consecutive so queue order is preserved inside a batch, and near-equal so
+    one session does not get 10 tasks while the next gets 1.
+    """
+    chunk_count = max(1, min(chunk_count, len(items)))
+    base, extra = divmod(len(items), chunk_count)
+    out = []
+    start = 0
+    for i in range(chunk_count):
+        size = base + (1 if i < extra else 0)
+        out.append(items[start:start + size])
+        start += size
+    return out
+
+
+def _mechanical_batches(tasks):
+    """Fuse small same-repo mechanical tasks into batches of ~5-10.
+
+    These are the tasks fusion exists for: each one is a few lines in the same
+    repo, and run alone each pays a full session to rediscover that repo. They
+    fuse on repo alone, without demanding file overlap.
+
+    Batch COUNT is ceil(N / MAX_BATCH_SIZE), so N tasks land in between
+    ceil(N/MAX_BATCH_SIZE) and ceil(N/MIN_MECHANICAL_BATCH) sessions. A short
+    tail is kept as one undersized batch rather than dropped — leftover work
+    that never fuses is exactly the backlog this is draining.
+    """
+    if len(tasks) < 2:
+        return []
+    total_len = sum(len(t.get("prompt", "") or "") for t in tasks)
+    by_count = -(-len(tasks) // MAX_BATCH_SIZE)          # ceil
+    by_prompt = -(-total_len // MAX_FUSED_PROMPT_LEN)    # ceil; 0 when empty
+    chunk_count = max(1, by_count, by_prompt)
+    return [c for c in _even_chunks(tasks, chunk_count) if len(c) >= 2]
+
+
 def find_fusible(queued_tasks):
     """Find groups of tasks that can be fused into single agent calls.
 
@@ -101,6 +155,14 @@ def find_fusible(queued_tasks):
     batches = []
 
     for pid, tasks in by_project.items():
+        if len(tasks) < 2:
+            continue
+
+        # Mechanical/config work in one repo fuses on repo alone.
+        mechanical = [t for t in tasks if (t.get("kind") or "") in MECHANICAL_KINDS]
+        rest = [t for t in tasks if (t.get("kind") or "") not in MECHANICAL_KINDS]
+        batches.extend(_mechanical_batches(mechanical))
+        tasks = rest
         if len(tasks) < 2:
             continue
 
@@ -187,38 +249,107 @@ def distribute_outcome(batch, agent_output, merged, cost=None):
 
         try:
             state = "MERGED" if merged else "BLOCKED"
-            db.update("tasks", t["id"], {
+            patch = {
                 "state": state,
                 "note": f"[batch-fusion] {len(batch)}-task batch, cost share=${task_cost:.4f}",
                 "finished_at": "now()" if merged else None,
-            })
+            }
+            if state == "MERGED":
+                # This path wrote MERGED with NO artifact_commit at all — a merge certified by
+                # nothing but a boolean. merge_truth rejects it (an empty artifact_commit is a
+                # phantom by definition) and records PHANTOM_UNVERIFIED, so the gap is visible
+                # instead of counting as a shipped change.
+                import merge_truth
+                merge_truth.guarded_task_update(t, patch)
+            else:
+                db.update("tasks", t["id"], patch)
         except Exception:
             pass
 
 
+def batch_session(batch):
+    """Describe one batch as a SINGLE routable session.
+
+    This is what makes fusion actually save anything: the caller runs one
+    session per descriptor, not one per task. The session key is derived from
+    the member task ids, so re-deriving a batch from the same tasks yields the
+    same key and a caller can dedupe against work already dispatched.
+    """
+    if not batch:
+        return None
+    ids = sorted(str(t.get("id", "")) for t in batch)
+    key = hashlib.sha256("|".join(ids).encode("utf-8")).hexdigest()[:16]
+    return {
+        "session_key": f"fusion-{key}",
+        "project_id": batch[0].get("project_id", ""),
+        "task_ids": [t.get("id") for t in batch],
+        "slugs": [t.get("slug") or str(t.get("id", ""))[:8] for t in batch],
+        "kinds": sorted({(t.get("kind") or "") for t in batch}),
+        "size": len(batch),
+        "prompt": fuse_prompts(batch),
+    }
+
+
+def plan_sessions(queued_tasks):
+    """Full pipeline: queued tasks -> one session descriptor per batch.
+
+    Fail-soft by contract — a bad task row must cost its own batch, not the
+    whole cycle. Callers treat an empty list as "nothing to fuse", which is
+    distinguishable from a raised exception.
+    """
+    try:
+        batches = find_fusible(queued_tasks)
+    except Exception:
+        return []
+    sessions = []
+    for batch in batches:
+        try:
+            session = batch_session(batch)
+        except Exception:
+            continue
+        if session:
+            sessions.append(session)
+    return sessions
+
+
 def run():
-    """Periodic: scan for fusible tasks and report."""
+    """Periodic: scan for fusible tasks and emit the fused sessions.
+
+    Previously this only counted batches and returned, so fusion looked alive
+    while nothing was ever routed. It now produces the actual session
+    descriptors and reports them, and says so explicitly when there is nothing
+    to fuse — "no work" must be distinguishable from "not running".
+    """
     if not FUSION_ENABLED:
         print("[batch-fusion] disabled")
-        return
+        return []
 
     try:
         tasks = db.select("tasks", {
             "select": "id,prompt,project_id,kind,slug,state",
             "state": "eq.QUEUED",
             "order": "created_at.asc",
-            "limit": 30,
+            "limit": str(_env_int("ORCH_FUSION_SCAN_LIMIT", 200)),
         }) or []
     except Exception:
         print("[batch-fusion] failed to fetch tasks")
-        return
+        return []
 
-    batches = find_fusible(tasks)
-    if batches:
-        total_tasks = sum(len(b) for b in batches)
-        print(f"[batch-fusion] found {len(batches)} fusible batches ({total_tasks} tasks → {len(batches)} calls)")
-    else:
-        print(f"[batch-fusion] {len(tasks)} queued, no fusible batches found")
+    sessions = plan_sessions(tasks)
+    if not sessions:
+        print(f"[batch-fusion] heartbeat: {len(tasks)} queued, 0 fusible batches")
+        return []
+
+    fused_tasks = sum(s["size"] for s in sessions)
+    saved = fused_tasks - len(sessions)
+    print(
+        f"[batch-fusion] heartbeat: {len(tasks)} queued, "
+        f"{fused_tasks} tasks -> {len(sessions)} sessions (saves {saved})"
+    )
+    for s in sessions:
+        print(f"[batch-fusion]   {s['session_key']} project={s['project_id']} "
+              f"size={s['size']} kinds={','.join(s['kinds'])}")
+    return sessions
 
 
 if __name__ == "__main__":

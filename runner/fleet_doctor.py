@@ -79,6 +79,20 @@ def run():
                f"host={HOST}", severity="warn")
         live = [r.get("hostname") for r in rows if _fresh(r.get("last_seen"))]
         _check(results, "fleet has live runners", bool(live), ", ".join(live[:8]), severity="warn")
+
+        # The check above and the one before it are both about THIS host, so neither
+        # can ever catch the machine that actually died — that was the 2026-08-02
+        # blind spot (Mac 2 down from ~10:28, no alert). Evaluate the other hosts.
+        try:
+            import machine_silence_watch
+            verdict = machine_silence_watch.check()
+            silent = verdict.get("silent") or []
+            _check(results, "no silent fleet machines", not silent,
+                   "; ".join(f"{m['hostname']} quiet {m['age_minutes']}m" for m in silent[:5])
+                   or "all known machines heartbeating",
+                   severity="warn")
+        except Exception as e:
+            _check(results, "machine silence watch", False, str(e)[:300], severity="warn")
     except Exception as e:
         _check(results, "heartbeat query", False, str(e)[:300])
 

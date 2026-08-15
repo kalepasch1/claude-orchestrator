@@ -1,0 +1,42 @@
+{
+  "verdict": "conditional",
+  "score": 6,
+  "conviction": 8,
+  "opinion": "Cloud-native redesign to Kubernetes/container orchestration is operationally justified and worth pursuing—distributed execution at scale cannot be achieved cost-effectively without it. However, the transition introduces three novel classes of attack surface with dependencies that are asymmetric in risk. The operative principle is this: **distributed systems with centralized planes (etcd, apiserver, orchestration gateway) must have threat models and supply-chain controls specified and validated in design, not bolted on post-deployment.** The reason is simple: orchestration plane compromise—whether via container supply-chain infiltration, inter-node communication interception, or apiserver exposure—can compromise the entire distributed system simultaneously. Unlike traditional monolithic deployments where compromise is localized, cloud-native compromise is systemic. Applying this standard to the current design: (1) Inter-node communication threat model does not exist (no specification of mTLS, encryption, or authentication under single-node compromise). (2) Container supply-chain controls are not documented (no evidence of image scanning, registry lockdown, or signed-release enforcement). (3) Orchestration plane hardening (etcd access control, apiserver auth, kubelet privilege escalation mitigations) is stated as an assumption, not a design artifact. Under this standard, proceeding to merge without addressing these three gaps violates the principle of fail-secure design for distributed systems. The committee does NOT oppose cloud-native—we oppose merging without the preconditions that make it defensible. The dependency is mechanical and verifiable: if threat model + supply-chain plan + hardening spec exist and are validated against operational capacity, the verdict flips to SUPPORT. If they do not exist or are incomplete, the verdict is OPPOSE until they do.",
+  "citations": [
+    {
+      "source": "Cloud Security Architect seat reasoning (submitted 2026-08-04)",
+      "proposition": "Orchestration platform complexity (etcd compromise, apiserver exposure, kubelet privilege escalation) creates novel attack vectors requiring design-phase mitigation",
+      "confidence": 1.0
+    },
+    {
+      "source": "Threat Modeler seat reasoning (submitted 2026-08-04)",
+      "proposition": "Formal threat model of inter-node communication, container image verification, and orchestration plane hardening must precede deployment",
+      "confidence": 1.0
+    },
+    {
+      "source": "CIS Kubernetes Benchmark v1.9+ (public standard)",
+      "proposition": "Control plane components (etcd, apiserver, kubelet) require authentication, encryption in transit, and access control to prevent privilege escalation and data exfiltration",
+      "confidence": 0.95
+    },
+    {
+      "source": "NIST SP 800-218: Secure Software Development Framework (SSDF)",
+      "proposition": "Supply-chain risk management (PO5.1, PO5.2) requires risk assessment of third-party components before integration",
+      "confidence": 0.95
+    }
+  ],
+  "assumptions": [
+    "Threat model for inter-node compromise does not currently exist (no artifact provided to committee).",
+    "Container image verification and registry lockdown are not yet documented as part of this design (operational procedures do not substitute for security architecture).",
+    "Orchestration plane hardening (etcd encryption, apiserver auth, kubelet security) is discussed as operational requirement, not as designed mitigation.",
+    "The team has capacity to commission and complete risk assessment within 2 weeks (pending confirmation)."
+  ],
+  "conditions": "Before merge, the following artifacts must exist and be reviewed by Cloud Security & Threat Modeling seats:\n1. THREAT-MODEL.md: Formal threat model covering (a) inter-node communication under compromise of a single node (specify mTLS, TLS version, cipher suite, key rotation); (b) control plane compromise scenarios (etcd breach, apiserver exposure, kubelet takeover); (c) container registry compromise path and mitigation.\n2. SUPPLY-CHAIN-CONTROLS.md: Documented controls covering (a) container image scanning (tool, frequency, blocking policy); (b) registry access control (authentication, network isolation, audit logging); (c) signed-release enforcement and verification.\n3. HARDENING-SPEC.md: Design specification for (a) etcd encryption at rest and in transit; (b) apiserver authentication/authorization (RBAC or equivalent); (c) kubelet security (disable privileged containers policy, read-only root filesystem defaults); (d) rollback and forensics procedure if orchestration plane is breached.\n4. OPERATIONAL-CAPACITY.md: Validation that new security complexity does not exceed team's operational security maturity (e.g., 'we can monitor etcd writes in real-time', 'we can rotate certificates within X hours', 'we can audit orchestration decisions').",
+  "dissent": "none",
+  "recommendation": "1. APPROVE commencement of 2-week risk assessment (Cloud Security + Threat Modeling + Risk Engineering) to produce the four required artifacts. 2. HOLD merge gate on completion and sign-off of all four. 3. PLAN merge for week of 2026-08-18, pending artifact completion. 4. DO NOT proceed with cloud-native deployment if threat model or supply-chain controls cannot be specified (this indicates insufficient operational maturity and should trigger a 30-day pause for team upskilling).",
+  "p_success": 0.7,
+  "upside": "If threat model and controls are sound: cloud-native orchestration enables 3-5x cost efficiency and sub-minute auto-healing, unblocking the roadmap for the Entity Formation API scale tier.",
+  "downside": "If threat model is incomplete or supply-chain is uncontrolled: container registry compromise, inter-node MITM, or control-plane breach can take down the entire fleet simultaneously with no single-node isolation boundary.",
+  "reversible": false,
+  "critical": true
+}

@@ -100,6 +100,20 @@ def gate(task=None, project_id=None):
 
     If task is provided, extracts project_id from it.
     """
+    # THE CONVERGENCE GATE: nothing that cannot itself reach DEPLOYED_AND_VERIFIED may
+    # spawn children. The watermark below limits HOW MUCH we fan out; this limits WHETHER
+    # we may fan out at all. Without it every failure spawned tasks and nothing retired
+    # them (~10:1 amplification). Disable with ORCH_CONVERGENCE_GATE=0.
+    if task:
+        try:
+            import deployment_terminal
+            ok, why = deployment_terminal.can_spawn_children(task)
+            if not ok:
+                print(f"[convergence_gate] BLOCKED decomposition: {why}", flush=True)
+                return False
+        except Exception:
+            pass    # fail-open: the gate must never break the decomposition path
+
     pid = project_id or (task or {}).get("project_id")
     allowed, reason = can_decompose(pid)
     if not allowed:

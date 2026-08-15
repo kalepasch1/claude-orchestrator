@@ -266,6 +266,98 @@ def _seats(committee):
     return s if isinstance(s, list) and s else list(DEFAULT_SEATS)
 
 
+# ---- GROUPTHINK GUARD (CADE) --------------------------------------------------------------------
+# RED_SEAT is a standing adversary on every panel, but one devil's advocate against a room that already
+# agrees is theatre: it gets absorbed. Extra adversary personas and an exploration ("productive heretic")
+# quota are expensive, so they are seated ONLY when they can actually change the answer — i.e. when
+# materiality is high, or when the panel converged BEFORE anyone cross-examined anyone (premature
+# consensus is the signature of groupthink, not of an easy question).
+HERETIC_SEAT = "Productive Heretic (exploration seat)"
+ADVERSARY_SEATS = [
+    "Falsification adversary (name the evidence that would kill this)",
+    "Second-order adversary (name what breaks downstream, not here)",
+]
+# Materiality at/above which the guard seats extra adversaries even without premature convergence.
+GROUPTHINK_MATERIALITY = float(os.environ.get("COMMITTEE_GROUPTHINK_MATERIALITY", "0.6"))
+
+_MATERIAL_MARKERS = (
+    "irreversible", "irreversibly", "production", "prod ", "customer", "revenue", "payment",
+    "billing", "credential", "secret", "security", "privacy", "pii", "delete", "drop table",
+    "migration", "licens", "regulat", "compliance", "custody", "legal", "contract", "liability",
+)
+
+
+def issue_materiality(title, body=None, blast_radius=None):
+    """PRE-PANEL stakes estimate in [0,1] for CADE IssueSpec.materiality.
+
+    Distinct from _materiality(panel, ...), which scores stakes AFTER the panel has spoken. This one runs
+    BEFORE seats are assembled, because seat composition is the decision it feeds. Deliberately cheap and
+    deterministic (no model call): it only has to be good enough to decide whether to buy extra seats.
+    """
+    text = f"{title or ''} {body or ''}".lower()
+    m = 0.3
+    hits = sum(1 for k in _MATERIAL_MARKERS if k in text)
+    m += min(0.4, 0.1 * hits)
+    if blast_radius is not None:
+        try:
+            m += 0.3 * max(0.0, min(1.0, float(blast_radius)))
+        except (TypeError, ValueError):
+            pass
+    return round(max(0.0, min(1.0, m)), 2)
+
+
+def converged_fast(positions):
+    """True when every opening position landed on the SAME verdict before any cross-examination.
+
+    Requires >=3 seats: unanimity across two seats is too thin to call groupthink.
+    """
+    pos = positions or []
+    verdicts = {(p.get("verdict") or "").strip().lower() for p in pos if p.get("verdict")}
+    return len(pos) >= 3 and len(verdicts) == 1
+
+
+def groupthink_seats(materiality, premature_consensus, seated=None):
+    """The EXTRA seats to add to a panel. Empty unless the guard actually fires.
+
+    Returns adversary personas plus an exploration quota that scales with materiality (the higher the
+    stakes, the more we pay to have someone argue the unpopular read). Never returns a seat that is
+    already seated, so callers can apply it idempotently.
+    """
+    try:
+        mat = float(materiality)
+    except (TypeError, ValueError):
+        mat = 0.0
+    if not (mat >= GROUPTHINK_MATERIALITY or premature_consensus):
+        return []
+    extra = list(ADVERSARY_SEATS)
+    quota = 2 if mat >= 0.85 else 1          # exploration quota
+    extra += [HERETIC_SEAT] if quota == 1 else [f"{HERETIC_SEAT} #{i + 1}" for i in range(quota)]
+    already = set(seated or [])
+    return [s for s in extra if s not in already]
+
+
+def tournament_bracket(proposals, keep=None):
+    """IDEA TOURNAMENT: eliminate the weaker half of competing proposals, strongest-first.
+
+    Pure ranking primitive for generative issues — personas propose competing solutions, weaker ones are
+    knocked out each round, and the survivors go to synthesis. Kept free of model/DB calls so the
+    elimination rule itself is testable and deterministic; the debate rounds that produce the scores live
+    in the caller. Ties break on the original order, so the bracket is stable.
+    """
+    items = [p for p in (proposals or []) if isinstance(p, dict)]
+    if not items:
+        return []
+
+    def _rank(entry):
+        idx, p = entry
+        score = float(p.get("score", 5) or 5)
+        conviction = float(p.get("conviction", 5) or 5)
+        return (-(score * (0.5 + conviction / 20.0)), idx)   # conviction modulates, score dominates
+
+    survivors = max(1, (len(items) + 1) // 2) if keep is None else max(1, min(int(keep), len(items)))
+    return [p for _, p in sorted(enumerate(items), key=_rank)[:survivors]]
+
+
 def _precedent(committee_name, title, body, app=None):
     """CONSENSUS MEMORY + CROSS-APP CASE LAW: surface the closest prior opinion from THIS committee as
     precedent — from ANY app in the portfolio — so a lesson learned on one app pre-empts the same mistake
@@ -514,6 +606,31 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
                   verdict=d.get("verdict"), text=d.get("risk") or d.get("opportunity"))
     if not positions:
         return None
+
+    # GROUPTHINK GUARD: the coordination loop below exits the moment every verdict agrees, so a room that
+    # agreed on the opening round is never cross-examined at all — the cheapest possible answer and the
+    # most dangerous one. Before letting that stand, buy extra adversary + exploration seats, but ONLY
+    # when they can plausibly change the outcome: high materiality, or exactly that premature consensus.
+    premature = converged_fast(positions)
+    mat = issue_materiality(title, body)
+    extra_seats = groupthink_seats(mat, premature, seated=seats)
+    if extra_seats:
+        _emit(subject_id, 50, "groupthink-guard", expert=name,
+              text=f"materiality={mat}, premature_consensus={premature}; seating {', '.join(extra_seats)}")
+        opening_digest = " | ".join(f"{p['seat']} [{p.get('verdict')}]" for p in positions)[:600]
+        heretic_brief = (
+            f"The panel has already landed on: {opening_digest}\n"
+            f"YOUR ROLE: do NOT ratify that. Argue the strongest position the room has NOT considered, and "
+            f"name the specific evidence that would overturn the emerging consensus. An objection the panel "
+            f"can absorb without changing anything is a wasted seat.\n")
+        for j, seat in enumerate(extra_seats):
+            d = _json(_seat_prompt(seat, heretic_brief), need=_seat_need(name, seat))
+            if d:
+                d["seat"] = seat
+                positions.append(d)
+                _emit(subject_id, 51 + j, "heresy", expert=f"{name}/{seat}",
+                      verdict=d.get("verdict"), text=d.get("risk") or d.get("opportunity"))
+        seats = seats + extra_seats
 
     # rounds 1..MAX_ROUNDS: coordinate until the panel converges (all verdicts agree) or rounds run out
     rounds_run = 0
@@ -1043,9 +1160,21 @@ def export_proof_pack(det_id):
 
 def process_determination_actions(limit=10):
     """Drain the console action queue: replay / ask / approve / override / another-round. Approve+override
-    feed the owner-preference learner so the system needs the reviewer less over time."""
-    acts = db.select("determination_actions", {"select": "*", "status": "eq.pending",
-                     "order": "created_at.asc", "limit": str(limit)}) or []
+    feed the owner-preference learner so the system needs the reviewer less over time.
+
+    Fail-soft on the queue read. This was an unguarded db.select and it is the FIRST statement
+    in run(), so a transient DB outage (2026-08-06: urllib URLError [Errno 61] Connection
+    refused) propagated straight out and killed the whole committees job before it did any
+    work — 81 tracebacks, 52% of this job's failures, and the crashed holder then showed up as
+    "periodic committees: WEDGED — skipped 3 consecutive invocation(s)". A DB blip must cost
+    one skipped drain, not the job.
+    """
+    try:
+        acts = db.select("determination_actions", {"select": "*", "status": "eq.pending",
+                         "order": "created_at.asc", "limit": str(limit)}) or []
+    except Exception as e:
+        print(f"committees: determination-action queue unreadable, skipping drain ({e})", flush=True)
+        return 0
     n = 0
     for a in acts:
         act = a.get("action"); did = a.get("determination_id"); payload = a.get("payload") or {}
@@ -1342,13 +1471,36 @@ def run(limit=8):
     """Convene the committees. AUTONOMOUS BY DEFAULT: the panel self-executes clear wins and auto-clears
     routine decisions; a human is involved ONLY when the matter is critical or highly contentious."""
     process_determination_actions()   # first, fulfill any one-click reviewer actions from the console
-    reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
-    pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
+    # A committees run is meaningless without the DB, and an unreachable DB is a transient
+    # condition, not a defect to crash on. Report it once and skip the cycle: the alternative
+    # (seen 2026-08-06) is a traceback every 30 min plus a WEDGED lock held by the corpse.
+    try:
+        reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
+        project_rows = db.select("projects", {"select": "id,name,default_base"}) or []
+    except Exception as e:
+        print(f"committees: DB unreachable, skipping this cycle ({e})", flush=True)
+        return {"skipped": "db_unavailable", "error": str(e)}
+    pid = {p["name"]: p["id"] for p in project_rows}
+    base_by_app = {p["name"]: (p.get("default_base") or "main") for p in project_rows}
+    try:
+        operator_work_pending = bool(db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "submitted_by": "not.is.null", "limit": "1",
+        }) or db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "slug": "like.dropbox-*", "limit": "1",
+        }) or [])
+    except Exception:
+        operator_work_pending = True
     n = executed = escalated = cleared = 0
 
     for p in db.select("improvement_proposals", {"select": "id,app,surface,title,proposal,rationale,divergent",
                         "status": "eq.for_review", "limit": str(limit)}) or []:
         if p["id"] in reviewed:
+            continue
+        if operator_work_pending and str(p.get("app") or "").lower() == "beethoven":
+            # Keep the reviewed proposal intact, but do not convert speculative
+            # self-work into another task while authenticated/legacy operator work waits.
             continue
         if not p.get("divergent"):
             import improvement_scrutiny
@@ -1367,7 +1519,12 @@ def run(limit=8):
         upd = {"rationale": (p.get("rationale") or "")[:500] + _note(agg)}
         # AUTONOMY: a non-divergent, non-critical, high-conviction GO builds itself — no owner card.
         if agg.get("auto_ok") and not p.get("divergent"):
-            slug = "improve-" + re.sub(r"[^a-z0-9]+", "-", (p.get("title") or "")[:40].lower()).strip("-")
+            # B: full-length collision-free slug. `title[:40]` produced 48-char slugs that
+            # collided for 40.6% of proposals, silently merging distinct proposals onto one
+            # task (and letting sibling slices certify each other as landed).
+            import improvement_ledger
+            slug = improvement_ledger.make_slug(p.get("title") or "",
+                                                p.get("bottleneck_key") or "committee")
             if pid.get(p.get("app")):
                 spec = compose_spec(p.get("title"), p.get("proposal") or "", agg["panel"])
                 staged = agg.get("rollout") == "canary"
@@ -1379,25 +1536,28 @@ def run(limit=8):
                               "pct": pct, "status": "active",
                               "note": (agg.get("premortem") or {}).get("failure_story", "")[:300]})
                 db.insert("tasks", {"project_id": pid[p["app"]], "slug": slug, "state": "QUEUED",
-                          "kind": "build", "deps": [], "base_branch": "main", "material": False,
+                          "kind": "improvement", "deps": [], "base_branch": base_by_app[p["app"]], "material": False,
+                          "note": "source:committee-improvement; qa:independent; release:verified",
                           "prompt": spec})
-                upd["status"] = "queued"; upd["task_slug"] = slug
+                upd["status"] = "queued"; upd["task_slug"] = slug; upd["slug_v2"] = True
                 executed += 1
                 _log_action("proposal", p["id"], p.get("title"),
                             "auto-build-canary" if staged else "auto-build", agg)
         elif agg.get("experiment") and not p.get("divergent") and pid.get(p.get("app")):
             # AUTO-EXPERIMENT: reversible deadlock -> ship a flagged A/B challenger and let data decide.
-            slug = "ab-" + re.sub(r"[^a-z0-9]+", "-", (p.get("title") or "")[:36].lower()).strip("-")
+            import improvement_ledger
+            slug = "ab-" + improvement_ledger.make_slug(p.get("title") or "", "ab")
             m0 = {r["app"]: float(r.get("mrr_usd") or 0) + float(r.get("active_users") or 0)
                   for r in (db.select("app_revenue", {"select": "app,mrr_usd,active_users"}) or [])}.get(p["app"], 0)
             db.insert("committee_experiments", {"app": p["app"], "slug": slug, "kind": "ab",
                       "hypothesis": (p.get("title") or "")[:200], "status": "running", "metric_start": m0})
             db.insert("tasks", {"project_id": pid[p["app"]], "slug": slug, "state": "QUEUED", "kind": "build",
-                      "deps": [], "base_branch": "main", "material": False,
+                      "deps": [], "base_branch": base_by_app[p["app"]], "material": False,
+                      "note": "source:committee-experiment; qa:independent; release:verified",
                       "prompt": compose_spec(p.get("title"), (p.get("proposal") or "") +
                                "\n\nSHIP AS AN A/B EXPERIMENT behind a flag (50/50); do not enable globally.",
                                agg["panel"])})
-            upd["status"] = "queued"; upd["task_slug"] = slug
+            upd["status"] = "queued"; upd["task_slug"] = slug; upd["slug_v2"] = True
             _log_action("proposal", p["id"], p.get("title"), "auto-experiment", agg)
         elif agg.get("escalate") or p.get("divergent"):
             upd["status"] = "for_review"   # keep in front of the owner (divergent OR critical/contentious)
@@ -1586,10 +1746,65 @@ def board_review():
     return {"apps": len(alloc), "top": top and top.get('app'), "bumped": bumped}
 
 
+#: How often the portfolio bandit force-funds its LEAST-favored arm. Fleet-pushable via
+#: fleet_control.py because it is ORCH_-prefixed and carries no secret. 0 disables.
+ORCH_BOARD_CONTRARIAN_EVERY = os.environ.get("ORCH_BOARD_CONTRARIAN_EVERY", "5")
+
+
+def _contrarian_every(value=None):
+    """Parse the contrarian interval. Fail-soft: anything unparseable means 'default 5'."""
+    raw = ORCH_BOARD_CONTRARIAN_EVERY if value is None else value
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 5
+    return n if n >= 0 else 5
+
+
+def contrarian_due(total_pulls, every=None):
+    """True when this pull is the scheduled counter-consensus pull.
+
+    UCB1 already explores, but it explores toward arms it is UNCERTAIN about; it never
+    deliberately funds the arm it is confident is worst. That is precisely the arm whose
+    low score is most likely to be an artefact of the board's own priors — an app starved
+    early looks bad forever because it is never funded enough to prove otherwise. So on a
+    fixed cadence the least-favored arm is force-funded regardless of score.
+
+    Fail-soft: a non-numeric interval falls back to the default rather than raising, and
+    0 disables the behaviour entirely (pure UCB1).
+    """
+    n = _contrarian_every(every)
+    if n <= 0:
+        return False
+    try:
+        pulls = int(total_pulls)
+    except (TypeError, ValueError):
+        return False
+    return pulls > 0 and pulls % n == 0
+
+
+def select_board_arm(scored, total_pulls, every=None):
+    """Choose (arm, is_contrarian) from UCB-sorted ``scored`` (descending).
+
+    Pure so the policy is testable without a database. Returns the normal UCB winner
+    except on a contrarian beat, when the LAST entry — the least-favored arm — is
+    returned instead. With fewer than two arms there is no dissent to fund, so the
+    winner stands.
+    """
+    if not scored:
+        return None, False
+    if len(scored) > 1 and contrarian_due(total_pulls, every):
+        return scored[-1], True
+    return scored[0], False
+
+
 def board_bandit():
     """PORTFOLIO BANDIT: instead of a one-shot allocation, continuously shift build effort toward the app
     with the best REALIZED reward (concluded-experiment lift + revenue movement), while exploring
-    underfunded apps just enough not to miss a sleeper. UCB1 over apps; autonomous queue rebalance."""
+    underfunded apps just enough not to miss a sleeper. UCB1 over apps; autonomous queue rebalance.
+
+    ANTI-GROUPTHINK: every ORCH_BOARD_CONTRARIAN_EVERY pulls the least-favored arm is
+    force-funded (see contrarian_due) so consensus is stress-tested rather than compounded."""
     import math
     apps = [p for p in (db.select("projects", {"select": "id,name"}) or []) if p["name"] != "smoke-test"]
     # reward signal: average realized lift of each app's concluded experiments (fallback: optimistic prior)
@@ -1608,7 +1823,7 @@ def board_bandit():
         ucb = (reward / 10.0) + math.sqrt(2 * math.log(total_pulls) / (pulls + 1))
         scored.append((ucb, name, a["id"], reward))
     scored.sort(reverse=True)
-    top = scored[0] if scored else None
+    top, is_contrarian = select_board_arm(scored, total_pulls)
     bumped = 0
     if top:
         _, tname, tid, treward = top
@@ -1621,10 +1836,14 @@ def board_bandit():
         rsum = float(st.get("reward_sum") or 0) + treward
         db.insert("board_bandit", {"app": tname, "pulls": pulls, "reward_sum": rsum,
                   "avg_reward": round(rsum / pulls, 3), "updated_at": "now()"}, upsert=True)
+        rationale = (f"CONTRARIAN pull: least-favored arm force-funded to stress-test consensus "
+                     f"(reward {round(treward,2)}, explored {pulls}x)" if is_contrarian
+                     else f"UCB pick: reward {round(treward,2)}, explored {pulls}x")
         db.insert("board_allocations", {"app": tname, "recommended_share": 1.0,
-                  "rationale": f"UCB pick: reward {round(treward,2)}, explored {pulls}x"})
-    print(f"committees.board_bandit: picked {top and top[1]}, bumped {bumped} tasks")
-    return {"top": top and top[1], "bumped": bumped}
+                  "rationale": rationale})
+    print(f"committees.board_bandit: picked {top and top[1]}"
+          f"{' (contrarian)' if is_contrarian else ''}, bumped {bumped} tasks")
+    return {"top": top and top[1], "bumped": bumped, "contrarian": is_contrarian}
 
 
 def mine_hypotheses(limit=3):
@@ -1687,9 +1906,105 @@ def build_kg():
     return n
 
 
+def causal_links(opinions, outcomes, min_support=2):
+    """Aggregate (verdict -> measured outcome) evidence per app. Pure; no I/O.
+
+    The similarity edges built above answer "what did we decide near this?" — co-occurrence.
+    They cannot answer "did holding that verdict actually move anything", because an opinion
+    and an outcome that merely share an app and a week look identical to a keyword graph.
+
+    So a link is only counted when the outcome came AFTER the determination for the same app
+    (``created_at`` / ``concluded_at`` compared as strings, which is correct for the ISO-8601
+    timestamps this schema stores). Effect is the mean realized lift of the experiments that
+    followed. ``min_support`` exists because one experiment after one verdict is an anecdote:
+    below it the link is dropped rather than reported as causal.
+
+    This is directional evidence, not proof — nothing here controls for confounders, so the
+    output is phrased as "followed by" wherever it reaches a prompt.
+
+    Returns a list of dicts sorted by |effect| descending, each:
+        {verdict, app, n, effect}
+    Fail-soft: malformed rows are skipped, never raised on.
+    """
+    buckets = {}
+    for o in opinions or []:
+        try:
+            verdict = (o.get("consensus_verdict") or "").strip()
+            app = o.get("app") or "portfolio"
+            at = str(o.get("created_at") or "")
+        except AttributeError:
+            continue
+        if not verdict:
+            continue
+        for e in outcomes or []:
+            try:
+                if (e.get("app") or "portfolio") != app:
+                    continue
+                when = str(e.get("concluded_at") or "")
+                if not (at and when and when > at):
+                    continue
+                lift = float(e.get("lift") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            buckets.setdefault((verdict, app), []).append(lift)
+    links = []
+    for (verdict, app), lifts in buckets.items():
+        if len(lifts) < min_support:
+            continue
+        links.append({"verdict": verdict, "app": app, "n": len(lifts),
+                      "effect": round(sum(lifts) / len(lifts), 3)})
+    links.sort(key=lambda l: (-abs(l["effect"]), l["verdict"], l["app"]))
+    return links
+
+
+def format_causal_context(links, limit=3):
+    """Render causal_links() as a prompt line. Empty string when there is nothing to say."""
+    if not links:
+        return ""
+    parts = [f"'{l['verdict']}' on {l['app']} was followed by mean lift "
+             f"{l['effect']:+} across {l['n']} experiments" for l in links[:limit]]
+    return ("CAUSAL EVIDENCE (determination -> measured outcome; directional, not controlled): "
+            + " | ".join(parts) + "\n")
+
+
+def build_causal_kg(limit=300):
+    """Persist causal edges alongside the similarity edges. Fail-soft: never raises."""
+    try:
+        ops = db.select("committee_opinions",
+                        {"select": "app,consensus_verdict,created_at",
+                         "order": "created_at.desc", "limit": str(limit)}) or []
+        exps = db.select("committee_experiments",
+                         {"select": "app,lift,concluded_at", "status": "eq.concluded"}) or []
+        links = causal_links(ops, exps)
+        have = {(e["from_key"], e["to_key"], e["relation"]) for e in
+                (db.select("kg_edges", {"select": "from_key,to_key,relation",
+                                        "relation": "eq.outcome:followed", "limit": "5000"}) or [])}
+        n = 0
+        for l in links:
+            fk, tk = l["verdict"], l["app"]
+            if (fk, tk, "outcome:followed") in have:
+                continue
+            db.insert("kg_edges", {"from_kind": "verdict", "from_key": fk, "to_kind": "outcome",
+                                   "to_key": tk, "relation": "outcome:followed",
+                                   "weight": l["n"]})
+            have.add((fk, tk, "outcome:followed"))
+            n += 1
+        print(f"committees.build_causal_kg: {len(links)} causal links, {n} new edges")
+        return n
+    except Exception as exc:
+        # CLAUDE.md: broad catch is the fail-soft convention, but it must diagnose before
+        # swallowing — a silent except is the defect.
+        print(f"committees.build_causal_kg: skipped ({exc})")
+        return 0
+
+
 def kg_context(title, body, limit=4):
     """Query the knowledge graph for opinions near this decision (any committee) — richer than single-
-    committee precedent. Returns a compact context string."""
+    committee precedent. Returns a compact context string.
+
+    Appends CAUSAL EVIDENCE when the graph has enough post-determination outcomes to say
+    which verdicts were actually followed by movement, so the board reasons about effect
+    rather than adjacency."""
     key = set(re.findall(r"[a-z]{4,}", ((title or "") + " " + (body or "")).lower()))
     ops = db.select("committee_opinions", {"select": "committee,subject_title,consensus_verdict,opinion",
                     "order": "created_at.desc", "limit": "200"}) or []
@@ -1704,7 +2019,20 @@ def kg_context(title, body, limit=4):
         return ""
     lines = [f"{o['committee']} held '{o.get('consensus_verdict')}' on '{o.get('subject_title')}'"
              for _, o in scored[:limit]]
-    return "RELATED PRIOR DECISIONS (knowledge graph): " + " | ".join(lines) + "\n"
+    out = "RELATED PRIOR DECISIONS (knowledge graph): " + " | ".join(lines) + "\n"
+    # Causal layer is additive and fail-soft: if the outcome data is unavailable the
+    # co-occurrence context above is still returned unchanged.
+    try:
+        near = {o.get("consensus_verdict") for _, o in scored[:limit]}
+        cops = db.select("committee_opinions", {"select": "app,consensus_verdict,created_at",
+                         "order": "created_at.desc", "limit": "200"}) or []
+        cexps = db.select("committee_experiments", {"select": "app,lift,concluded_at",
+                          "status": "eq.concluded"}) or []
+        links = [l for l in causal_links(cops, cexps) if l["verdict"] in near]
+        out += format_causal_context(links)
+    except Exception as exc:
+        print(f"committees.kg_context: causal layer skipped ({exc})")
+    return out
 
 
 def meta_review():

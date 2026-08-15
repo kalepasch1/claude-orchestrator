@@ -9,6 +9,7 @@ import kill_switch as _real_kill_switch
 import log as _real_log
 import subscription_guard as _real_subscription_guard
 import provider_terms as _real_provider_terms
+import tdd_gate as _real_tdd_gate
 
 _PROVIDER_DEFAULTS = {
     name: dict(metadata) for name, metadata in _real_provider_terms.DEFAULTS.items()
@@ -27,6 +28,50 @@ def _restore_environment_after_test():
     yield
     os.environ.clear()
     os.environ.update(before)
+
+
+@pytest.fixture(autouse=True)
+def _reset_projects_cache():
+    """A test's mocked `projects` rows must never leak into the next test.
+
+    db.claim_task reads the project list through db._refresh_projects_cache(), a
+    module-global memo with a 300s TTL. The memo is keyed on nothing but time, so
+    the FIRST test to call claim_task populates it and every later test in the same
+    session silently reuses those rows — its own patched db.select("projects") is
+    never consulted.
+
+    That is invisible until a test supplies non-default projects. Host affinity then
+    computes local_repo_pids from the STALE ids, no queued task matches, claim_task
+    filters the whole queue away and returns None. test_pinned_express_lane's
+    test_multiple_projects_with_pinned_express_lane and
+    test_paused_project_filtering_happens_before_express_lane failed exactly this way
+    — both pass in isolation, both fail in-suite, and whichever ran first was the one
+    that passed. Two red tests in the merge gate for every branch, with a symptom
+    ("no locally-runnable tasks") that points at host affinity rather than at cache
+    bleed.
+
+    Clearing the memo before each test makes the patched select authoritative again.
+    """
+    _real_db._cached_projects_list = []
+    _real_db._PROJECT_CACHE_TIME["at"] = 0
+    yield
+    _real_db._cached_projects_list = []
+    _real_db._PROJECT_CACHE_TIME["at"] = 0
+
+
+@pytest.fixture(autouse=True)
+def _reset_tdd_gate_cache():
+    """tdd_gate memoizes its fleet_config reads for 30s on module globals.
+
+    Same shape as the projects memo above: the FIRST test to call get_required_kinds()
+    populates the memo, and every later test in the session gets that value back instead
+    of its own patched db.select. test_tdd_gate's test_caches_result_for_30s asserts a
+    DB call count, so it passes alone and fails in-suite depending purely on which file
+    ran first — one more permanently-red test in the merge gate with a misleading symptom.
+    """
+    _real_tdd_gate.invalidate_cache()
+    yield
+    _real_tdd_gate.invalidate_cache()
 
 
 # Every control-plane module any test replaces via sys.modules[...] = ModuleType(...)

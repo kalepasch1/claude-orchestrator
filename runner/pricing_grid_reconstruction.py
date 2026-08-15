@@ -29,6 +29,20 @@ def _tier_units_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> 
     return True
 
 
+def _tier_capacity_units(tier_min: int, tier_max: Optional[int]) -> int:
+    """Canonical tier capacity: how many units a bounded tier can ever hold.
+
+    Unlimited (max_units=None) and malformed (max < min) tiers report 0. This is the
+    ONE definition of capacity in the codebase — `common_utils.consume_from_tier`
+    recomputed the identical `tier_max - (tier_min - 1)` expression inline, which is the
+    duplication this consolidation removes. Everything that needs a capacity now calls
+    here or `PricingTier._tier_capacity`.
+    """
+    if tier_max is None:
+        return 0
+    return max(0, tier_max - tier_min + 1)
+
+
 def _calculate_applicable_units(units: int, tier_min: int, tier_max: Optional[int]) -> int:
     """Single unified method for calculating applicable units in a tier range.
 
@@ -69,12 +83,13 @@ class PricingTier:
 
     @staticmethod
     def _tier_capacity(tier: 'PricingTier') -> int:
-        """Unified capacity calculation for a tier."""
-        if tier.is_unlimited:
-            return 0
-        if tier.max_units < tier.min_units:
-            return 0
-        return _calculate_applicable_units(tier.max_units, tier.min_units, tier.max_units)
+        """Capacity of *tier* in units; 0 for unlimited or malformed tiers.
+
+        Thin delegation to the canonical `_tier_capacity_units` so callers can reach it
+        off the class without importing the module-level helper. Reads only min/max —
+        never metadata — so it cannot leak tier metadata into a calculation.
+        """
+        return _tier_capacity_units(tier.min_units, tier.max_units)
 
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for units within this tier's range."""
@@ -111,22 +126,34 @@ class PricingGrid:
         return sorted(self.tiers, key=lambda t: t.min_units)
 
     @staticmethod
-    def _consume_and_cost(tier: PricingTier, remaining: int) -> Tuple[int, float]:
-        """Unified method: consume units from tier and calculate cost."""
+    def _consume_tier_units(tier: PricingTier, remaining: int) -> Tuple[int, float]:
+        """Consume units from tier and calculate cost.
+
+        Returns (consumed_units, cost_for_consumed).
+        """
         if remaining <= 0:
             return 0, 0.0
 
-        consumed, _ = common_utils.consume_from_tier(
-            current=tier.min_units - 1,
-            tier_min=tier.min_units,
-            tier_max=tier.max_units,
-            amount=remaining
-        )
+        # An unlimited tier absorbs everything; a bounded one is clamped to its capacity.
+        # This used to call common_utils.consume_from_tier(current=tier.min_units - 1, ...),
+        # which with that fixed `current` reduces to exactly `tier_max - tier_min + 1` —
+        # the same expression PricingTier._tier_capacity owns. Two copies of one rule is
+        # the duplication being consolidated; capacity now has a single definition.
+        if tier.is_unlimited:
+            consumed = remaining
+        else:
+            consumed = min(remaining, PricingTier._tier_capacity(tier))
         if consumed == 0:
             cost = 0.0
         else:
             cost = tier.flat_fee + (consumed * tier.unit_price)
         return consumed, cost
+
+    # Backward-compatible alias: callers/tests predating the rename still use this name.
+    # NB: the canonical implementation is _consume_tier_units above; the old name is the
+    # alias. This assignment was inverted (new = old), which raised NameError at class-body
+    # evaluation time and made the whole module unimportable.
+    _consume_and_cost = _consume_tier_units
 
     def total_cost(self, units: int) -> float:
         """Calculate total cost across all tiers for a given unit count.
@@ -139,7 +166,7 @@ class PricingGrid:
         for tier in self.sorted_tiers:
             if remaining <= 0:
                 break
-            consumed, cost = self._consume_and_cost(tier, remaining)
+            consumed, cost = self._consume_tier_units(tier, remaining)
             total += cost
             remaining -= consumed
         return round(total, 2)
@@ -174,9 +201,34 @@ class PricingGridReconstructionUtil:
     @staticmethod
     def from_raw_tiers(product_id: str, raw_tiers: List[Dict[str, Any]],
                        currency: str = "USD") -> PricingGrid:
-        """Reconstruct PricingGrid from raw tier dicts using unified factory."""
+        """Reconstruct PricingGrid from raw tier dicts, dropping exact duplicates.
+
+        A raw feed that lists the same tier twice used to produce a grid holding it
+        twice, and an exact duplicate overlaps ITSELF: `validate_grid` on such a grid
+        returns (False, ["tier 'base' overlaps with 'base'"]), so a redundant row made a
+        correct price table fail its own validation. The duplicate also inflated the tier
+        count everywhere the grid is rendered or counted (`to_dict`, callers reading
+        `len(tiers)`).
+
+        Deduplication is on the FULL pricing identity — name, bounds and unit price — so
+        two tiers that merely share a name but price differently are preserved and still
+        reported as a genuine overlap. First occurrence wins, which keeps the caller's
+        ordering intent; sorting then happens exactly as before.
+
+        Cost is deliberately unaffected: `_consume_tier_units` already consumed each unit
+        once, so `total_cost` returned the same number with or without the duplicate.
+        This removes the redundant entry and nothing else.
+        """
         tiers = [_build_pricing_tier_from_dict(rt) for rt in raw_tiers]
-        grid = PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
+        deduped: List[PricingTier] = []
+        seen = set()
+        for tier in tiers:
+            identity = (tier.name, tier.min_units, tier.max_units, tier.unit_price)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduped.append(tier)
+        grid = PricingGrid(product_id=product_id, tiers=deduped, currency=currency)
         grid.tiers = grid.sorted_tiers
         return grid
 

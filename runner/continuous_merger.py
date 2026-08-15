@@ -28,6 +28,8 @@ Usage from runner.py:
     # In set_state, when state == "DONE":
     continuous_merger.on_task_done(task_dict)
 """
+from __future__ import annotations  # PY3.9 fleet: PEP-604 'str | None' annotations
+# would raise TypeError at import time, making this whole module silently unimportable.
 import os
 import sys
 import subprocess
@@ -36,6 +38,7 @@ import time
 import traceback
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from regenerable_artifacts import partition_dirt, describe
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -62,6 +65,17 @@ ENABLED = os.environ.get("ORCH_CONTINUOUS_MERGER_ENABLED", "true").lower() in (
 WORKERS = int(os.environ.get("ORCH_CONTINUOUS_MERGER_WORKERS", "2"))
 MAX_RETRY = int(os.environ.get("ORCH_CONTINUOUS_MERGER_RETRY", "2"))
 GIT_TIMEOUT = int(os.environ.get("ORCH_GIT_TIMEOUT", "90"))
+# Live-runner guard: never merge agent/<slug> while another RUNNING task owns the
+# same slug (an orphan-repair resume, a duplicate claim) — it is still committing
+# to that branch from its worktree, and merging + deleting the ref mid-write is
+# the "live runner merge conflict" class. Deferring loses nothing: the task stays
+# DONE and merge_backlog()/merge_train retries once the runner finishes.
+LIVE_RUNNER_GUARD = os.environ.get(
+    "ORCH_MERGER_LIVE_RUNNER_GUARD", "true").lower() in ("true", "1", "yes", "on")
+# A RUNNING row older than this is treated as orphaned, not live, so a wedged row
+# can only delay a merge — never block it forever (the janitor demotes it anyway).
+LIVE_RUNNER_STALE_SECONDS = int(
+    os.environ.get("ORCH_MERGER_LIVE_RUNNER_STALE_SECONDS", "1800") or 1800)
 
 # Per-project locks to serialize git operations
 _project_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
@@ -74,7 +88,46 @@ _stats = {
     "conflict": 0,
     "errors": 0,
     "skipped": 0,
+    "deferred_live_runner": 0,
 }
+
+
+def _live_runner_blocking(project_id: str, slug: str, task_id: str) -> str:
+    """Return a short description of the live runner that owns agent/<slug>,
+    or "" when the branch is safe to merge.
+
+    A "live" runner is another task row on the same project+slug that is
+    RUNNING and was updated within LIVE_RUNNER_STALE_SECONDS. Fail-safe by
+    design: if the DB check itself errors we report the branch as blocked —
+    deferring to the backlog sweep loses nothing, merging past a live runner
+    loses its in-flight commits.
+    """
+    if not LIVE_RUNNER_GUARD or not db or not slug:
+        return ""
+    try:
+        rows = db.select("tasks", {
+            "select": "id,state,updated_at",
+            "project_id": f"eq.{project_id}",
+            "slug": f"eq.{slug}",
+            "state": "eq.RUNNING",
+            "limit": "10",
+        }) or []
+    except Exception as e:
+        return f"live-runner check unavailable ({e})"
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        if str(row.get("id")) == str(task_id):
+            continue
+        updated = str(row.get("updated_at") or "")
+        try:
+            age = (now - datetime.fromisoformat(
+                updated.replace("Z", "+00:00"))).total_seconds()
+        except (ValueError, TypeError):
+            age = 0.0  # unparseable/naive timestamp: assume live, defer this pass
+        if age <= LIVE_RUNNER_STALE_SECONDS:
+            return f"task {row.get('id')} RUNNING (updated {int(age)}s ago)"
+    return ""
 
 
 def _ensure_pool():
@@ -108,13 +161,74 @@ def _lookup_project(project_id: str) -> dict | None:
         return None
 
 
+def _capture_merge_memory(repo: str, branch: str, sha: str) -> bool:
+    """Record an integrated merge in merged_diff_memory. Best-effort.
+
+    WIRED 2026-08-11. `merged_diff_memory.capture_merge()` had no production
+    caller anywhere in the repo — only tests — so the memory file stayed empty
+    forever and `get_recent_merges()` / `stats()` were dead API returning
+    nothing. This is the same defect class the module's own `recent()` docstring
+    describes: a function that exists and is never reached, failing silently.
+
+    Every merge this module integrates is a proven diff, which is exactly what
+    the reuse-first path wants to read back. Capture is deliberately last and
+    fail-soft: a memory write must never fail a merge that already landed.
+    """
+    if not sha or not repo:
+        return False
+    try:
+        import merged_diff_memory
+        return bool(merged_diff_memory.capture_merge(sha, branch, repo))
+    except Exception as exc:
+        _log.debug("continuous_merger: merge-memory capture skipped (%s)", exc)
+        return False
+
+
+def _resolved_file_gate_blocked(repo, resolved_files):
+    """Refuse a merge that left markers anywhere or a resolved file broken.
+
+    FAIL-CLOSED on an import error, consistent with the rest of this module's gate
+    stack: a promotion gate that passes because it could not be loaded is decorative.
+    """
+    try:
+        import resolved_file_gate
+    except Exception as exc:
+        return True, ("resolved_file_gate unavailable (%s) — unverified resolutions are "
+                      "disabled (fail-closed); branch left for the merge train" % exc)
+    try:
+        return resolved_file_gate.promotion_blocked(repo, resolved_paths=resolved_files)
+    except Exception as exc:
+        return True, "resolved_file_gate errored (%s); failing closed" % exc
+
+
 def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     """Attempt to merge a single branch into base.
 
     Returns:
-        {"merged": bool, "strategy": str, "error": str|None}
+        {"merged": bool, "strategy": str, "error": str|None, "sha": str|None}
+        "sha" is the integrated commit (evidence for artifact_commit) when merged.
     """
-    result = {"merged": False, "strategy": "none", "error": None}
+    result = {"merged": False, "strategy": "none", "error": None, "sha": None}
+
+    # NEVER destroy uncommitted work in the main checkout (added 2026-08-04).
+    #
+    # The `reset --hard` below used to run unconditionally. Combined with the missing
+    # cross-process lock (see _process_task), this module silently reverted uncommitted
+    # edits in the main checkout whenever any task completed — observed three times in one
+    # day against in-flight operator/agent edits, including the very commit that was fixing
+    # this class of bug. A merge job has no business discarding work it did not create.
+    _porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty"], repo).stdout.strip()
+    # Machine-generated artifacts are not authorship; only real edits block.
+    _blocking, _regenerable = partition_dirt(_porcelain)
+    if _regenerable and not _blocking:
+        print("continuous_merger: %s proceeding — %s"
+              % (repo, describe(_blocking, _regenerable)), flush=True)
+    dirty = "\n".join(_blocking)
+    if dirty:
+        result["error"] = ("main checkout has uncommitted changes — refusing to reset; "
+                           "branch left for the merge train")
+        result["strategy"] = "skipped-dirty"
+        return result
 
     # Ensure we're on base and clean
     _git(["git", "checkout", base], repo)
@@ -133,45 +247,73 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     # Check if already an ancestor (already merged)
     ancestor = _git(["git", "merge-base", "--is-ancestor", branch, base], repo)
     if ancestor.returncode == 0:
-        # Already merged — just delete the branch ref
+        # Already merged — capture the integrated tip as evidence, then delete the branch ref
+        tip = _git(["git", "rev-parse", branch], repo).stdout.strip()
+        # Capture before deleting the ref: capture_merge shells out to git for
+        # author/date/message/files, and the branch name is part of the record.
+        _capture_merge_memory(repo, branch, tip)
         _git(["git", "branch", "-D", branch], repo)
         result["merged"] = True
         result["strategy"] = "already_ancestor"
+        result["sha"] = tip or None
         return result
 
-    # Try normal merge
-    slug = task.get("slug", branch)
-    merge = _git(["git", "merge", "--no-ff", branch, "-m",
-                   f"Merge branch '{slug}' (continuous-merger)"], repo)
+    # ALL merges — clean or conflicted — go through auto_conflict_resolver.resolve_branch,
+    # which runs the fail-closed anti-loss gates (regression, divergent-authorship,
+    # shadowed-stub) on EVERY committed merge and rolls back + preserves the branch on any
+    # finding.
+    #
+    # HISTORY (fixed 2026-08-04, operator directive "improvements must never be lost to a
+    # merge"): this function used to run its own bare `git merge` for the clean case and
+    # only delegated to the resolver on conflict. A branch forked before an improvement
+    # landed merges CLEANLY while reverting that improvement; this path then deleted the
+    # branch — the only surviving copy. That unguarded clean path authored a large share of
+    # the losses behind the 2026-08-04 phantom-merge reclassification (10,598 merges,
+    # NO_EVIDENCE). FAIL-CLOSED: if the resolver (and with it the gate stack) cannot be
+    # imported, no merge happens here at all.
+    if auto_conflict_resolver is None:
+        result["error"] = ("auto_conflict_resolver unavailable — unverified merges are "
+                           "disabled (fail-closed); branch left for merge_train")
+        result["strategy"] = "blocked"
+        return result
 
-    if merge.returncode == 0:
-        _git(["git", "branch", "-d", branch], repo)
+    acr_result = auto_conflict_resolver.resolve_branch(repo, branch, base, dry_run=False)
+    if acr_result.get("merged"):
+        # THE RESOLVED-FILE GATE (2026-08-12). The resolver's own gate stack answers
+        # "did this merge lose an improvement?"; it does not answer "is the file the
+        # resolver wrote still valid?". A resolution that strips the markers and leaves
+        # a syntactically broken file passes every existing check, and a marker written
+        # into a file NOBODY touched in this change set was invisible to the
+        # path-list-only scanner. Both are refusals here, and the merge is rolled back
+        # rather than force-pushed or half-discarded.
+        gate_blocked, gate_reason = _resolved_file_gate_blocked(
+            repo, acr_result.get("resolved_files") or [])
+        if gate_blocked:
+            _git(["git", "reset", "--hard", "HEAD~1"], repo)
+            result["error"] = "resolved-file gate: %s" % gate_reason
+            result["strategy"] = "gate-blocked"
+            return result
+
         result["merged"] = True
-        result["strategy"] = "clean"
+        # Evidence: the merge commit sha — HEAD of the repo right after resolve_branch
+        # committed the merge on base. Persisted as tasks.artifact_commit by the caller.
+        head = _git(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+        result["sha"] = head or None
+        _capture_merge_memory(repo, branch, head)
+        strategy = acr_result.get("strategy", "clean")
+        resolved = acr_result.get("resolved_files") or []
+        result["strategy"] = (f"auto_resolved ({len(resolved)} files)"
+                              if strategy == "auto" else strategy)
         return result
 
-    # Merge failed — try auto-conflict-resolver
-    if auto_conflict_resolver:
-        # Abort the failed merge first
-        _git(["git", "merge", "--abort"], repo)
-        _git(["git", "reset", "--hard", "HEAD"], repo)
-
-        acr_result = auto_conflict_resolver.resolve_branch(
-            repo, branch, base, dry_run=False
-        )
-        if acr_result.get("merged"):
-            result["merged"] = True
-            result["strategy"] = f"auto_resolved ({len(acr_result.get('resolved_files', []))} files)"
-            return result
-        else:
-            result["error"] = f"auto-resolve failed: {acr_result.get('error') or 'manual files: ' + str(acr_result.get('manual_files', []))}"
-            result["strategy"] = "conflict"
-            return result
-    else:
-        _git(["git", "merge", "--abort"], repo)
-        result["error"] = "merge conflict, auto_conflict_resolver not available"
-        result["strategy"] = "conflict"
-        return result
+    err = acr_result.get("error")
+    if not err:
+        err = "manual files: " + str(acr_result.get("manual_files", []))
+    result["error"] = f"auto-resolve failed: {err}"
+    result["strategy"] = ("regression-blocked"
+                          if acr_result.get("strategy") == "regression-blocked"
+                          else "conflict")
+    return result
 
 
 def _process_task(task: dict):
@@ -180,6 +322,14 @@ def _process_task(task: dict):
     task_id = task.get("id", "")
     slug = task.get("slug", "")
     branch = task.get("branch") or f"agent/{slug}"
+
+    live = _live_runner_blocking(project_id, slug, task_id)
+    if live:
+        _log.info("continuous_merger: %s has a live runner (%s) — deferring merge "
+                  "to the backlog sweep", branch, live)
+        with _stats_lock:
+            _stats["deferred_live_runner"] += 1
+        return
 
     project = _lookup_project(project_id)
     if not project:
@@ -197,9 +347,54 @@ def _process_task(task: dict):
             _stats["skipped"] += 1
         return
 
-    # Serialize git ops per project
+    # Serialize git ops per project.
+    #
+    # CROSS-PROCESS LOCK (added 2026-08-04). _project_locks is a threading.Lock, so it only
+    # serialized threads INSIDE this process. merge_train, release_train, branch_lease,
+    # runner and worktree_isolation all coordinate through repo_lock.hold(), an fcntl.flock
+    # on the repo — this module was the one merger that never took it. Two mergers could
+    # therefore drive `git checkout` / `reset --hard` / `git merge` on the SAME repo at the
+    # same instant. That is the "overlapping mergers" failure mode directly: interleaved
+    # index writes, a train's in-progress state reset out from under it, and branches
+    # deleted by one path while another was still reading them.
+    #
+    # Fail-safe by design: if another merger holds the repo we SKIP this cycle rather than
+    # block a worker thread. The task stays DONE and the periodic merge_backlog() sweep (or
+    # merge_train) picks it up on the next pass — nothing is lost by deferring.
     lock = _project_locks[project_id]
+    try:
+        import repo_lock
+    except Exception:
+        repo_lock = None
     with lock:
+        _repo_guard = (repo_lock.hold(repo, timeout=120) if repo_lock
+                       else _nullcontext_true())
+        with _repo_guard as _got_repo:
+            if repo_lock is not None and not _got_repo:
+                _log.info("continuous_merger: %s busy (another merger holds the repo lock) "
+                          "— deferring %s to the backlog sweep", repo, slug)
+                with _stats_lock:
+                    _stats["skipped"] += 1
+                return
+            return _merge_with_retries(repo, branch, base, task, slug, task_id,
+                                       project_id)
+
+
+class _nullcontext_true:
+    """Stand-in when repo_lock is unavailable: proceed, but say so loudly."""
+
+    def __enter__(self):
+        _log.warning("continuous_merger: repo_lock unavailable — merging WITHOUT the "
+                     "cross-process lock; concurrent mergers are possible")
+        return True
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _merge_with_retries(repo, branch, base, task, slug, task_id, project_id):
+    """The merge attempt loop, run while holding both the thread and repo locks."""
+    if True:
         for attempt in range(MAX_RETRY + 1):
             try:
                 merge_result = _merge_branch(repo, branch, base, task)
@@ -212,13 +407,31 @@ def _process_task(task: dict):
                         if "auto_resolved" in strategy:
                             _stats["auto_resolved"] += 1
 
-                    # Update task state to MERGED
+                    # Update task state to MERGED — with commit evidence. Without a sha we
+                    # cannot honestly certify MERGED (and the DB evidence gate would reject
+                    # it), so fall back to DONE for merge_train to finish the job.
                     if db:
+                        merge_sha = merge_result.get("sha") or ""
                         try:
-                            db.update("tasks", {"id": task_id},
-                                      {"state": "MERGED",
-                                       "note": f"continuous-merger: {strategy}",
-                                       "updated_at": "now()"})
+                            if merge_sha:
+                                # A local merge produced this sha; that does not mean it
+                                # reached prod (it may sit on staging, or the push may have
+                                # failed after the merge succeeded). merge_truth requires
+                                # ancestry of prod_branch before MERGED is written.
+                                import merge_truth
+                                merge_truth.guarded_task_update(
+                                    {"id": task_id, "slug": slug, "project_id": project_id},
+                                    {"state": "MERGED",
+                                     "artifact_commit": merge_sha,
+                                     "note": f"continuous-merger: {strategy} @ {merge_sha[:12]}",
+                                     "updated_at": "now()"},
+                                    repo=repo)
+                            else:
+                                db.update("tasks", {"id": task_id},
+                                          {"state": "DONE",
+                                           "note": f"continuous-merger: {strategy} but no merge sha "
+                                                   "captured — left DONE for merge_train",
+                                           "updated_at": "now()"})
                         except Exception:
                             pass
 

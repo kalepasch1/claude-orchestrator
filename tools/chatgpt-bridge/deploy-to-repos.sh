@@ -36,18 +36,11 @@ if not isinstance(trig, dict) or 'workflow_dispatch' not in trig:
 print("workflow YAML OK")
 PY
 
-REPOS=(
-  "$HOME/Documents/beethoven/claude-orchestrator"
-  "$HOME/Documents/tomorrow/tomorrow"
-  "$HOME/Documents/apparently"
-  "$HOME/Documents/smarter"
-  "$HOME/Documents/illuminati"
-  "$HOME/Documents/vigil"
-  "$HOME/Documents/pareto/2080"
-)
+BINDINGS="$HERE/../../runner/deployment_bindings.json"
 
-for ROOT in "${REPOS[@]}"; do
-  NAME="$(basename "$ROOT")"
+# deployment_bindings.json is the fleet's canonical app registry. Keeping a
+# second seven-repo list here left newer apps outside the ChatGPT handoff system.
+while IFS=$'\t' read -r NAME ROOT; do
   echo "=== $NAME"
   [ -d "$ROOT/.git" ] || { echo "  skip (not a git checkout)"; continue; }
 
@@ -92,7 +85,8 @@ for ROOT in "${REPOS[@]}"; do
   git -C "$WT" commit -q -m "chore: add ChatGPT no-network handoff protocol
 
 Sandbox sessions cannot reach github.com. CHATGPT.md tells the agent to emit a
-patch instead of debugging DNS; chatgpt-patch.yml applies one from the browser."
+patch instead of debugging DNS; the bridge registers every result in the
+orchestrator queue and chatgpt-patch.yml applies one from the browser."
 
   # Does this repo sit behind the fleet's release train?
   GUARDED=0
@@ -115,6 +109,13 @@ patch instead of debugging DNS; chatgpt-patch.yml applies one from the browser."
 
   git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1
   git -C "$ROOT" worktree prune 2>/dev/null
-done
+done < <(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+  rows = json.load(fh).get("targets", [])
+for row in rows:
+  if row.get("app") and row.get("repo_path"):
+    print("{}\t{}".format(row["app"], row["repo_path"]))
+' "$BINDINGS")
 
 echo "done."

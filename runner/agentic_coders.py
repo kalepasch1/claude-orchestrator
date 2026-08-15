@@ -23,7 +23,9 @@ Backward compatible: with no extra coders, behavior is the prior claude -> codex
 """
 import os, sys, json, re, shlex, subprocess, time, hashlib
 import contextlib
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lane_guard
 
 # capability a task needs by difficulty (see _task_difficulty)
 _NEED = {"easy": 5, "hard": 8}
@@ -300,6 +302,27 @@ def _cli_present(name):
     return ok
 
 
+def claude_runnable_here():
+    """Can THIS host actually execute the claude lane?
+
+    True when the `claude` binary resolves (honouring CLAUDE_BIN, which may be an absolute path)
+    or the Agent SDK is importable — the SDK path in claude_cli.run() needs no binary. Checked
+    before dispatch so a host missing both fails over instead of raising FileNotFoundError and
+    leaving a no-diff task for the repair pipeline to cycle on.
+    """
+    binname = os.environ.get("CLAUDE_BIN", "claude")
+    if os.path.sep in binname:
+        if os.path.isfile(binname) and os.access(binname, os.X_OK):
+            return True
+    elif _cli_present(binname):
+        return True
+    try:
+        import claude_cli
+        return bool(getattr(claude_cli, "_HAS_AGENT_SDK", False))
+    except Exception:
+        return False
+
+
 def _ollama_up():
     """Is a local Ollama server reachable? Cached ~60s. Used to prune the free ollama coder when the
     server is down, so easy tasks don't all fail on it before switching coders."""
@@ -362,6 +385,60 @@ def _spec(name):
         if c["name"] == name:
             return c
     return None
+
+
+def coder_provider(coder):
+    """The vendor a coder actually calls, read from its `--model <provider>/…` argument.
+
+    Returns "" when it cannot be determined — an unknown provider is never treated as
+    unhealthy, because guessing wrong removes a working coder from the pool.
+    """
+    try:
+        if str(coder.get("name") or "") == "claude":
+            return "claude"
+        cmd = str(coder.get("cmd") or "")
+        marker = "--model "
+        idx = cmd.find(marker)
+        if idx < 0:
+            return ""
+        spec = cmd[idx + len(marker):].split()[0]
+        return spec.split("/", 1)[0].strip().lower() if "/" in spec else ""
+    except Exception:
+        return ""
+
+
+def _provider_healthy(coder):
+    """False only when this coder's provider is demoted (credits/auth dead).
+
+    WHY THIS GATE EXISTS. A canary died repeatedly on:
+
+        litellm.APIError: XaiException - Error code: 403 - 'Your team … has either used
+        all available credits or reached its monthly spending limit.'
+        Retrying in 4.0s … 8.0s … 16.0s … 32.0s
+
+    Those retries are aider's own loop (aider.models.RETRY_TIMEOUT = 60), which retries
+    ANY exception until the window closes. LITELLM_NUM_RETRIES=1 does not bound it, and
+    there is no env knob for it — so ~60 seconds are burned per attempt on a 403 that
+    cannot resolve until someone buys credits.
+
+    The retry loop is not the thing to fight; SELECTING a dead provider is. Nothing in
+    the coder pool consulted provider health, so a vendor that is out of credits stayed
+    selectable forever and every routed task paid the same minute of backoff. This asks
+    the demote registry that already exists and simply was not wired into selection.
+
+    Fail-OPEN: any error, or an unreadable provider, keeps the coder eligible. A health
+    check that removes working coders is a worse outage than the one it prevents.
+    """
+    if not _truthy("ORCH_CODER_PROVIDER_HEALTH_GATE", True):
+        return True
+    provider = coder_provider(coder)
+    if not provider or provider == "claude":
+        return True
+    try:
+        import provider_failover_sla
+        return not provider_failover_sla.is_demoted(provider)
+    except Exception:
+        return True
 
 
 def _within_cap(coder):
@@ -427,7 +504,7 @@ def _heavy_ollama_saturated(coder):
 # kept for backward-compat with any external caller
 def _third_within_cap():
     c = _spec(os.environ.get("ORCH_THIRD_CODER", ""))
-    return bool(c) and _within_cap(c)
+    return bool(c) and _within_cap(c) and _provider_healthy(c)
 
 
 def _task_difficulty(task):
@@ -528,7 +605,7 @@ def _stable_share(task):
     return (int(hashlib.sha1(key.encode()).hexdigest()[:8], 16) % 1000) / 1000.0
 
 
-def pick(task, slot_index=0):
+def _pick_raw(task, slot_index=0):
     """Choose an agentic coder, optimizing cost x capability x task difficulty.
 
     - COWORK SKILL dispatch: tasks needing browser/doc/visual capabilities → Cowork session.
@@ -567,13 +644,14 @@ def pick(task, slot_index=0):
     diff = _task_difficulty(task)
     need = int(task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
     sensitivity = _task_sensitivity(task)
+    _avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
     usable = [c for c in pool
-              if c["cap"] >= need and _within_cap(c) and _allowed_by_terms(c, sensitivity)
-              and not _heavy_ollama_saturated(c)]
+              if c["cap"] >= need and _within_cap(c) and _provider_healthy(c) and _allowed_by_terms(c, sensitivity)
+              and not _heavy_ollama_saturated(c) and c["name"] not in _avoid]
     if not usable and sensitivity in ("crown_jewel", "crown-jewel", "crownjewel"):
         # Fail closed toward local-only: prefer any local coder even if it is below ideal cap,
         # instead of leaking crown-jewel context to an external provider.
-        local = [c for c in pool if _allowed_by_terms(c, sensitivity) and _within_cap(c)]
+        local = [c for c in pool if _allowed_by_terms(c, sensitivity) and _within_cap(c) and _provider_healthy(c)]
         if local:
             usable = sorted(local, key=lambda c: (-c["cap"], c["cost"]))
     def adjusted_cost(c):
@@ -594,13 +672,13 @@ def pick(task, slot_index=0):
                      key=lambda c: (_throttle_penalty(c), adjusted_cost(c), -c["cap"]))
 
     forced = str(task.get("force_coder") or "").strip()
-    if forced:
+    if forced and forced not in _avoid:
         # "aider" names the execution seam, not a concrete pool entry. Resolve
         # it to a usable non-Claude backend instead of silently falling through
         # to a Claude subscription account.
         if forced == "aider":
             candidates = by_cost or sorted(
-                [c for c in pool if c["name"] != "claude" and _within_cap(c)],
+                [c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c) and _provider_healthy(c)],
                 key=lambda c: (adjusted_cost(c), -c["cap"]),
             )
             if candidates:
@@ -626,12 +704,15 @@ def pick(task, slot_index=0):
             return by_cost[0]["name"]
         if diff == "critical":
             return "claude"
-        strongest = sorted([c for c in pool if c["name"] != "claude" and _within_cap(c)],
+        strongest = sorted([c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c) and _provider_healthy(c)],
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
 
     # HIGH URGENCY: bypass cost optimisation — reliability matters more than savings for P0/thermal tasks.
-    if _task_urgency(task) == "high" and any(c["name"] == "claude" for c in usable):
+    # Not when the operator has explicitly demanded full offload: "most reliable" is worthless if that
+    # backend has no quota left, which is exactly the state that motivated the directive.
+    if (_task_urgency(task) == "high" and any(c["name"] == "claude" for c in usable)
+            and not _explicit_full_offload_requested()):
         return "claude"
 
     # LEARNED ROUTER: prefer the coder that empirically converts THIS task-kind to merges most cheaply
@@ -642,7 +723,17 @@ def pick(task, slot_index=0):
             import router_stats
             slug = str(task.get("slug") or "").lower()
             stage = "recovery" if slug.startswith("recover-missing-branch") else None
-            rec = router_stats.best_coder(task.get("kind"), [c["name"] for c in usable], stage=stage)
+            candidates = [c["name"] for c in usable]
+            # The learned router optimises $/merge from our own history — but that history was
+            # written when Claude was effectively the only coder that ever ran, so it now returns
+            # "claude" for every kind and short-circuits every cost check below it. That is a
+            # self-reinforcing loop: Claude wins because Claude is all it has ever seen. When the
+            # operator has explicitly demanded full offload (a 100% share), hold the router to
+            # non-Claude candidates so the other backends can actually produce the outcome data
+            # the router needs to learn from.
+            if _explicit_full_offload_requested():
+                candidates = [n for n in candidates if n != "claude"] or candidates
+            rec = router_stats.best_coder(task.get("kind"), candidates, stage=stage)
             if rec:
                 return rec
         except Exception:
@@ -709,6 +800,48 @@ def pick(task, slot_index=0):
     if by_cost and h < share:
         return by_cost[0]["name"]
     return "claude"
+
+
+def pick(task, slot_index=0):
+    """Public entry point. Wraps _pick_raw() to honor task["_avoid_coders"] (a list of
+    coder names that must not be reselected) without touching the routing logic itself.
+
+    Added for the "push unfinished work to another vendor" repair path: when a task is
+    being re-queued specifically because it did not finish (orphaned/stuck RUNNING),
+    agentic_repair.choose_coder() populates _avoid_coders with the coder that just
+    stalled, so it gets diversified away from instead of reselected. When the task has
+    no _avoid_coders (the overwhelming majority of calls -- normal routing), this is a
+    zero-cost passthrough to the original, unmodified selection logic.
+    """
+    avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
+    if not avoid:
+        return _pick_raw(task, slot_index)
+
+    clean_task = dict(task)
+    if str(clean_task.get("force_coder") or "") in avoid:
+        clean_task.pop("force_coder", None)
+    if str(clean_task.get("model") or "") in avoid:
+        clean_task.pop("model", None)
+
+    result = _pick_raw(clean_task, slot_index)
+    if result not in avoid:
+        return result
+
+    # _pick_raw still landed on an avoided name -- one of its several hardcoded
+    # "claude" fallback branches, since those don't consult _avoid. Fall back to the
+    # next-best usable coder directly rather than handing back the thing we were told
+    # to avoid.
+    pool = _pool()
+    diff = _task_difficulty(clean_task)
+    need = int(clean_task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
+    sensitivity = _task_sensitivity(clean_task)
+    usable = [c for c in pool
+              if c["cap"] >= need and _within_cap(c) and _provider_healthy(c) and _allowed_by_terms(c, sensitivity)
+              and not _heavy_ollama_saturated(c) and c["name"] not in avoid]
+    if usable:
+        ranked = sorted(usable, key=lambda c: (float(c["cost"]), -c["cap"]))
+        return ranked[0]["name"]
+    return result  # nothing else usable at all -- better to return something than None
 
 
 def route(task):
@@ -844,6 +977,26 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
             logging.getLogger(__name__).warning("swarm path failed (%s), falling back to claude", e)
             coder = "claude"  # fall through to normal path
     if coder == "claude":
+        # A host without the `claude` binary (and without the Agent SDK) cannot run this lane at
+        # all: claude_cli.run() raises FileNotFoundError from subprocess before the agent does any
+        # work, the task ends with no diff, and the repair pipeline classifies it as missing-branch
+        # and re-queues it onto the same host forever. Observed on the second Mac, whose launchd
+        # environment has no `claude` on PATH. Fail over to a coder this host actually has.
+        if not claude_runnable_here():
+            failover = next((c for c in available()
+                             if c != "claude" and not c.startswith("swarm:")), None) \
+                or next((c for c in available() if c != "claude"), None)
+            if failover:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "claude lane unavailable on this host (no CLI, no SDK) — failing over to %s",
+                    failover)
+                return run(failover, prompt, model, cwd=cwd, env=env, project=project,
+                           timeout=timeout, **kwargs)
+            raise RuntimeError(
+                "claude lane requested but this host has neither the `claude` CLI on PATH nor the "
+                "Agent SDK installed, and no other coder is available. Install the CLI or set "
+                "CLAUDE_BIN to its absolute path in the runner environment.")
         import claude_cli
         return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout, **kwargs)
     spec = _spec(coder)
@@ -862,19 +1015,37 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
                 slot = local_model_slots.slot(ollama_model, operation=f"agentic:{coder}")
             except Exception:
                 slot = contextlib.nullcontext({"locked": False, "unloaded": []})
+        argv = shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd]
+        # subprocess.run(timeout=) kills the DIRECT CHILD only. When the lane is
+        # `bash -lc "<coder> ..."`, that reaps the shell and reparents the coder
+        # itself to init, still holding its RAM -- which is how 64 of 66 lanes
+        # became >1h zombies on 2026-08-02. lane_guard runs the lane in its own
+        # process group and signals the GROUP, and additionally kills a lane that
+        # has produced no output for ORCH_LANE_IDLE_TIMEOUT.
         with slot:
-            proc = subprocess.run(shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
-                                  cwd=cwd, env=_aider_env(env), capture_output=True, text=True, timeout=timeout)
+            proc = lane_guard.run_supervised(
+                argv,
+                cwd=cwd, env=_aider_env(env), timeout=timeout,
+                idle_timeout=int(os.environ.get("ORCH_LANE_IDLE_TIMEOUT", "600") or 600),
+                task_class=kwargs.get("task_class") or kwargs.get("kind"),
+            )
         # REAL cost from aider's own output (per-message $), so paid-coder daily caps are exact; fall
         # back to the coder's nominal est_usd only when the CLI reported no cost (e.g. a free local model).
-        real = _parse_cost((proc.stdout or "") + "\n" + (proc.stderr or ""))
+        stdout = proc.get("stdout", "") or ""
+        stderr = proc.get("stderr", "") or ""
+        rc = proc.get("returncode", 1)
+        real = _parse_cost(stdout + "\n" + stderr)
         cost = real if real is not None else float((spec or {}).get("est_usd", 0.0) or 0.0)
         latency_ms = int((time.time() - t0) * 1000)
+        reaped = proc.get("timed_out") or proc.get("idle_killed")
         _agentic_event("agentic_coder_finish", coder, model, project=project, value=latency_ms,
-                       action=f"returncode={proc.returncode} cost_usd={cost}")
-        return {"text": proc.stdout, "cost_usd": cost, "input_tokens": 0, "output_tokens": 0,
-                "returncode": proc.returncode, "stderr": proc.stderr or "",
-                "coder": coder, "latency_ms": latency_ms}
+                       action=f"returncode={rc} cost_usd={cost}"
+                              + (" lane_reaped=1" if reaped else ""))
+        return {"text": stdout, "cost_usd": cost, "input_tokens": 0, "output_tokens": 0,
+                "returncode": rc, "stderr": stderr,
+                "coder": coder, "latency_ms": latency_ms,
+                "lane_timed_out": bool(proc.get("timed_out")),
+                "lane_idle_killed": bool(proc.get("idle_killed"))}
     except subprocess.TimeoutExpired:
         _agentic_event("agentic_coder_finish", coder, model, project=project,
                        value=int((time.time() - t0) * 1000), action="returncode=124 timeout")

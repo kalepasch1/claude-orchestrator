@@ -48,8 +48,18 @@ def check() -> dict:
     digest = hashlib.sha256(
         (CONTRACT_VERSION + "|" + detail + "|" + ",".join(REQUIRED_WORKTREE_KEYWORDS)).encode()
     ).hexdigest()[:16]
-    return {"ok": ok, "detail": detail, "contract_hash": digest,
-            "contract_version": CONTRACT_VERSION, "code_sha": code_sha()}
+    proof = {"ok": ok, "detail": detail, "contract_hash": digest,
+             "contract_version": CONTRACT_VERSION, "code_sha": code_sha()}
+    # Identity of the *incarnation* speaking, not just of the code it holds.
+    # Fail-soft and never recursive: runner_generation calls check() for the
+    # contract hash, so only the cheap persisted identity is read back here.
+    try:
+        import runner_generation
+        proof["runner_id"] = runner_generation.runner_id()
+        proof["generation"] = runner_generation.generation()
+    except Exception:  # pragma: no cover - identity is advisory, contract is not
+        pass
+    return proof
 
 
 def ready() -> bool:

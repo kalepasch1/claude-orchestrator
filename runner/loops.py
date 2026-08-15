@@ -56,11 +56,42 @@ def _due(loop):
 def run_due():
     ensure_all()
     loops = db.select("loops", {"select": "*"}) or []
+    due = [loop for loop in loops if _due(loop)]
+    if not due:
+        print("loops.run_due: fired 0 loops")
+        return 0
+
+    # These handlers already iterate the whole portfolio internally. The old
+    # per-row dispatch ran the same fleet scan once for every app (roughly 15x).
+    # Only optimizer-pass is truly scoped by the loop row's repo.
+    fleet_handler_types = {loop.get("type") for loop in due if loop.get("type") != "optimize"}
+    fired_fleet_handlers = set()
+    try:
+        operator_pending = bool(db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "submitted_by": "not.is.null", "limit": "1",
+        }) or db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "slug": "like.dropbox-*", "limit": "1",
+        }) or [])
+    except Exception:
+        operator_pending = True
     fired = 0
-    for loop in loops:
-        if not _due(loop):
-            continue
+    deferred = 0
+    for loop in due:
         typ, project = loop["type"], loop["project"]
+        if operator_pending and typ in {"review", "learn", "optimize", "colosseum", "creative_gen", "growth_learn"}:
+            deferred += 1
+            continue
+        if typ in fleet_handler_types and typ in fired_fleet_handlers:
+            # The one fleet-wide call covers this row; advance its receipt without
+            # re-running the same handler for every project.
+            db.update("loops", {"id": loop["id"]}, {"last_run": datetime.datetime.utcnow().isoformat()})
+            continue
+        if typ in fleet_handler_types:
+            # Mark before invocation: a failing fleet handler must not be retried
+            # once per remaining app in the same scheduler cycle.
+            fired_fleet_handlers.add(typ)
         try:
             if typ == "remediate":
                 import watchdog; watchdog.check()
@@ -95,7 +126,8 @@ def run_due():
             print(f"loop {typ}/{project} error: {e}")
         db.update("loops", {"id": loop["id"]}, {"last_run": datetime.datetime.utcnow().isoformat()})
         fired += 1
-    print(f"loops.run_due: fired {fired} loops"); return fired
+    print(f"loops.run_due: fired {fired} handlers; deferred {deferred} speculative rows")
+    return fired
 
 
 if __name__ == "__main__":

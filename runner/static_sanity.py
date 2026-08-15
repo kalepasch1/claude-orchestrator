@@ -32,6 +32,34 @@ CRITICAL_MODULES = [
 ]
 
 
+def all_modules():
+    """Every runner module, excluding tests.
+
+    WHY (2026-08-02): the gate only ever covered the 14 names above, so undefined names went on
+    shipping everywhere else. A sweep of the full tree found 42 of them across nine modules —
+    including blocker_quarantine's `max_depth`, which crash-looped the quarantine job for weeks,
+    and whole missing functions in config_sync, ci_dispatch and promotion_pipeline. Those are the
+    same "overwrite dropped the definition, the call site survived" failure this module was
+    written to stop; it just wasn't looking at those files. audit() below covers the whole tree so
+    the sentinel can report drift outside the critical set without gating startup on it.
+    """
+    return sorted(
+        p for p in (os.path.join(HERE, n) for n in os.listdir(HERE)
+                    if n.endswith(".py") and not n.startswith("test_"))
+        # FILES ONLY. `os.listdir` yields directories too, and a directory whose name
+        # ends in .py (a package dir, a stray worktree scratch dir) was handed straight
+        # to pyflakes, which errors on it and returns None for the WHOLE batch — the
+        # gate then reports "tooling unavailable" and passes everything silently. That
+        # is the same fail-open this module exists to prevent.
+        if os.path.isfile(p)
+    )
+
+
+def audit():
+    """Undefined-name findings across the entire runner tree. Returns [] clean, None if no tool."""
+    return check(all_modules())
+
+
 def _pyflakes(paths):
     try:
         r = subprocess.run([sys.executable, "-m", "pyflakes", *paths],
@@ -49,8 +77,26 @@ def check(paths=None):
     """Return undefined-name findings for the given (or all critical) modules."""
     if paths is None:
         paths = [os.path.join(HERE, m) for m in CRITICAL_MODULES]
-    paths = [p for p in paths if os.path.exists(p)]
+    # isfile, not exists: a DIRECTORY passes exists() and pyflakes errors on it, which
+    # takes the whole batch down with it. Directories are avoided; files come first.
+    paths = [p for p in paths if os.path.isfile(p)]
+    if not paths:
+        return []
     out = _pyflakes(paths)
+    if out is None and len(paths) > 1:
+        # SMALLER RETRY SCOPE. One bad path used to blind the gate for every other file
+        # in the batch — a single None means "tooling unavailable" and assert_critical
+        # passes everything. Retry file by file so one casualty costs one file's
+        # coverage, not all of it. Only retried when there is something to narrow to,
+        # so a genuinely missing pyflakes still returns None on the first pass.
+        findings, any_ok = [], False
+        for p in paths:
+            single = _pyflakes([p])
+            if single is None:
+                continue
+            any_ok = True
+            findings.extend(l for l in single.splitlines() if "undefined name" in l)
+        return findings if any_ok else None
     if out is None:
         return None  # tooling unavailable — caller decides
     return [l for l in out.splitlines() if "undefined name" in l]

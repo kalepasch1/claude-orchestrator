@@ -1,0 +1,4 @@
+recovery-intent: factory-unblock-dropbox-mission-complete-merge-and-deploy-the-full-b
+template: 3eff9a9405aa
+intent: active actual advice after agentic author backlog batch beethoven blindly blocker build capability capacity cause change checks claim class close coder complete conflict conflicting conflicts contract coordination cross custody darwin decision deferred delete deploy design diagnose dropbox duplicate error execution failure files first flaky floor force generated genuine governor improvement improvements independent intake judge kernel leave legal licensing manual merge minutes mission model needing needs obsolete orchestration orchestrator original overwrite owner packages panel passport pipeline planner policy prefix preflight prior
+base: master

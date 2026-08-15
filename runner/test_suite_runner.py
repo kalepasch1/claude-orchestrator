@@ -57,37 +57,6 @@ def discover_test_modules(include_subdir=False, pattern=None):
     return modules
 
 
-def discover_test_modules(args):
-    """
-    Find test modules, optionally filtering by git diff.
-    """
-    if not args.git_diff_base:
-        return discover_all_test_modules()
-
-    changed_files = _get_changed_python_files(args.git_diff_base)
-    
-    modules_to_run = set()
-    has_non_test_python_changes = False
-
-    for f in changed_files:
-        if f.startswith("test_") and f.endswith(".py"):
-            modules_to_run.add(f[:-3])
-        else:
-            # A non-test Python file changed, so we might need to run more tests
-            has_non_test_python_changes = True
-            break # No need to check further changed files, we'll run all tests
-
-    if has_non_test_python_changes:
-        print(f"Non-test Python files changed (e.g., {changed_files[0] if changed_files else 'N/A'}). Running all tests.", file=sys.stderr)
-        return discover_all_test_modules()
-    elif modules_to_run:
-        print(f"Running {len(modules_to_run)} affected test module(s) based on git diff.", file=sys.stderr)
-        return sorted(list(modules_to_run))
-    else:
-        print("No relevant Python files changed or no test files directly affected. Running no tests.", file=sys.stderr)
-        return [] # No tests to run if only non-Python files changed, or no changes at all.
-
-
 def run_module_tests(mod_name):
     """Import a test module and run all test_ functions in it."""
     results = {"passed": 0, "failed": 0, "skipped": 0, "errors": []}

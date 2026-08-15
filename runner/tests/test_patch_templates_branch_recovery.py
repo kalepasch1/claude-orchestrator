@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock, call
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import patch_templates as pt
 import patch_recovery as pr
+import branch_recovery as br
 
 SLUG = "fix-widget-border"
 REPO = "/fake/repo"
@@ -247,6 +248,166 @@ class PreClaimHookIntegrationTest(unittest.TestCase):
 
         self.assertIn("[patch-template:", result["prompt"])
         self.assertIn("Fix widget border radius", result["prompt"])
+
+
+# ---------------------------------------------------------------------------
+# branch_recovery.recover_missing_branches — batch merge-train recovery
+# ---------------------------------------------------------------------------
+
+def _entries(n, repo="/fake/repo", project="beethoven"):
+    return [{"slug": f"lost-{i}", "repo": repo, "base": "master",
+             "project": project} for i in range(n)]
+
+
+def _batch_patches(apply_result=None, recover_result=None,
+                   exists=False, is_repo=True):
+    """Common patch stack for batch tests; returns the context managers."""
+    apply_result = apply_result or {"ok": True, "method": "library"}
+    recover_result = recover_result or {"ok": False, "method": "none",
+                                        "reason": "exhausted"}
+    return [
+        patch.object(br, "_is_git_repo", return_value=is_repo),
+        patch.object(br, "_branch_exists_local", return_value=exists),
+        patch.object(br, "_mark_task_state", return_value=True),
+        patch("patch_recovery._apply_diff_to_branch",
+              return_value=apply_result),
+        patch("patch_recovery.recover", return_value=recover_result),
+    ]
+
+
+class RecoverMissingBranchesBatchTest(unittest.TestCase):
+    """Acceptance: >=80% of 5+ synthetic missing branches end MERGED or
+    QUARANTINED, and edge cases (empty, all-fail, existing, isolation)."""
+
+    def _run(self, missing, library=None, patches=None, **kwargs):
+        patches = patches if patches is not None else _batch_patches()
+        with patches[0], patches[1], patches[2] as mark, patches[3], patches[4]:
+            result = br.recover_missing_branches(missing, library, **kwargs)
+        return result, mark
+
+    def test_five_missing_branches_reach_terminal_state(self):
+        missing = _entries(5)
+        library = {f"lost-{i}": "diff --git a/f b/f\n+x" for i in range(5)}
+        stats, mark = self._run(missing, library)
+        self.assertEqual(stats["reviewed"], 5)
+        terminal = stats["merged"] + stats["quarantined"]
+        self.assertGreaterEqual(terminal / stats["reviewed"], 0.8)
+        self.assertEqual(stats["merged"], 5)
+        self.assertEqual(stats["skipped"], 0)
+        self.assertEqual(mark.call_count, 5)
+        for c in mark.call_args_list:
+            self.assertEqual(c.args[1], "MERGED")
+
+    def test_mixed_outcomes_still_meet_recovery_bar(self):
+        """4 library hits apply, 1 has no library entry and recover() fails."""
+        missing = _entries(5)
+        library = {f"lost-{i}": "diff --git a/f b/f\n+x" for i in range(4)}
+        stats, _ = self._run(missing, library)
+        self.assertEqual(stats["merged"], 4)
+        self.assertEqual(stats["quarantined"], 1)
+        terminal = stats["merged"] + stats["quarantined"]
+        self.assertGreaterEqual(terminal / stats["reviewed"], 0.8)
+
+    def test_empty_list_returns_zero_stats(self):
+        stats, mark = self._run([])
+        self.assertEqual(
+            {k: stats[k] for k in ("reviewed", "merged", "quarantined", "skipped")},
+            {"reviewed": 0, "merged": 0, "quarantined": 0, "skipped": 0})
+        mark.assert_not_called()
+
+    def test_none_missing_is_noop(self):
+        stats, _ = self._run(None)
+        self.assertEqual(stats["reviewed"], 0)
+
+    def test_all_fail_all_quarantined_no_raise(self):
+        missing = _entries(6)
+        library = {e["slug"]: "diff --git a/f b/f\n+x" for e in missing}
+        patches = _batch_patches(
+            apply_result={"ok": False, "method": "library", "reason": "apply failed"})
+        stats, mark = self._run(missing, library, patches=patches)
+        self.assertEqual(stats["quarantined"], 6)
+        self.assertEqual(stats["merged"], 0)
+        for c in mark.call_args_list:
+            self.assertEqual(c.args[1], "QUARANTINED")
+
+    def test_existing_branches_are_skipped(self):
+        missing = _entries(3)
+        patches = _batch_patches(exists=True)
+        stats, mark = self._run(missing, patches=patches)
+        self.assertEqual(stats["skipped"], 3)
+        self.assertEqual(stats["merged"] + stats["quarantined"], 0)
+        mark.assert_not_called()
+
+    def test_other_project_entries_are_skipped(self):
+        missing = _entries(2, project="beethoven") + _entries(2, project="pareto-2080")[0:2]
+        for e in missing[2:]:
+            e["slug"] += "-other"
+        library = {e["slug"]: "diff --git a/f b/f\n+x" for e in missing}
+        stats, _ = self._run(missing, library, project="beethoven")
+        self.assertEqual(stats["merged"], 2)
+        self.assertEqual(stats["skipped"], 2)
+
+    def test_low_similarity_library_hit_falls_back_to_recover(self):
+        missing = _entries(1)
+        library = {"lost-0": {"diff": "diff --git a/f b/f\n+x", "similarity": 0.3}}
+        recover_ok = {"ok": True, "method": "patch_replay", "branch": "agent/lost-0"}
+        patches = _batch_patches(recover_result=recover_ok)
+        with patches[0], patches[1], patches[2], \
+             patches[3] as apply_mock, patches[4] as rec:
+            stats = br.recover_missing_branches(missing, library, threshold=0.8)
+        apply_mock.assert_not_called()
+        rec.assert_called_once()
+        self.assertEqual(stats["merged"], 1)
+
+    def test_library_exception_is_fail_soft(self):
+        def boom(_slug):
+            raise RuntimeError("RPC infra outage")
+        missing = _entries(2)
+        stats, _ = self._run(missing, boom)  # recover() also fails -> quarantined
+        self.assertEqual(stats["quarantined"], 2)
+
+    def test_malformed_entries_are_skipped_not_raised(self):
+        missing = ["just-a-string", {"repo": "/fake/repo"}, {"slug": "no-repo"}]
+        stats, _ = self._run(missing)
+        self.assertEqual(stats["skipped"], 3)
+
+    def test_invalid_git_path_quarantines(self):
+        missing = _entries(1)
+        patches = _batch_patches(is_repo=False)
+        stats, _ = self._run(missing, patches=patches)
+        self.assertEqual(stats["quarantined"], 1)
+
+    def test_focused_test_failure_quarantines_with_output(self):
+        missing = _entries(1)
+        missing[0]["test_cmd"] = ["pytest", "-x"]
+        library = {"lost-0": "diff --git a/f b/f\n+x"}
+        patches = _batch_patches()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch.object(br, "_run_focused_tests",
+                          return_value=(False, "1 failed")):
+            stats = br.recover_missing_branches(missing, library)
+        self.assertEqual(stats["quarantined"], 1)
+        self.assertIn("1 failed", stats["details"][0]["reason"])
+
+    def test_threshold_env_var_is_respected(self):
+        missing = _entries(1)
+        library = {"lost-0": {"diff": "diff --git a/f b/f\n+x", "similarity": 0.5}}
+        patches = _batch_patches()
+        with patch.dict(os.environ,
+                        {"ORCH_MISSING_BRANCH_RECOVERY_THRESHOLD": "0.4"}), \
+             patches[0], patches[1], patches[2], patches[3] as apply_mock, patches[4]:
+            stats = br.recover_missing_branches(missing, library)
+        apply_mock.assert_called_once()
+        self.assertEqual(stats["merged"], 1)
+
+    def test_db_mark_failure_does_not_abort_loop(self):
+        missing = _entries(3)
+        library = {e["slug"]: "diff --git a/f b/f\n+x" for e in missing}
+        patches = _batch_patches()
+        with patches[0], patches[1], patches[3], patches[4], \
+             patch("db.update", side_effect=RuntimeError("db down")):
+            stats = br.recover_missing_branches(missing, library)
+        self.assertEqual(stats["merged"], 3)
 
 
 if __name__ == "__main__":

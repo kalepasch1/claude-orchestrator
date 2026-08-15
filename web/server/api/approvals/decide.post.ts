@@ -6,7 +6,7 @@ type DecisionStatus = 'approved' | 'denied'
 
 export default defineEventHandler(async (event) => {
   const user = await requireConnectorUser(event)
-  const body = await readBody<{ id?: string; status?: DecisionStatus; approver?: string; authorizationBoundaryAcknowledged?: boolean }>(event)
+  const body = await readBody<{ id?: string; status?: DecisionStatus; approver?: string; authorizationBoundaryAcknowledged?: boolean; rationale?: string }>(event)
   const id = body?.id
   const status = body?.status
   const approver = String(user.email || user.id)
@@ -62,6 +62,21 @@ export default defineEventHandler(async (event) => {
     .select('*')
     .maybeSingle()
   if (error) throw createError({ statusCode: 500, message: error.message })
+  // Wave-0 attribution (review-gate spec item 4): every operator decision is an
+  // attributed steering_events row; release cards are release_decision events.
+  {
+    const rationale = typeof body?.rationale === 'string' && body.rationale.trim() ? body.rationale.trim().slice(0, 4000) : null
+    const steering = await sb.from('steering_events').insert({
+      approval_id: id,
+      project: card.project || null,
+      actor_id: user.id || null,
+      actor_label: approver,
+      event_type: String(card.kind) === 'release' ? 'release_decision' : 'approval_rationale',
+      rationale,
+      payload: { decision: data?.status ?? status, requested: status, kind: card.kind ?? null, slug: card.slug ?? null },
+    })
+    if (steering.error) console.error('steering_events write failed:', steering.error.message)
+  }
   if (data && data.status !== 'pending' && ['legal', 'material'].includes(String(card.kind)) && card.slug) {
     const { data: businessRun } = await sb.from('business_action_runs').select('id,action').eq('id', card.slug).maybeSingle()
     if (businessRun) {

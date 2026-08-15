@@ -1,0 +1,213 @@
+{
+ "app": "apparently",
+ "checked": 12,
+ "file_conflicts_requiring_serialization": {},
+ "items": [
+  {
+   "slug": "applier-apply-path-fixes",
+   "targets": [
+    "server/engines/self-assessment/improvement-applier.ts"
+   ],
+   "current_state": {
+    "server/engines/self-assessment/improvement-applier.ts": {
+     "exists": true,
+     "lines": 1053
+    }
+   },
+   "all_targets_exist": true
+  },
+  {
+   "slug": "applier-loud-failures",
+   "targets": [
+    "server/api/cron/approval-scanner.get.ts"
+   ],
+   "current_state": {
+    "server/api/cron/approval-scanner.get.ts": {
+     "exists": true,
+     "lines": 130
+    }
+   },
+   "all_targets_exist": true
+  },
+  {
+   "slug": "hive-types-regen",
+   "targets": [
+    "server/db/knexfile.js"
+   ],
+   "current_state": {
+    "server/db/knexfile.js": {
+     "exists": false
+    }
+   },
+   "all_targets_exist": false
+  },
+  {
+   "slug": "hive-verifier-promotion",
+   "targets": [
+    "server/engines/citation-verification-runner.ts",
+    "server/engines/hive/fact-verifier.ts",
+    "server/engines/hive/reg-fact-store.ts",
+    "server/utils/citation-verifier.ts"
+   ],
+   "current_state": {
+    "server/engines/citation-verification-runner.ts": {
+     "exists": true,
+     "lines": 277
+    },
+    "server/engines/hive/fact-verifier.ts": {
+     "exists": false
+    },
+    "server/engines/hive/reg-fact-store.ts": {
+     "exists": true,
+     "lines": 270
+    },
+    "server/utils/citation-verifier.ts": {
+     "exists": true,
+     "lines": 650
+    }
+   },
+   "all_targets_exist": false
+  },
+  {
+   "slug": "hive-bots-and-assessment",
+   "targets": [
+    "server/engines/self-assessment/assessment-engine.ts"
+   ],
+   "current_state": {
+    "server/engines/self-assessment/assessment-engine.ts": {
+     "exists": true,
+     "lines": 1813
+    }
+   },
+   "all_targets_exist": true
+  },
+  {
+   "slug": "hive-candidate-graduation-ui",
+   "targets": [
+    "server/api/hive/graduate-candidate.post.ts",
+    "server/engines/hive/vertical-spawner.ts"
+   ],
+   "current_state": {
+    "server/api/hive/graduate-candidate.post.ts": {
+     "exists": true,
+     "lines": 32
+    },
+    "server/engines/hive/vertical-spawner.ts": {
+     "exists": true,
+     "lines": 62
+    }
+   },
+   "all_targets_exist": true
+  },
+  {
+   "slug": "hive-premortem-memo",
+   "targets": [
+    "server/engines/hive/premortem-memo.ts"
+   ],
+   "current_state": {
+    "server/engines/hive/premortem-memo.ts": {
+     "exists": true,
+     "lines": 310
+    }
+   },
+   "all_targets_exist": true
+  },
+  {
+   "slug": "hive-lifecycle-impact-propagation",
+   "targets": [
+    "server/engines/hive/dependency-index.ts",
+    "server/engines/hive/impact-propagation.ts",
+    "server/engines/hive/remediation-enqueuer.ts"
+   ],
+   "current_state": {
+    "server/engines/hive/dependency-index.ts": {
+     "exists": true,
+     "lines": 186
+    },
+    "server/engines/hive/impact-propagation.ts": {
+     "exists": true,
+     "lines": 158
+    },
+    "server/engines/hive/remediation-enqueuer.ts": {
+     "exists": true,
+     "lines": 172
+    }
+   },
+   "all_targets_exist": true
+  },
+  {
+   "slug": "hive-regulatory-debt-score",
+   "targets": [
+    "server/engines/hive/regulatory-debt.ts"
+   ],
+   "current_state": {
+    "server/engines/hive/regulatory-debt.ts": {
+     "exists": false
+    }
+   },
+   "all_targets_exist": false
+  },
+  {
+   "slug": "hive-coverage-radar-report",
+   "targets": [
+    "server/engines/hive/coverage-radar.ts"
+   ],
+   "current_state": {
+    "server/engines/hive/coverage-radar.ts": {
+     "exists": false
+    }
+   },
+   "all_targets_exist": false
+  },
+  {
+   "slug": "hive-filing-ready-gate",
+   "targets": [
+    "server/db/queries/reg-facts.ts",
+    "server/engines/hive/filing-ready-gate.test.ts",
+    "server/engines/hive/filing-ready-gate.ts",
+    "server/routes/submission-autopilot.ts",
+    "server/types/reg-facts.ts"
+   ],
+   "current_state": {
+    "server/db/queries/reg-facts.ts": {
+     "exists": true,
+     "lines": 4
+    },
+    "server/engines/hive/filing-ready-gate.test.ts": {
+     "exists": true,
+     "lines": 125
+    },
+    "server/engines/hive/filing-ready-gate.ts": {
+     "exists": true,
+     "lines": 45
+    },
+    "server/routes/submission-autopilot.ts": {
+     "exists": true,
+     "lines": 8
+    },
+    "server/types/reg-facts.ts": {
+     "exists": true,
+     "lines": 16
+    }
+   },
+   "all_targets_exist": true
+  },
+  {
+   "slug": "cade-budget-guard",
+   "targets": [
+    "server/utils/cade/__tests__/budget.test.ts",
+    "server/utils/cade/budget.ts"
+   ],
+   "current_state": {
+    "server/utils/cade/__tests__/budget.test.ts": {
+     "exists": false
+    },
+    "server/utils/cade/budget.ts": {
+     "exists": true,
+     "lines": 236
+    }
+   },
+   "all_targets_exist": false
+  }
+ ]
+}

@@ -41,11 +41,26 @@ def _read_state():
 
 
 def _write_json(path, data):
+    """Atomically write JSON.
+
+    FIX 2026-08-02: the temp file was a fixed "<path>.tmp", so two concurrent runs of this job
+    raced on the same name — the first os.replace() consumed the shared temp file and the second
+    died with FileNotFoundError. That is what kept db_health.json missing, which in turn made
+    resilience_mesh fail on every cycle. A pid-unique temp name removes the race; both writers
+    now succeed and last-writer-wins, which is the intended semantics for a health snapshot.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    os.replace(tmp, path)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _acquire_lock():

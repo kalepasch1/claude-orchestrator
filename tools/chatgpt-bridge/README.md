@@ -15,8 +15,8 @@ this Mac does the pushing.
 1. In ChatGPT: make the changes, then `git diff > /mnt/data/<repo>--<slug>.patch`
    (or zip the changed files). Download it.
 2. Save it to `~/Documents/chatgpt-dropbox/`.
-3. Within 30 seconds it is on GitHub: new branch, PR opened, macOS notification with
-   the link.
+3. Within 30 seconds it is on GitHub and registered with the orchestrator queue: new
+   branch, PR/recovery task, and a macOS notification with the result.
 
 ## Naming
 
@@ -35,8 +35,11 @@ Or from a header line inside the patch:
 # message: fix: login redirect loop on Safari
 ```
 
-Known repos: `claude-orchestrator`, `tomorrow`, `apparently`, `smarter`,
-`illuminati`, `vigil`, `2080`.
+Known repos come from `runner/deployment_bindings.json`, including Apparently,
+Apparently Law, Beethoven/Madeus, Tomorrow, Smarter, Illuminati, Vigil, Darwn,
+Pareto 2080, Racefeed, HiSanta, Sustainable Barks, kalepasch.com, and PMI. Common
+legacy aliases (`claude-orchestrator`, `2080`, `hisanta`, `galop`, `pasch`, `pmi`,
+`trojun`) resolve to their canonical app names.
 
 ## Guarantees
 
@@ -46,7 +49,14 @@ Known repos: `claude-orchestrator`, `tomorrow`, `apparently`, `smarter`,
   and rewritten if wrong, because Vercel blocks production deploys from other authors.
 - Branch + PR by default. Nothing reaches a production branch without a merge.
 - A patch that does not apply cleanly fails loudly into `_failed/` with the error —
-  the worktree and branch are torn down, nothing partial is pushed.
+  the worktree and branch are torn down, nothing partial is pushed, and the preserved
+  artifact is registered as an orchestrator recovery task.
+- A successful patch is also registered with orchestrator intake so its PR cannot exist
+  outside the improvement queue.
+- Every 30 minutes a read-only audit checks registered repos, attached worktrees,
+  local-only commits, stashes, rescue refs, Codex session workspaces, output bundles,
+  and bridge failures. Stable evidence older than six hours becomes an idempotent
+  reconciliation task; active/fresh edits are left alone and caught by a later sweep.
 
 ## Manual use
 
@@ -63,6 +73,7 @@ chatgpt-patch file.patch --push-to-default               # straight to main (car
 |------|------|
 | `apply-patch.sh` | Core: resolve repo → worktree → apply → commit → push → PR |
 | `watch-dropbox.sh` | One sweep of the drop-box; run by launchd every 30s |
+| `local_build_audit.py` | Reconcile bridge + Codex/local git residue into queue intake |
 | `install.sh` | Idempotent setup: drop-box, `~/bin/chatgpt-patch`, launchd agent |
 | `deploy-to-repos.sh` | Installs `CHATGPT.md` + `chatgpt-patch.yml` into every repo |
 | `chatgpt-patch.workflow.yml` | Source of the browser-fallback workflow |
@@ -70,6 +81,18 @@ chatgpt-patch file.patch --push-to-default               # straight to main (car
 
 launchd label: `com.claudeorchestrator.chatgptbridge`
 Logs: `~/Documents/chatgpt-dropbox/_logs/bridge.log`
+
+### Legacy/deep audit
+
+Run an immediate, all-history local snapshot (the scanner never resets or deletes source):
+
+```bash
+python3 tools/chatgpt-bridge/local_build_audit.py --force --stale-hours 0 \
+  --report ~/Documents/chatgpt-dropbox/_logs/local-build-audit.md
+```
+
+Queue slugs include a content fingerprint, and the scanner keeps a local registry at
+`_logs/local-build-audit.json`, so unchanged evidence is never enqueued twice.
 
 ### Why it runs through ClaudeRunner.app, and how it tells you when that breaks
 

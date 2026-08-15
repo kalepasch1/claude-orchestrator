@@ -47,6 +47,7 @@ def _format_task(row, project_name="beethoven"):
     title = row.get("title") or row.get("slug") or "untitled"
     material = "yes" if row.get("material") else "no"
     model = row.get("model") or "haiku"
+    submitted_by = row.get("submitted_by_label") or row.get("submitted_by") or ""
     depends = row.get("depends") or row.get("deps") or []
     if isinstance(depends, str):
         depends = [d.strip() for d in depends.split(",") if d.strip()]
@@ -60,6 +61,7 @@ def _format_task(row, project_name="beethoven"):
         f"  title: {title}",
         f"  material: {material}",
         f"  model: {model}",
+        f"  submitted-by: {submitted_by}",
         f"  depends: {deps_str}",
         f"  proof: {proof}",
         f"  prompt: |",

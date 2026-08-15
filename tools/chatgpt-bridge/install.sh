@@ -7,10 +7,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DROPBOX="$HOME/Documents/chatgpt-dropbox"
 PLIST="$HOME/Library/LaunchAgents/com.claudeorchestrator.chatgptbridge.plist"
 LABEL="com.claudeorchestrator.chatgptbridge"
+# launchd opens StandardOutPath/StandardErrorPath ITSELF, before it execs the
+# program — so those two paths are opened as launchd, not as ClaudeRunner.app,
+# and the app's Full Disk Access grant does NOT cover them. Any path under
+# ~/Documents therefore fails to open and launchd aborts the spawn with
+# EX_CONFIG (exit 78) without ever running the job. Keep them under ~/Library.
+LAUNCHD_LOG_DIR="$HOME/Library/Logs/claude-orchestrator"
 
 chmod +x "$HERE/apply-patch.sh" "$HERE/watch-dropbox.sh"
 
 mkdir -p "$DROPBOX/_applied" "$DROPBOX/_failed" "$DROPBOX/_logs"
+mkdir -p "$LAUNCHD_LOG_DIR"
 
 # convenience CLI on PATH
 mkdir -p "$HOME/bin"
@@ -38,8 +45,8 @@ cat > "$PLIST" <<PLISTEOF
   </array>
   <key>StartInterval</key><integer>30</integer>
   <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>$DROPBOX/_logs/launchd.out.log</string>
-  <key>StandardErrorPath</key><string>$DROPBOX/_logs/launchd.err.log</string>
+  <key>StandardOutPath</key><string>$LAUNCHD_LOG_DIR/chatgpt-bridge.out.log</string>
+  <key>StandardErrorPath</key><string>$LAUNCHD_LOG_DIR/chatgpt-bridge.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>

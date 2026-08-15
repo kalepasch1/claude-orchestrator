@@ -25,7 +25,12 @@ _log = _log_mod.get("runner")
 
 def emit_task_log(slug: str, level: str, msg: str) -> None:
     """Log a task message at the given level (info/error/warning/debug)."""
-    log_fn = getattr(_log, level, _log.info)
+    # Resolve the logger per call (not the module-level _log binding) so test
+    # doubles patched over log.get take effect and late logging config is honored.
+    logger = _log_mod.get("runner")
+    if level not in ("debug", "info", "warning", "error", "critical"):
+        level = "info"
+    log_fn = getattr(logger, level, logger.info)
     log_fn("[%s] %s", slug, msg)
     try:
         db.insert("run_logs", {
@@ -101,6 +106,7 @@ if __name__ == "__main__":
 
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
+import provider_banner
 import prompt_assembler
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
@@ -168,18 +174,29 @@ USE_CONFIDENCE = os.environ.get("CONFIDENCE_GATE", "true").lower() == "true"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 RUNNER_ID = os.environ.get("RUNNER_ID", socket.gethostname() + "-" + str(os.getpid()))
+
+# When this process started. Used by the self-deploy gate to enforce a minimum uptime before
+# honouring a restart request, so a fleet that commits to its own repo cannot restart the runner
+# faster than tasks can finish.
+_PROC_START_T = time.time()
+
+
+class _SkipRestart(Exception):
+    """Control-flow signal: a restart was requested but is being deferred, not performed."""
+
+
 POLL = int(os.environ.get("POLL_SECONDS", "5"))
 # Concurrency ceiling. Bumped 2->4: resource_governor.can_claim() still clamps every claim by
 # free RAM / kernel memory pressure / disk, so the Mac can't be overrun — this just lets the
 # runner use idle headroom instead of sitting at 2. Tune MAX_PARALLEL in runner/.env per machine.
 MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "12"))
-RATE = ("temporarily limiting", "rate limit", "429", "overloaded", "too many requests")
-EXHAUST = ("usage limit", "out of credits", "insufficient_quota", "quota",
-           "weekly limit", "hit your weekly", "limit · resets", "limit - resets",
-           "reached your usage", "usage limit reached", "upgrade to increase",
-           "5-hour limit", "hour limit reached", "session limit", "limit reached ∙ resets",
-           "spend limit", "monthly spend", "monthly limit", "hit your monthly",
-           "limit · raise it", "raise it at claude.ai")
+# Provider banner vocabulary now lives in ONE module (provider_banner). Three
+# copies of it had drifted: the phrases below were the richest set, and
+# root_cause.py's classifier knew none of them — so an exhaustion this runner
+# handled correctly was filed as "unknown" by the analyzer reading the same
+# string. Same tuples, same substring semantics; one source.
+RATE = provider_banner.RATE_SIGNALS
+EXHAUST = provider_banner.EXHAUST_SIGNALS
 # Cross-project reuse directive injected into every task: economize by reusing, not re-drafting.
 REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
     "Before writing net-new code: (1) search THIS repo for an existing helper/component/pattern "
@@ -220,14 +237,64 @@ def _project_repo(project_id):
         return None
 
 
+def _is_closure_refusal(exc) -> bool:
+    """True when *exc* is the database refusing a closure that cannot prove delivered work.
+
+    Matched structurally where possible: db.RequestRejectedError exposes the SQLSTATE, and
+    enforce_evidence_on_closure raises check_violation (23514). That class only exists once the
+    companion db.py change lands, so this is resolved with getattr and falls back to matching the
+    trigger's own wording -- the branch must be mergeable in either order.
+
+    Narrow on purpose. A transient outage, an auth failure or a schema error must still raise;
+    silently downgrading those to BLOCKED would hide real breakage behind a tidy task state.
+    """
+    rejected = getattr(db, "RequestRejectedError", None)
+    if rejected is not None and isinstance(exc, rejected):
+        if getattr(exc, "code", None) in ("23514", "check_violation"):
+            return True
+    text = str(exc)
+    if "400" not in text and "check_violation" not in text:
+        return False
+    return ("cannot close as" in text
+            or "is already cited by" in text
+            or "evidence_gate" in text)
+
+
 def set_state(task_id: str, **kw) -> None:
     """Update a task row in Supabase, auto-setting updated_at to now().
 
     Accepts arbitrary keyword args that map to columns on the tasks table
     (e.g. state='DONE', note='...', cost=0.12).
+
+    A closure the database refuses does NOT propagate. enforce_evidence_on_closure rejects a
+    DONE/MERGED row that cannot prove delivered work (no artifact_commit, or one another closed
+    task already cites); PostgREST returns that PL/pgSQL raise as HTTP 400. Letting it escape
+    here aborted run_task at its terminal write, which is worse than the refusal in three ways:
+    the lease and file reservations below were never released, the row stayed RUNNING until the
+    20-minute janitor cap, and the requeue re-ran the whole task only to be refused again. That
+    is the loop behind this task's own 4 attempts.
+
+    The refusal itself stands -- the row must not claim delivery it cannot prove. It is instead
+    downgraded to BLOCKED carrying the gate's explanation, so the work is visible and the
+    cleanup below always runs.
     """
     kw["updated_at"] = "now()"
-    db.update("tasks", {"id": task_id}, kw)
+    try:
+        db.update("tasks", {"id": task_id}, kw)
+    except Exception as exc:
+        if not _is_closure_refusal(exc):
+            raise
+        _log.warning("set_state: closure refused for %s (%s); recording BLOCKED: %s",
+                     task_id, kw.get("state"), exc)
+        blocked_note = (f"closure gate refused {kw.get('state')}: {exc}. "
+                        f"Prior note: {kw.get('note') or ''}")[:4000]
+        try:
+            db.update("tasks", {"id": task_id},
+                      {"state": "BLOCKED", "note": blocked_note, "updated_at": "now()"})
+        except Exception as inner:
+            # Never let bookkeeping strand the lease released below.
+            _log.error("set_state: could not record BLOCKED for %s: %s", task_id, inner)
+        kw = dict(kw, state="BLOCKED")
     # Every non-running transition ends this executor's right to mutate the
     # branch. A crashed worker is covered by the server-side lease TTL.
     if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
@@ -306,6 +373,34 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
                 status="approved",
                 decided_by="canonical-train:runner",
             )
+            # INLINE PASS THROTTLE (2026-08-06): train_run() here runs a FULL train pass —
+            # every project, every card — per completed task, holding the machine-wide
+            # integration lease for the duration (observed 60+ min). With tasks completing
+            # constantly, the runner's inline passes monopolized the lease and the scheduled
+            # train-60 tick (every 60s) skipped for hours: 5h with zero merges while ~300
+            # DONE tasks waited. The card above is the train's queue entry, so the scheduled
+            # tick integrates it within its next pass regardless. Keep the inline full pass
+            # only as a low-frequency resilience fallback (in case the scheduler dies), at
+            # most one per ORCH_INLINE_TRAIN_COOLDOWN_S across all worker threads/restarts.
+            _inline_marker = os.path.join(
+                os.environ.get("CLAUDE_ORCH_HOME",
+                               os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                            ".runtime")),
+                "inline-train.last")
+            _inline_cool = float(os.environ.get("ORCH_INLINE_TRAIN_COOLDOWN_S", "3600") or 3600)
+            try:
+                _run_inline = (time.time() - os.path.getmtime(_inline_marker)) >= _inline_cool
+            except OSError:
+                _run_inline = True
+            if not _run_inline:
+                # Work is committed and its card is approved; the scheduled train owns
+                # integration. DONE is the train's normal pick state for carded work.
+                return "DONE"
+            try:
+                with open(_inline_marker, "w") as _imf:
+                    _imf.write(str(time.time()))
+            except OSError:
+                pass
             merge_train.train_run()
             rows = db.select("tasks", {"select": "state,note", "slug": f"eq.{slug}", "limit": "5"}) or []
             latest = next((r for r in rows if r.get("state") in ("MERGED", "TESTFAIL", "CONFLICT", "BLOCKED")),
@@ -501,6 +596,50 @@ def _integration_base(repo, proj, task_base):
     return dev
 
 
+def _quarantine_garbage_paths(wt, slug, env):
+    """Drop agent-created files whose PATH is obviously not a path, pre-`git add -A`.
+
+    An agent that answers with a step-by-step explanation can leave fragments of
+    that answer behind as file names. On 2026-08-02 one run committed
+    "Step 5: Write a Minimal Test", "unittest.main()" and a root-level
+    test_template_95fc17a.py whose body was its own filename — the last of which
+    broke `pytest --collect-only` for the whole repo. `git add -A` staged all of
+    it without looking. Validate first; park anything rejected outside the
+    worktree and log loudly so the run is still auditable.
+
+    Only UNTRACKED files are considered: modifications to files already in the
+    repo are the agent's legitimate business, and we must never delete those.
+    Fail-soft — a guard error must not cost the fleet a completed task.
+    """
+    try:
+        import write_guard
+    except ImportError:
+        return []
+    if not write_guard.enabled():
+        return []
+    try:
+        proc = subprocess.run(["git", "status", "--porcelain", "-z",
+                               "--untracked-files=all"],
+                              cwd=wt, env=env, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            return []
+        candidates = [entry[3:] for entry in (proc.stdout or "").split("\0")
+                      if len(entry) > 3 and entry[:2] == "??"]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    def _read(rel):
+        with open(os.path.join(wt, rel), encoding="utf-8", errors="replace") as fh:
+            return fh.read(4096)
+
+    _, rejected = write_guard.partition(candidates, read=_read)
+    for rel, reason in rejected:
+        dest = write_guard.quarantine(wt, rel, tag=slug)
+        _log.error("[write-guard] %s: REFUSED agent file %r — %s%s",
+                   slug, rel, reason, f" (quarantined to {dest})" if dest else "")
+    return rejected
+
+
 def _commit_agent_work(wt, slug, prompt, base="main"):
     """Capture the agent's work. Returns True if the branch has real work to integrate.
 
@@ -516,6 +655,7 @@ def _commit_agent_work(wt, slug, prompt, base="main"):
            "GIT_AUTHOR_NAME": _git_name, "GIT_AUTHOR_EMAIL": _git_email,
            "GIT_COMMITTER_NAME": _git_name, "GIT_COMMITTER_EMAIL": _git_email}
     try:
+        _quarantine_garbage_paths(wt, slug, env)
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         # commit any uncommitted changes the agent left staged
         if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=wt, env=env).returncode != 0:
@@ -526,7 +666,17 @@ def _commit_agent_work(wt, slug, prompt, base="main"):
         ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"], cwd=wt, env=env,
                                capture_output=True, text=True)
         try:
-            return int((ahead.stdout or "0").strip()) > 0
+            _has_work = int((ahead.stdout or "0").strip()) > 0
+            if _has_work:
+                # DURABILITY AT COMMIT TIME (root cause of 3,332 recover-missing-branch tasks,
+                # 23.6% of all output). The origin push used to happen only AFTER verification
+                # passed, so any branch whose task failed verification, crashed, was reaped, or
+                # ran on the other Mac stayed LOCAL-ONLY — and was then eligible for worktree/
+                # branch GC. The work was destroyed and re-done as a brand new task.
+                # Committed work is now shared to origin the instant it exists, before any
+                # verification, integration or GC can see it. Disable: ORCH_SHARE_AGENT_BRANCHES=0.
+                _durable_share_branch(wt, slug, env)
+            return _has_work
         except ValueError:
             # base ref not found in the worktree — fall back to "did we just stage anything?"
             return subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=wt, env=env).returncode != 0
@@ -535,14 +685,85 @@ def _commit_agent_work(wt, slug, prompt, base="main"):
         return False
 
 
+def _durable_share_branch(wt, slug, env=None, attempts=3):
+    """Push agent/<slug> to origin as soon as it has committed work.
+
+    A branch that exists only on one Mac's disk is not durable: worktree GC, branch GC,
+    the resource governor, a crashed runner, or simply the other Mac claiming the task all
+    destroy it, and the orchestrator then files a NEW recover-missing-branch-<slug> task that
+    re-does the work from scratch. That single failure mode produced 3,332 merged tasks
+    (23.6% of all output).
+
+    Once the ref is on origin the work survives anything local. Writes a marker file so the
+    governor/GC can tell 'shared, safe to prune locally' from 'unshared, must not touch'.
+    Fail-soft: no remote / offline keeps the previous local-only behaviour.
+    """
+    if os.environ.get("ORCH_SHARE_AGENT_BRANCHES", "true").lower() not in ("true", "1", "yes", "on"):
+        return False
+    branch = f"agent/{slug}"
+    env = env or os.environ
+    for attempt in range(attempts):
+        try:
+            pr = subprocess.run(["git", "push", "-u", "origin", f"HEAD:refs/heads/{branch}"],
+                                cwd=wt, env=env, capture_output=True, text=True, timeout=180)
+            err = (pr.stderr or "")
+            if pr.returncode == 0 or "up-to-date" in err.lower() or "already exists" in err:
+                print(f"[branch-durability] shared {branch} to origin at commit time")
+                # Marker lives OUTSIDE the worktree: anything written inside it would be
+                # swept into the next `git add -A` and pollute the agent's diff.
+                try:
+                    home = os.environ.get("CLAUDE_ORCH_HOME",
+                                          os.path.expanduser("~/.claude-orchestrator"))
+                    d = os.path.join(home, "shared-branches")
+                    os.makedirs(d, exist_ok=True)
+                    with open(os.path.join(d, slug.replace("/", "_")), "w") as fh:
+                        fh.write(branch)
+                except Exception:
+                    pass
+                return True
+            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: {err[-160:]}")
+        except Exception as e:
+            print(f"[branch-durability] push {branch} attempt {attempt+1} error: {e}")
+        time.sleep(2 * (attempt + 1))
+    print(f"[branch-durability] WARNING {branch} NOT shared to origin — commit exists only on "
+          f"this disk; GC must not delete it")
+    return False
+
+
 def _must_run_agent_for_evidence(task, slug):
-    """Forced canaries exist to measure the coder, so old branches must not short-circuit them."""
+    """Forced canaries exist to measure the coder, so old branches must not short-circuit them.
+
+    CONFLICT-REPAIR REBUILDS (2026-08-06): a task requeued by auto_remediate with
+    note `agentic-repair:conflict` (or `:missing-branch`) exists precisely because the
+    merge train exhausted its redo cap rebasing the EXISTING branch — the repair
+    directive says "recover on a fresh branch". The zero-spend shortcut then reused
+    that same unrebasable branch ("existing committed branch — integrating without
+    re-running the agent"), sending it straight back to the train to conflict again.
+    Observed as 6-8 slugs retried 9-15x each while holding pass time hostage and the
+    fresh DONE backlog waited. A conflict-repair task must actually re-run the agent.
+    """
+    note = str((task or {}).get("note") or "").lower()
+    if note.startswith("agentic-repair:conflict") or note.startswith("agentic-repair:missing-branch"):
+        return True
     if not (task or {}).get("force_coder"):
         return False
     kind = str((task or {}).get("kind") or "").lower()
-    note = str((task or {}).get("note") or "").lower()
     s = str(slug or (task or {}).get("slug") or "")
     return kind == "canary" or s.startswith("canary-") or "-canary-" in s or "coder-canary" in note
+
+
+def _prompt_evolver():
+    """Return the prompt_evolver module under either sys.path layout.
+
+    runner.py runs with runner/ on sys.path (bare `import db`), the test suite
+    imports the package from the repo root (`from runner import db`). Resolve
+    lazily so a missing module can never break task execution.
+    """
+    try:
+        import prompt_evolver
+    except ImportError:
+        from runner import prompt_evolver
+    return prompt_evolver
 
 
 def _cap_agent_prompt(prompt):
@@ -582,6 +803,87 @@ def _agentic_repair_continue(t, category, failure, attempt, directive=None):
     set_state(t["id"], state="RUNNING",
               note=f"agentic-repair:{category} in-session {used + 1}/{max_repairs}; fixing before completion")
     return True
+
+
+# Guard verdict codes. Stable strings: they are written to the task note and to the
+# regression log, so a query like "how often did GUARD_DEFAULT_RESPONSE fire this week"
+# has to keep working across releases.
+GUARD_OK = "ok"
+GUARD_EMPTY_DIFF = "GUARD_EMPTY_DIFF"
+GUARD_DEFAULT_RESPONSE = "GUARD_DEFAULT_RESPONSE"
+GUARD_EMPTY_OUTPUT = "GUARD_EMPTY_OUTPUT"
+
+# The runner has no HTTP surface, so the spec's "HTTP 409 Conflict" is carried as a
+# machine-readable conflict code on the verdict rather than an actual response status.
+# Any transport that fronts the runner can map GUARD_CONFLICT_STATUS straight through;
+# inventing a web layer here just to raise a literal 409 would be a fiction.
+GUARD_CONFLICT_STATUS = 409
+
+
+def guard_check(output, diff_files=None):
+    """Detect a session that burned a model call and produced nothing.
+
+    Two distinct failures were previously handled by two inline blocks with subtly
+    different behaviour, and neither recorded WHICH condition fired — so the shelf note
+    "agent run failed" was all the regression analysis ever had to work with.
+
+    Returns a dict: {"ok": bool, "reason": <code>, "status": int|None, "detail": str}.
+    Pure — no db, no network, no clock — so it is cheap to assert on directly.
+
+      * GUARD_EMPTY_OUTPUT      the agent said nothing at all;
+      * GUARD_DEFAULT_RESPONSE  the CLI opened without instructions and the model replied
+                                with a greeting ("I'm ready to help. What would you like
+                                to work on?") — the prompt-delivery bug this guards;
+      * GUARD_EMPTY_DIFF        the agent talked but committed no file changes.
+
+    `diff_files` is the list of changed paths; None means "not measured" and is NOT
+    treated as empty — an unmeasured diff must not be reported as a missing one.
+    """
+    text = output or ""
+    if not text.strip():
+        return {"ok": False, "reason": GUARD_EMPTY_OUTPUT, "status": GUARD_CONFLICT_STATUS,
+                "detail": "agent produced no output"}
+
+    try:
+        import session_proof
+        stalled = bool(session_proof.STALL_RX.search(text))
+    except Exception as e:
+        # Fail SOFT toward "not stalled": a missing import must not convert every
+        # successful run into a retry. Logged, per the fail-soft convention.
+        _log.debug("guard_check: session_proof unavailable (%s); skipping stall match", e)
+        stalled = False
+    if stalled:
+        return {"ok": False, "reason": GUARD_DEFAULT_RESPONSE, "status": GUARD_CONFLICT_STATUS,
+                "detail": "output matches a default/greeting response — prompt was not delivered"}
+
+    if diff_files is not None and len(diff_files) == 0:
+        return {"ok": False, "reason": GUARD_EMPTY_DIFF, "status": GUARD_CONFLICT_STATUS,
+                "detail": "agent produced output but no committable file changes"}
+
+    return {"ok": True, "reason": GUARD_OK, "status": None, "detail": ""}
+
+
+def record_guard_trigger(task, slug, kind, verdict):
+    """Persist a guard trip for regression analysis, then set the task to RETRY.
+
+    Deliberately RETRY and not RUNNING. The prior code left the task RUNNING and looped
+    in-process, so a guard trip was invisible to the queue: nothing could count it, the
+    retry promoter never saw it, and a task that tripped repeatedly looked like one long
+    healthy run. RETRY is a state the rest of the system already understands.
+
+    Fail-soft: a failure to record must not prevent the state change.
+    """
+    note = f"guard_check: {verdict.get('reason')} ({verdict.get('detail')}) — retrying"
+    try:
+        regression.record(
+            (task.get("project_name") or ""), slug, kind,
+            (task.get("prompt") or "")[:500],
+            verdict.get("reason") or GUARD_OK,
+            verdict.get("detail") or "")
+    except Exception as e:
+        _log.debug("guard_check: regression.record failed: %s", e)
+    set_state(task["id"], state="RETRY", note=note[:400])
+    return note
 
 
 def run_task(t):
@@ -945,6 +1247,22 @@ def run_task(t):
                 except Exception:
                     pass
             coder = "claude" if t.get("_force_claude") else agentic_coders.pick(t, slot_index=attempt - 1)
+            # FLEET IMMUNE SYSTEM §3, diagnosis (7): weak-coder routes produced "0/12 merged"
+            # cycles on legal-class tasks. The cost optimiser above picks on price; this is the
+            # floor underneath it — force the strongest coder after 2 failed attempts, and never
+            # let a legal-class task (need >= 8) have its DIFF written by a weak local model.
+            # Triage and QA stay cheap; only the coder stage is gated. Only ever moves UP.
+            try:
+                import route_escalation
+                _esc = route_escalation.decide_route(t, route=coder, attempts=attempt - 1)
+                if _esc.get("escalated"):
+                    _log.info("route-escalation[%s]: %s -> %s (%s)", slug, coder,
+                              _esc["route"], _esc["reason"])
+                    set_state(t["id"], note=f"route-escalation: {_esc['detail']}"[:400])
+                    coder = _esc["route"]
+            except Exception as e:
+                # Fail-soft: a routing guard must never stop a task from running at all.
+                _log.debug("hook route_escalation failed: %s", e)
             try:
                 _coder_route = agentic_coders.route({**t, "force_coder": coder})
                 visible_model = model if coder == "claude" else f"{coder}:{_coder_route.get('model') or model}"
@@ -1098,6 +1416,24 @@ def run_task(t):
                         _extras += _evolved
                 except Exception as e:
                     _log.debug("hook prompt_evolution failed: %s", e)
+                # PROMPT EVOLUTION BANDIT: UCB1 over per-kind prompt TEMPLATES.
+                #
+                # prompt_evolution (above) adds evolved SECTIONS to a prompt. prompt_evolver
+                # chooses the prompt's SHAPE — base / chain_of_thought / edit_first — and
+                # learns which shape actually ships. It was written with its own tests and
+                # reward hygiene and then imported by nothing, so the arms were never pulled
+                # and the bandit could not learn: this is the Claude interface handling it.
+                #
+                # Applied AFTER compression and evolved additions so the tag survives to the
+                # model, and recorded against the same t so the outcome hook can attribute it.
+                try:
+                    import prompt_evolver
+                    _bandit_kind = str(t.get("kind") or "build")
+                    draft_prompt, _bandit_tid = prompt_evolver.select_template(
+                        _bandit_kind, draft_prompt)
+                    t["_bandit_kind"], t["_bandit_template_id"] = _bandit_kind, _bandit_tid
+                except Exception as e:
+                    _log.debug("hook prompt_evolver failed: %s", e)
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
@@ -1446,6 +1782,16 @@ def run_task(t):
                             draft_prompt = live_bidding.inject_auction_context(draft_prompt, _auction)
                 except Exception as e:
                     _log.debug("hook live_bidding failed: %s", e)
+                # PROMPT EVOLVER: UCB1 bandit over per-kind prompt templates. Runs
+                # last so the chosen arm wraps the fully enriched prompt, and stashes
+                # the arm on the task so record() can settle its reward after the run.
+                try:
+                    _evolved, _template_id = _prompt_evolver().select_template(kind, draft_prompt)
+                    if _template_id and _template_id != "base":
+                        draft_prompt = _cap_agent_prompt(_evolved)
+                    t["_prompt_template_id"] = _template_id
+                except Exception as e:
+                    _log.debug("hook prompt_evolver select failed: %s", e)
             # ── WAVE PIPELINE: pre-execution hooks ──────────────────────────
             _wave_t0 = time.time()
             try:
@@ -1764,11 +2110,25 @@ def run_task(t):
                     # SESSION PROOF: check for stall pattern first
                     try:
                         import session_proof
-                        if not t.get("_proof_retry") and session_proof.STALL_RX.search(out or ""):
+                        _guard = guard_check(out, diff_files=[])
+                        if not _guard["ok"] and not t.get("_proof_retry"):
+                            # First trip: the prompt probably never arrived, so re-inject it
+                            # in-session. Cheaper than a full requeue and it fixes the cause.
                             t["_proof_retry"] = True
                             prompt = session_proof.reinjection_prompt(t)
-                            set_state(t["id"], state="RUNNING", note="session-proof: stall detected — re-injecting prompt")
+                            set_state(t["id"], state="RUNNING",
+                                      note=f"session-proof: {_guard['reason']} — re-injecting prompt")
                             continue
+                        if not _guard["ok"]:
+                            # Second trip AFTER re-injection. Re-injection is not the fix, so
+                            # stop burning calls in-process: record which condition fired and
+                            # hand the task back to the queue as RETRY. Previously this fell
+                            # through to the generic "no file changes" nudge, which discarded
+                            # the diagnosis and is why the shelf note was only "agent run failed".
+                            record_guard_trigger(t, slug, kind, _guard)
+                            record(t, name, slug, kind, visible_model, acct, attempt,
+                                   False, False, out, t0, cost=run_cost)
+                            return
                     except Exception as e:
                         _log.debug("hook session_proof failed: %s", e)
                     nochange_nudge = (
@@ -1791,8 +2151,23 @@ def run_task(t):
                     "The agent still produced no committable changes. Make the smallest concrete implementation now; create or edit files and commit the diff.",
                 ):
                     continue
-                set_state(t["id"], state="BLOCKED", note="agent produced no committable changes after retries")
-                regression.record(name, slug, kind, t["prompt"][:500], "no file changes", "agent investigated but changed nothing; re-scope task")
+                # EXHAUSTION PATH — the guard has to run HERE too. It was only reachable
+                # inside `if _nochange_count < 2` above, so a session that kept replying
+                # with a greeting past two nudges fell through to the generic note below
+                # and the GUARD_DEFAULT_RESPONSE diagnosis was thrown away at exactly the
+                # moment it mattered most. That is why the shelf only ever recorded
+                # "no file changes" for the prompt-delivery bug this guard exists to name.
+                _final_guard = guard_check(out, diff_files=[])
+                _blocked_note = "agent produced no committable changes after retries"
+                _regr_signal, _regr_advice = "no file changes", (
+                    "agent investigated but changed nothing; re-scope task")
+                if not _final_guard["ok"]:
+                    _blocked_note = (f"{_blocked_note}; {_final_guard['reason']} "
+                                     f"({_final_guard['detail']})")
+                    _regr_signal = _final_guard["reason"]
+                    _regr_advice = _final_guard["detail"]
+                set_state(t["id"], state="BLOCKED", note=_blocked_note[:400])
+                regression.record(name, slug, kind, t["prompt"][:500], _regr_signal, _regr_advice)
                 record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
             # SESSION PROOF (positive path): verify the diff is real work echoing the task
             if not _integrating_existing:
@@ -2356,6 +2731,29 @@ def run_task(t):
                 prompt_evolution.record_prompt_outcome(t, draft_prompt, visible_model, integrated, _pe_cost, attempt)
             except Exception as e:
                 _log.debug("hook prompt_evolution.record failed: %s", e)
+            # PROMPT EVOLUTION BANDIT: pull the arm's reward.
+            #
+            # Only recorded when an arm was actually selected — a run whose selection hook
+            # failed has no arm, and crediting "base" for it would bias the bandit toward
+            # the default every time selection broke.
+            #
+            # deployed_verified is NOT known here (deploy happens after the merge train), so
+            # a first-try merge backed by a real evidence sha earns the 0.5 partial credit
+            # prompt_evolver defines and nothing earns 1.0 from this call site. That is the
+            # reward hygiene the module documents: ~96% of MERGED rows were later found to be
+            # phantoms, so a bare merge claim must not look like delivery.
+            try:
+                if t.get("_bandit_template_id"):
+                    import prompt_evolver
+                    prompt_evolver.record_outcome(
+                        t.get("_bandit_kind") or "build",
+                        t["_bandit_template_id"],
+                        merged_first_try=bool(integrated) and int(attempt or 0) == 0,
+                        deployed_verified=False,
+                        artifact_commit=str(t.get("evidence_sha") or ""),
+                    )
+            except Exception as e:
+                _log.debug("hook prompt_evolver.record failed: %s", e)
             # ERROR TAXONOMY: record remediation outcome
             try:
                 import error_taxonomy
@@ -2447,6 +2845,22 @@ def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, o
         candidate_shared.harvest(project, slug, kind, out)
     except Exception as e:
         print(f"[record] candidate_shared skipped: {e}")
+    # PROMPT EVOLVER: settle the bandit arm this run used. Pass raw signals only —
+    # reward hygiene (deployment beats merge, phantom merges earn nothing) is
+    # prompt_evolver's job, not the caller's. deployed_verified stays false here
+    # because record() runs before deployment settles; a first-try integration
+    # backed by a real artifact_commit still earns partial credit.
+    template_id = t.get("_prompt_template_id")
+    if template_id:
+        try:
+            _prompt_evolver().record_outcome(
+                kind, template_id,
+                merged_first_try=bool(integrated) and int(attempt or 0) <= 1,
+                deployed_verified=str(t.get("state") or "").upper() == "DEPLOYED_AND_VERIFIED",
+                artifact_commit=str(t.get("artifact_commit") or ""),
+            )
+        except Exception as e:
+            print(f"[record] prompt evolver settlement skipped: {e}")
 
 
 def cost_ledger_row(project, slug, model, out):
@@ -2473,6 +2887,11 @@ _SCHEDULE = [
     ("resmesh-60",    "resilience_mesh.py", "interval", 60),    # keep local/vendor/deploy prep moving during Supabase/vendor outages
     ("train-60",      "merge_train.py",     "interval", 60),    # canonical approved-card cleanup train
     ("mergestall-900","merge_stall_monitor.py","interval",900), # alert if merges stop landing despite a real backlog (2026-07-08 incident safeguard)
+    ("funnel-600",    "pipeline_funnel.py",  "interval", 600),  # flow, not activity: per-stage count + AGE-OF-OLDEST.
+                                                                # Every 2026-08-06 failure (0 cards vs 191 DONE for months,
+                                                                # 8h of red deploys, 13-day-old stranded work, a 5h DB
+                                                                # blackout that looked like idleness) was invisible because
+                                                                # counters kept moving while individual work sat still.
     ("stuckreaper-1800","stuck_reaper",       "interval", 1800), # detect+recover RUNNING tasks stuck >2h (docstring promised this; was in
                                                                   # periodic.py's JOBS dict but never added here — 2026-07-29 fix)
     ("priorityscore-600","priority_scorer",   "interval", 600),  # score QUEUED tasks with default priority=1000 so claim order reflects
@@ -2500,6 +2919,7 @@ _SCHEDULE = [
     ("businesscreative-15", "business_os_worker.py", "interval", 15), # atomically claim cost-capped creative jobs; outputs always enter review
     ("virtualexec-30", "virtual_executive_worker.py", "interval", 30), # predict work and execute only policy/credential/approval-authorized saga steps
     ("remediation-3600","quarantine_remediation.py","interval",3600), # scan quarantined tasks, requeue viable undelivered improvements
+    ("phantomrecovery-600","phantom_recovery.py","interval",600), # return operator dropbox work falsely marked MERGED to the claimable queue
 
     ("anomaly-3600",  "anomaly.py",         "interval", 3600),
     ("roi-daily",     "roi",                "daily",    (0, 15)),
@@ -2551,6 +2971,18 @@ _SCHEDULE = [
     # defect that had "Legal & Compliance" panels opining on Kubernetes. Each run puts real
     # regulatory questions through the 5-round gauntlet and mints citation-backed verdict cards.
     ("legaldocket-1800","legal_docket.py",  "interval", 1800),  # standing legal docket -> verdict cards
+    # Machine + pipeline heartbeat alerts (operator directive 2026-08-02, P0). Reads the
+    # runner_heartbeats rows every machine already writes and PAGES when one goes silent
+    # >30m — Mac 2 was down from ~10:28 with nothing saying so. Also runs the hourly
+    # consistency self-tests (pressure file vs DB row, boot-commit file, release-train env)
+    # and auto-reverts RELEASE_MIN_BATCH=1 recovery mode once the backlog is drained.
+    ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
+    # Independent, contract-based pipeline smoke test: catches false pressure signals,
+    # stale boot code, and recovery-mode settings that otherwise survive indefinitely.
+    ("pipelineselftest-3600", "pipeline_selftest.py", "interval", 3600),
+    # Drain already-written agent branches into canonical integration cards without paying an
+    # agent to rewrite them. The CLI's bounded default prevents a first-run card flood.
+    ("bulkshelf-600", "bulk_integrate_shelf.py", "interval", 600),
     # Benchmark redlines: redline REAL filed briefs in the most contentious regulatory matters +
     # draft the fully-revised addendum — the proof-of-superiority engine. Targets only activate
     # once the actual public filing text is ingested (never redlines an unheld document).
@@ -2613,6 +3045,16 @@ _SCHEDULE = [
     ("roadmap-weekly","roadmap",            "weekly",   (1, 6, 0)),# revenue-ranked weekly focus proposals
     ("dagspecunbl-60","dagspecunblock",      "interval", 60),    # speculatively release tasks waiting on RETRY deps
     ("worktreegc-300","worktreegc",         "interval", 300),   # remove stale agent worktrees (unblocks merges)
+    ("vercelconfig-600","vercelconfig",     "interval", 600),   # deploy-config drift a local build can't catch
+    ("botcommits-900","botcommits",         "interval", 900),   # bot-authored commits must parse
+    ("crashloop-300","crashloop",           "interval", 300),   # catch 100%-dead modules (preflight: 19d unnoticed)
+    ("stubguard-900","stubguard",           "interval", 900),   # constant-return stubs shadowing real code (build stays GREEN)
+    ("divergent-900","divergent",           "interval", 900),   # merges that dropped a symbol both sides authored (71cfd4ca6)
+    ("worktreeguard-300","worktreeguard",   "interval", 300),   # pin uncommitted work to rescue refs (destroyed 3x on 2026-08-02)
+    ("deploysilence-3600","deploysilence",  "interval", 3600),  # ZERO prod deploys in N days — absence of deploys alerts nothing
+    ("rescuedur-6h", "rescuedurability",   "interval", 21600), # rescue branches must not be local-only (34 were)
+    ("pipelineselftest-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
+    ("cleanclone-6h","cleanclone",          "interval", 21600), # pristine clone install+build (expensive)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
     ("releasekpi-1800","release_kpi.py",     "interval", 1800),  # released->deploy-green KPI + self-tune gate
@@ -2680,6 +3122,7 @@ _SCHEDULE = [
     ("toolchain-1800",        "toolchain_gate.py",      "interval", 1800), # verify build toolchain per project, auto-repair
     ("pause-arbiter-300",     "pause_arbiter.py",       "interval", 300),  # lift self-clearing pauses (TTL + registered checks)
     ("fleet-stuck-300",       "fleet_stuck_alarm.py",   "interval", 300),  # queued>0 & running=0 for >15min -> notify + remediate
+    ("push-stall-600",        "push_stall_alarm.py",    "interval", 600),  # local-only commits on a protected branch >30min, + credential-in-remote-URL scan
     ("batch-completion-300",  "batch_completion.py",     "interval", 300),  # state/run SLA + batch progress snapshot
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
     ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
@@ -2702,6 +3145,11 @@ _sched_last: dict = {}
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+                     # Liveness monitoring must survive a pause. A paused fleet is exactly
+                     # when a machine can quietly die without anyone noticing, and the
+                     # monitor calls no models — it only reads heartbeats and files.
+                     "fleet_heartbeat.py",
+                     "pipeline_selftest.py", "bulk_integrate_shelf.py",
                      "approval_policy.py", "queue_janitor.py",
                      "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
@@ -2882,12 +3330,6 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # stale-reap threshold scales with how often a job is actually supposed to run, instead of a
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
-_JOB_MAX_RUNTIME = {
-    "merge_train.py": int(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "release_train.py": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "releasetrain": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "integration_sweeper.py": int(os.environ.get("ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S", "7200")),
-}
 
 # Launch cadence is not an execution timeout. Integration and release jobs can
 # legitimately spend tens of minutes in isolated typecheck/build worktrees. A
@@ -2928,6 +3370,42 @@ def _is_still_running(job):
     except OSError:
         del _PERIODIC_PIDS[job]
         return False
+
+
+def _external_instance_running(job):
+    """True when a copy of `job` launched by a PREVIOUS runner is still executing.
+
+    Matches on the job's own path so a substring cannot alias two different jobs, and
+    excludes our own pid and children we already track. Fail-soft: if the process
+    table cannot be read we report "not running", because wrongly reporting "running"
+    would silently stop a job forever, which is worse than one duplicate.
+    """
+    if os.environ.get("ORCH_SCHED_EXTERNAL_INSTANCE_CHECK", "true").lower() not in (
+            "1", "true", "yes", "on"):
+        return False
+    try:
+        target = os.path.join(os.path.dirname(os.path.abspath(__file__)), job)
+        out = subprocess.run(["pgrep", "-f", target], capture_output=True, text=True,
+                             timeout=10).stdout
+    except Exception:
+        return False
+    mine = {os.getpid()}
+    mine.update(p for p, _ in _PERIODIC_PIDS.values())
+    for line in out.split():
+        try:
+            pid = int(line)
+        except ValueError:
+            continue
+        if pid in mine:
+            continue
+        # Adopt it so the reaper can lease-kill it if it really is wedged. Launch time
+        # is unknown across a restart; assume it started now, which gives the orphan a
+        # full lease before the reaper touches it rather than an instant kill.
+        _PERIODIC_PIDS.setdefault(job, (pid, time.time()))
+        print(f"[sched] {job} already running as pid {pid} from a previous runner — "
+              f"adopting instead of launching a duplicate", flush=True)
+        return True
+    return False
 
 
 _REAP_MULTIPLIER = {
@@ -3027,10 +3505,27 @@ def _reap_zombie_tasks():
         print(f"[zombie-reaper] error: {e}")
 
 
+# Scheduler keys (or job names) that must not fire, comma-separated.
+#
+# WHY THIS EXISTS (2026-08-06). Over three months the fleet ran 21,029 tasks and
+# merged 3,604 of them -- but only 198 of those merges were product feature specs
+# (slug prefix `dropbox-`). The other 94.5% was the fleet working on itself:
+# 765 recover-missing-branch, 601 canary, 523 improve, 231 rework, 225 qafix.
+# The cause is structural, not incidental: several generators are on unconditional
+# timers -- `improve` every 15 minutes ("never throttled"), `adversarial_fleet`
+# every 5, `coder_canary` every 30, `divergent` every 15 -- so each one manufactures
+# new work every cycle regardless of how much real product work is already waiting.
+# Self-improvement with no ceiling crowds out the thing being improved. There was
+# no way to turn any of it off short of editing this list, so here is the lever.
+_DISABLED_JOBS = {j.strip() for j in os.environ.get("ORCH_DISABLED_JOBS", "").split(",") if j.strip()}
+
+
 def _scheduler_tick() -> None:
     now = time.time()
     dt = datetime.datetime.now()
     for key, job, stype, args in _SCHEDULE:
+        if key in _DISABLED_JOBS or job in _DISABLED_JOBS:
+            continue
         last = _sched_last.get(key, 0)
         if stype == "interval":
             fire = (now - last) >= args
@@ -3283,7 +3778,10 @@ def main():
             _reload_t = time.time()
             try:
                 import hot_reload
-                hot_reload.maybe_reload()
+                # Pass the in-flight set: hot_reload now defers CODE swaps until the fleet is
+                # idle (drain-then-swap). Swapping modules under a running task destroyed
+                # in-flight work three times in one session.
+                hot_reload.maybe_reload(active_slugs=active)
             except Exception as e:
                 _log.debug("hook hot_reload failed: %s", e)
         # SELF-DEPLOY: graceful exec-into-new-code when self_deploy requested it (canary-gated)
@@ -3292,6 +3790,33 @@ def main():
             _rr = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".restart_requested")
             if os.path.exists(_rr):
                 max_active = max(0, int(os.environ.get("ORCH_RESTART_MAX_ACTIVE", "2") or 2))
+                # A drain threshold at or above lane capacity is not a drain — `active` can never
+                # exceed MAX_PARALLEL, so `active <= threshold` is true on the very first check and
+                # the runner exits instantly with every task still mid-flight. fleet_config had this
+                # at 40 against 12 lanes: the fleet commits to its own repo, self_deploy sees new
+                # code and requests a restart, the runner drops all in-flight work and exits, and
+                # ~90 seconds later it happens again. 55 tasks sat in RUNNING with 2 agents alive
+                # and nothing completed for hours. Clamp it to something that can actually gate.
+                _lane_cap = max(1, int(os.environ.get("MAX_PARALLEL", "12") or 12))
+                _ceiling = max(0, _lane_cap // 4)
+                if max_active > _ceiling:
+                    print(f"[self-deploy] restart drain threshold {max_active} >= lane capacity "
+                          f"{_lane_cap} would never gate anything — clamping to {_ceiling}")
+                    max_active = _ceiling
+                # A self-improving fleet commits to its own repo continuously, so "new code exists"
+                # is true again within minutes. Without a floor on restart frequency the runner
+                # spends its life restarting instead of finishing tasks.
+                _min_gap = max(0, int(os.environ.get("ORCH_RESTART_MIN_INTERVAL_S", "1800") or 0))
+                _since_boot = time.time() - _PROC_START_T
+                if _since_boot < _min_gap:
+                    if time.time() - _restart_log_t > 300:
+                        print(f"[self-deploy] restart requested but this runner is only "
+                              f"{int(_since_boot)}s old (min interval {_min_gap}s) — deferring so "
+                              f"in-flight work can finish")
+                        _restart_log_t = time.time()
+                    # Deferring, not draining: keep claiming so the lanes stay busy.
+                    os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
+                    raise _SkipRestart()
                 if time.time() - _restart_log_t > 30:
                     print(f"[self-deploy] restart requested — draining lanes active={len(active)} threshold={max_active}")
                     _restart_log_t = time.time()
@@ -3303,6 +3828,8 @@ def main():
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
             else:
                 os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
+        except _SkipRestart:
+            pass
         except ValueError:
             pass
         except SystemExit:

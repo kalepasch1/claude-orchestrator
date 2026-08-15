@@ -23,6 +23,15 @@ DEFAULT_LIMIT = int(os.environ.get("ORCH_QUARANTINE_LIMIT", "120"))
 MAX_BASE_CHARS = int(os.environ.get("ORCH_QUARANTINE_PROMPT_CHARS", "12000"))
 MARK = "blocker-quarantine"
 REPLACEMENT_CATEGORIES = {"legal", "secret", "security"}
+# How many rework/recover passes a task may accumulate before we stop auto-respawning
+# replacements and escalate to a human instead.
+#
+# FIX 2026-08-02: run()'s depth cap referenced a bare `max_depth` that was never bound, so every
+# quarantine run that reached the cap died with NameError. The earlier fix added the missing
+# _rework_depth() helper but left `max_depth` undefined, which just moved the crash one name to
+# the right — the cap has therefore never actually fired, and nested rework chains kept
+# respawning. 2 matches the "2+ nested rework- segments" rule the cap was written for.
+REWORK_MAX_DEPTH = int(os.environ.get("ORCH_QUARANTINE_REWORK_MAX_DEPTH", "2"))
 
 _LEGAL = re.compile(
     r"\blegal review\b|\blegal counsel\b|\bunauthorized practice of law\b|\bupl violation\b|"
@@ -187,10 +196,65 @@ def _evidence_signal(task):
     return "\n".join((note, log_tail))
 
 
+def _strip_self_reference(task, value):
+    """Remove the task's own slug (and the recovery prefixes built from it) from *value*.
+
+    A task named recover-missing-branch-foo carries that phrase in its slug, its prompt and every
+    note the pipeline writes about it. Any classifier that reads those strings will conclude
+    "missing branch" no matter what actually went wrong, respawn another recover-missing-branch-
+    task, and match again on the next pass — a loop that terminates only when a depth cap fires.
+    """
+    text = str(value or "")
+    slug = str(task.get("slug") or "")
+    if slug:
+        text = text.replace(slug, "")
+        # The generated slug also appears with its generator prefixes stripped or doubled.
+        for prefix in ("recover-missing-branch-", "rework-", "remediate-", "factory-unblock-"):
+            if slug.startswith(prefix):
+                text = text.replace(slug[len(prefix):], "")
+    return text
+
+
+def _identity_only_category(task, category):
+    """True when *category* would still be reached with all failure evidence removed.
+
+    This is the general form of the bug that produced most of the fleet's rework: a category
+    whose own generator prefix appears in the task's identity (slug/prompt) matches on the task's
+    NAME rather than on what went wrong, respawns a task carrying the same name, and matches
+    again forever. Rather than trusting any single regex to stay self-reference-free, re-run the
+    classifier on the same task with note and log_tail blanked. If it still lands on the same
+    non-default category, that verdict came from the task's identity, not its failure.
+    """
+    if category in ("rework", "flake"):
+        return False
+    stripped = dict(task)
+    stripped["note"] = ""
+    stripped["log_tail"] = ""
+    try:
+        return _classify_raw(stripped) == category
+    except Exception:
+        return False
+
+
 def classify(task):
+    """Classify a blocked task, refusing verdicts that come from the task's own name."""
+    category = _classify_raw(task)
+    if _identity_only_category(task, category):
+        print("%s: '%s' classified as %s from its own identity with no supporting evidence — "
+              "downgrading to rework (a self-referential category respawns itself forever)"
+              % (MARK, str(task.get("slug"))[:60], category))
+        return "rework"
+    return category
+
+
+def _classify_raw(task):
     blocker = _blocker_signal(task)
     evidence = _evidence_signal(task)
-    text = blocker + "\n" + str(task.get("prompt") or "")
+    # _blocker_signal() strips the task's own slug from the note and log so a task cannot
+    # self-trigger its own category — but the prompt was concatenated back in RAW, which reopened
+    # exactly that hole. A prompt describes INTENT ("recover the missing branch for X"), never
+    # OUTCOME, so its wording must not decide why a run failed. Strip the slug here too.
+    text = blocker + "\n" + _strip_self_reference(task, task.get("prompt"))
     state = str(task.get("state") or "").upper()
     # Secret/security classification must come from the blocker EVIDENCE (note/log), never from
     # a slug or prompt that merely contains the word "secret"/"security" as part of an app or
@@ -202,7 +266,12 @@ def classify(task):
         return "security"
     if _LEGAL.search(text):
         return "legal"
-    if _MISSING.search(text):
+    # missing-branch reads from EVIDENCE only, for the same reason secret/security do above.
+    # The category's own generator prefix ("recover-missing-branch") is one of _MISSING's
+    # alternatives, so matching it against the prompt made every failed recovery task —
+    # whatever the real cause — re-classify as missing-branch and respawn itself. Over three
+    # hours that single path accounted for 84 of the fleet's repair spawns.
+    if _MISSING.search(evidence):
         return "missing-branch"
     if _BUILD.search(text):
         return "buildfail"
@@ -585,8 +654,8 @@ def _rework_depth(slug):
 
 def _candidate_rows(limit):
     selects = [
-        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder,sensitivity",
-        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder",
+        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder,sensitivity,attempt",
+        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder,attempt",
         "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model",
         "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material",
         "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch",
@@ -651,8 +720,8 @@ def run(limit=DEFAULT_LIMIT):
         # "rework-legal-rework-legal-rework-legal-..." chain in production, manufacturing
         # QUARANTINED rows forever. Once the cap is hit, stop reworking automatically and put a
         # human in the loop instead.
-        if category in REPLACEMENT_CATEGORIES and _rework_depth(task.get("slug")) >= max_depth:
-            note = (f"{MARK}: escalated after {max_depth}+ rework attempts (category={category}); "
+        if category in REPLACEMENT_CATEGORIES and _rework_depth(task.get("slug")) >= REWORK_MAX_DEPTH:
+            note = (f"{MARK}: escalated after {REWORK_MAX_DEPTH}+ rework attempts (category={category}); "
                     f"needs human review instead of another auto-rework. "
                     f"Last blocker: {(task.get('note') or task.get('log_tail') or '')[:300]}")[:900]
             try:

@@ -17,7 +17,6 @@ Remediation by cause (tasks.remediation_count changes strategy; it does not punt
 
 Runs every couple minutes; also callable. This is the "self-remedy everything" loop.
 """
-import re
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -83,7 +82,7 @@ def run(limit=120):
     _phase_times["offload_backlog"] = _time.monotonic() - _tp
 
     _tp = _time.monotonic()
-    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,state",
+    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,state,attempt",
                                   "state": "in.(BLOCKED,CONFLICT,TESTFAIL)", "limit": str(limit)}) or []
     _phase_times["fetch_blocked"] = _time.monotonic() - _tp
     requeued = escalated = revised = reclaimed = left = shelved = decomposed = agentic_repairs = 0
@@ -318,7 +317,7 @@ def _non_claude_model(model):
 def offload_budget_capacity_backlog(limit=500):
     """Convert already-queued Claude budget/capacity rows to explicit non-Claude routes."""
     try:
-        rows = db.select("tasks", {"select": "id,slug,prompt,note,model,force_coder,material,kind,project_id,base_branch,log_tail",
+        rows = db.select("tasks", {"select": "id,slug,prompt,note,model,force_coder,material,kind,project_id,base_branch,log_tail,attempt,remediation_count",
                                    "state": "in.(QUEUED,RETRY,BLOCKED)", "limit": str(limit)}) or []
     except Exception:
         return 0
@@ -336,8 +335,13 @@ def offload_budget_capacity_backlog(limit=500):
         patch = agentic_repair.repair_patch(
             t, signal, category="capacity", prefer_non_claude=True,
             directive="This backlog row was blocked by Claude budget/capacity. Continue the same task through a non-Claude/local coder and finish it.")
-        patch["remediation_count"] = 0
-        patch["note"] = "agentic-repair:capacity; backlog offloaded from Claude budget/capacity guard"
+        # Never reset remediation_count here. It used to be zeroed on every capacity offload, so a
+        # task that repeatedly hit the Claude budget guard had its repair history wiped each pass
+        # and no ceiling could ever bind — an unbounded re-queue loop hiding behind a fair-sounding
+        # "don't penalise the task for our capacity problem". A capacity offload is still a repair
+        # cycle spent; if a row needs more than the ceiling, something else is wrong with it.
+        if not agentic_repair.is_terminal(patch):
+            patch["note"] = "agentic-repair:capacity; backlog offloaded from Claude budget/capacity guard"
         db.update("tasks", {"id": t["id"]}, patch)
         changed += 1
     return changed
@@ -383,7 +387,7 @@ def recover_auto_closed_noops(limit=500):
     """Put tasks that were incorrectly marked DONE for no-op retries back into the queue."""
     if os.environ.get("ORCH_RECOVER_AUTO_CLOSED_NOOPS", "false").lower() not in ("1", "true", "yes", "on"):
         return 0
-    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail",
+    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail,attempt",
                                "state": "eq.DONE", "limit": str(limit)}) or []
     restored = 0
     for task in rows:
@@ -514,12 +518,44 @@ def _decompose(task, note):
         return None
 
 
+def _auto_create_child_branches(task, child_slugs):
+    """Missing-branch auto-creator (slice 3): after a decomposition completes, pre-create
+    each child's agent/<slug> branch via git_auto_branch so coders never claim a sub-task
+    whose branch is missing. Branch names derive from the decomposition result (the child
+    slugs _spawn_subtasks actually created). Fail-soft: never blocks the decomposition path.
+    Returns the number of branches ensured."""
+    if not child_slugs:
+        return 0
+    try:
+        import git_auto_branch
+        rows = db.select("projects", {"select": "repo_path,default_base",
+                                      "id": f"eq.{task.get('project_id')}", "limit": "1"}) or []
+        repo = (rows[0].get("repo_path") or "") if rows else ""
+        if not repo or not os.path.isdir(repo):
+            return 0
+        base = task.get("base_branch") or (rows[0].get("default_base") or "") or "master"
+        made = 0
+        for child in child_slugs:
+            try:
+                branch, _final = git_auto_branch.ensure_branch_safe(repo, child, base=base)
+                if branch:
+                    made += 1
+            except Exception:
+                continue
+        return made
+    except Exception:
+        return 0
+
+
 def _spawn_subtasks(task, subs, return_ids=False):
     """Create child tasks for a decomposed parent. Returns count actually created.
-    FIXED 2026-07-11: quality gate rejects sub-tasks < 80 chars or missing action verbs."""
+    FIXED 2026-07-11: quality gate rejects sub-tasks < 80 chars or missing action verbs.
+    Slice-3 (missing-branch auto-creator): each spawned child also gets its agent/<slug>
+    branch pre-created so the child never starts against a missing branch."""
     ACTION_WORDS = re.compile(r"\b(add|create|implement|fix|update|write|modify|remove|refactor|replace|extract|move|rename|delete|configure|set up|integrate|convert|wrap|define|build|test|validate|ensure|return|handle|parse|send|fetch|call|check)\b", re.I)
     made = 0
     child_ids = []
+    child_slugs = []
     for i, s in enumerate(subs):
         prompt_text = str(s.get("prompt") or "").strip()
         if len(prompt_text) < 80 or not ACTION_WORDS.search(prompt_text):
@@ -535,10 +571,13 @@ def _spawn_subtasks(task, subs, return_ids=False):
                 "prompt": prompt_text,
                 "note": f"auto-decomposed from {task['slug']}"})
             made += 1
+            child_slugs.append(child)
             if return_ids and isinstance(row, list) and row:
                 child_ids.append(row[0].get("id", ""))
         except Exception:
             pass
+    # Decomposition complete -> auto-create each child's branch (fail-soft).
+    _auto_create_child_branches(task, child_slugs)
     if return_ids:
         return made, child_ids
     return made
@@ -554,7 +593,7 @@ def _already_decomposed(task, note):
 def recover_shelved(limit=200):
     """Auto-process the SHELVED pile so no human ever has to requeue: decompose big ones, requeue small
     ones. Only genuine legal/secret human-holds are left for the owner."""
-    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail",
+    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,attempt",
                                "state": "eq.SHELVED", "limit": str(limit)}) or []
     decomposed = requeued = 0
     for t in rows:

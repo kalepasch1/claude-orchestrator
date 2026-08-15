@@ -38,6 +38,27 @@ def _profile(hostname=None):
                 "max_ollama_gb": 16, "heavy_models": [], "total_ram_gb": None, "free_ram_gb": None}
 
 
+def _check_revenue_critical_lane():
+    """Check and prioritize revenue-critical lane tasks (set by economic_scheduler)."""
+    try:
+        critical_tasks = db.select("tasks", {"select": "id,lane,priority",
+                                             "state": "eq.QUEUED",
+                                             "lane": "eq.revenue-critical",
+                                             "limit": "20"}) or []
+        if critical_tasks:
+            # Boost priority of revenue-critical tasks (lower number = claimed first)
+            for idx, task in enumerate(critical_tasks):
+                try:
+                    db.update("tasks", {"id": task["id"]},
+                              {"priority": idx + 1, "updated_at": "now()"})
+                except Exception:
+                    pass
+            return len(critical_tasks)
+        return 0
+    except Exception:
+        return 0
+
+
 def run():
     """Periodic entry: manage local model lanes, cleanup orphans, publish fleet capability."""
     hostname = socket.gethostname()
@@ -60,7 +81,10 @@ def run():
     # 5. Report lane availability
     available_lanes = profile["max_ollama_lanes"] - len(running)
 
-    # 6. Publish this machine's capability snapshot so the rest of the fleet knows what's
+    # 6. Prioritize revenue-critical lane tasks (set by economic_scheduler)
+    critical_lane_count = _check_revenue_critical_lane()
+
+    # 7. Publish this machine's capability snapshot so the rest of the fleet knows what's
     # actually available here (models pulled + free lanes), not just that a heartbeat exists.
     try:
         import fleet_capabilities
@@ -81,6 +105,7 @@ def run():
                 "ram_ok": ram_ok,
                 "orphans_killed": orphans_killed,
                 "unloaded": unloaded,
+                "critical_lane_count": critical_lane_count,
                 "checked_at": time.time()
             }),
             "updated_at": "now()"
@@ -88,12 +113,13 @@ def run():
     except Exception:
         pass
 
-    if orphans_killed or unloaded:
+    if orphans_killed or unloaded or critical_lane_count:
         print(f"[lane_scheduler] {hostname}: orphans_killed={orphans_killed} unloaded={unloaded} "
               f"running={len(running)} available={max(0, available_lanes)} ram_ok={ram_ok} "
+              f"critical_lane={critical_lane_count} "
               f"profile={profile.get('source')}({profile['max_ollama_lanes']}lanes/{profile.get('max_ollama_gb')}GB)")
 
-    return {"available_lanes": max(0, available_lanes), "ram_ok": ram_ok}
+    return {"available_lanes": max(0, available_lanes), "ram_ok": ram_ok, "critical_lane_count": critical_lane_count}
 
 
 def can_schedule_model(model_name):

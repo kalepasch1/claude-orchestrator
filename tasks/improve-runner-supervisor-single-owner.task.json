@@ -1,0 +1,10 @@
+{
+  "project": "beethoven",
+  "slug": "improve-runner-supervisor-single-owner",
+  "kind": "bugfix",
+  "source": "codex-120-day-queue-remediation",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "prompt": "Restore one durable, observable owner for the production runner supervisor. Reconcile launchd registration with the canonical repository path, reject ad-hoc competing keepalives, recheck the maintenance fence before every restart, validate runner and supervisor lock ownership, and emit a health incident when the service label is missing or ownership drifts. Do not kill active coder subprocesses until ownership and handoff are proven. Add process-fixture tests for missing launchd service, duplicate supervisor, stale lock, maintenance appearing after startup, and clean handoff.",
+  "proof": "Supervisor ownership tests pass and a controlled restart shows exactly one keepalive and one runner owned by the registered service with the maintenance fence honored.",
+  "note": "The launchd label disappeared while a runner later started outside the expected service ownership path."
+}

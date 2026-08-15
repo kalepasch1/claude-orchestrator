@@ -52,10 +52,73 @@ MIGRATION_RX = re.compile(r"\b(schema|migration|database|backfill|data model|rls
 RESEARCH_RX = re.compile(r"\b(research|investigate|ideate|concept|strategy|proposal|experiment|ab test|a/b)\b", re.I)
 MECHANICAL_RX = re.compile(r"\b(copy|typo|format|lint|rename|style|css|tailwind|docs?|changelog)\b", re.I)
 
+_ALLOWLIST_ENV_KEYS = {
+    "security": "ORCH_SECURITY_TASK_ALLOWLIST",
+    "legal": "ORCH_LEGAL_TASK_ALLOWLIST",
+}
+
+# Module-level constant backing each task class, consulted by `task_allowlist`
+# when the corresponding ORCH_* env var is unset. Resolved through globals() at
+# call time (not bound here) so that reassigning the constant — which is the
+# documented programmatic control surface, and what unittest.mock.patch.object
+# does — actually changes the gate.
+_ALLOWLIST_CONSTANTS = {
+    "security": "SECURITY_TASK_ALLOWLIST",
+    "legal": "LEGAL_TASK_ALLOWLIST",
+}
+
+
+def _parse_allowlist(raw: Optional[str]) -> Optional[set]:
+    """Parse a comma-separated allowlist env value.
+
+    None (key unset) means "no allowlist configured" -> everything allowed.
+    An empty/whitespace-only value means "allow nothing".
+    """
+    if raw is None:
+        return None
+    return set(v.strip().lower() for v in raw.split(",") if v.strip())
+
+
+def task_allowlist(task_class: str) -> Optional[set]:
+    """Resolve the allowlist for a task class at call time.
+
+    Precedence:
+      1. The ORCH_* environment variable, read live, so a fleet-wide config push
+         takes effect without restarting the runner.
+      2. Otherwise the module-level ``{SECURITY,LEGAL}_TASK_ALLOWLIST`` constant.
+
+    Step 2 is not optional. Those constants are exported and documented as the
+    programmatic control surface ("kept for backward compatibility with existing
+    importers"), but an earlier refactor to live-env reads stopped consulting them,
+    so assigning one had no effect and `_credential_allows` silently fell through to
+    its allow-everything default. A credential gate that cannot be closed
+    programmatically is worse than no gate, because callers believe it is shut.
+    Reading the constant as the fallback keeps the live push authoritative while
+    making the exported constants load-bearing again.
+
+    Fail-soft: any error means "no allowlist".
+    """
+    try:
+        cls = (task_class or "").lower()
+        key = _ALLOWLIST_ENV_KEYS.get(cls)
+        if not key:
+            return None
+        raw = os.environ.get(key)
+        if raw is not None:
+            return _parse_allowlist(raw)
+        # Env unset -> fall back to the module-level constant. Unset AND unassigned
+        # is None, i.e. "no allowlist configured", preserving the default-open
+        # behaviour for classes nobody has gated.
+        return globals().get(_ALLOWLIST_CONSTANTS.get(cls, ""), None)
+    except Exception:
+        return None
+
+
 _SECURITY_ALLOWLIST_ENV = os.environ.get("ORCH_SECURITY_TASK_ALLOWLIST")
 _LEGAL_ALLOWLIST_ENV = os.environ.get("ORCH_LEGAL_TASK_ALLOWLIST")
-SECURITY_TASK_ALLOWLIST = set(v.strip() for v in _SECURITY_ALLOWLIST_ENV.split(",") if v.strip()) if _SECURITY_ALLOWLIST_ENV is not None else None
-LEGAL_TASK_ALLOWLIST = set(v.strip() for v in _LEGAL_ALLOWLIST_ENV.split(",") if v.strip()) if _LEGAL_ALLOWLIST_ENV is not None else None
+# Import-time snapshots kept for backward compatibility with existing importers.
+SECURITY_TASK_ALLOWLIST = _parse_allowlist(_SECURITY_ALLOWLIST_ENV)
+LEGAL_TASK_ALLOWLIST = _parse_allowlist(_LEGAL_ALLOWLIST_ENV)
 RESTRICTED_OPERATIONS = {"task_security_gate", "task_legal_gate", "permission_audit", "credential_validation"}
 
 
@@ -103,12 +166,19 @@ def classify(prompt: str, kind: str = "build", material: bool = False) -> Dict[s
 
 
 def _credential_allows(task_class: str, kind: str, text: str) -> bool:
-    k = (kind or "").lower()
-    if task_class == "legal" and LEGAL_TASK_ALLOWLIST is not None and k not in LEGAL_TASK_ALLOWLIST:
-        return False
-    if task_class == "security" and SECURITY_TASK_ALLOWLIST is not None and k not in SECURITY_TASK_ALLOWLIST:
-        return False
-    return True
+    """True when `kind` is permitted to be handled as a restricted task class.
+
+    Resolves the allowlist live (see `task_allowlist`) so a fleet-wide config push
+    applies without a runner restart. Fail-soft: unknown class -> allowed.
+    """
+    try:
+        k = (kind or "").lower()
+        allowed = task_allowlist(task_class)
+        if allowed is None:
+            return True
+        return k in allowed
+    except Exception:
+        return True
 
 
 def _operation_authorized(operation: str, task_class: str) -> bool:
@@ -315,13 +385,50 @@ def render_plan(plan: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def build_deferred_plan(prompt: str, project: str = "", kind: str = "build",
+                        source: str = "unknown", slug: str = "",
+                        material: bool = False) -> Dict[str, Any]:
+    """Build a deterministic envelope without telemetry or provider calls.
+
+    Intake uses this path because live routing is revalidated when a task is
+    claimed. Performing the same remote lookups serially for every manifest can
+    consume the watcher's entire lease before the queue insert happens.
+    """
+    cls = classify(prompt, kind=kind, material=material)
+    deferred = {
+        "provider": "runtime-policy",
+        "model": "selected-at-claim",
+        "reason": "deferred to execution-time capability and capacity checks",
+    }
+    return {
+        "source": source or "unknown",
+        "project": project or "selected app",
+        "kind": kind or "build",
+        "slug": slug or "(auto)",
+        "task_class": cls["task_class"],
+        "need": cls["need"],
+        "risk": cls["risk"],
+        "preflight": dict(deferred),
+        "strategy": dict(deferred),
+        "coder": "selected-at-claim",
+        "author_model": "selected-at-claim",
+        "qa": dict(deferred),
+        "qa_panel": ["independent cross-model panel selected at execution time"],
+        "legal_gate": "owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret",
+        "release": f"auto-merge to {os.environ.get('ORCH_STAGING_BRANCH', 'orchestrator/dev')} after tests, verify, judge; production release via batch train",
+        "collaboration": [],
+    }
+
+
 def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-                slug: str = "", material: bool = False) -> str:
+                slug: str = "", material: bool = False,
+                resolve_live_routes: bool = True) -> str:
     """Prepend the shared contract unless the prompt is already wrapped or is a control command."""
     text = prompt or ""
     if not text.strip() or already_wrapped(text) or is_control_prompt(text):
         return text
-    plan = build_plan(text, project=project, kind=kind, source=source, slug=slug, material=material)
+    builder = build_plan if resolve_live_routes else build_deferred_plan
+    plan = builder(text, project=project, kind=kind, source=source, slug=slug, material=material)
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
 
 
@@ -338,10 +445,122 @@ def artifact(prompt: str, project: str = "", kind: str = "build", source: str = 
         return "{}"
 
 
+def task_fields(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+                slug: str = "", material: bool = False, existing_note: str = "",
+                model: Optional[str] = None, force_coder: Optional[str] = None) -> Dict[str, Any]:
+    """Return schema-safe admission fields shared by every task source.
+
+    Persisting the route is important for Cowork executors that claim directly
+    from Supabase and do not execute the native runner's prompt assembler.
+    Native execution still revalidates forced routes at claim time, so provider
+    exhaustion or capability drift safely falls through to a fresh choice.
+    """
+    text = prompt or ""
+    plan = build_plan(text, project=project, kind=kind, source=source,
+                      slug=slug, material=material)
+    wrapped = text if (already_wrapped(text) or is_control_prompt(text) or not text.strip()) else (
+        render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
+    )
+    chosen_coder = force_coder or plan.get("coder") or None
+    chosen_model = model or plan.get("executor_model") or plan.get("author_model") or None
+    return {
+        "prompt": wrapped,
+        "note": note(existing_note, source=source),
+        "model": chosen_model,
+        "force_coder": chosen_coder,
+    }
+
+
 def note(existing: str = "", source: str = "unknown") -> str:
     base = (existing or "").strip()
     suffix = f"pipeline:{source or 'unknown'}; triage-plan-code-qa-devmerge-release"
     return f"{base}; {suffix}" if base else suffix
+
+
+# ── contract-first verification ─────────────────────────────────────────────────────────────
+#
+# "the verify gate IS the spec" (Wave C, Part 4, clause 2). A code task that is generated with a
+# sibling `-write-tests` task but does NOT depend on it runs concurrently with its own acceptance
+# test, so the test can land after the code and prove nothing. That ordering bug is invisible in
+# the DAG unless something checks it — this is that check.
+#
+# Both helpers below were referenced by runner/tests/test_contract_first.py and by
+# planner._apply_tdd_gating, and existed in neither module: 10 tests failed on master with
+# AttributeError, and the planner silently fell through to its except branch on every gated task.
+
+#: A proof that names a runnable command is already specific; do not overwrite the author's.
+_SPECIFIC_PROOF_RX = re.compile(
+    r"(pytest|unittest|npm |yarn |pnpm |go test|cargo |python3? -m|make |exits? [0-9]|\-k )", re.I)
+
+
+def rewrite_proof_for_contract_first(proof: str, test_slug: str) -> str:
+    """Point a vague proof at the acceptance test that must pass. Specific proofs pass through.
+
+    "tests pass" is not a proof — every task claims it and nothing checks which tests. Naming
+    the sibling test task makes the claim falsifiable.
+    """
+    text = (proof or "").strip()
+    if text and _SPECIFIC_PROOF_RX.search(text):
+        return proof
+    return f"acceptance test from '{test_slug}' passes + suite green"
+
+
+def _acceptance_test_file(repo_path: str, slug: str) -> Optional[str]:
+    """The conventional acceptance-test path for a slug, if it exists on disk."""
+    stem = f"test_{str(slug or '').replace('-', '_')}.py"
+    for parts in (("runner", "tests", stem), ("tests", stem)):
+        candidate = os.path.join(repo_path, *parts)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def verify_contract_first(tasks: List[Dict[str, Any]],
+                          repo_path: Optional[str] = None) -> Dict[str, Any]:
+    """Check that every code task is ordered behind its acceptance test.
+
+    Returns {"ok": bool, "errors": [str], "verified": [str]}.
+
+    Absence of a test task is NOT an error — TDD gating is opt-in per kind, and failing tasks
+    that were never gated would make this check unusable. What IS an error is a test task that
+    exists and is not depended upon: that is the silent-ordering bug this exists to catch.
+    """
+    errors: List[str] = []
+    verified: List[str] = []
+    try:
+        by_slug = {t.get("slug"): t for t in (tasks or []) if isinstance(t, dict)}
+        for task in tasks or []:
+            if not isinstance(task, dict):
+                continue
+            slug = task.get("slug") or ""
+            if not slug or slug == "contracts":
+                continue
+
+            test_slug = f"{slug}-write-tests"
+            deps = list(task.get("deps") or [])
+            if test_slug in by_slug:
+                if test_slug in deps:
+                    verified.append(slug)
+                else:
+                    errors.append(
+                        f"{slug}: acceptance test task '{test_slug}' exists but is not in its "
+                        f"deps {deps} — the two run concurrently, so the test proves nothing")
+                continue
+
+            if repo_path:
+                path = _acceptance_test_file(repo_path, slug)
+                if path:
+                    try:
+                        with open(path) as fh:
+                            body = fh.read()
+                    except Exception:
+                        body = ""
+                    state = "xfail" if "xfail" in body else "active"
+                    verified.append(f"{slug}: acceptance test file {state} ({path})")
+        return {"ok": not errors, "errors": errors, "verified": verified}
+    except Exception as e:
+        # Fail-soft per this module's contract: a broken verifier must not block the pipeline.
+        return {"ok": True, "errors": [], "verified": [], "warning": f"verify unavailable: {e}"}
 
 
 if __name__ == "__main__":

@@ -17,12 +17,18 @@ rate-limit pattern). Two intake paths:
 Feedback is scrubbed (privacy) and stored in `orchestrator_feedback`, then clustered by
 feedback_review.py into orchestrator self-improvement proposals (your meta-loop + eval gate).
 """
-import os, sys, re, json, argparse
+import os, sys, re, json, argparse, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db, privacy
 
 CATEGORIES = ("context", "model", "prompt", "tooling", "guardrail", "strategy", "rate_limit", "other")
+SEVERITIES = ("low", "med", "high")
 TAG = re.compile(r"<orchestrator_feedback>(.*?)</orchestrator_feedback>", re.S | re.I)
+_RECENT_FINGERPRINTS = {}
+_PLACEHOLDERS = {
+    "...", "…", "n/a", "none", "null", "observation", "suggestion",
+    "measured bottleneck...", "reversible mechanism + acceptance metric + rollback...",
+}
 
 # Appended to every task prompt so agents know how to report back.
 INSTRUCTION = (
@@ -38,13 +44,50 @@ INSTRUCTION = (
 
 def submit(category, observation, suggestion="", severity="med", project=None, slug=None,
            task_id=None, evidence=None, source="agent"):
+    category = str(category or "").strip().lower()
+    severity = str(severity or "").strip().lower()
     cat = category if category in CATEGORIES else "other"
+    if severity not in SEVERITIES:
+        # Reject prompt-schema echoes such as the literal "low|med|high". Silently
+        # coercing them used to create tens of thousands of fake reports.
+        return False
     obs, _ = privacy.scrub(observation or "")
     sug, _ = privacy.scrub(suggestion or "")
     ev, _ = privacy.scrub(evidence or "")
+    obs, sug, ev = str(obs).strip(), str(sug).strip(), str(ev).strip()
+    if len(obs) < 12 or obs.lower() in _PLACEHOLDERS or sug.lower() in _PLACEHOLDERS:
+        return False
+    fingerprint = hashlib.sha256(json.dumps([
+        source or "agent", project or "", slug or "", cat, severity, obs, sug,
+    ], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    if fingerprint in _RECENT_FINGERPRINTS:
+        return False
+
+    # Also dedupe across runner restarts. Limit the read narrowly and compare in
+    # Python so punctuation in feedback never becomes a PostgREST filter.
+    query = {"select": "source,project,slug,category,severity,observation,suggestion",
+             "source": f"eq.{source or 'agent'}", "order": "created_at.desc", "limit": "30"}
+    if project:
+        query["project"] = f"eq.{project}"
+    if slug:
+        query["slug"] = f"eq.{slug}"
+    try:
+        recent = db.select("orchestrator_feedback", query) or []
+        if any((str(row.get("observation") or "").strip() == obs
+                and str(row.get("suggestion") or "").strip() == sug
+                and str(row.get("category") or "") == cat
+                and str(row.get("severity") or "") == severity)
+               for row in recent):
+            _RECENT_FINGERPRINTS[fingerprint] = True
+            return False
+    except Exception:
+        pass
     db.insert("orchestrator_feedback", {"task_id": task_id, "project": project, "slug": slug,
               "source": source, "category": cat, "severity": severity,
               "observation": obs[:2000], "suggestion": sug[:2000], "evidence": ev[:2000]})
+    _RECENT_FINGERPRINTS[fingerprint] = True
+    if len(_RECENT_FINGERPRINTS) > 4096:
+        _RECENT_FINGERPRINTS.pop(next(iter(_RECENT_FINGERPRINTS)))
     return True
 
 
@@ -56,10 +99,12 @@ def extract_and_store(log_text, project=None, slug=None, task_id=None):
         except Exception:
             continue
         for it in (items if isinstance(items, list) else [items]):
-            submit(it.get("category", "other"), it.get("observation", ""),
-                   it.get("suggestion", ""), it.get("severity", "med"),
-                   project, slug, task_id, it.get("evidence"))
-            n += 1
+            if not isinstance(it, dict):
+                continue
+            if submit(it.get("category", "other"), it.get("observation", ""),
+                      it.get("suggestion", ""), it.get("severity", "med"),
+                      project, slug, task_id, it.get("evidence")):
+                n += 1
     return n
 
 

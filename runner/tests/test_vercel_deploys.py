@@ -201,6 +201,13 @@ class TestPreviewCanary(unittest.TestCase):
         suspicious = re.findall(r'["\'][A-Za-z0-9_\-]{20,}["\']', src)
         # Allow the VBASE URL constant and nothing else
         suspicious = [s for s in suspicious if "vercel.com" not in s and "api.vercel" not in s]
+        # An env var NAME is not a secret — it is the opposite of one, the proof that the
+        # value is being read from the environment rather than embedded. Long config names
+        # like "PREVIEW_CANARY_HEALTH_PATH" tripped the length heuristic and made this test
+        # fail for doing its job correctly. Exclude only names this module actually reads out
+        # of os.environ, so a bare 20-char literal sitting in the source is still caught.
+        env_names = set(re.findall(r'os\.environ(?:\.get)?[\(\[]\s*["\']([A-Za-z0-9_\-]+)["\']', src))
+        suspicious = [s for s in suspicious if s.strip("\"'") not in env_names]
         self.assertEqual(suspicious, [],
                          f"Possible hardcoded secret in preview_canary.py: {suspicious}")
 

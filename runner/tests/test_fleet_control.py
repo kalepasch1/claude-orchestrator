@@ -5,6 +5,11 @@ import socket
 import sys
 import time
 import unittest
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+pytest.importorskip("websockets", reason="websockets not installed; fleet control gateway unavailable")
 
 import websockets
 

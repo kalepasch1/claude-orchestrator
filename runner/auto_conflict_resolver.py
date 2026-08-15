@@ -33,7 +33,9 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
+from regenerable_artifacts import partition_dirt, describe
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -142,21 +144,33 @@ def _classify_conflict(filepath: str, conflict_type: str = "") -> str:
     return "manual"
 
 def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: str) -> bool:
-    """Apply a resolution strategy to a single conflicting file."""
+    """Apply a resolution strategy to a single conflicting file.
+
+    Every branch that writes a file now VERIFIES the result before claiming success —
+    a False here makes the caller `git merge --abort`, which is always safe.
+    """
     if strategy == "ours":
         r = _git(["git", "checkout", "--ours", filepath], repo)
-        if r.returncode == 0:
+        if r.returncode == 0 and _resolved_ok(repo, filepath):
             _git(["git", "add", filepath], repo)
             return True
         return False
     elif strategy == "theirs":
         r = _git(["git", "checkout", "--theirs", filepath], repo)
-        if r.returncode == 0:
+        if r.returncode == 0 and _resolved_ok(repo, filepath):
             _git(["git", "add", filepath], repo)
             return True
         return False
     elif strategy == "union":
-        r = _git(["git", "merge-file", "--union", filepath, filepath, filepath], repo)
+        # FIX 2026-08-02: this was `merge-file --union filepath filepath filepath` followed by
+        # an UNCONDITIONAL `return True`. Passing the same path as current/base/other merges a
+        # file with ITSELF — the output is the input unchanged, i.e. the still-conflicted
+        # working-tree file WITH its <<<<<<< markers — which was then `git add`ed and committed.
+        # The real union needs the three index stages: :1 = base, :2 = ours, :3 = theirs.
+        if not _union_stages(repo, filepath):
+            return False
+        if not _resolved_ok(repo, filepath):
+            return False
         _git(["git", "add", filepath], repo)
         return True
     elif strategy == "regenerate":
@@ -175,12 +189,332 @@ def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: st
                 fullpath = os.path.join(repo, filepath)
                 with open(fullpath, "w") as f:
                     f.write(result["merged_content"])
+                if not _resolved_ok(repo, filepath):
+                    return False
                 _git(["git", "add", filepath], repo)
                 return True
         except Exception:
             pass
         return False
     return False
+
+
+CONFLICT_MARKERS = ("<<<<<<< ", "=======\n", ">>>>>>> ")
+
+
+def _union_stages(repo: str, filepath: str) -> bool:
+    """True union of the three index stages. Returns True only on a real success.
+
+    :1 = merge base, :2 = ours, :3 = theirs. `git merge-file --union` writes the union
+    into the first argument. An add/add conflict has no stage :1; an empty base is the
+    correct ancestor there, so both sides' additions are kept.
+    """
+    import tempfile
+    tmpdir = None
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="acr-union-")
+        paths = {}
+        for stage, name in ((1, "base"), (2, "ours"), (3, "theirs")):
+            r = _git(["git", "show", f":{stage}:{filepath}"], repo)
+            content = r.stdout if r.returncode == 0 else ("" if stage == 1 else None)
+            if content is None:
+                return False  # a side is missing entirely — not a union case
+            paths[name] = os.path.join(tmpdir, name)
+            with open(paths[name], "w", errors="replace") as fh:
+                fh.write(content)
+        m = _git(["git", "merge-file", "--union",
+                  paths["ours"], paths["base"], paths["theirs"]], repo)
+        if m.returncode < 0:  # negative = merge-file error; >0 would be leftover conflicts
+            return False
+        with open(paths["ours"], "r", errors="replace") as fh:
+            merged = fh.read()
+        with open(os.path.join(repo, filepath), "w", errors="replace") as fh:
+            fh.write(merged)
+        return True
+    except Exception:
+        return False
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _resolved_ok(repo: str, filepath: str) -> bool:
+    """Verify a just-resolved file: no conflict markers left, and it still parses.
+
+    FIX 2026-08-02: `_resolve_file` used to claim success without ever looking at what it
+    produced, so conflict markers and syntactically broken files were staged and committed.
+    Unknown file types pass the syntax check (only the marker check applies).
+    """
+    full = os.path.join(repo, filepath)
+    try:
+        with open(full, "r", errors="replace") as fh:
+            text = fh.read()
+    except (OSError, IOError):
+        return False
+    for marker in CONFLICT_MARKERS:
+        if marker in text or text.endswith(marker.rstrip("\n")):
+            return False
+
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".py":
+            compile(text, filepath, "exec")
+        elif ext in (".json",):
+            import json as _json
+            _json.loads(text)
+        elif ext in (".js", ".mjs", ".cjs"):
+            chk = subprocess.run(["node", "--check", full], capture_output=True,
+                                 text=True, timeout=30)
+            if chk.returncode != 0:
+                return False
+        elif ext in (".yml", ".yaml"):
+            try:
+                import yaml as _yaml
+                _yaml.safe_load(text)
+            except ImportError:
+                pass  # no pyyaml — marker check only
+    except FileNotFoundError:
+        return True   # no node installed: marker check only, don't block the merge
+    except subprocess.SubprocessError:
+        return True
+    except Exception:
+        return False  # SyntaxError / JSONDecodeError / YAMLError -> broken resolution
+    return True
+
+def _regression_check(repo: str, pre_sha: str, branch: str, result_ref: str = "HEAD") -> str:
+    """Post-merge anti-regression verification. Returns '' if clean, else the findings.
+
+    ADDED 2026-08-02 (operator directive: "I don't ever want to lose any improved code to
+    a merge"). RE-APPLIED the same day after `dc288ea5 Merge branch 'agent/qafix-...'
+    (auto-resolved)` deleted this very function — this module's own unverified merge path
+    ate its own guard, which is the exact failure mode the guard exists to stop.
+
+    This module authored every `Merge branch '...' (auto-resolved)` commit in the log and
+    until now committed the result of `checkout --ours/--theirs`, `merge-file --union` and
+    ast_merge with NO verification that the merged tree still contained the code it started
+    with. merge_train._post_fork_regression() never runs on this path. Confirmed losses:
+    improvement_miner (b9a8fd26), integration_sweeper (a780345c, d26357a6), vigil's
+    package-lock.json, and this function itself (dc288ea5).
+
+    FAIL-CLOSED: if the guard cannot be imported or it raises, the merge is rejected.
+    Opt out only with ORCH_MERGE_REGRESSION_GUARD=false.
+    """
+    if os.environ.get("ORCH_MERGE_REGRESSION_GUARD", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return ""
+    if not pre_sha:
+        return "regression guard: could not capture pre-merge SHA (fail-closed)"
+    try:
+        import regression_guard
+    except Exception as exc:
+        return f"regression guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
+    try:
+        msg = _git(["git", "log", "-1", "--format=%s%n%b", result_ref], repo).stdout or ""
+        ok, detail = regression_guard.gate(repo, pre_sha, result_ref, commit_message=msg)
+        return "" if ok else detail
+    except Exception as exc:
+        return f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _divergent_check(repo: str, base: str, branch: str, result_ref: str = "HEAD") -> str:
+    """Divergent-authorship verification. Returns '' if clean, else the findings.
+
+    WIRING GAP CLOSED 2026-08-04 (adversarial sweep). divergent_authorship_guard was wired
+    into merge_train._divergent_gate ONLY. This module — which authored every
+    `Merge branch '...' (auto-resolved)` commit in the log, including 71cfd4ca6, the exact
+    add/add loss the guard was written for — never called it. The guard existed, was
+    importable, was tested, and was not on this path. That is the same failure the operator
+    has already been bitten by twice: a guard that exists but is not invoked.
+
+    _regression_check() alone CANNOT cover this shape. It diffs pre-merge vs post-merge, and
+    in an add/add the pre-merge tree has no version of the file at all, so there is no "symbol
+    the base had and the result lost" for it to find. 71cfd4ca6 dropped CANARY_ENABLED and
+    CANARY_PERCENT while every base-vs-result check stayed green.
+
+    FAIL-CLOSED: an import error or a guard crash rejects the merge.
+    Opt out only with ORCH_MERGE_DIVERGENT_GATE=false / ORCH_DIVERGENT_GUARD_ENABLED=false.
+    """
+    if os.environ.get("ORCH_MERGE_DIVERGENT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return ""
+    try:
+        import divergent_authorship_guard
+    except Exception as exc:
+        return (f"divergent authorship guard unavailable (fail-closed): "
+                f"{type(exc).__name__}: {exc}")
+    try:
+        ok, detail = divergent_authorship_guard.gate(repo, base, branch,
+                                                     result_ref=result_ref)
+        return "" if ok else detail
+    except Exception as exc:
+        return f"divergent authorship guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _stub_check(repo: str, base: str, branch: str) -> str:
+    """Shadowed-stub verification on the auto-resolve path. '' if clean.
+
+    WIRING GAP CLOSED 2026-08-04: stub_guard was wired into merge_train._stub_gate only. A
+    barrel resolved here by --ours/--theirs/--union can land a constant-return stub that
+    shadows a real `export *` re-export, which compiles, tests green, and silently disables
+    whatever the real symbol enforced. FAIL-CLOSED.
+    """
+    if os.environ.get("ORCH_MERGE_STUB_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return ""
+    try:
+        import stub_guard
+    except Exception as exc:
+        return f"stub guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
+    try:
+        res = stub_guard.check_repo(repo, branch, os.path.basename(repo), base=base)
+    except Exception as exc:
+        return f"stub guard error (fail-closed): {type(exc).__name__}: {exc}"
+    if res.get("skipped"):
+        return ""
+    blocking = [v for v in res.get("violations", []) if v.get("severity") == "block"]
+    if not blocking or stub_guard.BREAK_GLASS:
+        return ""
+    return " | ".join("[%s] %s: %s" % (v["code"], v.get("path"), v.get("detail", ""))
+                      for v in blocking[:6])
+
+
+def _discard_check(repo: str, pre_sha: str, branch: str, result_ref: str = "HEAD") -> str:
+    """Silent-discard verification: did the resolution keep mainline and drop the branch?
+
+    WIRING GAP CLOSED 2026-08-06. Audit of the 59 auto-resolved merges on master since
+    Aug 1: 6 (10%) discarded at least one branch edit, across 28 files, and 28 of 28 of
+    those edits were BRANCH-ORIGINAL — they existed nowhere else at merge time. Not one
+    was the benign "the branch was carrying mainline's own history" case. The dropped
+    commits were themselves fixes for silent work loss (f01601e2, ef31027d, 311d68e3,
+    9c3e7f7d, 4fe179c8): the resolver has been eating the repairs for its own problem.
+
+    None of the three gates above can see this shape, and that is structural rather than
+    unlucky:
+      * _regression_check diffs the PRE-merge tree against the result. Here the result is
+        byte-identical to the mainline parent, so pre == post for every file and the diff
+        is empty by construction.
+      * _divergent_check fires on SYMBOL loss. A branch edit that changes a function BODY
+        (9c3e7f7d is exactly that) leaves every symbol present on both sides.
+      * _stub_check looks for constant-return shadowing, a different shape again.
+
+    So this compares the RESULT against BOTH PARENTS and asks the only question that
+    distinguishes the failure: did we keep mainline's bytes verbatim while discarding a
+    branch edit that exists nowhere else? FAIL-CLOSED, like its neighbours.
+    Opt out only with ORCH_AUTOMERGE_DISCARD_GUARD=false.
+    """
+    try:
+        import automerge_discard_guard
+    except Exception as exc:
+        return (f"automerge discard guard unavailable (fail-closed): "
+                f"{type(exc).__name__}: {exc}")
+    if not pre_sha:
+        return "automerge discard guard: no pre-merge SHA to use as the mainline parent (fail-closed)"
+    try:
+        ok, detail = automerge_discard_guard.gate(repo, pre_sha, branch,
+                                                  result_ref=result_ref, branch=branch)
+        return "" if ok else detail
+    except Exception as exc:
+        return f"automerge discard guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+class _GateTimeout(Exception):
+    """One verification gate outran its budget."""
+
+
+def _bounded(name, check):
+    """Run one gate under a wall-clock budget. Raises _GateTimeout when it outruns it.
+
+    WHY (2026-08-15). These four gates are the fleet's overwrite protection, and they are also
+    where every train pass was dying: the merge train produced ZERO merges in 24 hours while the
+    watchdog fired 56 times at the 900s pass cap, and every dump landed inside this function.
+    One slow branch — a huge diff, a stalled subprocess, a control-plane hiccup — consumed the
+    entire pass, so the other several hundred candidates were never even looked at.
+
+    A budget here does NOT weaken the guard. A gate that times out yields a finding, so the
+    merge is refused and the branch is retried next pass; the failure direction is identical to
+    a crashing gate, which this function has always treated as fail-closed. What changes is that
+    one pathological branch now costs one branch instead of the whole cycle.
+
+    The worker is a daemon thread and is abandoned on timeout rather than killed, because Python
+    cannot interrupt a blocking read. It holds no lock the next pass needs — the shared-ref locks
+    live above this layer — so an abandoned probe finishes into the void and is collected.
+    """
+    budget = float(os.environ.get("ORCH_MERGE_GATE_TIMEOUT_S", "180") or 180)
+    if budget <= 0:
+        return check()
+    box = {}
+
+    def _run():
+        try:
+            box["ok"] = check()
+        except BaseException as exc:      # re-raised on the caller's thread below
+            box["exc"] = exc
+
+    t = threading.Thread(target=_run, name=f"verify-{name}", daemon=True)
+    t.start()
+    t.join(budget)
+    if t.is_alive():
+        raise _GateTimeout(
+            f"{name} gate exceeded {budget:.0f}s on {branch_label(locals())}; refusing the merge "
+            f"this pass so one slow branch cannot consume the whole cycle")
+    if "exc" in box:
+        raise box["exc"]
+    return box.get("ok")
+
+
+def branch_label(_scope):
+    """Best-effort branch name for the timeout message; never raises."""
+    try:
+        return str(_scope.get("name") or "candidate")
+    except Exception:
+        return "candidate"
+
+
+def _verify_merge(repo: str, pre_sha: str, base: str, branch: str,
+                  result_ref: str = "HEAD") -> str:
+    """Every anti-loss gate this path must pass, in order. '' when all are clean.
+
+    result_ref: the ref holding the committed merge result. "HEAD" on paths that merge in
+    the current checkout; pass the target branch name when the merge landed on a ref that
+    is NOT checked out (approval_merge's fetch/fast-forward path), otherwise the gates
+    would diff the wrong tree.
+    """
+    for name, check in (("regression", lambda: _regression_check(repo, pre_sha, branch, result_ref=result_ref)),
+                        ("divergent", lambda: _divergent_check(repo, pre_sha or base, branch,
+                                                               result_ref=result_ref)),
+                        ("stub", lambda: _stub_check(repo, pre_sha or base, branch)),
+                        ("discard", lambda: _discard_check(repo, pre_sha, branch, result_ref=result_ref))):
+        try:
+            findings = _bounded(name, check)
+        except Exception as exc:   # a crashing gate must never wave the merge through
+            return f"merge verification error (fail-closed): {type(exc).__name__}: {exc}"
+        if findings:
+            return findings
+    return ""
+
+
+# Public entry point for OTHER merge paths (continuous_merger, self_healing_merge,
+# release_train, approval_merge). Every module that commits a merge — clean OR
+# conflicted — must run this before deleting the source branch. Added 2026-08-04:
+# the unguarded clean-merge paths in those modules were the primary code-loss
+# mechanism behind the phantom-merge reclassification.
+verify_merge = _verify_merge
+
+
+def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:
+    """Undo a merge that would destroy code and route the branch to manual review.
+
+    The branch is deliberately NOT deleted: after a reset it is the only remaining copy of
+    the work, and deleting it is how code became unrecoverable in the first place.
+    """
+    _git(["git", "reset", "--hard", pre_sha], repo)
+    result["merged"] = False
+    result["strategy"] = "regression-blocked"
+    result["manual_files"] = result.get("resolved_files") or []
+    result["error"] = f"REGRESSION BLOCKED — merge rolled back, branch preserved: {findings}"
+    return result
+
 
 def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) -> dict:
     """Try to merge a branch with auto-resolution of conflicts."""
@@ -189,11 +523,20 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
         "resolved_files": [], "manual_files": [], "error": None,
     }
 
+    # Pre-merge SHA — the anti-regression gate's "before" tree, and the rollback target.
+    _pre = _git(["git", "rev-parse", "HEAD"], repo)
+    pre_sha = _pre.stdout.strip() if _pre.returncode == 0 else ""
+
     # Step 1: attempt normal merge
     merge_result = _git(["git", "merge", "--no-ff", branch, "-m",
                          f"Merge branch '{branch}' (auto-resolved)"], repo)
 
     if merge_result.returncode == 0:
+        # A CLEAN git merge is not evidence that nothing was lost: a branch forked before an
+        # improvement landed deletes it with zero conflict. Verify BEFORE we drop the branch.
+        findings = _verify_merge(repo, pre_sha, base, branch)
+        if findings:
+            return _reject_merge(repo, pre_sha, result, findings)
         if dry_run:
             _git(["git", "reset", "--hard", "HEAD~1"], repo)
         else:
@@ -258,6 +601,16 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
     # Step 5: commit the resolved merge
     commit = _git(["git", "commit", "--no-edit"], repo)
     if commit.returncode == 0:
+        # ANTI-REGRESSION GATE: --ours/--theirs/--union/ast_merge just decided, per file,
+        # which code survives. Verify the committed tree against the pre-merge tree BEFORE
+        # the branch (the only other copy of that code) is deleted. On any finding the merge
+        # is reset away and the branch is kept for manual/agentic repair.
+        # Also runs the divergent-authorship and shadowed-stub gates: this is the --union
+        # path, and 71cfd4ca6 (add/add, both module constants dropped) came out of exactly
+        # here with a clean base-vs-result diff.
+        findings = _verify_merge(repo, pre_sha, base, branch)
+        if findings:
+            return _reject_merge(repo, pre_sha, result, findings)
         result["merged"] = True
         result["strategy"] = "auto"
         _git(["git", "branch", "-d", branch], repo)
@@ -268,9 +621,57 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
 
     return result
 
+def _dirty_tracked(repo: str) -> str:
+    """Tracked-file dirt in the MAIN checkout that a reset would actually lose.
+
+    Returns '' when the only dirt is machine-generated artifacts the fleet
+    rewrites on its own (context caches, generated registries, schema dumps).
+    Those used to deadlock the merge train: they are never clean for long, so a
+    literal dirty check refused every merge in six repos indefinitely — 24
+    merges/hour fell to zero for five straight hours on 2026-08-05 while
+    completions kept climbing. See runner/regenerable_artifacts.py.
+    """
+    porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty"], repo).stdout.strip()
+    if not porcelain:
+        return ""
+    blocking, regenerable = partition_dirt(porcelain)
+    if regenerable and not blocking:
+        # Visible, never silent: a silent exemption here would recreate the
+        # original disappearing-work bug in a new costume.
+        print("auto_conflict_resolver: %s proceeding — %s"
+              % (repo, describe(blocking, regenerable)), flush=True)
+    return "\n".join(blocking)
+
+
 def resolve_repo(repo: str, base: str, *, dry_run: bool = False) -> dict:
     """Run auto-conflict-resolution across all agent branches in a repo.
     Iterates in passes until no more merges succeed."""
+    # ── DIRTY-CHECKOUT GUARD (2026-08-05) ────────────────────────────────────────────
+    # This function opened with an UNCONDITIONAL `git checkout base` + `git reset --hard
+    # HEAD` on the MAIN checkout, and merge_train.train_run() calls it on every cycle that
+    # has any conflict. Any uncommitted work in the shared clone — operator hotfix, agent
+    # edit mid-flight — was destroyed without warning, without a stash, and therefore
+    # without even the stash-rescue safety net that covers the other loss paths.
+    #
+    # This is the FOURTH loss path of the same family, after continuous_merger's
+    # unconditional reset, self_healing_merge's unpopped stash, and merge_train's
+    # unverified merges. Confirmed live on 2026-08-05: it silently reverted an in-progress
+    # edit to runner/db.py on the main checkout.
+    #
+    # Bulk conflict resolution is a background convenience — it can always wait a cycle.
+    # Uncommitted work cannot be recreated. So: refuse, loudly, and let the next pass run
+    # once the tree is clean. Nothing is stashed or rescued because nothing is destroyed.
+    dirty = _dirty_tracked(repo)
+    if dirty and not dry_run:
+        n = len(dirty.splitlines())
+        msg = ("auto_conflict_resolver.resolve_repo REFUSED on %s: %d uncommitted tracked "
+               "file(s) in the main checkout. Refusing to `reset --hard` work this process "
+               "did not create; resolution will retry once the tree is clean. Files: %s"
+               % (repo, n, ", ".join(ln[3:] for ln in dirty.splitlines()[:8])))
+        print(msg, flush=True)
+        return {"repo": repo, "base": base, "passes": 0, "total_merged": 0,
+                "auto_resolved": 0, "manual_remaining": 0, "skipped": 0,
+                "details": [], "refused": msg}
     _git(["git", "checkout", base], repo)
     _git(["git", "reset", "--hard", "HEAD"], repo)
     _git(["git", "config", "user.name", "kalepasch1"], repo)

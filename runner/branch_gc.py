@@ -46,6 +46,30 @@ def _branch_age_days(repo_path, branch):
         return None
 
 
+def _is_on_origin(repo_path, branch):
+    """True only if origin already holds every commit on `branch`.
+
+    Two checks, because either alone is insufficient:
+      1. origin/<branch> exists and points at (or ahead of) our tip, OR
+      2. our tip is an ancestor of some origin ref (already merged upstream).
+    Fail CLOSED: if we cannot prove the work is on origin, we report False and keep it.
+    """
+    rc, tip, _ = _git(repo_path, "rev-parse", "--verify", branch)
+    if rc != 0 or not tip:
+        return False
+    rc, _, _ = _git(repo_path, "rev-parse", "--verify", f"origin/{branch}")
+    if rc == 0:
+        # unpushed commits on the local branch?
+        rc2, out2, _ = _git(repo_path, "rev-list", "--count", f"origin/{branch}..{branch}")
+        if rc2 == 0 and (out2 or "1").strip() == "0":
+            return True
+    # tip already contained in something on origin (e.g. merged to main and pushed)
+    rc3, out3, _ = _git(repo_path, "branch", "-r", "--contains", tip)
+    if rc3 == 0 and any(line.strip().startswith("origin/") for line in (out3 or "").splitlines()):
+        return True
+    return False
+
+
 def collect_garbage(repo_path, terminal_slugs):
     """Delete local agent branches for terminal tasks older than MIN_AGE_DAYS.
 
@@ -71,6 +95,15 @@ def collect_garbage(repo_path, terminal_slugs):
             continue
         age = _branch_age_days(repo_path, branch)
         if age is None or age < MIN_AGE_DAYS:
+            skipped += 1
+            continue
+        # DURABILITY GUARD: never destroy committed work that exists only on this disk.
+        # A local-only branch that gets GC'd becomes a recover-missing-branch-<slug> task
+        # that re-does the work from scratch (23.6% of all fleet output came from this).
+        # Deleting is only safe once origin has the same commits.
+        if not _is_on_origin(repo_path, branch):
+            print(f"branch_gc: KEEPING {branch} — not present on origin, deleting it would "
+                  f"destroy the only copy of its commits")
             skipped += 1
             continue
         if DRY_RUN:

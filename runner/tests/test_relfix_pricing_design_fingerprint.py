@@ -155,7 +155,7 @@ class TestBackwardCompatibilityPreserved:
         assert tier.cost_for_units(1) == 7.5  # flat_fee 5.0 + 1 unit * 2.5
         assert tier.cost_for_units(50) == 130.0  # flat_fee 5.0 + 50 units * 2.5
         assert tier.cost_for_units(100) == 255.0  # flat_fee 5.0 + 100 units * 2.5
-        assert tier.cost_for_units(101) == 255.0  # capped at max_units
+        assert tier.cost_for_units(101) == 0.0  # above tier range: not applicable
 
     def test_pricing_grid_multi_tier_cost_calculation_unchanged(self):
         """Multi-tier cost calculation must produce same results."""

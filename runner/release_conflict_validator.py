@@ -55,6 +55,7 @@ API_GUARD_PATTERNS = [
     r"authMiddleware",
     r"checkAuth",
     r"verifyToken",
+    r"@middleware/auth",
 ]
 
 

@@ -14,7 +14,7 @@ Operator-authorized queue drop, 2026-07-09. Premise: all v1–v3 queued work dep
 
 - **B-1 One Onboarding Graph** — extend P0-PASSPORT from claims to full profile prefill: sign up in any app → entity/household graph pre-fills every other app's onboarding; invariant: the network never asks the same question twice. Proof: cross-app prefill fixture test.
 - **B-2 Unified wallet & billing** — one subscription wallet across all apps (tiers, rewards fungibility I2, T8 rebates, RAISE-agnostic); cross-sell = one-click tier add, one invoice. Proof: cross-app entitlement test.
-- **B-3 Kernel persona registry** — (mirrors PROMPT-w2a-expert-roster) persona definitions + reliability live once; all apps consume; calibration compounds portfolio-wide. 
+- **B-3 Kernel persona registry** — (mirrors PROMPT-w2a-expert-roster) persona definitions + reliability live once; all apps consume; calibration compounds portfolio-wide.
 - **B-4 Typed event fabric** — unify X2 oracle events, C5/D5 signals, coordination bus topics into one typed, replayable event fabric (H3 projections as the replay engine); any new app subscribes to the whole portfolio's nervous system on day one. Proof: replay determinism test.
 
 ## C. Kill-shots (competition-ending conversion features)
@@ -28,7 +28,7 @@ Operator-authorized queue drop, 2026-07-09. Premise: all v1–v3 queued work dep
 ## D. Readiness polish (immediately user-friendly)
 
 - **D-1 Mobile command surface** — X1 Autonomy Console as a mobile app with push approvals: war-room decisions, Pareto authority approvals, Apparently officer sign-offs, fleet brief, post-hoc review queue — the operator's and every user's whole day in 3 taps. Proof: approval round-trip from push notification fixture.
-- **D-2 Zero-empty-states** — every app's first-run screens show live value before any user data: market-wide stats, public benchmarks, demo rooms/races/filings pre-loaded; no blank dashboards anywhere (lint: every route renders non-empty on a fresh account). 
+- **D-2 Zero-empty-states** — every app's first-run screens show live value before any user data: market-wide stats, public benchmarks, demo rooms/races/filings pre-loaded; no blank dashboards anywhere (lint: every route renders non-empty on a fresh account).
 - **D-3 Plain-language everything** — the W2d implication-card standard (audience-grade reading level, jargon expansion on hover, "what this means for you" section) applied as a portfolio lint on all user-facing generated text.
 
 Sequencing: A-3 TTFV gates first (they measure everything else), then C-1 Switch Day (conversion), B-4 fabric + B-3 registry (multipliers), then the rest by G13 allocation.

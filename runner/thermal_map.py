@@ -13,6 +13,18 @@ LARGE_WORDS = ("redesign", "migration", "architecture", "monorepo", "rewrite", "
 
 
 def estimate_minutes(task, ctx=None):
+    """Estimate how many wall-clock minutes ``task`` will take to merge.
+
+    Args:
+        task: Task row mapping. Reads ``prompt``, ``kind``, ``deps`` and
+            ``remediation_count``. Missing keys fall back to safe defaults.
+        ctx: Unused; accepted so callers can pass the same scoring context
+            they pass to :func:`expected_value` and :func:`score`.
+
+    Returns:
+        float: Estimated minutes, floored at 3.0 so the value is always a
+        usable divisor in :func:`score`.
+    """
     prompt = (task.get("prompt") or "").lower()
     kind = (task.get("kind") or "build").lower()
     base = {"docs": 8, "chore": 10, "mechanical": 10, "test": 14,
@@ -28,6 +40,24 @@ def estimate_minutes(task, ctx=None):
 
 
 def expected_value(task, ctx):
+    """Score the expected merged value of ``task``, before time is factored in.
+
+    Starts from the project's revenue (log-damped), scaled by that project's
+    historical success rate and discounted by its average cost per task, then
+    applies multipliers for revenue-bearing builds, operator-approved slugs,
+    missing-branch recovery, orchestrator self-repair, and a penalty for tasks
+    that have already burned transient retries.
+
+    Args:
+        task: Task row mapping. Reads ``project``, ``kind``, ``prompt``,
+            ``slug``, ``note`` and ``transient_retries``.
+        ctx: Scoring context. Reads ``revenue_by_project``, ``outcome_stats``,
+            ``surface_returns`` and ``approved_slugs``. Missing keys are
+            treated as empty.
+
+    Returns:
+        float: Unitless expected value; higher means more worth claiming.
+    """
     project = task.get("project") or ""
     revenue = float((ctx.get("revenue_by_project") or {}).get(project, 0) or 0)
     stats = (ctx.get("outcome_stats") or {}).get(project, {}) or {}
@@ -57,8 +87,35 @@ def expected_value(task, ctx):
 
 
 def score(task, ctx):
+    """Return the thermal-map score: expected merged value per minute.
+
+    This is the single number ``claim_task`` and ``ev_scheduler`` sort on, so
+    a cheap, quick, high-value task outranks an equally valuable one that will
+    take an hour.
+
+    Args:
+        task: Task row mapping (see :func:`expected_value`).
+        ctx: Scoring context (see :func:`expected_value`).
+
+    Returns:
+        float: Expected value divided by estimated minutes. The divisor is
+        floored at 3.0 by :func:`estimate_minutes`, so this never divides by
+        zero.
+    """
     return expected_value(task, ctx) / estimate_minutes(task, ctx)
 
 
 def rank(tasks, ctx):
+    """Order ``tasks`` best-first by :func:`score`.
+
+    Ties break on ``created_at`` then ``id`` so the ordering is deterministic
+    across runs and across the parallel claimers that share this ranking.
+
+    Args:
+        tasks: Iterable of task row mappings.
+        ctx: Scoring context (see :func:`expected_value`).
+
+    Returns:
+        list: New list of the same tasks, highest score first.
+    """
     return sorted(tasks, key=lambda t: (-score(t, ctx), t.get("created_at") or "", str(t.get("id"))))

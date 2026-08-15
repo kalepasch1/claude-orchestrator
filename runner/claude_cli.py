@@ -39,6 +39,14 @@ STATE = os.path.join(HOME, "call_budget.json")
 MAX_CALLS_HOUR = int(os.environ.get("CLAUDE_MAX_CALLS_PER_HOUR", "80"))
 MAX_USD_HOUR = float(os.environ.get("CLAUDE_MAX_USD_PER_HOUR", "10"))
 MAX_USD_DAY = float(os.environ.get("CLAUDE_MAX_USD_PER_DAY", "40"))
+# THROUGHPUT FIX 2026-08-02: the *cost* breakers were made subscription-aware (see _record:
+# "sub_usd ... never trips caps") but the *call-count* breaker was not — so every free
+# subscription call burned the same 80/hr budget as a billable API call. With ~2,200 tasks
+# queued the fleet was pinned at ~60 model calls/hour (1/min) purely by this counter, with
+# zero worker processes running most of the time. Billable calls stay capped at
+# MAX_CALLS_HOUR (that protects the wallet); subscription calls get their own, much higher
+# ceiling whose only job is to stop a runaway loop, not to pace normal work.
+MAX_SUB_CALLS_HOUR = int(os.environ.get("CLAUDE_MAX_SUB_CALLS_PER_HOUR", "600"))
 _lock = threading.Lock()
 os.makedirs(HOME, exist_ok=True)
 
@@ -66,13 +74,28 @@ def _within(items, seconds):
     return [x for x in items if x[0] >= cut]
 
 
+def _billable_calls(calls):
+    """Count only calls that cost real money.
+
+    Entry shape is [ts, 1, billable] where billable is 1/0. Entries written before this
+    field existed are 2-element and are treated as NON-billable: real spend is tracked
+    independently in `spend`, so a legacy entry can never hide a dollar, and treating them
+    as billable would instantly trip the breaker on upgrade.
+    """
+    return sum(1 for x in calls if len(x) > 2 and x[2])
+
+
 def _check_budget():
     s = _load()
     calls = _within(s.get("calls", []), 3600)
     hour_usd = sum(x[1] for x in _within(s.get("spend", []), 3600))
     day_usd = sum(x[1] for x in _within(s.get("spend", []), 86400))
-    if len(calls) >= MAX_CALLS_HOUR:
-        raise CircuitOpen(f"call cap: {len(calls)}/{MAX_CALLS_HOUR} per hour")
+    billable = _billable_calls(calls)
+    if billable >= MAX_CALLS_HOUR:
+        raise CircuitOpen(f"billable call cap: {billable}/{MAX_CALLS_HOUR} per hour")
+    if len(calls) >= MAX_SUB_CALLS_HOUR:
+        raise CircuitOpen(
+            f"total call cap: {len(calls)}/{MAX_SUB_CALLS_HOUR} per hour (runaway guard)")
     if hour_usd >= MAX_USD_HOUR:
         raise CircuitOpen(f"hourly $ cap: ${hour_usd:.2f}/${MAX_USD_HOUR}")
     if day_usd >= MAX_USD_DAY:
@@ -85,7 +108,9 @@ def _record(usd, sub_usd=0):
     with _lock:
         s = _load()
         now = time.time()
-        s["calls"] = _within(s.get("calls", []), 86400) + [[now, 1]]
+        # 3rd element = billable flag, so the call breaker can tell a free subscription
+        # call apart from one that costs real money (see MAX_SUB_CALLS_HOUR).
+        s["calls"] = _within(s.get("calls", []), 86400) + [[now, 1, 1 if float(usd or 0) > 0 else 0]]
         s["spend"] = _within(s.get("spend", []), 86400) + [[now, float(usd or 0)]]
         s["sub_spend"] = _within(s.get("sub_spend", []), 86400) + [[now, float(sub_usd or 0)]]
         _save(s)
@@ -350,12 +375,15 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
 
 def status():
     s = _load()
-    return {"calls_last_hour": len(_within(s.get("calls", []), 3600)),
+    hour_calls = _within(s.get("calls", []), 3600)
+    return {"calls_last_hour": len(hour_calls),
+            "billable_calls_last_hour": _billable_calls(hour_calls),
             "usd_last_hour": round(sum(x[1] for x in _within(s.get("spend", []), 3600)), 2),
             "usd_last_day": round(sum(x[1] for x in _within(s.get("spend", []), 86400)), 2),
             "sub_equiv_last_hour": round(sum(x[1] for x in _within(s.get("sub_spend", []), 3600)), 2),
             "sub_equiv_last_day": round(sum(x[1] for x in _within(s.get("sub_spend", []), 86400)), 2),
-            "caps": {"calls_hr": MAX_CALLS_HOUR, "usd_hr": MAX_USD_HOUR, "usd_day": MAX_USD_DAY}}
+            "caps": {"billable_calls_hr": MAX_CALLS_HOUR, "total_calls_hr": MAX_SUB_CALLS_HOUR,
+                     "usd_hr": MAX_USD_HOUR, "usd_day": MAX_USD_DAY}}
 
 
 if __name__ == "__main__":

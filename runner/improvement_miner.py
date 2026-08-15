@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-improvement_miner.py - bakes "how can I make this 20-500X better?" into the learning loop. For each app
+improvement_miner.py - bakes "how can I make this 100-1000X better?" into the learning loop. For each app
 and each SURFACE (feature, product, api, backend, frontend, ux, function, growth), it asks a strong model
 for concrete, high-leverage improvements, then:
 
@@ -17,6 +17,7 @@ import os, sys, json, re
 import collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import self_work_gate
 
 # EVERYTHING is in scope — not just the app's product surfaces, but the whole autonomous system:
 # cross-app coordination, the orchestration layer, the individual bots, the swarm, and the hive-mind.
@@ -31,13 +32,170 @@ MIN_SCORE = float(os.environ.get("IMPROVE_MIN_SCORE", "12"))   # auto-build bar 
 QUEUE_FLOOR = int(os.environ.get("IMPROVE_QUEUE_FLOOR", "12"))
 BOTTLENECK_SURFACES = ("integration", "reliability", "orchestration-layer", "cost-efficiency", "observability")
 
+# ---- SURFACE ESCALATION ---------------------------------------------------------------------------
+# improvement_measure writes measured per-surface returns to surface_returns so the miner can "weight
+# high-return surfaces higher next cycle". Weighting alone is too weak: surf_boost only nudges the score
+# of ideas that were already mined, so a surface that is demonstrably paying off still waits its turn in
+# the round-robin cursor and still gets the same number of slots. Escalation makes the response real —
+# a proven surface gets PINNED into this run's rotation (budget/frequency) and gets deeper exploration
+# tasks queued through the normal intake path.
+ORCH_SURFACE_ESCALATE_THRESHOLD = float(os.environ.get("ORCH_SURFACE_ESCALATE_THRESHOLD", "0.25"))
+ORCH_SURFACE_ESCALATE_MAX = int(os.environ.get("ORCH_SURFACE_ESCALATE_MAX", "3"))       # surfaces per run
+ORCH_SURFACE_ESCALATE_DEPTH = int(os.environ.get("ORCH_SURFACE_ESCALATE_DEPTH", "2"))   # explore tasks/surface
+
+
+def surface_returns():
+    """{surface: avg_delta} as measured by improvement_measure. Fail-soft: {} on any error."""
+    out = {}
+    try:
+        rows = db.select("surface_returns", {"select": "surface,avg_delta"}) or []
+    except Exception:
+        return out
+    for r in rows:
+        try:
+            name = (r or {}).get("surface")
+            if name:
+                out[str(name)] = float(r.get("avg_delta") or 0)
+        except (TypeError, ValueError, AttributeError):
+            continue          # no-op on bad data rather than poisoning the whole run
+    return out
+
+
+def escalating_surfaces(returns=None, threshold=None, limit=None):
+    """Surfaces whose measured return cleared the escalation bar, best-first.
+
+    Only known SURFACES qualify: a stale or mistyped row in surface_returns must not be able to inject an
+    arbitrary surface name into the rotation.
+    """
+    try:
+        bar = ORCH_SURFACE_ESCALATE_THRESHOLD if threshold is None else float(threshold)
+    except (TypeError, ValueError):
+        bar = ORCH_SURFACE_ESCALATE_THRESHOLD
+    rets = surface_returns() if returns is None else (returns or {})
+    if not isinstance(rets, dict):
+        return []
+    known = set(SURFACES)
+    hits = []
+    for surface, delta in rets.items():
+        try:
+            d = float(delta)
+        except (TypeError, ValueError):
+            continue
+        if surface in known and d > bar:
+            hits.append((d, surface))
+    hits.sort(key=lambda x: (-x[0], x[1]))
+    cap = ORCH_SURFACE_ESCALATE_MAX if limit is None else max(0, int(limit))
+    return [s for _, s in hits[:cap]]
+
+
+def escalation_pairs(apps, surfaces, cap=None):
+    """(app, surface) pairs to PIN into the rotation — the concrete budget/frequency raise.
+
+    Round-robins over surfaces first so several escalated surfaces each get a slot before any one of them
+    takes a second app. Returns [] when nothing escalated, which keeps the normal rotation untouched.
+    """
+    app_list = [a for a in (apps or []) if a]
+    surf_list = [s for s in (surfaces or []) if s]
+    if not app_list or not surf_list:
+        return []
+    limit = PER_RUN if cap is None else max(0, int(cap))
+    out, seen = [], set()
+    for a in app_list:
+        for s in surf_list:
+            pair = (a, s)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            out.append(pair)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def exploration_records(app, surfaces, project_id, base_branch="master", depth=None):
+    """Deeper-exploration task records for escalated surfaces (pure: builds rows, queues nothing)."""
+    if not app or not project_id:
+        return []
+    n = ORCH_SURFACE_ESCALATE_DEPTH if depth is None else max(0, int(depth))
+    rows = []
+    for surface in (surfaces or []):
+        for i in range(n):
+            slug = f"explore-{surface}-{app}-{i + 1}"[:60]
+            rows.append({
+                "project_id": project_id, "slug": slug, "state": "QUEUED", "kind": "build",
+                "base_branch": base_branch,
+                "prompt": (
+                    f"DEEPER EXPLORATION (auto-escalated): the '{surface}' surface has a measured return "
+                    f"above ORCH_SURFACE_ESCALATE_THRESHOLD, so it has earned extra exploration budget.\n"
+                    f"Go a level deeper than the usual mining pass on {app}'s {surface} surface: find the "
+                    f"single highest-leverage concrete change, implement the smallest mergeable version of "
+                    f"it, and add the narrowest test that proves the new behavior. Preserve existing "
+                    f"behavior. Round {i + 1} of {n}."),
+                "assumptions": {"target_path": f"{surface}:{app}:explore-{i + 1}"},
+            })
+    return rows
+
+
+def queue_exploration_tasks(app, surfaces, project_id, base_branch="master", depth=None,
+                            find_open_by_intent=None, insert=None, bump=None):
+    """Auto-queue deeper exploration tasks through the EXISTING intake path (enqueue.enqueue_task).
+
+    Reusing enqueue_task means escalation inherits its intent-key coalescing, so repeatedly escalating the
+    same hot surface bumps the open task instead of minting duplicates every hour. The three collaborators
+    are injectable so this is testable without a database. Fail-soft: never raises into the mining run.
+    """
+    records = exploration_records(app, surfaces, project_id, base_branch=base_branch, depth=depth)
+    if not records:
+        return {"created": 0, "coalesced": 0}
+
+    if find_open_by_intent is None or insert is None or bump is None:
+        def find_open_by_intent(key):
+            try:
+                rows = db.select("tasks", {"select": "id,slug,attempt", "intent_key": f"eq.{key}",
+                                           "state": "in.(QUEUED,RUNNING)", "limit": "1"}) or []
+            except Exception:
+                return None
+            return rows[0] if rows else None
+
+        def insert(record, key):
+            row = dict(record)
+            row.pop("assumptions", None)          # transport-only hint, not a tasks column
+            row["intent_key"] = key
+            try:
+                return db.insert("tasks", row)
+            except Exception:
+                return None
+
+        def bump(existing):
+            try:
+                db.update("tasks", {"id": f"eq.{existing.get('id')}"},
+                          {"attempt": int(existing.get("attempt") or 0) + 1})
+            except Exception:
+                pass
+
+    tally = {"created": 0, "coalesced": 0}
+    try:
+        import enqueue as _enqueue
+    except Exception:
+        return tally
+    for record in records:
+        try:
+            res = _enqueue.enqueue_task(record, find_open_by_intent=find_open_by_intent,
+                                        insert=insert, bump=bump)
+            action = getattr(res, "action", None) or (res[0] if isinstance(res, tuple) else None)
+            if action in tally:
+                tally[action] += 1
+        except Exception:
+            continue          # one bad record must not abort the escalation pass
+    return tally
+
 PROMPT = """You are a world-class product+engineering+systems strategist. For the target below, propose 3
-concrete, high-leverage hypotheses to make its {surface} 20x-500x better — MORE EFFICIENT, faster, cheaper,
+concrete, high-leverage hypotheses to make its {surface} 100x-1000x better — MORE EFFICIENT, faster, cheaper,
 higher-quality, or more autonomous. This can be the app itself OR the autonomous system that builds it
 (how the bots, the swarm, the hive-mind, and the cross-app coordination work). A multiplier is a hypothesis,
 not an achieved result. Ground it in current telemetry and make it falsifiable. Return ONE JSON array; each item:
 {"title":"...","current_state":"what exists / the gap","proposal":"the concrete change to build",
- "expected_multiplier":"20x|50x|100x|500x","impact":1-10,"feasibility":1-10,"divergent":true|false,
+ "expected_multiplier":"100x|250x|500x|1000x","impact":1-10,"feasibility":1-10,"divergent":true|false,
  "multiplier_basis":"baseline math showing how the multiplier could occur",
  "baseline_metric":"named current metric and value/source","target_metric":"named target and value",
  "acceptance_tests":["deterministic test", "integration/behavior test"],
@@ -122,8 +280,24 @@ def _next_pairs():
         i = 0
     urgent = []
     apps = list(dict.fromkeys(apps))
-    for surface in BOTTLENECK_SURFACES:
-        urgent.append(("beethoven", surface))
+    # These bottleneck surfaces used to be force-pinned to the orchestrator's own repo every
+    # single run, which is the single largest source of self-directed proposals. Gated off by
+    # default — see self_work_gate.ORCH_SELF_IMPROVEMENT_ENABLED.
+    if self_work_gate.allow_self_target(self_work_gate.SELF_PROJECT, "improvement_miner urgent bottleneck pairs"):
+        for surface in BOTTLENECK_SURFACES:
+            urgent.append((self_work_gate.SELF_PROJECT, surface))
+    # Never rotate onto the orchestrator's own repo as a normal app either.
+    apps = [a for a in apps if self_work_gate.allow_self_target(a, "improvement_miner app rotation")]
+    pairs = [(a, s) for a in apps for s in SURFACES] or pairs
+    # SURFACE ESCALATION: a surface with proven measured return is pinned into THIS run's rotation ahead
+    # of the cursor — an actual frequency/budget raise, not just a score nudge on the next pass. Capped at
+    # half the run so escalation can never starve the round-robin that keeps everything else re-examined.
+    try:
+        _esc = escalating_surfaces()
+        if _esc:
+            urgent = escalation_pairs(apps, _esc, cap=max(1, PER_RUN // 2)) + urgent
+    except Exception:
+        pass          # fail-soft: escalation must never break the normal rotation
     out = []
     seen = set()
     for pair in urgent + [pairs[(i + k) % len(pairs)] for k in range(min(PER_RUN, len(pairs)))]:
@@ -202,13 +376,74 @@ def _draft_slots(capacity):
     return min(PER_RUN, int(capacity.get("slots") or 0))
 
 
+def run_measured():
+    """REQUIREMENT A: the only sanctioned generation path — measured bottlenecks only.
+
+    Template/model generation (`run_template()`, below) invented ideas and let the model
+    score its own inventions. This path measures first: it detects bottlenecks from live
+    telemetry, ranks them by arithmetic headroom, refuses to fabricate a score when there
+    is no realized history, dedupes semantically against shipped AND regressed work, and
+    emits proposals that each carry a baseline, a target, an executable metric query and
+    an evaluation deadline.
+
+    Targets USER APPS by default: self-targeting still runs through self_work_gate, which
+    is off unless ORCH_SELF_IMPROVEMENT_ENABLED is set.
+    """
+    import bottleneck_detector, improvement_ledger
+    found = bottleneck_detector.detect()
+    if not found:
+        print("improvement_miner: no measurably-bad metric — emitting nothing. "
+              "This is the correct outcome, not a failure.")
+        return {"detected": 0, "queued": 0, "skipped_duplicate": 0, "suppressed": 0}
+    apps = [p["name"] for p in (db.select("projects", {"select": "name"}) or [])
+            if p["name"] not in ("smoke-test",)]
+    targets = [a for a in apps
+               if self_work_gate.allow_self_target(a, "bottleneck-derived proposal")]
+    suppressed = len(apps) - len(targets)
+    target = os.environ.get("ORCH_IMPROVE_TARGET_APP") or (targets[0] if targets else None)
+    if not target:
+        print("improvement_miner: every candidate target is gated off; emitting nothing")
+        return {"detected": len(found), "queued": 0, "skipped_duplicate": 0,
+                "suppressed": suppressed}
+    ranked = improvement_ledger.rank([dict(b, app=target) for b in found])
+    queued, dup = 0, 0
+    for b in ranked[:PER_RUN]:
+        row = improvement_ledger.build_proposal(b, target)
+        out = improvement_ledger.queue(row)
+        if out:
+            queued += 1
+            print(f"improvement_miner: queued {out['task_slug']} — baseline "
+                  f"{out['baseline_value']} -> target {out['target_value']} "
+                  f"({out['predicted_multiplier']}x of {out['headroom_multiplier']}x headroom), "
+                  f"evaluate after {out['evaluate_after']}")
+        else:
+            dup += 1
+    print(f"improvement_miner(measured): {len(found)} bottlenecks, {queued} proposals, "
+          f"{dup} deduped, {suppressed} target(s) gated off")
+    return {"detected": len(found), "queued": queued, "skipped_duplicate": dup,
+            "suppressed": suppressed, "target": target}
+
+
 def run():
+    """Dispatch entry point. Measured generation is the default; the legacy template
+    path survives only behind ORCH_IMPROVE_LEGACY_TEMPLATE=1 for comparison."""
+    if os.environ.get("ORCH_IMPROVE_LEGACY_TEMPLATE", "").lower() in ("1", "true", "yes", "on"):
+        print("improvement_miner: LEGACY template generation explicitly enabled")
+        return run_template()
+    return run_measured()
+
+
+def run_template():
     import improvement_scrutiny, improvement_optimizer
     capacity = improvement_optimizer.capacity(db)
-    if capacity["limited"]:
-        print("improvement_miner: capacity-limited; draining scrutiny/build backlog before drafting")
-        return {"queued": 0, "for_review": 0, "needs_revision": 0,
-                "capacity_limited": True, "capacity": capacity}
+    # proposal_only: the review/build lane is saturated, so we keep MINING (discovery never stalls)
+    # but record every draft as status='proposed' instead of promoting it to 'for_review'. That adds
+    # zero work to the saturated lane while preserving the idea. `deferred` counts those drafts.
+    # (Restored from commit d4ff56be, whose run() body was partially reverted by merge b9a8fd26 —
+    #  leaving proposal_only/deferred referenced but never bound. See also _draft_slots().)
+    proposal_only = bool(capacity["limited"])
+    if proposal_only:
+        print("improvement_miner: review capacity full; drafting bounded proposals without promotion")
     pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
     # don't re-propose the same title for the same app+surface
     existing = db.select("improvement_proposals", {
@@ -226,9 +461,22 @@ def run():
     # gather + SCORE all candidates first (impact x feasibility x revenue-fit), then build highest-EV first
     cands = []
     novelty_rejected = 0
+    self_suppressed = 0
     for app0, surface in _next_pairs():
-        # meta surfaces improve the AUTONOMOUS SYSTEM itself -> target the orchestrator repo
-        app = "beethoven" if surface in META_SURFACES else app0
+        # meta surfaces improve the AUTONOMOUS SYSTEM itself -> target the orchestrator repo.
+        # Gated: when self-improvement is off we keep mining the surface but for the USER APP,
+        # so the machinery stays warm and only its target changes.
+        app = app0
+        if surface in META_SURFACES:
+            if self_work_gate.allow_self_target(self_work_gate.SELF_PROJECT,
+                                                f"meta surface '{surface}'"):
+                app = self_work_gate.SELF_PROJECT
+            elif self_work_gate.is_self_project(app0):
+                self_suppressed += 1
+                continue
+        if not self_work_gate.allow_self_target(app, f"surface '{surface}'"):
+            self_suppressed += 1
+            continue
         for it in (_mine(app, surface) or [])[:3]:
             title = (it.get("title") or "").strip()
             if not title or (app, surface, title.lower()) in seen:
@@ -247,7 +495,8 @@ def run():
             seen.add((app, surface, title.lower()))
     cands.sort(key=lambda x: x[0], reverse=True)   # impact-ranked: biggest wins first
     queued = review = revision = 0
-    for score, app, surface, it, title in cands[:capacity["slots"]]:
+    deferred = 0
+    for score, app, surface, it, title in cands[:_draft_slots(capacity)]:
             divergent = bool(it.get("divergent"))
             row = {"app": app, "surface": surface, "title": title[:200],
                    "current_state": (it.get("current_state") or "")[:600],
@@ -282,9 +531,12 @@ def run():
                 review += int(not proposal_only)
                 deferred += int(proposal_only)
             seen.add((app, surface, title.lower()))
-    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision")
+    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision, "
+          f"{deferred} deferred, {self_suppressed} self-targeted pairs suppressed")
     return {"queued": queued, "for_review": review, "needs_revision": revision,
-            "novelty_rejected": novelty_rejected, "capacity": capacity}
+            "deferred": deferred, "capacity_limited": proposal_only,
+            "novelty_rejected": novelty_rejected, "capacity": capacity,
+            "self_suppressed": self_suppressed}
 
 
 if __name__ == "__main__":

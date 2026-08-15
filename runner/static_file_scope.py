@@ -26,6 +26,8 @@ Environment:
     ORCH_SCOPE_MAX_DEPTH        Max import-graph depth to follow (default: 2)
     ORCH_SCOPE_EXPAND_IMPORTS   Whether to expand via import graph (default: true)
 """
+from __future__ import annotations  # PY3.9 fleet: PEP-604 'str | None' annotations
+# would raise TypeError at import time, making this whole module silently unimportable.
 import os
 import re
 import sys

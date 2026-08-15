@@ -21,6 +21,15 @@ QUALITY_BAR = float(os.environ.get("APP_QUALITY_BAR", "7.0"))   # min avg score 
 # rough ascending cost rank for tie-breaking when quality is comparable
 COST_RANK = {"local": 0, "groq": 1, "deepseek": 2, "google": 3,
              "xai": 4, "openai": 5, "claude": 6}
+# A route is a claim about a model's competence; a claim needs evidence. Without a sample
+# floor, 118 of 152 live routes were won on n<=2 observations and route selection flapped
+# on noise. Below this many samples we leave the incumbent route alone.
+ROUTE_MIN_SAMPLES = int(os.environ.get("APP_ROUTE_MIN_SAMPLES", "20"))
+# Verification-critical ops must never be cost-optimized onto a model that fails the quality
+# bar. verify_diff — which decides whether a diff is correct — was routed to llama3.2:3b at
+# avg quality 4.7 on a SINGLE sample, a plausible direct cause of the phantom-merge wave.
+CRITICAL_OPS = {op.strip() for op in os.environ.get(
+    "APP_CRITICAL_OPS", "verify_diff,confidence_gate,quality_gate,review,judge").split(",") if op.strip()}
 
 
 def _heuristic_score(op):
@@ -110,13 +119,27 @@ def _aggregate_and_route():
         # keep only those clearing the quality bar; if none clear, record that this is only the
         # best observed fallback so operators do not mistake sparse telemetry for a proven route.
         clears_bar = [c for c in cands if c["avg_quality"] >= QUALITY_BAR]
+        # Verification-critical ops get no below-bar fallback. If nothing clears the quality
+        # bar we write NO route and the caller keeps its configured default — a weak verifier
+        # is worse than an expensive one, because it silently certifies bad diffs.
+        if op in CRITICAL_OPS and not clears_bar:
+            print(f"app_triage_review: {app}/{op} is verification-critical and no candidate "
+                  f"clears q>={QUALITY_BAR}; leaving the configured default in place")
+            continue
         good = clears_bar or cands
-        best = sorted(good, key=lambda c: (round(c["avg_cost"], 4),
-                                           COST_RANK.get(c["provider"], 9)))[0]
+        # Evidence floor: never flap a live route on sparse telemetry.
+        proven = [c for c in good if c["n"] >= ROUTE_MIN_SAMPLES]
+        if not proven:
+            print(f"app_triage_review: {app}/{op} — no candidate met the n>={ROUTE_MIN_SAMPLES} "
+                  f"sample floor; leaving the incumbent route alone")
+            continue
+        best = sorted(proven, key=lambda c: (round(c["avg_cost"], 4),
+                                             COST_RANK.get(c["provider"], 9)))[0]
         route_reason = (
-            f"cheapest clearing q>={QUALITY_BAR} (avg q {best['avg_quality']:.1f})"
+            f"cheapest clearing q>={QUALITY_BAR} over n={best['n']} (avg q {best['avg_quality']:.1f})"
             if clears_bar else
-            f"best observed fallback below q>={QUALITY_BAR} (avg q {best['avg_quality']:.1f})"
+            f"best observed fallback below q>={QUALITY_BAR} over n={best['n']} "
+            f"(avg q {best['avg_quality']:.1f})"
         )
         db.insert("app_op_routes", {
             "app": app, "operation": op, "provider": best["provider"], "model": best["model"],

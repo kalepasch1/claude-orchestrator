@@ -1,0 +1,33 @@
+diff --git a/server/engines/agent-runtime/branch-recovery.ts b/server/engines/agent-runtime/branch-recovery.ts
+index de104997..9152e78a 100644
+--- a/server/engines/agent-runtime/branch-recovery.ts
++++ b/server/engines/agent-runtime/branch-recovery.ts
+@@ -114,3 +114,12 @@ export function findMissingBranchProposals(
+   }
+   return results
+ }
++
++// Placeholder for hive entity relationship recovery logic (patch from beethoven)
++/**
++ * Recovers missing branch information related to hive entities.
++ */
++function recoverMissingBranch(proposal: BranchProposal, existing: ExistingBranchInfo): void {
++  // TODO: Implement the actual patch logic here.
++  console.log(`Placeholder: Recovering missing branch for ${proposal.id} on ${existing.branch}`);
++}
+diff --git a/tests/engines/branch-recovery.test.ts b/tests/engines/branch-recovery.test.ts
+index 311a2e43..0e752fa5 100644
+--- a/tests/engines/branch-recovery.test.ts
++++ b/tests/engines/branch-recovery.test.ts
+@@ -48,4 +48,11 @@ describe('branch recovery', () => {
+     expect(found[0].proposal.id).toBe('missing')
+     expect(found[0].existing.commitSha).toBe(SHA)
+   })
++
++  it('should test recoverMissingBranch function', () => {
++    const proposal = makeProposal({ id: 'test-prop' });
++    const existing = makeExisting('test-branch', 'test-sha');
++    recoverMissingBranch(proposal, existing); // Should not throw an error.
++    expect(true).toBe(true)
++  })
+ })

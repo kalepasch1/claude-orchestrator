@@ -26,13 +26,19 @@ export default defineEventHandler(async event => {
   }
   const { data: loop, error } = await sb.from('scoped_improvement_loops').upsert(loopRow, { onConflict: 'owner_id,scope_type,scope_ref' }).select().single()
   if (error) throw createError({ statusCode: 500, message: error.message })
+  let task = null
   if (projectId) {
-    await sb.from('tasks').insert({
+    const taskResult = await sb.from('tasks').insert({
       project_id: projectId,
-      slug: `improve-${scopeType}-${scopeRef}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 70),
+      slug: `${`operator-improve-${scopeType}-${scopeRef}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 58)}-${Date.now()}`,
       prompt: activationPrompt(loop), kind: 'improvement', state: 'QUEUED',
-      note: `source:scoped-improvement; loop:${loop.id}; mode:${mode}; qa:independent; rollback:auto`,
-    })
+      priority: 10,
+      note: `source:operator-scoped-improvement; loop:${loop.id}; mode:${mode}; qa:independent; rollback:auto; release:verified`,
+      submitted_by: user.id,
+      submitted_by_label: user.email || user.id,
+    }).select('id,slug,state,kind,project_id,created_at').single()
+    if (taskResult.error) throw createError({ statusCode: 500, message: `Improvement loop was saved but execution was not queued: ${taskResult.error.message}` })
+    task = taskResult.data
   }
-  return { ok: true, loop, receipt: { action: 'improvement_loop_activated', scope: `${scopeType}:${scopeRef}`, invariants: LOCKED_INVARIANTS, at: new Date().toISOString() } }
+  return { ok: true, loop, task, receipt: { action: 'improvement_loop_activated', scope: `${scopeType}:${scopeRef}`, task_id: task?.id || null, task_slug: task?.slug || null, invariants: LOCKED_INVARIANTS, at: new Date().toISOString() } }
 })

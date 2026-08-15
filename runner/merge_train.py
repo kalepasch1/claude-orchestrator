@@ -27,7 +27,7 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess, time
+import datetime, json, os, re, sys, subprocess, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 # RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
@@ -38,8 +38,11 @@ except Exception:
     _verify_mod = None
 
 import events
+import delivery_lease
+import shadow_mode
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
+import paused_host_guard
 import agentic_repair
 import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization site but never
                         # imported -> every train_run() crashed with NameError before integrating
@@ -119,6 +122,38 @@ def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
 
+_REMOTE_AGENT_REFS = {}          # repo -> (expires_at, {branch names}) ; None set == "unknown"
+_REMOTE_AGENT_LOCK = threading.Lock()
+REMOTE_REF_TTL_S = float(os.environ.get("MERGE_TRAIN_REMOTE_REF_TTL_S", "120"))
+
+
+def _remote_agent_branch_maybe(repo, branch):
+    """True if origin might hold `branch`; False only when we positively know it does not.
+
+    Returns True on any uncertainty (listing failed, cache cold and refresh errored) so the
+    caller falls back to its own fetch. Never returns False for a branch origin actually has,
+    which is what keeps this an optimisation rather than a merge-skipping filter.
+    """
+    now = time.monotonic()
+    with _REMOTE_AGENT_LOCK:
+        entry = _REMOTE_AGENT_REFS.get(repo)
+        if entry and entry[0] > now:
+            names = entry[1]
+            return True if names is None else (branch in names)
+    names = None
+    try:
+        r = _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent/*", timeout=90)
+        if r.returncode == 0:
+            names = {line.split("\trefs/heads/", 1)[1].strip()
+                     for line in (r.stdout or "").splitlines()
+                     if "\trefs/heads/" in line}
+    except Exception:
+        names = None
+    with _REMOTE_AGENT_LOCK:
+        _REMOTE_AGENT_REFS[repo] = (time.monotonic() + REMOTE_REF_TTL_S, names)
+    return True if names is None else (branch in names)
+
+
 def _materialize_branch(repo, branch):
     """Fleet-aware branch lookup with worktree recovery.
 
@@ -132,6 +167,24 @@ def _materialize_branch(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
         return False
+    # THE TRAIN'S REAL WALL-CLOCK SINK (measured 2026-08-06).
+    #
+    # Cards get filed by ensure_integration_card as soon as work is approved, which is often
+    # BEFORE the agent branch exists — the task is still QUEUED. Every such card reached this
+    # line and paid a full `git fetch origin <branch>` (timeout 120s) to discover a ref that
+    # was never pushed. In the last 20,000 train lines: 2,096 WAIT outcomes against 1 MERGED,
+    # the same slugs re-fetched 60-195 times each. With ORCH_MERGE_TRAIN_MAX_RUNTIME_S=900 the
+    # pass was being killed on the not-yet-created cards before it ever reached the mergeable
+    # ones. The queue was not stalled on conflicts; it was starved of clock.
+    #
+    # One `git ls-remote --heads origin refs/heads/agent/*` answers the same question for every
+    # card in the pass. Absent from that listing => there is nothing to fetch, so skip straight
+    # to WAIT. Fail-soft: if ls-remote errors or times out we fall through to the old per-branch
+    # fetch, so the worst case is today's behaviour rather than a missed merge. The cache is
+    # per-repo with a short TTL, so a branch pushed mid-pass is simply picked up on the next
+    # pass — this can defer a merge by one cycle, never skip or overwrite one.
+    if branch.startswith("agent/") and not _remote_agent_branch_maybe(repo, branch):
+        return False
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
         if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
@@ -142,8 +195,21 @@ def _materialize_branch(repo, branch):
         return False
 
 
-def _task_patch(task, patch):
-    db.update("tasks", {"id": task["id"]}, patch)
+def _task_patch(task, patch, repo=None, prod_branch=None):
+    """Single write point for task state in the train — so the MERGED gate cannot be bypassed.
+
+    Every MERGED written here must first be proven reachable from the project's integration
+    branch (merge_truth). Production reachability is deliberately checked later by the
+    release/deployment terminal. A patch that is not MERGED passes straight through. On an
+    infrastructure error the gate returns None and we write nothing, leaving the row for the
+    next cycle rather than downgrading a real merge because a fetch timed out.
+    """
+    import merge_truth
+    final = merge_truth.gate_merged_patch(task, patch, repo=repo, prod_branch=prod_branch)
+    if final is None:
+        return None
+    db.update("tasks", {"id": task["id"]}, final)
+    return final
 
 
 def _freeze_integration_identity(repo, branch, task, slug):
@@ -211,6 +277,225 @@ def _post_fork_regression(repo, branch, base, orig_fork):
         return True, ""
 
 
+def _regression_gate(repo, base, branch, candidate_sha):
+    """CONTENT anti-regression gate (2026-08-02 operator directive). Returns (ok, detail).
+
+    _post_fork_regression() above only compares raw text lines the BASE gained SINCE the
+    branch forked against lines the branch deletes. Every confirmed historical loss slipped
+    past it because the improvement predated the fork point (improvement_miner b9a8fd26,
+    pipeline_contract task_fields, integration_sweeper a780345c/d26357a6) or the loss
+    happened on the auto_conflict_resolver path, which never calls it at all.
+
+    This gate is content-based: it diffs the rebased candidate against the CURRENT base and
+    fails on a function/class that base has but the candidate lost or stubbed, on any new
+    undefined name, on a deleted lockfile/CI config, and on unexplained mass deletion.
+
+    FAIL-CLOSED: an import error, a guard crash, or an unreadable tree all return False.
+    Opt out only with ORCH_MERGE_REGRESSION_GUARD=false.
+    """
+    if os.environ.get("ORCH_MERGE_REGRESSION_GUARD", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "regression guard disabled by ORCH_MERGE_REGRESSION_GUARD"
+    try:
+        import regression_guard
+    except Exception as exc:
+        return False, (f"regression guard unavailable (fail-closed): "
+                       f"{type(exc).__name__}: {exc}")
+    try:
+        msg = _git(repo, "log", "--format=%s%n%b", f"{base}..{branch}", timeout=60).stdout or ""
+    except Exception:
+        msg = ""
+    try:
+        return regression_guard.gate(repo, base, candidate_sha or branch, commit_message=msg)
+    except Exception as exc:
+        return False, f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _divergent_gate(repo, base, branch):
+    """PRE-merge divergent-authorship gate (2026-08-02). Returns (ok, detail).
+
+    _regression_gate above compares the merge RESULT against the base, which cannot see the
+    add/add shape: when neither the base nor anything before it contained the file, both
+    sides authored it from scratch and there is no "lost symbol relative to base" to find.
+    That is exactly how 71cfd4ca6 dropped CANARY_ENABLED/CANARY_PERCENT from
+    gpt1_canary_router.py while every base-vs-result check stayed green.
+
+    This gate runs on the two SIDES before any resolution and routes divergent files to a
+    namespacing/manual path instead of letting --ours/--theirs/--union guess.
+
+    FAIL-CLOSED: an import error or a guard crash returns False.
+    Opt out only with ORCH_DIVERGENT_GUARD_ENABLED=false.
+    """
+    if os.environ.get("ORCH_MERGE_DIVERGENT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "divergent guard disabled by ORCH_MERGE_DIVERGENT_GATE"
+    try:
+        import divergent_authorship_guard
+    except Exception as exc:
+        return False, (f"divergent authorship guard unavailable (fail-closed): "
+                       f"{type(exc).__name__}: {exc}")
+    try:
+        return divergent_authorship_guard.gate(repo, base, branch)
+    except Exception as exc:
+        return False, f"divergent authorship guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _orphan_import_gate(repo, base, branch):
+    """Refuse a candidate that adds an import no tracked file can satisfy. (ok, detail)
+
+    apparently's production build was red for five hours on
+    `Could not resolve "./kv" from "server/utils/governance.ts"`. governance.ts was committed;
+    kv.ts was not — it existed only as untracked dirt on the machine that wrote it. The build
+    gate ran in a checkout that HAD the file, so the change was green right up to shipping. The
+    defect was not in the diff; it was missing from it.
+
+    Scoped to the files the candidate touches, and only to "./" / "../" specifiers. Every repo
+    here carries pre-existing dangling imports in paths no build entry point reaches (17 in
+    apparently, 15 in tomorrow, both green), so judging the whole tree would fail every merge on
+    inherited noise. Alias forms ("~/", "@/") are excluded because resolving them means guessing
+    at srcDir and tsconfig paths — that guess produced 281 findings across four green repos.
+
+    Cheap by design: git plus a regex, no build, no network. Runs before the test and build
+    gates rather than after.
+
+    FAIL-OPEN, unlike the regression and stub gates. Those protect against destroying existing
+    code, where the cost of a false negative is unrecoverable. This one protects against
+    shipping a broken build, which the build gate downstream will also catch — so a crash here
+    must not block the queue. Opt out with ORCH_MERGE_ORPHAN_IMPORT_GATE=false.
+    """
+    if os.environ.get("ORCH_MERGE_ORPHAN_IMPORT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "orphan-import gate disabled by ORCH_MERGE_ORPHAN_IMPORT_GATE"
+    try:
+        import orphan_imports
+        changed = _git(repo, "diff", "--name-only", f"{base}...{branch}")
+        if changed.returncode:
+            return True, "could not diff candidate (gate skipped)"
+        touched = {p.strip() for p in (changed.stdout or "").splitlines() if p.strip()}
+        if not touched:
+            return True, "no files changed"
+        found = orphan_imports.dangling_imports(repo, only_files=touched)
+        if found:
+            return False, orphan_imports.describe(found)
+        # Case-colliding paths are the same shape of defect from the other direction: additive,
+        # so no deletion- or stub-based guard sees them, and permanently fatal on a
+        # case-insensitive filesystem. An auto-resolved merge left racefeed tracking both
+        # OPPORTUNITIES.json and opportunities.json; macOS can hold one of them, so git reported
+        # the other as modified in every checkout and that integration slot was condemned from
+        # the moment the merge landed.
+        clashes = orphan_imports.case_collisions(repo, only_files=touched)
+        if clashes:
+            names = "; ".join(" vs ".join(paths) for _, paths in clashes[:4])
+            return False, (f"{len(clashes)} case-colliding path(s) — unusable on a "
+                           f"case-insensitive filesystem: {names}")
+        return True, "no dangling imports or case collisions in the changed files"
+    except Exception as exc:
+        return True, f"orphan-import gate unavailable (fail-open): {type(exc).__name__}: {exc}"
+
+
+def _stub_gate(repo, proj, base, branch):
+    """MERGE-path stub gate (2026-08-02). Returns (ok, detail).
+
+    stub_guard has existed as a PERIODIC sweep only, so the 206 shadowed re-exports it can
+    detect were free to merge and were caught (if at all) hours later by the next sweep. A
+    barrel that adds `export const assertEcpCounterparty = () => ({})` next to
+    `export * from './real'` compiles, tests green, and silently disables a regulatory gate
+    the moment it lands. A periodic scan is a report; only a gate is a guarantee.
+
+    FAIL-CLOSED: an import error or a guard crash returns False.
+    Opt out only with ORCH_MERGE_STUB_GATE=false / ORCH_STUB_GUARD_ENABLED=false.
+    """
+    if os.environ.get("ORCH_MERGE_STUB_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "stub gate disabled by ORCH_MERGE_STUB_GATE"
+    try:
+        import stub_guard
+    except Exception as exc:
+        return False, f"stub guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
+    try:
+        result = stub_guard.check_repo(repo, branch, (proj or {}).get("name"), base=base)
+    except Exception as exc:
+        return False, f"stub guard error (fail-closed): {type(exc).__name__}: {exc}"
+    if result.get("skipped"):
+        return True, f"stub gate: {result['skipped']}"
+    blocking = [v for v in result.get("violations", []) if v.get("severity") == "block"]
+    if not blocking:
+        return True, f"stub gate clean ({result.get('files', 0)} file(s))"
+    if stub_guard.BREAK_GLASS:
+        return True, "stub gate BREAK-GLASS override (ORCH_STUB_GUARD_BREAK_GLASS)"
+    detail = " | ".join("[%s] %s%s: %s" % (v["code"], v.get("path"),
+                                           ("::" + v["symbol"]) if v.get("symbol") else "",
+                                           v.get("detail", ""))
+                        for v in blocking[:8])
+    if len(blocking) > 8:
+        detail += f" | ... and {len(blocking) - 8} more"
+    return False, detail
+
+
+def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, detail, t0=None):
+    """Park ONE candidate that would DESTROY code in base; the train continues.
+
+    Mirrors _quarantine_build_failure's shape exactly so the existing remediation fleet can
+    act on it: 'regressfail' rows carry the specific findings in the note (file::symbol +
+    reason) so remediation bots can restore the exact symbols instead of guessing. Never
+    falls through to a merge — nothing below the call site runs for a red candidate.
+    """
+    head = ("integrate REGRESSFAIL — merge would DELETE or STUB code that exists in "
+            f"{base}; restore the named symbols before merging. branch={branch} base={base} "
+            "(merge-train regression guard; NOT merged, NOT pushed)")
+    tail = (detail or "")[-1200:]
+    tr = int(task.get("transient_retries") or 0)
+    cap = int(os.environ.get("MERGE_REGRESSION_REDO_CAP", "2"))
+    state = "QUARANTINED"
+    if tr < cap:
+        try:
+            patch = agentic_repair.repair_patch(
+                task, f"{head}\n{tail}", category="regressfail",
+                directive=("Re-apply your change on top of the CURRENT base WITHOUT removing "
+                           "or stubbing any existing function, class, method, lockfile or CI "
+                           "config. Restore every symbol named in the findings above with its "
+                           "full original body, keep your own new code, then run the tests."))
+        except Exception:
+            patch = {"state": "QUEUED", "account": None, "updated_at": "now()"}
+        patch["transient_retries"] = tr + 1
+        patch["note"] = f"{head} [regression-quarantine {tr + 1}/{cap}] {tail}"[:1800]
+        state = f"repair {tr + 1}/{cap}"
+    else:
+        patch = {"state": "QUARANTINED", "account": None, "updated_at": "now()",
+                 "note": (f"merge-train-regression-guard: quarantined as regressfail after {cap} "
+                          f"repair attempts. {head} Findings: {tail}")[:900]}
+    try:
+        _task_patch(task, patch)
+    except Exception:
+        try:
+            _task_patch(task, {"state": "BLOCKED", "account": None, "updated_at": "now()",
+                               "note": patch.get("note", head)[:900]})
+        except Exception:
+            pass
+    try:
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSFAIL"})
+    except Exception:
+        pass
+    _attribute_train_outcome(slug, task, "regressfail", integrated=False)
+    try:
+        import json as _json, time as _time
+        db.insert("coordination_tasks", {"task_type": "merge_regression_blocked",
+            "payload": _json.dumps({"at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                                    "slug": slug, "branch": branch, "base": base,
+                                    "findings": (detail or "")[:2000]})[:4000]}, upsert=False)
+    except Exception:
+        pass
+    if _pm:
+        try:
+            _pm.record(slug, task.get("kind") or "unknown", ok=False,
+                       duration_ms=int((time.monotonic() - t0) * 1000) if t0 else 0,
+                       gate_decision="REGRESSFAIL", gate_reason=(detail or "")[:200])
+        except Exception:
+            pass
+    _log(pname, slug, "REGRESSFAIL", f"{state}; {(detail or '')[:120]}")
+    return "regressfail"
+
+
 def _rebase_onto_base(repo, branch, base):
     """Step 2: rebase the branch onto the CURRENT base. Returns (ok, conflict_detail).
     Frees any leftover agent worktree first (approval_merge._free_branch — git refuses to
@@ -249,6 +534,14 @@ def _try_semantic_merge(repo, branch, base):
         merge_base = mb.stdout.strip()
         if not merge_base:
             return False
+
+        # Capture the branch tip BEFORE anything resets it. This is the conceptual
+        # "branch parent" of the resolution and the rollback target; after the
+        # `git reset --hard base` below, the branch ref no longer points at the work.
+        tip = _git(repo, "rev-parse", "--verify", f"{branch}^{{commit}}")
+        if tip.returncode != 0 or not tip.stdout.strip():
+            return False
+        branch_tip = tip.stdout.strip()
 
         # files changed on the branch side (merge-base..branch)
         branch_diff = _git(repo, "diff", "--name-only", merge_base, branch)
@@ -328,6 +621,32 @@ def _try_semantic_merge(repo, branch, base):
             commit = subprocess.run(["git", "commit", "--allow-empty", "-m", msg], cwd=wt,
                                     capture_output=True, timeout=30)
             if commit.returncode != 0:
+                return False
+
+            # SILENT-DISCARD GATE (2026-08-06). This is the second producer of
+            # "(auto-resolved)" commits, and the semantic merge can legitimately resolve a
+            # file to exactly mainline's bytes. When it does, and the branch side carried
+            # commits that exist nowhere else, that is not a resolution — it is a deletion
+            # wearing a merge's clothes, and nothing downstream can see it (the result IS
+            # the mainline blob, so every base-vs-result diff is empty).
+            #
+            # Note the parents deliberately: the worktree was reset to `base` and the
+            # merged content overlaid, so the new commit's git parent is base. The
+            # CONCEPTUAL branch parent is branch_tip, captured before the reset — passing
+            # the post-reset ref would compare the branch against itself and always pass.
+            try:
+                import automerge_discard_guard
+                ok, detail = automerge_discard_guard.gate(
+                    repo, base, branch_tip, result_ref="HEAD", branch=branch)
+            except Exception as exc:
+                ok, detail = False, (f"automerge discard guard error (fail-closed): "
+                                     f"{type(exc).__name__}: {exc}")
+            if not ok:
+                # Roll the branch back to where it was and let the caller fall through to
+                # the existing redo/manual path. The branch is the only copy of the work.
+                subprocess.run(["git", "reset", "--hard", branch_tip], cwd=wt,
+                               capture_output=True, timeout=30)
+                print(f"[train] semantic merge of {branch} REFUSED: {detail}")
                 return False
             return True
         finally:
@@ -464,30 +783,176 @@ def _test_cmd_for(proj, repo):
     except Exception:
         return cmd
 
-def _commit_identity(repo, ref):
-    try:
-        resolved = _git(repo, "rev-parse", ref).stdout.strip()
-        return resolved or ref
-    except (OSError, subprocess.SubprocessError):
-        return ref
 
-def _verified_or_run(repo, commit, command, kind="merge-qa"):
-    import re
-    cacheable = bool(re.fullmatch(r"[0-9a-fA-F]{40,64}", str(commit or "")))
+# ── production build gate (FAIL-CLOSED) ──────────────────────────────────────────────
+#
+# 2026-08-02: the train merged and PUSHED code that had never been compiled. The only
+# pre-merge check was _test_cmd_for(), which returns `npm test` for any repo with a root
+# package.json — so on every Next/Nuxt app the PRODUCTION BUILD never ran before the base
+# was fast-forwarded and pushed to origin. 19,262 merged tasks against 90 successful
+# releases (and the permanent stream of red Vercel deploys) came out of exactly this hole.
+#
+# Everything below is deliberately FAIL-CLOSED. build_gate.run_build() itself fail-OPENS on
+# an empty command (`if not build_cmd: return True, "no build_cmd (skipped)"`), so the
+# command must be resolved and validated HERE, before run_build is ever called. An
+# undeterminable build command, a failed import, or any exception raised inside run_build
+# is a BUILD FAILURE — never a pass. That is the exact inversion of the old behaviour.
+#
+# Gate ORDER in _integrate_card: (2c) content regression guard -> (3) tests -> (3b) THIS
+# build gate -> (4) fast-forward -> (5) push. Cheapest gate first; the build is the most
+# expensive check we run, so it only ever sees candidates that already passed the others.
+
+def _build_gate_enabled():
+    """Read at call time so a fleet_config/env change takes effect without a restart."""
+    return _truthy("ORCH_MERGE_BUILD_GATE", True)
+
+
+def _build_timeout():
     try:
-        import proof_graph
-        if cacheable and proof_graph.reusable_verification(repo, commit, command, kind):
-            return True, "reused exact commit/dependency verification proof"
+        return int(os.environ.get("MERGE_TRAIN_BUILD_TIMEOUT", "900"))
+    except ValueError:
+        return 900
+
+
+def _build_cmd_for(proj, repo):
+    """Resolve the project's REAL production build command.
+
+    Deliberately does NOT reuse _test_cmd_for(): that helper falls back to TEST_CMD
+    ('npm test'), which is precisely what made the old gate meaningless. Order is
+    build_gate.build_cmd_for() (project row `build_cmd` reconciled with detection, and
+    persisted back onto the project) then a bare detect_build_cmd() if the DB write path
+    is unavailable. Returns '' when nothing can be determined — the caller treats that as
+    FAILURE, not as "nothing to do".
+    """
+    try:
+        import build_gate
     except Exception:
-        pass
-    ok, tail = _run_tests(repo, command, commit)
+        return ""
+    try:
+        cmd = build_gate.build_cmd_for(proj, repo)
+        if cmd:
+            return str(cmd).strip()
+    except Exception:
+        pass  # DB unavailable / no build_cmd column — fall back to pure detection
+    try:
+        return str(build_gate.detect_build_cmd(repo) or "").strip()
+    except Exception:
+        return ""
+
+
+def _built_or_run(repo, commit, build_cmd, kind="merge-build"):
+    """Build an exact commit, reusing a durable proof when one exists.
+
+    Mirrors _verified_or_run()'s proof_graph cache (commit + dependency fingerprint +
+    command + kind) so an unchanged SHA is not rebuilt on every train pass. kind defaults
+    to 'merge-build' so build proofs can never alias the 'merge-qa' test proofs.
+    Only GREEN results are recorded; failures are never cached.
+    """
+    import build_gate
+    cacheable = bool(re.fullmatch(r"[0-9a-fA-F]{40,64}", str(commit or "")))
+    if cacheable:
+        try:
+            import proof_graph
+            if proof_graph.reusable_verification(repo, commit, build_cmd, kind):
+                return True, "reused exact commit/dependency build proof"
+        except Exception:
+            pass
+    ok, log = build_gate.run_build(repo, commit, build_cmd, timeout=_build_timeout())
     if ok and cacheable:
         try:
             import proof_graph
-            proof_graph.record_verification(repo, commit, command, kind, True)
+            proof_graph.record_verification(repo, commit, build_cmd, kind, True)
         except Exception:
             pass
-    return ok, tail
+    return ok, log
+
+
+def _build_gate(repo, proj, branch, candidate_sha):
+    """Run the production build on the candidate. Returns (ok, detail).
+
+    FAIL-CLOSED: every path that is not a proven-green build returns False.
+    """
+    if not _build_gate_enabled():
+        # Explicit operator opt-out only (ORCH_MERGE_BUILD_GATE=false). Default is ENABLED.
+        return True, "build gate disabled by ORCH_MERGE_BUILD_GATE"
+    build_cmd = _build_cmd_for(proj, repo)
+    if not build_cmd:
+        # NOT a pass. run_build() would return (True, "no build_cmd (skipped)") here; that
+        # silent skip is the fail-open this gate exists to remove.
+        return False, ("no production build command could be determined for this repo "
+                       "(set projects.build_cmd, a package.json build script, vercel.json "
+                       "buildCommand, or DEFAULT_BUILD_CMD) — fail-closed, not skipped")
+    try:
+        ok, log = _built_or_run(repo, candidate_sha or branch, build_cmd)
+    except Exception as exc:
+        # An exception is a FAILURE. release_train.py used to `except Exception: pass` here
+        # and release anyway; the train must never do that.
+        return False, f"$ {build_cmd}\nbuild gate error (fail-closed): {type(exc).__name__}: {exc}"
+    if ok:
+        return True, f"build green: {build_cmd} ({str(log or '')[:120]})"
+    # Same tail convention as _run_tests(): last 6000 chars of the captured output.
+    return False, f"$ {build_cmd}\n{(log or '').strip()[-6000:]}"
+
+
+def _quarantine_build_failure(repo, card, slug, task, pname, branch, base, detail, t0=None):
+    """Park ONE build-red candidate; the train continues with the next card/project.
+
+    Reuses the fleet's existing quarantine mechanism: 'buildfail' is a repairable category
+    (blocker_quarantine.classify -> 'buildfail' -> _repair_original), so under the redo cap
+    the SAME task/branch is re-queued through agentic_repair with the build log attached —
+    that is what auto_remediate/build_fixer key off. Past the cap the row is parked in the
+    terminal QUARANTINED state with blocker_quarantine's note shape. The note always opens
+    with runner.py's canonical 'integrate BUILDFAIL — production build red' marker so the
+    existing remediation regexes (auto_remediate._ENV_BUILDFAIL, postmortem._BUILD_FAIL,
+    blocker_quarantine._BUILD) match it.
+    """
+    head = ("integrate BUILDFAIL — production build red; fix build/type errors before merge. "
+            f"branch={branch} base={base} (merge-train build gate; NOT merged, NOT pushed)")
+    tail = (detail or "")[-1200:]
+    tr = int(task.get("transient_retries") or 0)
+    cap = int(os.environ.get("MERGE_BUILD_REDO_CAP", "2"))
+    state = "QUARANTINED"
+    if tr < cap:
+        try:
+            patch = agentic_repair.repair_patch(
+                task, f"{head}\n{tail}", category="buildfail",
+                directive=("Make the production build pass on this SAME branch with the smallest "
+                           "possible change (types/imports/config). Do not add features. Run the "
+                           "project's real build command locally and confirm it exits 0 before "
+                           "committing."))
+        except Exception:
+            patch = {"state": "QUEUED", "account": None, "updated_at": "now()"}
+        patch["transient_retries"] = tr + 1
+        patch["note"] = f"{head} [build-quarantine {tr + 1}/{cap}] {tail}"[:1800]
+        state = f"repair {tr + 1}/{cap}"
+    else:
+        patch = {"state": "QUARANTINED", "account": None, "updated_at": "now()",
+                 "note": (f"merge-train-build-gate: quarantined as buildfail after {cap} build "
+                          f"repair attempts. {head} Original blocker: {tail}")[:900]}
+    try:
+        _task_patch(task, patch)
+    except Exception:
+        # QUARANTINED may be rejected by a stricter schema — park as BLOCKED instead, which
+        # blocker_quarantine._candidate_rows() also picks up. Never fall through to a merge.
+        try:
+            _task_patch(task, {"state": "BLOCKED", "account": None, "updated_at": "now()",
+                               "note": patch.get("note", head)[:900]})
+        except Exception:
+            pass
+    try:
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:BUILDFAIL"})
+    except Exception:
+        pass
+    _attribute_train_outcome(slug, task, "buildfail", integrated=False)
+    if _pm:
+        try:
+            _pm.record(slug, task.get("kind") or "unknown", ok=False,
+                       duration_ms=int((time.monotonic() - t0) * 1000) if t0 else 0,
+                       gate_decision="BUILDFAIL", gate_reason=(detail or "")[:200])
+        except Exception:
+            pass
+    _log(pname, slug, "BUILDFAIL", f"{state}; {(detail or '')[:120]}")
+    return "buildfail"
 
 
 def _verified_or_run(repo, commit, command, kind="merge-qa"):
@@ -557,14 +1022,49 @@ def _ff_base(repo, branch, base):
     return False
 
 
-def _push_base(repo, base):
+def _push_base(repo, base, project=None):
     """Step 5: push only when explicitly enabled. Returns '' or an error tail.
 
     On a non-fast-forward rejection (origin moved while we merged — e.g. the other Mac pushed),
     reconcile once in an ISOLATED worktree: fetch origin/base, rebase local base's extra commits
     onto it, retry the push. Still failing -> return the error; the CALLER must NOT mark the task
     MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
-    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() != "true":
+    # SHADOW MODE — checked FIRST, before any other early return.
+    #
+    # Two things went wrong on the first attempt at this and both are worth writing down.
+    #
+    # It was placed after the ORCH_PUSH_ON_MERGE guard below, which returns "" and is false in
+    # this fleet — so the shadow check was unreachable and recorded nothing at all. A safety
+    # feature that never runs is worse than none, because you believe you have it.
+    #
+    # And it returned "". _push_base returns "" for SUCCESS, so a refusal would have told the
+    # caller the push worked and let the task go MERGED with nothing sent to origin — a DB that
+    # says shipped while GitHub never moved. That is the exact desync the push-verification gate
+    # below exists to stop (observed 2026-07-09), and I nearly reintroduced it through the front
+    # door while adding a guard against it.
+    #
+    # Shadow mode DEFERS, it does not complete. A non-empty return takes the PUSH-PENDING path:
+    # the task stays unmerged, its card stays undecided, and the next pass after the window
+    # lifts retries it. Rebase, tests and fast-forward are all idempotent by then.
+    if shadow_mode.refuse("push-integration-branch", project=project or "",
+                          subject=base, detail=f"{repo} -> origin/{base}"):
+        return "shadow mode: push withheld, nothing was sent to origin"
+    # THE INTEGRATION BRANCH HAS NEVER BEEN PUSHED (found 2026-08-15).
+    #
+    # This gated on ORCH_PUSH_ON_MERGE, which is false in this fleet and is the flag for pushing
+    # a PRODUCTION base. The integration branch is orchestrator/dev, whose flag is
+    # ORCH_PUSH_ON_DEV_MERGE, and that is true. _push_enabled_for_base() encodes exactly that
+    # distinction — and had ZERO call sites. It was written and never wired.
+    #
+    # So every train pass merged into the LOCAL integration branch, returned "" here as though
+    # it had pushed, and the sha-verification twenty lines below then found origin had not
+    # moved. That is the PUSH-VERIFY-FAILED count, and it is why local orchestrator/dev was
+    # found running one to four days ahead of origin in every app repo: the work was merged, it
+    # simply never left the machine.
+    #
+    # Shipping this while shadow mode is on is deliberate — the fix is inert until the canary
+    # window, so the first real push happens under observation rather than as a surprise.
+    if not _push_enabled_for_base(base):
         return ""
     # Ensure auth before push — the PAT may not have been injected yet if
     # task_refs.publish() hasn't run for this repo in this process.
@@ -574,6 +1074,12 @@ def _push_base(repo, base):
         task_refs._ensure_auth(repo)
     except Exception:
         pass  # best-effort; push will fail with a clear error if auth is missing
+    # FENCE CHECK (2026-08-13): this is the integration branch update that the 54
+    # PUSH-VERIFY-FAILED sha mismatches came from. integration_owner.decide() ran once,
+    # at the top of the pass, potentially many cards and minutes ago; re-verify the
+    # fence against the store here, immediately before origin moves.
+    delivery_lease.require(delivery_lease.held(project or "", delivery_lease.ROLE_INTEGRATOR),
+                           f"push integration branch {base}")
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
         return ""
@@ -593,28 +1099,86 @@ def _push_base(repo, base):
     return "PUSHFAIL:" + err[-120:]
 
 
-def _verify_push(repo, base):
-    """Contract guarantee: verify origin/{base} matches local {base} after push.
+def _is_ancestor(repo, ancestor_sha, descendant_sha):
+    """True when `ancestor_sha` is reachable from `descendant_sha`.
 
-    Returns '' on success, error string if the remote ref does not match.
-    This prevents the DB/GitHub desync observed 2026-07-09 where a task was
-    marked MERGED but the push silently failed to advance origin."""
+    Fail CLOSED: any git error returns False, so an unanswerable question is treated
+    as divergence and the caller refuses. Being wrong in this direction costs a retry;
+    being wrong in the other direction certifies a push that never landed.
+    """
+    if not ancestor_sha or not descendant_sha:
+        return False
+    try:
+        r = _git(repo, "merge-base", "--is-ancestor", ancestor_sha, descendant_sha, timeout=60)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _verify_push(repo, base):
+    """Contract guarantee: our commit is really on origin/{base} after the push.
+
+    Returns '' on success, error string otherwise. This prevents the DB/GitHub desync
+    observed 2026-07-09 where a task was marked MERGED but the push silently failed to
+    advance origin.
+
+    EXACT-MATCH WAS TOO STRICT (2026-08-07). The check required local == remote, so a
+    benign interleave — our push lands, then another train or auto-sync commits on top
+    before our read-back — reported VERIFY:sha-mismatch even though our work was safely
+    on the remote. Nothing was ever overwritten (the guard did its job), but every event
+    burned a full retry cycle, and the rate was climbing with fleet concurrency:
+    64 -> 72 -> 81 mismatches over 2026-08-07 alone.
+
+    So the question is no longer "does the remote tip equal my sha" but "is my commit
+    ON the remote branch". Those differ only when someone built on top of us, which is
+    precisely the benign case. The dangerous cases still fail, because for each of them
+    our commit is NOT an ancestor of the remote tip:
+
+      * the push never landed          -> local is AHEAD of remote, not an ancestor;
+      * the ref was force-reset/rewound -> our commit is unreachable;
+      * a divergent history was pushed  -> our commit is on an abandoned line.
+    """
     try:
         local = _git(repo, "rev-parse", base)
-        remote = _git(repo, "rev-parse", f"origin/{base}")
-        if local.returncode != 0 or remote.returncode != 0:
+        if local.returncode != 0:
             return "VERIFY:rev-parse-failed"
         local_sha = (local.stdout or "").strip()
+
+        # ALWAYS refresh before judging, and refresh with an explicit FORCED refspec.
+        #
+        # Two separate traps, both found by tests/test_merge_train_push_verify.py:
+        #
+        # 1. The old code compared against `origin/<base>` FIRST and only fetched if that
+        #    disagreed. `origin/<base>` is a local cache, so when it happened to already
+        #    equal local the function returned success having never contacted the remote —
+        #    it could certify a push that never left the machine. That is the exact
+        #    DB/GitHub desync this verifier exists to prevent.
+        # 2. A bare `fetch origin <base>` leaves `origin/<base>` UNCHANGED when the remote
+        #    was rewound or force-pushed, because that update is not a fast-forward. The
+        #    stale ref still contained our commit, so verification passed for a branch our
+        #    work had just been force-pushed off.
+        #
+        # The leading `+` on the refspec is what makes the local remote-tracking ref
+        # update non-fast-forward; a `--force` flag would be redundant AND would trip the
+        # repo's no-force-push guard (tests/test_release_push_fast_forward.py), which
+        # greps for the literal. This only ever rewrites a LOCAL cache ref — it can never
+        # touch the remote.
+        _git(repo, "fetch", "origin",
+             f"+{base}:refs/remotes/origin/{base}", timeout=60)
+
+        remote = _git(repo, "rev-parse", f"origin/{base}")
+        if remote.returncode != 0:
+            return "VERIFY:rev-parse-failed"
         remote_sha = (remote.stdout or "").strip()
-        if local_sha and remote_sha and local_sha == remote_sha:
+        if not local_sha or not remote_sha:
+            return "VERIFY:rev-parse-failed"
+        if local_sha == remote_sha:
             return ""
-        # Stale fetch cache — refetch and recheck once
-        _git(repo, "fetch", "origin", base, timeout=60)
-        remote2 = _git(repo, "rev-parse", f"origin/{base}")
-        remote2_sha = (remote2.stdout or "").strip()
-        if local_sha == remote2_sha:
+        # Benign advancement: our commit IS on the remote branch, someone just built
+        # on top of it between our push and our read-back.
+        if _is_ancestor(repo, local_sha, remote_sha):
             return ""
-        return f"VERIFY:sha-mismatch local={local_sha[:10]} remote={remote2_sha[:10]}"
+        return f"VERIFY:sha-mismatch local={local_sha[:10]} remote={remote_sha[:10]}"
     except Exception as e:
         return f"VERIFY:exception:{e}"
 
@@ -645,13 +1209,28 @@ def _integration_base(repo, proj, task_base):
     return dev
 
 
-def _delete_branch(repo, branch):
-    _git(repo, "branch", "-D", branch)
-    # Also clean up the remote tracking branch to prevent accumulation
+def _delete_branch(repo, branch, reason="merge-train redo"):
+    """Free the branch NAME for a clean rebuild without destroying its COMMITS.
+
+    FIX 2026-08-04 (cowork audit): both call sites are redo-on-conflict paths — a rebase
+    conflict or a base that refused to fast-forward. Neither means the work is worthless,
+    but this used to `branch -D` AND `push origin --delete`, which removed the durable copy
+    that runner._durable_share_branch() had just created at commit time. Committed work
+    then existed nowhere, and the orchestrator filed a recover-missing-branch-<slug> task to
+    generate it again from scratch (3,332 such tasks, 23.6% of all output).
+
+    branch_durability.safe_delete archives the tip under refs/archive/ first, so the redo
+    still gets a clean branch name while the original commits stay recoverable by sha.
+    """
     try:
-        _git(repo, "push", "origin", "--delete", branch)
-    except Exception:
-        pass  # Remote branch may already be gone
+        import branch_durability
+        branch_durability.safe_delete(repo, branch, reason=reason, delete_remote=True)
+        return
+    except Exception as exc:
+        # Fail SAFE, not closed: if the guard is unavailable, keep the branch rather than
+        # fall back to the destructive path. A stuck branch is recoverable; deleted work is not.
+        print(f"[merge_train] branch durability guard unavailable for {branch} "
+              f"({type(exc).__name__}: {exc}); NOT deleting")
 
 
 def _log(project, slug, outcome, extra=""):
@@ -717,6 +1296,15 @@ def _record_pressure(by_project, projects):
                 json.dump(payload, f, indent=2)
         except OSError:
             pass
+    # cowork fix 2026-08-02: sentinel train_guard reads the FILE mtime, but the DB
+    # upsert above succeeds, so the file never updated -> perpetual false train-stale.
+    try:
+        _pf = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           ".runtime", "merge_train_pressure.json")
+        with open(_pf, "w") as _f:
+            json.dump(payload, _f, indent=2)
+    except OSError:
+        pass
     return payload
 
 
@@ -887,51 +1475,130 @@ def _select_batch(group):
                 value_scores[key] = 0.0
     except Exception:
         value_scores = {}
-    annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
+    def operator_rank(entry):
+        _card, slug, task, _risk = entry
+        note = str(task.get("note") or "").lower()
+        return 0 if (task.get("submitted_by") or str(slug).startswith("dropbox-")
+                     or "source:operator-" in note or "source:intent-console" in note) else 1
+
+    # Authenticated/manual requests are attempted before speculative machine work.
+    # All normal risk caps and every regression/build/divergence gate still apply.
+    annotated.sort(key=lambda e: (operator_rank(e),
+                                  {"low": 0, "standard": 1, "sensitive": 2}[e[3]],
                                   -value_scores.get(str(e[2].get("id") or e[2].get("slug") or ""), 0),
                                   str(e[0].get("created_at") or "")))
     return annotated
 
 
-def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=None,
-                            detail=None, status="approved", decided_by="canonical-train"):
+CARD_CREATED = "created"
+CARD_EXISTED = "existed"
+CARD_FAILED = "failed"
+#: Outcomes that mean "this slug is now visible to the merge train". Callers MUST
+#: treat only these as success. CARD_FAILED means the work is not integrable and the
+#: producing task must NOT be marked DONE.
+CARD_OK = (CARD_CREATED, CARD_EXISTED)
+
+
+def _find_existing_card(slug):
+    """Targeted, server-side lookup for a live merge card carrying `slug`.
+
+    SCAN-WINDOW ANTI-PATTERN (removed 2026-08-06). This used to pull the newest
+    MERGE_CARD_DEDUP_SCAN (default 4,000) approval rows and filter CLIENT-SIDE against a
+    table of 238,177 rows. The in-code comment already recorded the consequence — "240 dupes
+    of one slug" — and the identical pattern had just caused a starvation outage in
+    _pick_cards(). A scan cannot be made correct by making the window bigger: any card older
+    than the window is invisible, so dedup silently fails and the caller files a duplicate.
+
+    Two bounded queries replace it. The first matches the `slug` column directly. The second
+    covers legacy rows written before the column existed, where the slug lives only in the
+    "merge of <slug>" title (see approval_merge._slug_from). Both are LIMIT-1 server-side
+    filters, so cost is independent of table size.
+    """
+    if not slug:
+        return None
+    kinds = f"in.({','.join(MERGE_KINDS)})"
+    common = {"select": "id,slug,title,kind,status,decided_by",
+              "kind": kinds, "status": "in.(pending,approved)"}
+    # SKIP_PREFIXES pushed into the query so the train's own outcome stamps
+    # ("train:MERGED", "merge-handler:...") never masquerade as a live card.
+    not_handled = ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES)
+    for params in (
+        dict(common, slug=f"eq.{slug}", limit="1", or_=f"(decided_by.is.null,{not_handled})"),
+        dict(common, title=f"ilike.*merge of {slug}*", limit="5"),
+    ):
+        # `or_` is spelled with a trailing underscore above only to keep it a valid kwarg
+        # name; PostgREST expects the bare key "or".
+        if "or_" in params:
+            params["or"] = params.pop("or_")
+        try:
+            rows = db.select("approvals", params) or []
+        except Exception:
+            rows = []
+        for c in rows:
+            if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
+                continue
+            if approval_merge._slug_from(c) == slug:
+                return c
+    return None
+
+
+def ensure_integration_card_result(project, slug, *, kind="integrate", title=None, why=None,
+                                   detail=None, status="approved",
+                                   decided_by="canonical-train"):
     """Idempotently feed passed code into the single canonical integration train.
 
     Producers should not merge directly. They create/approve one code-merge card
     and let train_run serialize rebase, tests, fast-forward, and cleanup.
+
+    Returns one of CARD_CREATED / CARD_EXISTED / CARD_FAILED. The tri-state exists because
+    the historical bool return conflated "a card already covers this slug" (fine) with
+    "nothing was created and nothing exists" (a task that can never be integrated). Callers
+    that only check truthiness treated the second case as success and stranded the work.
     """
     if not slug:
-        return False
+        return CARD_FAILED
     title = title or f"merge of {slug}"
-    cards = db.select("approvals", {"select": "id,slug,title,kind,status,decided_by",
-                                    "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "status": "in.(pending,approved)",
-                                    "order": "created_at.desc",  # newest first — unordered scans missed dupes past the limit (240 dupes of one slug)
-                                    "limit": os.environ.get("MERGE_CARD_DEDUP_SCAN", "4000")}) or []
-    for c in cards:
-        if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
-            continue
-        cslug = approval_merge._slug_from(c)
-        if cslug == slug:
-            patch = {}
-            if c.get("status") != status:
-                patch["status"] = status
-            if status == "approved" and not c.get("decided_by"):
-                patch["decided_by"] = decided_by
-            if patch:
-                db.update("approvals", {"id": c["id"]}, patch)
-            return False
+    try:
+        existing = _find_existing_card(slug)
+    except Exception:
+        existing = None
+    if existing:
+        patch = {}
+        if existing.get("status") != status:
+            patch["status"] = status
+        if status == "approved" and not existing.get("decided_by"):
+            patch["decided_by"] = decided_by
+        if patch:
+            try:
+                db.update("approvals", {"id": existing["id"]}, patch)
+            except Exception:
+                pass  # the card exists and is live; a failed status nudge is not a strand
+        return CARD_EXISTED
     row = {"project": project, "kind": kind, "slug": slug, "title": title,
            "status": status, "why": why or "passed tests; queued for canonical merge train",
            "detail": detail or "", "decided_by": decided_by if status == "approved" else None}
     try:
         db.insert("approvals", row)
+        return CARD_CREATED
     except Exception:
         # Some older approval tables may not have a slug column. The title fallback
         # keeps approval_merge._slug_from compatible with those rows.
         row.pop("slug", None)
-        db.insert("approvals", row)
-    return True
+        try:
+            db.insert("approvals", row)
+            return CARD_CREATED
+        except Exception:
+            # Do NOT swallow. The caller decides what to do, but it must be told.
+            return CARD_FAILED
+
+
+def ensure_integration_card(project, slug, **kwargs):
+    """Back-compatible wrapper: True only when a NEW card was created.
+
+    Preserved verbatim in meaning for the many existing callers that use the bool.
+    New code should call ensure_integration_card_result() and check `in CARD_OK`.
+    """
+    return ensure_integration_card_result(project, slug, **kwargs) == CARD_CREATED
 
 
 # ── the train ─────────────────────────────────────────────────────────────────
@@ -952,10 +1619,85 @@ def _pick_cards():
     N+1 scan is in train_run(): task resolution is now batched into one query instead of one
     per card (see _resolve_tasks_batch below).
     """
-    cards = db.select("approvals", {"select": "*", "status": "eq.approved",
-                                    "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "order": "created_at.desc",
-                                    "limit": os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")}) or []
+    # SCAN-WINDOW STARVATION (fixed 2026-08-06) — the real cause of months of stranded work.
+    #
+    # This scanned the NEWEST `limit` approved cards and filtered client-side. The approvals
+    # table now holds 238,177 rows, and the train stamps decided_by on every card it handles,
+    # so the newest 3,000 are almost entirely already-decided outcomes. A card that was created
+    # but not merged (branch not ready, project paused, host stale, train crashed mid-pass)
+    # ages out of that window within hours and is then INVISIBLE FOREVER — while
+    # ensure_integration_card still sees it and refuses to file a replacement, so the task can
+    # never be re-queued either. Measured: 90 finished tasks holding valid, undecided cards
+    # that the train had not looked at in up to 98 hours, with `undecided cards = 0` reported
+    # because every one of them sat outside the scan window.
+    #
+    # Scanning oldest-first as well as newest-first costs one extra query and bounds the
+    # damage permanently: the backlog head is always visible, and fresh work still enters via
+    # the desc pass. Dedup by id since the two windows overlap once the backlog is small.
+    # SERVER-SIDE UNHANDLED FILTER (2026-08-06, second half of the same bug).
+    #
+    # Scanning both ends of the table bounded the damage but did not remove it. Measured today:
+    # 21,974 approved merge-kind cards exist, of which only 569 are genuinely unhandled — and
+    # PostgREST silently caps `limit` at 1,000 rows per request, so MERGE_TRAIN_SCAN_LIMIT=3000
+    # really means "the 1,000 oldest plus the 1,000 newest". The other ~20,000 rows in the middle
+    # are already-decided outcomes the train re-reads forever, while roughly 466 of the 569 real
+    # candidates sit in the middle and are structurally invisible. That is the mechanism behind
+    # "the queue never finishes": the work was never lost, it was never *looked at*.
+    #
+    # Pushing the SKIP_PREFIXES test into the query makes the window hold candidates instead of
+    # history, so all 569 fit in one page with room to spare. decided_by IS NULL has to be
+    # spelled out because SQL NOT LIKE on NULL is NULL, not true, and freshly-filed cards
+    # ("canonical-train:sweeper", an attribution marker, not a verdict) must stay visible.
+    #
+    # The dual-order scan and the client-side filter below are both KEPT: the first so a backlog
+    # larger than one page still shows its head, the second so this stays correct even if the
+    # server-side predicate is dropped by the fallback path.
+    # MERGE_TRAIN_SCAN_LIMIT=0 in fleet_config is the fleet-wide kill switch for hosts too old
+    # to honour integration_owner.decide() — today, Mac 2 on 10d9e408, which cannot pull itself
+    # forward (14 dirty tracked files, and that build has no regenerable allowlist or remote
+    # escape hatch) and therefore keeps running a second merge train against the same origin.
+    # Starving _pick_cards is the only lever that build exposes.
+    #
+    # It was pinned out of the way on this host via ORCH_CONFIG_ENV_PINS, and that silently did
+    # not take: the running runner had inherited the pre-edit pins list from its parent, so
+    # os.environ.setdefault never applied the new one and THIS host quietly picked up the kill
+    # switch too — one train pass returned an all-zero summary before it was caught. A safety
+    # interlock that depends on a restart landing in the right order is not a safety interlock.
+    #
+    # Current code has integration_owner and does not need this switch to police itself, so it
+    # declines to be disabled by it. Operators wanting a genuine local override set a positive
+    # MERGE_TRAIN_SCAN_LIMIT; non-positive means "meant for the legacy hosts, not for me".
+    limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
+    try:
+        if int(str(limit).strip().strip('"')) <= 0:
+            limit = "3000"
+    except (TypeError, ValueError):
+        limit = "3000"
+    base = {"select": "*", "status": "eq.approved",
+            "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
+    unhandled = "or=(decided_by.is.null,and({}))".format(
+        ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES))
+    _k, _v = unhandled.split("=", 1)
+    scans = ({**base, _k: _v}, base)  # narrowed first; unfiltered only as a fallback
+
+    cards, seen = [], set()
+    for params in scans:
+        try:
+            got = []
+            for order in ("created_at.asc", "created_at.desc"):
+                got.extend(db.select("approvals", {**params, "order": order}) or [])
+        except Exception as e:
+            # A server that will not accept the predicate must not take the train down with it.
+            print(f"merge_train: unhandled-card filter unavailable ({e}); "
+                  f"falling back to the unfiltered scan window", flush=True)
+            continue
+        for c in got:
+            cid = c.get("id")
+            if cid in seen:
+                continue
+            seen.add(cid)
+            cards.append(c)
+        break  # the narrowed scan succeeded; the fallback page is redundant
     return [c for c in cards
             if c.get("kind") in MERGE_KINDS
             and approval_merge._is_code_merge_card(c)
@@ -1028,6 +1770,17 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     base = _integration_base(repo, proj, task_base)
 
+    # CROSS-HOST OWNERSHIP (2026-08-13): take the integrator lease for THIS repository
+    # before touching it. `ensure` is idempotent for this process, so a pass covering
+    # many cards in one repo acquires once and keeps it — releasing per card would drop
+    # ownership between cards and invite a takeover mid-pass. train_run releases the
+    # whole set at the end. Yielding here is not a failure: another host owns this repo
+    # and the card stays undecided for its train to pick up.
+    if delivery_lease.ensure(pname, delivery_lease.ROLE_INTEGRATOR) is None \
+            and delivery_lease.available():
+        _log(pname, slug, "SKIP", "another host holds the integrator lease")
+        return "not-integrator"
+
     if not _materialize_branch(repo, branch):
         state = task.get("state")
         if state in ("QUEUED", "RUNNING", "RETRY"):
@@ -1057,8 +1810,11 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     _refresh_base(repo, base)                                     # (1)
     if _already_integrated(repo, branch, base):
+        # Evidence: branch tip is an ancestor of base, so that tip IS the integrated commit.
+        integrated_sha = _commit_identity(repo, branch)
         _task_patch(task, {"state": "MERGED",
-                           "note": f"train: already integrated in {base}"})
+                           "artifact_commit": integrated_sha,
+                           "note": f"train: already integrated in {base} @ {integrated_sha[:12]}"})
         db.update("approvals", {"id": card["id"]},
                   {"decided_by": f"{MARK}:ALREADY_INTEGRATED"})
         _attribute_merge_outcome(slug, task)
@@ -1111,6 +1867,46 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         except Exception:
             pass
         return "regression-risk"
+
+    # (2c) CONTENT REGRESSION GATE — fail-closed, runs BEFORE tests, BEFORE any build gate,
+    # and long BEFORE the base moves (4) or anything is pushed (5). Cheapest real gate we
+    # have (AST + pyflakes over changed files only), so it runs first. Green tests are not
+    # evidence that nothing was LOST: a merge that replaces _branch_exists_anywhere() with
+    # `return False` passes every test suite and silently does the wrong thing forever.
+    # Nothing below this line executes for a candidate that would destroy code in base.
+    reg_gate_ok, reg_gate_detail = _regression_gate(repo, base, branch, candidate_sha)
+    if not reg_gate_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              reg_gate_detail, _t0)
+
+    # (2d) DIVERGENT-AUTHORSHIP GATE — fail-closed. Covers the one shape (2c) is structurally
+    # blind to: both sides AUTHORED the same file, so there is no base version whose loss a
+    # base-vs-result diff could detect. 71cfd4ca6 merged green through every result-based
+    # check and still dropped two module constants. Quarantines through the same
+    # regressfail path so the existing remediation fleet acts on it unchanged.
+    div_ok, div_detail = _divergent_gate(repo, base, branch)
+    if not div_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "DIVERGENT AUTHORSHIP — " + div_detail, _t0)
+
+    # (2e) STUB GATE — fail-closed. stub_guard was a periodic sweep only, so a barrel that
+    # shadows `export * from './real'` with a local constant-return stub merged freely and
+    # was reported hours later, if at all. 206 such instances landed this way; the ones that
+    # mattered silently disabled regulatory gates (assertEcpCounterparty stopped throwing)
+    # and zeroed financial functions. Now it blocks at merge time.
+    stub_ok, stub_detail = _stub_gate(repo, proj, base, branch)
+    if not stub_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "SILENT STUB / SHADOWED RE-EXPORT — " + stub_detail,
+                                              _t0)
+
+    # (2f) ORPHAN-IMPORT GATE — the cheapest gate we have, so it runs before the expensive ones.
+    # Catches a candidate whose import resolves on the author's disk and nowhere in the repo.
+    oi_ok, oi_detail = _orphan_import_gate(repo, base, branch)
+    if not oi_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "DANGLING IMPORT — " + oi_detail, _t0)
+
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:
@@ -1142,6 +1938,18 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "TESTFAIL", tail[:120])
         return "testfail"
 
+    # (3b) PRODUCTION BUILD GATE — fail-closed, runs AFTER the (2c) regression guard and
+    # AFTER tests (cheapest gate first), and BEFORE the base moves.
+    # Green tests are not evidence that the app COMPILES: `npm test` on a Next/Nuxt repo
+    # never invokes `next build` / `nuxi build`, which is why build-red code merged and
+    # pushed for months. Nothing below this line executes for a red candidate — no
+    # fast-forward (4), no push (5), no MERGED (6). A failure quarantines this one card
+    # and returns, so the train moves on to the next card/project instead of halting.
+    build_ok, build_detail = _build_gate(repo, proj, branch, candidate_sha)
+    if not build_ok:
+        return _quarantine_build_failure(repo, card, slug, task, pname, branch, base,
+                                         build_detail, _t0)
+
     current_candidate_sha = _commit_identity(repo, branch)
     if current_candidate_sha != candidate_sha:
         _task_patch(task, {"state": "DONE", "note": f"train: candidate advanced during QA {candidate_sha[:12]} -> {current_candidate_sha[:12]}; rerun exact new snapshot"})
@@ -1170,7 +1978,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "CONFLICT", "ff refused, cap exhausted")
         return "conflict"
 
-    push_err = _push_base(repo, base)                             # (5)
+    push_err = _push_base(repo, base, project=pname)              # (5)
     if push_err:
         # PUSH-VERIFICATION GATE: a merge is not MERGED until origin actually has it. A failed
         # push previously only annotated the note while the task still went MERGED — DB said
@@ -1193,7 +2001,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "PUSH-VERIFY-FAILED", verify_err[:120])
         return "push-pending"
 
-    _task_patch(task, {"state": "MERGED", "note": f"train: MERGED into {base}"})  # (6)
+    # (6) MERGED with evidence: current_candidate_sha is the exact snapshot that passed QA,
+    # was fast-forwarded into base, and whose presence on origin the push-verification gate
+    # (5b) just confirmed. Persist it as artifact_commit — the DB evidence gate requires it.
+    _task_patch(task, {"state": "MERGED",
+                       "artifact_commit": current_candidate_sha,
+                       "note": f"train: MERGED into {base} @ {str(current_candidate_sha)[:12]}"})
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
@@ -1216,14 +2029,24 @@ def _paused():
         return False
 
 
-def train_run():
-    """Entry point: run the integration train across all projects (serialized per project).
+def _train_run_unleased():
+    """Run the integration train across all projects (serialized per project).
+
+    The lease-taking public entry point is `train_run()` at the bottom of this module;
+    this is the body it delegates to. Both used to be spelled `def train_run`, with an
+    `_train_run_unleased = train_run` alias wedged between them. That worked at runtime
+    (the alias captured the first binding before the second shadowed it) but it made the
+    real implementation invisible to `inspect.getsource(merge_train.train_run)` — which
+    is how test_critical_fixes.py verifies the `repo_lock.hold(repo_path, timeout=...)`
+    call, so that guard silently went red. Naming the two functions differently keeps the
+    behaviour identical and makes the implementation reachable by name again.
 
     Returns a summary dict with keys:
         projects  (int)  — number of projects processed
         merged    (int)  — branches successfully fast-forwarded into base
         redo      (int)  — branches re-queued due to stale-base rebase conflicts
         testfail  (int)  — branches whose tests failed after rebase
+        buildfail (int)  — branches whose PRODUCTION BUILD was red (quarantined, never merged)
         conflict  (int)  — branches with unresolvable merge conflicts
         skipped   (int)  — branches skipped (cap reached or repo locked)
         risk      (dict) — counts by risk tier: low / standard / sensitive
@@ -1236,6 +2059,34 @@ def train_run():
 
     cards = _pick_cards()
     projects = {p["id"]: p for p in (db.select("projects") or [])}
+
+    # PER-PROJECT PAUSE (2026-08-06). `_paused()` above only consults the GLOBAL kill switch.
+    # Pausing a single project writes controls(scope='project', paused=true), which db.py
+    # honours when CLAIMING work -- but nothing here honoured it, so a paused project kept
+    # being merged and pushed to its production branch. Observed with illuminati: the operator
+    # asked for direct updates to stop because it is being absorbed into apparently/tomorrow/
+    # apparently-law/pareto, task claiming stopped correctly, and the train went on merging and
+    # deploying it anyway. "Paused" has to mean no writes of any kind, not just no new work.
+    # NOTE: paused project ids are collected here but the `projects` MAP IS LEFT INTACT.
+    # An earlier version of this filter deleted paused entries from `projects`, which made
+    # `projects.get(pid)` return {} further down; repo_path became "" and _record_pressure
+    # crashed the whole train with FileNotFoundError on an empty cwd. Paused projects are
+    # dropped from the per-project WORK grouping below instead, so lookups stay valid.
+    _paused_pids = set()
+    try:
+        _paused_names = {
+            (r.get("project") or "").strip()
+            for r in (db.select("controls", {"select": "project,paused,scope",
+                                             "scope": "eq.project", "paused": "is.true"}) or [])
+            if (r.get("project") or "").strip()
+        }
+        if _paused_names:
+            _paused_pids = {pid for pid, p in projects.items() if p.get("name") in _paused_names}
+            if _paused_pids:
+                print("merge_train: skipping paused project(s): "
+                      + ", ".join(sorted(projects[pid].get("name", "?") for pid in _paused_pids)))
+    except Exception as _pp_exc:      # never let a control-plane read stop the whole train
+        print(f"merge_train: per-project pause check failed ({_pp_exc}); continuing unpaused")
 
     # Resolve every card to its task, then group by project so each project is a serial train.
     # Batched (one tasks query for every card's slug) instead of one query per card -- with
@@ -1254,14 +2105,24 @@ def train_run():
             continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
 
+    # Drop paused projects from the work grouping (see the pause block above). Their cards are
+    # left UNDECIDED on purpose: pausing is reversible, and marking them decided here would
+    # silently discard the queued work when the project is resumed.
+    if _paused_pids:
+        by_project = {pid: v for pid, v in by_project.items() if pid not in _paused_pids}
+
     pressure = _record_pressure(by_project, projects)
     summary = {"projects": 0, "merged": 0, "already_integrated": 0,
-               "redo": 0, "testfail": 0, "conflict": 0,
+               "redo": 0, "testfail": 0, "regressfail": 0, "buildfail": 0, "conflict": 0,
                "skipped": 0, "project_errors": 0,
                "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict")  # only real attempts consume the cap
+    # 'regressfail' is a real attempt: the candidate was built, rebased and inspected, and it
+    # would have destroyed code in base. It consumes the cap exactly like testfail.
+    # 'buildfail' likewise — a red production build is the most expensive attempt we make, so
+    # it must consume the cap or one perpetually build-red project burns the whole cycle.
+    ATTEMPT_OUTCOMES = ("merged", "testfail", "regressfail", "buildfail", "conflict")
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     # FIX 2026-07-29 (re-applied — first attempt was wiped by the fleet's own stash/reset before
     # it could be committed): this block was a half-landed refactor — a bare `for` loop holding
@@ -1272,7 +2133,7 @@ def train_run():
         pid, group = item
         proj = projects.get(pid, {})
         result = {"projects": 1, "merged": 0, "already_integrated": 0,
-                  "redo": 0, "testfail": 0, "conflict": 0,
+                  "redo": 0, "testfail": 0, "regressfail": 0, "buildfail": 0, "conflict": 0,
                   "skipped": 0, "project_errors": 0,
                   "risk": {"low": 0, "standard": 0, "sensitive": 0}}
         used = {"low": 0, "standard": 0, "sensitive": 0}
@@ -1289,7 +2150,8 @@ def train_run():
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
         # FIX 2026-07-28: repo_lock.hold() takes (repo, timeout) only — the stray priority=True
         # kwarg was a second latent crash behind the missing import.
-        with repo_lock.hold(repo_path, timeout=300) as got_lock:
+        lock_timeout = float(os.environ.get("ORCH_MERGE_REPO_LOCK_TIMEOUT_S", "5"))
+        with repo_lock.hold(repo_path, timeout=lock_timeout) as got_lock:
             if not got_lock:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
@@ -1314,6 +2176,10 @@ def train_run():
                             result["redo"] += 1
                         elif outcome == "testfail":
                             result["testfail"] += 1
+                        elif outcome == "regressfail":
+                            result["regressfail"] += 1
+                        elif outcome == "buildfail":
+                            result["buildfail"] += 1
                         elif outcome == "conflict":
                             result["conflict"] += 1
                         else:
@@ -1356,7 +2222,7 @@ def train_run():
             except Exception:
                 pass
             return {"projects": 1, "merged": 0, "already_integrated": 0,
-                    "redo": 0, "testfail": 0, "conflict": 0,
+                    "redo": 0, "testfail": 0, "regressfail": 0, "buildfail": 0, "conflict": 0,
                     "skipped": len(group), "project_errors": 1,
                     "risk": {"low": 0, "standard": 0, "sensitive": 0}}
 
@@ -1368,8 +2234,9 @@ def train_run():
             results = list(pool.map(process_project_isolated, items))
         for result in results:
             for key in ("projects", "merged", "already_integrated", "redo",
-                        "testfail", "conflict", "skipped", "project_errors"):
-                summary[key] += result[key]
+                        "testfail", "regressfail", "buildfail", "conflict", "skipped",
+                        "project_errors"):
+                summary[key] += result.get(key, 0)
             for risk, count in result["risk"].items():
                 summary["risk"][risk] += count
     # AUTO-CONFLICT RESOLVER: second pass on branches that conflicted
@@ -1391,23 +2258,50 @@ def train_run():
 
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "
-          f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
+          f"{summary['testfail']} testfail, {summary['regressfail']} regressfail, "
+          f"{summary['buildfail']} buildfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
           f"across {summary['projects']} project(s)"
           f"{f', {auto_resolved} auto-resolved' if auto_resolved else ''}")
     return summary
 
 
-_train_run_unleased = train_run
-
-
 def train_run():
-    """Run the whole merge pass under the cross-train single-flight lease."""
+    """Run the whole merge pass under the cross-train single-flight lease.
+
+    CROSS-HOST GUARD (2026-08-06): the lease below is a flock on a file under THIS machine's
+    .runtime/, so it serialises processes on one Mac and is blind to the others. With two Macs
+    both running trains against the same GitHub origin that produced 54 PUSH-VERIFY-FAILED
+    sha-mismatches — real work destroyed by a push race, including the public-landing-hero
+    copyfix. integration_owner elects exactly one live host to integrate (and refuses hosts
+    running stale code), which is the missing cross-machine half of this lock.
+    """
+    # HOST PAUSE (2026-08-06): a paused host must not START a new pass. Checked before the
+    # owner election for the same reason as release_train — winning an election is not
+    # permission to run when the operator has stopped this machine. A pass already under
+    # way is never interrupted; only starting is refused.
+    _ok, _why = paused_host_guard.refuse("merge_train")
+    if not _ok:
+        return {"skipped": _why}
+    try:
+        import integration_owner
+        may, why = integration_owner.decide()
+        if not may:
+            print(f"merge_train: not the integration owner — {why}", flush=True)
+            return {"skipped": f"not integration owner: {why}"}
+    except Exception as _io_exc:      # a broken owner check must never stall every host
+        print(f"merge_train: integration-owner check failed ({_io_exc}); proceeding", flush=True)
     timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
     with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
         if not acquired:
             return {"skipped": "another integration or release train owns the global lease"}
-        return _train_run_unleased()
+        try:
+            return _train_run_unleased()
+        finally:
+            # Hand every repository back at the end of the pass so the next host takes
+            # over immediately instead of waiting out each TTL. Failing to release is
+            # not an error — the TTL still reclaims it.
+            delivery_lease.release_all(delivery_lease.ROLE_INTEGRATOR)
 
 
 # scheduler-compat alias: the train IS the integration path now
@@ -1427,7 +2321,6 @@ def _startup_static_gate():
 
 if __name__ == "__main__":
     _startup_static_gate()
-    import json
     # SINGLE-FLIGHT (2026-07-14): the 60s scheduler kept spawning new train processes while a
     # long pass (staging tests take minutes) was still running — 3-4 stacked merge_train.py
     # processes contended on the per-repo locks and burned RAM for zero extra merges. If another
@@ -1443,4 +2336,39 @@ if __name__ == "__main__":
     except (BlockingIOError, OSError):
         print(json.dumps({"skipped": "another merge_train instance is running"}))
         sys.exit(0)
+
+    # SELF-ENFORCED DEADLINE (2026-08-06). The runtime cap lived only in runner.py's
+    # _reap_stale_periodic, which can only kill pids recorded in that runner's own
+    # _PERIODIC_PIDS map. Restart the runner and every train it launched is reparented to
+    # init and becomes unkillable by the fleet — while still holding the flock above.
+    #
+    # Observed today: pid 37459, ppid 1, wedged 24 minutes in pure Python with seven lines of
+    # output, holding merge-train.single.lock. No train could start on this machine at all for
+    # as long as it lived, and nothing was going to reap it. A supervisor-dependent timeout is
+    # not a timeout; the pass has to own its own budget.
+    #
+    # faulthandler dumps every thread before we go, so the NEXT wedge is diagnosable instead of
+    # being another silent kill — the previous one took a root-only profiler to even locate.
+    # SIGUSR1 does the same on demand without killing anything.
+    import faulthandler, signal, threading as _th
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
+    _budget = float(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200") or 7200)
+    if _budget > 0:
+        def _deadline():
+            time.sleep(_budget)
+            sys.stderr.write(f"merge_train: WATCHDOG — pass exceeded {_budget:.0f}s; "
+                             f"dumping all threads and exiting so the single-flight lock "
+                             f"is released for the next pass\n")
+            sys.stderr.flush()
+            try:
+                faulthandler.dump_traceback(all_threads=True)
+            except Exception:
+                pass
+            sys.stderr.flush()
+            os._exit(3)
+        _th.Thread(target=_deadline, name="merge-train-watchdog", daemon=True).start()
+
     print(json.dumps(train_run(), indent=2, default=str))

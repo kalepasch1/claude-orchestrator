@@ -34,7 +34,14 @@ class TestQueueMonitor(unittest.TestCase):
 
     def test_syntax_check(self):
         import py_compile
-        py_compile.compile("runner/queue_monitor.py", doraise=True)
+        # Absolute path derived from THIS file. The literal "runner/queue_monitor.py" only
+        # resolved when pytest happened to run from the repo root; CI runs the runner
+        # suite with working-directory: runner, where it raised FileNotFoundError —
+        # so the syntax guard failed for a reason that had nothing to do with syntax.
+        import os
+        target = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "queue_monitor.py")
+        py_compile.compile(target, doraise=True)
 
 
 if __name__ == "__main__":

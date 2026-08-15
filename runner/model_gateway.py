@@ -126,8 +126,25 @@ def configured():
     if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
     if os.environ.get("GROQ_API_KEY", "").strip(): prov.append("groq")
     if os.environ.get("XAI_API_KEY", "").strip(): prov.append("xai")
-    if _ollama_up(): prov.append("local")
+    if _ollama_up() and not _local_disabled(): prov.append("local")
     return prov
+
+
+def _local_disabled():
+    """Whether local (Ollama) inference is switched off in favour of hosted providers.
+
+    WHY (2026-08-02): local inference was the fleet's actual throughput ceiling, not the work
+    itself. Ollama kept a 23GB qwen2.5-coder:32b resident; memory_guard unloaded it every few
+    minutes at 18-23% free RAM, something immediately reloaded it, and in the middle of that
+    thrash launchd's runner was SIGKILLed (exit 137) — so zero agent processes were alive and
+    nothing drained the queue. Meanwhile the resource governor read the same memory pressure and
+    throttled concurrency *down*, which made it worse.
+
+    Hosted providers (Claude subscription accounts, OpenAI, Google, DeepSeek) are all configured
+    and have none of that footprint. Setting ORCH_DISABLE_LOCAL_MODELS=1 keeps 'local' out of
+    routing entirely so the machine's RAM stops being a scheduling constraint.
+    """
+    return os.environ.get("ORCH_DISABLE_LOCAL_MODELS", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def available():
@@ -276,11 +293,13 @@ def provider_for_model(model):
         # Groq for cloud inference of open-source models; local for Ollama
         if os.environ.get("GROQ_API_KEY"):
             return "groq"
-        return "local"
+        # With local inference switched off, an open-weights model name must not silently pull a
+        # 23GB download back onto the box — fall through to a hosted provider instead.
+        return "claude" if _local_disabled() else "local"
     if m.startswith(("gpt-", "o1", "o3", "o4", "o5")):
         return "openai"
     if m:
-        return "local"
+        return "claude" if _local_disabled() else "local"
     return "claude"
 
 
@@ -487,10 +506,35 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last = {"provider": prov, "model": mdl, "error": str(e)}
+            demote_reason = None
             if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+                demote_reason = f"auth-{e.code}"
+            else:
+                # FIXED 2026-08-12. The demote above only fired for urllib.HTTPError, so a
+                # provider reached through litellm was NEVER demoted. Observed:
+                #   litellm.APIError: XaiException - Error code: 403 -
+                #   {'code': 'permission-denied', 'error': 'Your team … has either used all
+                #    available credits or reached its monthly spending limit.'}
+                # litellm.APIError is not an HTTPError, so isinstance() was False, the
+                # provider stayed in rotation, and every later task routed to it again —
+                # paying litellm's own internal backoff (Retrying in 4.0s, 8.0s, …) each
+                # time for a condition that cannot resolve without someone buying credits.
+                # A dead provider is a terminal fact about the ACCOUNT, not a flaky call.
+                #
+                # error_taxonomy already classifies this text correctly (exhaustion /
+                # account_quota / rotate_account), so classify the message rather than the
+                # exception class — that covers every SDK the fleet routes through.
+                try:
+                    import error_taxonomy
+                    cls = error_taxonomy.classify(str(e)) or {}
+                    if cls.get("error_class") in ("exhaustion", "permission_error"):
+                        demote_reason = f"{cls.get('error_class')}-{cls.get('subclass') or 'unknown'}"
+                except Exception:
+                    pass
+            if demote_reason:
                 try:
                     import provider_failover_sla
-                    provider_failover_sla.demote(prov, f"auth-{e.code}")
+                    provider_failover_sla.demote(prov, demote_reason)
                 except Exception:
                     pass
             if record_op:

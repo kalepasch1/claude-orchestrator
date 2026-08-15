@@ -1,7 +1,10 @@
 """Tests for deploy_verify._attribute_deploy_to_outcomes.
 
-Verifies that a confirmed Vercel READY state triggers deployed=True writes
-back to the outcomes rows that were integrated into that project.
+Verifies the write-back mechanics that mark integrated outcomes deployed.
+
+CONTRACT CHANGE 2026-08-13: a confirmed Vercel READY state is no longer sufficient on
+its own. Attribution now also requires a PASSING production journey receipt, so these
+mechanics tests pass one explicitly, and the gate itself is covered at the bottom.
 """
 import os
 import sys
@@ -13,9 +16,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import deploy_verify
 
 
+PASSING_JOURNEY = {"slug": "release", "verdict": "pass", "required": True,
+                   "failed_assertions": []}
+FAILED_JOURNEY = {"slug": "release", "verdict": "fail", "required": True,
+                  "failed_assertions": [{"step": "checkout", "assertion": "body_contains",
+                                         "expected": "Order placed", "actual": "absent"}]}
+
+
 class AttributeDeployToOutcomesTest(unittest.TestCase):
 
-    def _run(self, project, select_rows, *, raises=False):
+    def _run(self, project, select_rows, *, raises=False, journey=PASSING_JOURNEY):
         mock_db = MagicMock()
         if raises:
             mock_db.select.side_effect = Exception("column does not exist")
@@ -24,7 +34,7 @@ class AttributeDeployToOutcomesTest(unittest.TestCase):
         updates = []
         mock_db.update.side_effect = lambda t, m, p: updates.append((t, m, p))
         with patch.object(deploy_verify, "db", mock_db):
-            deploy_verify._attribute_deploy_to_outcomes(project)
+            deploy_verify._attribute_deploy_to_outcomes(project, journey_receipt=journey)
         return mock_db, updates
 
     def test_marks_integrated_outcomes_deployed(self):
@@ -73,9 +83,39 @@ class AttributeDeployToOutcomesTest(unittest.TestCase):
 
         mock_db.update.side_effect = flaky_update
         with patch.object(deploy_verify, "db", mock_db):
-            deploy_verify._attribute_deploy_to_outcomes("proj")
+            deploy_verify._attribute_deploy_to_outcomes("proj", journey_receipt=PASSING_JOURNEY)
         # All three slugs attempted despite the middle one failing
         self.assertEqual(call_count[0], 3)
+
+
+class AttributionRequiresAJourneyTest(unittest.TestCase):
+    """HTTP 200 + READY is release health, not delivery: it may not attribute alone."""
+
+    def _updates_for(self, journey):
+        mock_db = MagicMock()
+        mock_db.select.return_value = [{"slug": "foo-abc"}]
+        updates = []
+        mock_db.update.side_effect = lambda t, m, p: updates.append((t, m, p))
+        with patch.object(deploy_verify, "db", mock_db):
+            deploy_verify._attribute_deploy_to_outcomes("proj", journey_receipt=journey)
+        return updates
+
+    def test_no_receipt_attributes_nothing(self):
+        self.assertEqual(self._updates_for(None), [])
+
+    def test_failed_journey_attributes_nothing(self):
+        self.assertEqual(self._updates_for(FAILED_JOURNEY), [])
+
+    def test_flaky_journey_attributes_nothing(self):
+        flaky = dict(PASSING_JOURNEY, verdict="flaky")
+        self.assertEqual(self._updates_for(flaky), [])
+
+    def test_passing_journey_attributes(self):
+        self.assertEqual(len(self._updates_for(PASSING_JOURNEY)), 1)
+
+    def test_kill_switch_restores_the_old_behaviour(self):
+        with patch.dict(os.environ, {"ORCH_JOURNEY_ENABLED": "0"}):
+            self.assertEqual(len(self._updates_for(None)), 1)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,11 @@ _log = logging.getLogger("guardrails")
 # ── Configuration ──────────────────────────────────────────────────────────
 MODE = os.environ.get("ORCH_GUARDRAIL_MODE", "warn")
 MAX_BRANCHES = int(os.environ.get("ORCH_MAX_BRANCHES_PER_PROJECT", "30"))
-MAX_CREATES_PER_H = int(os.environ.get("ORCH_MAX_BRANCH_CREATES_PER_H", "10"))
+# Default raised 10 -> 240 (2026-08-03). 10/h was set when the fleet ran a handful of serial
+# agents; at MAX_PARALLEL=24 with a measured 2-3 claims/min it blocked every claim after the
+# first ~4 minutes of each hour and was the binding throughput limit. 240/h still catches the
+# runaway branch spam this guardrail exists for (thousands/h) — see runner/.env for sizing.
+MAX_CREATES_PER_H = int(os.environ.get("ORCH_MAX_BRANCH_CREATES_PER_H", "240"))
 MAX_MERGE_BACKLOG = int(os.environ.get("ORCH_MAX_MERGE_BACKLOG", "20"))
 DEPLOY_DEDUP_WINDOW = int(os.environ.get("ORCH_DEPLOY_DEDUP_WINDOW_S", "300"))
 MAX_WORKTREES = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
@@ -154,11 +158,48 @@ def check_worktree_count(repo_path):
     return {"passed": True, "count": count}
 
 # ── Guardrail 6: Remote branch GC (the missing piece) ─────────────────────
-def gc_remote_branches(repo_path):
+def terminal_slugs(project_repo_path=None):
+    """Slugs of tasks in a TERMINAL state (DONE/MERGED/QUARANTINED).
+
+    Mirrors the contract branch_gc.collect_garbage() has always required. Returns an EMPTY
+    set on any failure — and callers must treat an empty set as "delete nothing", never as
+    "nothing is protected". See gc_remote_branches().
+    """
+    try:
+        import db
+        params = {"select": "slug,state", "state": "in.(DONE,MERGED,QUARANTINED)", "limit": "20000"}
+        rows = db.select("tasks", params) or []
+        return {r.get("slug") for r in rows if r.get("slug")}
+    except Exception:
+        return set()
+
+
+def gc_remote_branches(repo_path, terminal=None):
     """Delete remote agent branches older than REMOTE_GC_DAYS.
-    branch_gc.py only handles local; this handles origin/agent/*."""
+    branch_gc.py only handles local; this handles origin/agent/*.
+
+    TASK-STATE GATE (audit addendum §A, prerequisite for ever wiring `remotegc`).
+    ---------------------------------------------------------------------------
+    This function deleted `origin/agent/*` by AGE ALONE. Unlike local `branch_gc.py` it never
+    consulted task state, so it could `git push origin --delete` the branch of a task that was
+    still QUEUED, RUNNING, or BLOCKED — an irreversible EXTERNAL deletion of live work. That is
+    why §A of the addendum lists `remotegc` as MUST-STAY-UNWIRED, and why removing that entry
+    from the do-not-touch list requires this gate to exist first.
+
+    `terminal` is a set of slugs in DONE/MERGED/QUARANTINED, exactly like
+    branch_gc.collect_garbage()'s `terminal_slugs`. Passing None makes this function fetch it
+    itself; if that lookup yields nothing, we REFUSE TO DELETE rather than assume the queue is
+    empty. Fail-safe beats fail-open when the failure mode is unrecoverable.
+    """
     if not REMOTE_GC_ENABLED:
         return {"deleted": 0, "reason": "disabled"}
+    if terminal is None:
+        terminal = terminal_slugs(repo_path)
+    if not terminal:
+        _log.warning("remote_branch_gc: no terminal task slugs available — refusing to delete "
+                     "any origin/agent/* branch (a QUEUED/RUNNING task's branch could be among "
+                     "them, and push --delete is irreversible)")
+        return {"deleted": 0, "skipped": 0, "errors": 0, "reason": "no terminal slugs — fail safe"}
     _git(repo_path, "fetch", "--prune", "origin")
     rc, out, _ = _git(repo_path, "branch", "-r", "--list", "origin/agent/*")
     if rc != 0:
@@ -166,6 +207,15 @@ def gc_remote_branches(repo_path):
     branches = [b.strip() for b in out.splitlines() if b.strip()]
     deleted, skipped, errors = [], 0, 0
     for branch in branches:
+        # TASK-STATE GATE — the branch_gc.py contract, mirrored. A slug that is not terminal
+        # belongs to work that is queued, running, or blocked; its remote branch is the only
+        # durable copy and `push --delete` cannot be undone.
+        slug = branch.replace("origin/agent/", "", 1) if branch.startswith("origin/agent/") else \
+            branch.replace("origin/", "", 1)
+        if slug not in terminal:
+            _log.info("remote_branch_gc: KEEPING %s — task '%s' is not in a terminal state "
+                      "(DONE/MERGED/QUARANTINED)", branch, slug)
+            skipped += 1; continue
         rc, log_out, _ = _git(repo_path, "log", "-1", "--format=%ct", branch)
         if rc != 0 or not log_out.strip():
             skipped += 1; continue
@@ -174,6 +224,24 @@ def gc_remote_branches(repo_path):
         except ValueError:
             skipped += 1; continue
         if age_days < REMOTE_GC_DAYS:
+            skipped += 1; continue
+        # FIX 2026-08-04 (cowork audit): this deleted origin/agent/* on AGE ALONE — no task
+        # state, no check that the work ever landed. origin is the durable copy that
+        # runner._durable_share_branch() creates precisely so local GC cannot destroy
+        # committed work; deleting it after 7 days closed the loop and destroyed the last
+        # copy anyway. An 8-day-old branch that never merged is the work most worth keeping.
+        # Delete only once the commits are reachable from another origin ref.
+        try:
+            import branch_durability
+            if not branch_durability.commits_reachable_elsewhere(repo_path, branch):
+                _log.info("remote_branch_gc: KEEPING %s — its commits are not reachable from "
+                          "any other origin ref; deleting it would destroy the only copy",
+                          branch)
+                skipped += 1; continue
+            branch_durability.archive_branch(repo_path, branch, reason="remote_branch_gc")
+        except ImportError:
+            # Fail SAFE: without the guard we cannot prove the work survives deletion.
+            _log.warning("remote_branch_gc: durability guard unavailable; keeping %s", branch)
             skipped += 1; continue
         remote_branch = branch.replace("origin/", "", 1)
         if REMOTE_GC_DRY_RUN:

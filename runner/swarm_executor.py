@@ -286,16 +286,36 @@ def _apply_diff(file_cache: Dict[str, str], diff_text: str) -> Dict[str, str]:
 
 def _write_repo_files(repo_path: str, original: Dict[str, str],
                       modified: Dict[str, str]):
-    """Write only changed files back to disk."""
+    """Write only changed files back to disk.
+
+    Paths here come from _parse_diff(), i.e. straight out of model output, so they
+    are validated before use: any line beginning "--- "/"+++ " becomes a path, and
+    prose or a code fragment on such a line would otherwise be created as a file
+    (see write_guard for the 2026-08-02 incident). Rejected paths are skipped and
+    logged loudly rather than silently written.
+    """
+    try:
+        import write_guard
+    except ImportError:
+        write_guard = None
     for relpath, content in modified.items():
-        if content != original.get(relpath):
-            fpath = os.path.join(repo_path, relpath)
-            os.makedirs(os.path.dirname(fpath), exist_ok=True)
-            try:
-                with open(fpath, "w") as f:
-                    f.write(content)
-            except OSError as e:
-                log.warning("write failed %s: %s", fpath, e)
+        if content == original.get(relpath):
+            continue
+        if write_guard is not None:
+            reason = write_guard.check(relpath, content)
+            if reason is not None:
+                log.error("swarm_executor: REFUSED model-supplied path %r — %s",
+                          relpath, reason)
+                continue
+        fpath = os.path.join(repo_path, relpath)
+        parent = os.path.dirname(fpath)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        try:
+            with open(fpath, "w") as f:
+                f.write(content)
+        except OSError as e:
+            log.warning("write failed %s: %s", fpath, e)
 
 
 # ---------------------------------------------------------------------------

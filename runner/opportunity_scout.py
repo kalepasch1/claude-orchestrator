@@ -2,8 +2,8 @@
 """
 opportunity_scout.py - a standing agent that surfaces BETTER ideas continuously. For each
 repo it asks a cheap model for RICE-scored 10x opportunities (features, refactors, perf,
-DX) and files the top ones as proposal cards. Never edits code - just proposes, so good
-ideas keep arriving for you to approve. Schedule weekly.
+DX) and files the top ones through the canonical improvement committee. Never edits code
+directly; accepted proposals become normal tasks with QA, merge, and release evidence.
 """
 import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,7 +46,7 @@ def run():
                 except Exception:
                     pass
         for o in sorted(ideas, key=rice, reverse=True)[:3]:
-            title = f"[RICE {rice(o)}] {o.get('title')}"
+            title = f"[RICE {rice(o)}] {o.get('title')}"[:200]
             why = o.get("why", "")
             kind = "proposal"
             # preference gate: suppress low-approval-likelihood proposals
@@ -54,11 +54,34 @@ def run():
             if preference.should_suppress(title, why, kind):
                 print(f"  suppressed (pref={pref:.2f}): {o.get('title')}")
                 continue
-            db.insert("approvals", {"project": p["name"], "kind": kind,
-                                    "title": title, "why": why,
-                                    "value": o.get("value"), "risk": o.get("risk"),
-                                    "command": "",
-                                    "detail": f"predicted approval likelihood: {pref:.0%}"})
+            existing = db.select("improvement_proposals", {
+                "select": "id", "app": f"eq.{p['name']}", "title": f"eq.{title}",
+                "status": "in.(proposed,for_review,queued)", "limit": "1",
+            }) or []
+            if existing:
+                continue
+            value = str(o.get("value") or "Improve verified product value.")
+            risk = str(o.get("risk") or "Revert the isolated change on regression.")
+            spec = (
+                f"IMPROVEMENT HYPOTHESIS (feature; not a measured result): {o.get('title')}\n\n"
+                f"Baseline: {why}\n"
+                f"Target: {value}\n"
+                "Multiplier basis: 2x = compare the measured target with the current baseline; "
+                "the opportunity's larger claim remains unproven until post-deploy measurement.\n"
+                "Measurement plan: establish the baseline before implementation and compare a seven-day "
+                "post-release sample against it.\n"
+                f"Rollback: {risk}\n\n"
+                "Acceptance tests:\n"
+                "- The committee records a concrete implementation boundary and measurable baseline.\n"
+                "- The implementation passes regression/build gates and has a verified deployment receipt."
+            )
+            db.insert("improvement_proposals", {
+                "app": p["name"], "surface": "feature", "title": title,
+                "current_state": str(why)[:600], "proposal": spec[:1500],
+                "expected_multiplier": "2x", "divergent": False,
+                "rationale": f"RICE {rice(o)}; predicted review likelihood {pref:.0%}. {risk}"[:800],
+                "status": "for_review", "score": rice(o),
+            })
             made += 1
     print(f"opportunity scout: filed {made} scored proposals")
 

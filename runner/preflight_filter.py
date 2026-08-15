@@ -49,7 +49,21 @@ _METADATA_ONLY_RE = re.compile(
 
 
 def preflight_check(task: dict) -> str:
-    """Return '' if task is dispatchable, or a quarantine reason string."""
+    """Return '' if task is dispatchable, or a quarantine reason string.
+
+    E: the verdict is recorded for liveness. A preflight that starts quarantining
+    (or passing) essentially everything is a bug, and now alarms within a day.
+    """
+    verdict = _preflight_check_inner(task)
+    try:
+        import gate_liveness
+        gate_liveness.record("preflight", verdict or "pass", task.get("slug"), verdict or None)
+    except Exception:
+        pass
+    return verdict
+
+
+def _preflight_check_inner(task: dict) -> str:
     prompt = str(task.get("prompt") or "")
     note = str(task.get("note") or "")
     attempt = task.get("attempt") or 0
@@ -80,8 +94,31 @@ def preflight_check(task: dict) -> str:
         return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
     if _RECYCLED_NOTE_RE.search(note):
         return f"preflight: recycled task ({note[:80]})"
+    # ATTEMPT COUNT ALONE MUST NOT CONDEMN A WELL-SPECIFIED TASK (2026-08-15).
+    #
+    # This quarantined anything that had failed 4 times. Audited today: 139 tasks were destroyed
+    # by this rule, every one in the cowork lane, and every one carrying a real specification —
+    # prompt lengths from 1,311 to 25,230 characters, median 5,985. Not one was a garbage stub.
+    # That single rule is most of the cowork lane's 45% completion rate.
+    #
+    # An attempt is consumed by ANY failure, and this fleet spent months failing for reasons
+    # that had nothing to do with the task: a merge train wedged behind an orphaned lock, gates
+    # timing out inside their own telemetry, scan windows hiding most of the queue, cross-host
+    # push races. Counting those against the task and then deleting its prompt is how a
+    # 6,000-character brief becomes nothing at all.
+    #
+    # So the rule now needs BOTH signals: repeated failure AND a thin prompt. A thin prompt that
+    # keeps failing really is unactionable. A detailed one that keeps failing is evidence about
+    # the fleet, and the right response is to keep it and fix the fleet. Substantial specs still
+    # face a hard ceiling, so nothing retries forever.
     max_attempts = int(os.environ.get("ORCH_PREFLIGHT_MAX_ATTEMPTS", "4"))
-    if attempt >= max_attempts:
+    hard_ceiling = int(os.environ.get("ORCH_PREFLIGHT_HARD_CEILING", "12"))
+    substantial = int(os.environ.get("ORCH_PREFLIGHT_SUBSTANTIAL_CHARS", "500"))
+    _is_substantial = len((prompt or "").strip()) >= substantial
+    if attempt >= hard_ceiling:
+        return (f"preflight: exhausted {attempt} attempts without success "
+                f"(hard ceiling {hard_ceiling})")
+    if attempt >= max_attempts and not _is_substantial:
         return f"preflight: exhausted {attempt} attempts without success"
 
     body = prompt

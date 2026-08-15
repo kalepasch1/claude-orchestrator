@@ -11,8 +11,15 @@ const feedbackItems = ref<any[]>([])
 const resourceGauge = ref<any>({})
 const sessionRunning = ref<Record<string, boolean>>({})
 const feedbackSaving = ref(false)
+const feedbackError = ref('')
+const feedbackReceipt = ref('')
 const loading = ref(false)
 const newFeedback = reactive({ category: 'other', severity: 'med', observation: '', suggestion: '' })
+
+async function authedFetch<T = any>(url: string, opts: any = {}): Promise<T> {
+  const { data: { session } } = await supabase.auth.getSession()
+  return $fetch<T>(url, { ...opts, headers: { ...(opts.headers || {}), ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) } })
+}
 
 async function loadAll() {
   loading.value = true
@@ -60,14 +67,18 @@ async function runSession(sess: any) {
 async function submitFeedback() {
   if (!newFeedback.observation.trim()) return
   feedbackSaving.value = true
+  feedbackError.value = ''
+  feedbackReceipt.value = ''
   try {
-    await supabase.from('orchestrator_feedback').insert({
+    const receipt: any = await authedFetch('/api/feedback', { method: 'POST', body: {
       category: newFeedback.category, severity: newFeedback.severity,
       observation: newFeedback.observation, suggestion: newFeedback.suggestion,
-      source: 'human', status: 'new',
-    })
+    } })
     newFeedback.observation = ''; newFeedback.suggestion = ''
+    feedbackReceipt.value = `Queued as ${receipt.task.slug}`
     await loadAll()
+  } catch (error: any) {
+    feedbackError.value = error?.data?.message || error?.message || 'The improvement was not queued.'
   } finally { feedbackSaving.value = false }
 }
 
@@ -235,6 +246,8 @@ watch(user, u => { if (u) loadAll() })
             class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-gray-900 text-sm rounded-lg disabled:opacity-40 transition-colors">
             {{ feedbackSaving ? 'Saving…' : 'Submit Feedback' }}
           </button>
+          <p v-if="feedbackReceipt" class="text-xs text-green-700">{{ feedbackReceipt }}</p>
+          <p v-if="feedbackError" class="text-xs text-red-700">{{ feedbackError }}</p>
         </div>
       </div>
 

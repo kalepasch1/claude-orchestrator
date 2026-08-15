@@ -20,6 +20,14 @@ _HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchest
 _STAMP_DIR = os.environ.get("ORCH_DEPS_STAMP_DIR", os.path.join(_HOME, "deps"))
 _LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock")
 _DEFAULT_TIMEOUT = int(os.environ.get("ORCH_DEPS_PREWARM_TIMEOUT", "900"))
+# Per-`cp` ceiling for one package root's node_modules activation.
+_ACTIVATION_CALL_TIMEOUT_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_TIMEOUT", "180"))
+# Ceiling for ALL roots in one link_shared_runtime() call. Must stay comfortably
+# below merge_train's 900s pass watchdog so activation can never consume the
+# whole pass and leave nothing merged.
+_ACTIVATION_TOTAL_BUDGET_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_BUDGET", "420"))
+# Below this much remaining budget, skip cloning and symlink instead.
+_ACTIVATION_MIN_SLICE_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_MIN_SLICE", "15"))
 _COMMON_PACKAGE_DIRS = tuple(
     x.strip() for x in os.environ.get(
         "ORCH_PACKAGE_ROOT_HINTS",
@@ -207,6 +215,37 @@ def _manager(repo):
     return "npm", [npm, "install", "--prefer-offline", "--no-audit", "--fund=false"]
 
 
+def _dev_env(manager, cmd):
+    """(cmd, env) that installs devDependencies, whatever NODE_ENV the fleet runs under.
+
+    ROOT CAUSE, found 2026-08-12. This host exports NODE_ENV=production. npm reads that
+    and OMITS devDependencies — silently, exiting 0, reporting "up to date". So every
+    fleet install produced a tree with no vitest, no test runner, no dev tooling, and
+    `npx vitest` died with ERR_MODULE_NOT_FOUND. worktree_preflight then called that tree
+    a "partial install" and blocked the project, forever, because re-running the same
+    install could never change the outcome.
+
+    Measured in claude-orchestrator/web: `npm ci` added 622 packages and vitest was not
+    among them; `npm ls vitest` reported empty while package.json declared it in
+    devDependencies. Re-running with NODE_ENV=development and --include=dev added the
+    missing 200 packages and the suite ran green immediately.
+
+    The fleet installs in order to BUILD AND TEST, so dev dependencies are not optional
+    for it — production omission is a deployment concern, not a CI one. Forced explicitly
+    rather than by hoping the ambient environment is right.
+    """
+    env = dict(os.environ)
+    if str(env.get("NODE_ENV", "")).lower() == "production":
+        env["NODE_ENV"] = "development"
+    env.pop("NPM_CONFIG_PRODUCTION", None)
+    env["NPM_CONFIG_INCLUDE"] = "dev"
+    if manager == "npm" and "--include=dev" not in cmd:
+        cmd = [*cmd, "--include=dev"]
+    elif manager == "pnpm" and "--prod" not in cmd:
+        cmd = [*cmd, "--dev"] if "--dev" not in cmd else cmd
+    return cmd, env
+
+
 def _ignore_scripts_cmd(manager, cmd):
     if manager == "npm" and "--ignore-scripts" not in cmd:
         return [*cmd, "--ignore-scripts"]
@@ -217,9 +256,142 @@ def _ignore_scripts_cmd(manager, cmd):
     return None
 
 
+def _entrypoint_files(pkg_dir, meta):
+    """Relative entrypoint paths a package declares, as far as we can cheaply tell."""
+    out = []
+    for key in ("main", "module"):
+        val = meta.get(key)
+        if isinstance(val, str) and val.strip():
+            out.append(val.strip())
+    def _collect(node, depth=0):
+        """Walk nested export conditions: {"import": {"default": "./src/index.js"}}."""
+        if depth > 6:
+            return
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            for key in ("node", "import", "require", "default", "browser"):
+                if key in node:
+                    _collect(node[key], depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item, depth + 1)
+
+    exports = meta.get("exports")
+    if isinstance(exports, str):
+        out.append(exports)
+    elif isinstance(exports, dict):
+        _collect(exports.get(".", exports))
+    return [p for p in out if isinstance(p, str) and not p.startswith("#") and "*" not in p]
+
+
+_ENTRY_EXTS = (".js", ".mjs", ".cjs", ".json", ".node", ".ts", ".d.ts")
+
+
+def _resolves(pkg_dir, target):
+    """Whether `target` resolves inside pkg_dir the way Node would.
+
+    Manifests routinely declare extensionless entrypoints ("main": "./dist/index") or point at a
+    directory. A bare os.path.exists() call marks all of those missing, which would flag most of
+    a healthy tree as corrupt and send every checkout into a reinstall loop.
+    """
+    base = os.path.normpath(os.path.join(pkg_dir, target.lstrip("./") if target.startswith("./") else target))
+    if os.path.isfile(base):
+        return True
+    for ext in _ENTRY_EXTS:
+        if os.path.isfile(base + ext):
+            return True
+    if os.path.isdir(base):
+        for ext in _ENTRY_EXTS:
+            if os.path.isfile(os.path.join(base, "index" + ext)):
+                return True
+        # A directory that exists but has no index is still a real directory on disk; treat the
+        # entrypoint as present and let the build be the judge rather than guessing wrong.
+        return True
+    return False
+
+
+def broken_packages(repo, limit=25):
+    """Installed packages whose directory exists but whose declared entrypoint does not.
+
+    Concurrent npm/pnpm runs against one checkout leave exactly this shape: node_modules/<pkg>
+    survives with its package.json, but dist/ was pruned by the other process. Nothing downstream
+    notices — .bin symlinks still resolve — until the build dies with ERR_MODULE_NOT_FOUND for
+    some transitive dependency. Scanning the top level is bounded (a few hundred stats) and cheap
+    relative to the doomed build it prevents.
+    """
+    nm = os.path.join(repo, "node_modules")
+    if not os.path.isdir(nm):
+        return []
+    broken = []
+    try:
+        entries = sorted(os.listdir(nm))
+    except OSError:
+        return []
+    for name in entries:
+        if name.startswith(".") or name == ".bin":
+            continue
+        base = os.path.join(nm, name)
+        candidates = []
+        if name.startswith("@"):
+            try:
+                candidates = [os.path.join(base, sub) for sub in sorted(os.listdir(base))]
+            except OSError:
+                continue
+        else:
+            candidates = [base]
+        for pkg_dir in candidates:
+            manifest = os.path.join(pkg_dir, "package.json")
+            if not os.path.isfile(manifest):
+                continue
+            try:
+                with open(manifest, encoding="utf-8") as fh:
+                    meta = json.load(fh)
+            except Exception:
+                continue
+            targets = _entrypoint_files(pkg_dir, meta)
+            if not targets:
+                continue
+            # Only flag when *every* declared entrypoint is missing: packages legitimately ship
+            # a subset (e.g. ESM-only builds that still declare a CJS "main").
+            if all(not _resolves(pkg_dir, t) for t in targets):
+                broken.append(os.path.relpath(pkg_dir, nm))
+                if len(broken) >= limit:
+                    return broken
+    return broken
+
+
+# Transitive packages the JS toolchains load on every build. A corrupt copy of any of these takes
+# the build down with an ERR_MODULE_NOT_FOUND that names the transitive package, not the direct
+# dependency, which is what made the 2026-08-02 corruption so slow to diagnose.
+_RUNTIME_CRITICAL = frozenset({
+    "citty", "consola", "std-env", "h3", "nitropack", "unstorage", "ofetch", "ufo", "defu",
+    "pathe", "jiti", "unimport", "unplugin", "vite", "rollup", "esbuild", "webpack",
+    "nuxt", "nuxi", "next", "typescript", "vue", "vue-router", "postcss", "tailwindcss",
+})
+
+
+def _load_bearing(repo, rel_pkg, manifest):
+    """Whether a damaged package is one this build will actually try to load.
+
+    Some packages are simply mispackaged upstream — the deprecated `fs` stub ships no index.js at
+    all, and `javascript-opentimestamps` points `main` at a file it never publishes. Those have
+    been "broken" since the day they were installed and the builds pass anyway. Failing readiness
+    on them would put the checkout into a permanent reinstall loop, which is a worse outage than
+    the one this check exists to catch — so direct dependencies deliberately do NOT qualify.
+
+    Only the shared JS toolchain does. Those packages are correctly published, every build loads
+    them, and they are precisely what a torn concurrent install damaged on 2026-08-02. If one of
+    them has lost its entrypoint, the tree really is corrupt and reinstalling really is the fix.
+    """
+    name = rel_pkg.replace(os.sep, "/")
+    return name in _RUNTIME_CRITICAL or name.split("/")[0] in ("@nuxt", "@vue", "@vitejs")
+
+
 def _deps_ready_local(repo):
     if not os.path.isfile(os.path.join(repo, "package.json")):
         return True
+    manifest = {}
     try:
         with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
             manifest = json.load(f)
@@ -241,7 +413,18 @@ def _deps_ready_local(repo):
         required_bins.append(("next",))
     if "vite" in joined or os.path.exists(os.path.join(repo, "vite.config.ts")) or os.path.exists(os.path.join(repo, "vite.config.js")):
         required_bins.append(("vite",))
-    if "tsc" in joined or "typescript" in joined or os.path.exists(os.path.join(repo, "tsconfig.json")):
+    # Require the TypeScript CLI only when the project actually depends on it.
+    #
+    # FIX 2026-08-02: this used to fire on the mere presence of tsconfig.json. Nuxt generates a
+    # tsconfig.json for editor support in projects that never install a standalone `typescript`
+    # (pareto-2080 is one), so that checkout could never satisfy readiness. Every caller that
+    # asked "are deps ready?" got False and kicked off another install — which is how several
+    # agents ended up running npm/pnpm against the same node_modules at once and tearing it. The
+    # never-satisfiable gate was manufacturing the corruption this module is meant to prevent.
+    _declares_ts = any((manifest.get(k) or {}).get(dep)
+                       for k in ("dependencies", "devDependencies")
+                       for dep in ("typescript", "vue-tsc"))
+    if "tsc" in joined or "typescript" in joined or _declares_ts:
         required_bins.append(("tsc", "vue-tsc"))
     if not os.path.isdir(nm):
         return not required_bins
@@ -261,6 +444,15 @@ def _deps_ready_local(repo):
             ("@vue", "compiler-sfc", "dist", "compiler-sfc.cjs.js"),
         )
         if not all(os.path.isfile(os.path.join(nm, *parts)) for parts in required_files):
+            return False
+    # Catch the general case the two hardcoded probes above only sample: any package left
+    # entrypoint-less by a concurrent install. Reporting not-ready sends this checkout back
+    # through a reinstall instead of into a build that dies on ERR_MODULE_NOT_FOUND.
+    if _truthy("ORCH_PREWARM_INTEGRITY_SCAN", True):
+        damaged = [p for p in broken_packages(repo, limit=40) if _load_bearing(repo, p, manifest)]
+        if damaged:
+            print(f"dependency_prewarm: {repo} has {len(damaged)} load-bearing package(s) with "
+                  f"missing entrypoints ({', '.join(damaged[:5])}); treating install as not ready")
             return False
     return True
 
@@ -295,6 +487,28 @@ def ensure(repo, reason="prewarm", timeout=None):
         return {"ok": True, "skipped": "no-package-json"}
     if _stamp_matches(repo):
         return {"ok": True, "skipped": "warm-cache"}
+    # Two locks, two jobs. The manifest-keyed lock below collapses identical installs across
+    # worktrees into one build. It deliberately does NOT provide mutual exclusion per checkout —
+    # two installs against the same tree with different manifest states take different locks — so
+    # take the checkout-keyed lock as well before touching this repo's dependencies.
+    _checkout_lock = None
+    try:
+        import install_lock as _il
+        _checkout_lock = _il.hold(repo, reason=reason)
+        _checkout_lock.__enter__()
+    except Exception:
+        _checkout_lock = None
+    try:
+        return _ensure_locked(repo, reason=reason, timeout=timeout)
+    finally:
+        if _checkout_lock is not None:
+            try:
+                _checkout_lock.__exit__(None, None, None)
+            except Exception:
+                pass
+
+
+def _ensure_locked(repo, reason="prewarm", timeout=None):
     # The lock is keyed by manifest content rather than checkout path: identical installs
     # across worktrees collapse into one build and one immutable runtime.
     lock_file = None
@@ -331,9 +545,12 @@ def ensure(repo, reason="prewarm", timeout=None):
             lock_file.close()
         return {"ok": False, "error": f"snapshot staging failed: {e}"}
     manager, cmd = _manager(build_root)
+    # The fleet installs in order to build AND TEST, so devDependencies are mandatory for
+    # it. See _dev_env: NODE_ENV=production on this host was silently omitting them.
+    cmd, _env = _dev_env(manager, cmd)
     try:
         r = subprocess.run(cmd, cwd=build_root, capture_output=True, text=True,
-                           timeout=timeout or _DEFAULT_TIMEOUT)
+                           env=_env, timeout=timeout or _DEFAULT_TIMEOUT)
     except subprocess.TimeoutExpired:
         shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
@@ -347,15 +564,23 @@ def ensure(repo, reason="prewarm", timeout=None):
         fallback = _ignore_scripts_cmd(manager, cmd)
         if fallback:
             r2 = subprocess.run(fallback, cwd=build_root, capture_output=True, text=True,
-                                timeout=timeout or _DEFAULT_TIMEOUT)
+                                env=_env, timeout=timeout or _DEFAULT_TIMEOUT)
             if r2.returncode == 0:
                 r = r2
                 ignored_scripts = True
     if r.returncode != 0:
         tail = ((r.stdout or "")[-800:] + "\n" + (r.stderr or "")[-800:]).strip()
+        err = tail or f"{manager} install failed"
+        # A failed install leaves the snapshot unready; label it with the standard
+        # readiness-validation failure class so repair routing sees one error family.
+        try:
+            if not _deps_ready_local(build_root):
+                err = "installed snapshot failed dependency readiness validation: " + err
+        except Exception:
+            pass
         shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
-        return {"ok": False, "manager": manager, "error": tail or f"{manager} install failed"}
+        return {"ok": False, "manager": manager, "error": err[:2000]}
     # PRISMA (2026-07-14): installs that skip lifecycle scripts (--ignore-scripts fallback,
     # pnpm script whitelisting) never run `prisma generate`, so every test importing the client
     # fails with "Cannot find module '.prisma/client/default'" — this single missing step
@@ -435,6 +660,16 @@ def link_shared_runtime(repo, worktree):
     roots = package_roots(repo) or [repo]
     linked = []
 
+    # Aggregate wall-clock budget for the clone path.
+    #
+    # activate_modules() bounds each individual `cp` at _ACTIVATION_CALL_TIMEOUT_S,
+    # but this function calls it once per package root. With 6 roots (the current
+    # beethoven layout) the worst case was 6 * 180s = 1080s, which alone exceeds the
+    # 900s merge_train watchdog -- so a single _build_gate could burn the entire pass
+    # in dependency activation and get killed before integrating anything. Bound the
+    # total here and degrade to the (near-instant) symlink path once spent.
+    deadline = time.monotonic() + _ACTIVATION_TOTAL_BUDGET_S
+
     def link_one(src, dst):
         if os.path.exists(src) and not os.path.exists(dst):
             try:
@@ -447,13 +682,19 @@ def link_shared_runtime(repo, worktree):
         if not os.path.isdir(src) or os.path.exists(dst):
             return
         mode = os.environ.get("ORCH_DEPS_ACTIVATION_MODE", "clone").lower()
-        if mode == "clone":
+        remaining = deadline - time.monotonic()
+        if mode == "clone" and remaining > _ACTIVATION_MIN_SLICE_S:
             if os.uname().sysname == "Darwin":
                 cmd = ["cp", "-cR", src, dst]
             else:
                 cmd = ["cp", "-a", "--reflink=auto", src, dst]
             try:
-                copied = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                copied = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(_ACTIVATION_CALL_TIMEOUT_S, remaining),
+                )
                 if copied.returncode == 0 and os.path.isdir(dst):
                     linked.append(dst)
                     return

@@ -125,7 +125,9 @@ AMBIGUITIES/CONCERNS:
     assert fake.updates
     # Check that existing_note was populated with scope and ambiguity info
     existing_note = seen.get("existing_note", "")
-    assert "preflight: sharpened" in existing_note
+    # 91c480fe renamed this prefix to "preflight-ok:" so preflight_filter's
+    # kill regex (r"preflight:|GC:") stops eating sharpened tasks.
+    assert "preflight-ok: sharpened" in existing_note
     assert "scope:" in existing_note or "ambiguities:" in existing_note
 
 

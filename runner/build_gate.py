@@ -69,6 +69,7 @@ def detect_build_cmd(repo):
     roots = dependency_prewarm.package_roots(repo)
     if not roots:
         return os.environ.get("DEFAULT_BUILD_CMD", "")
+    loose = ""
     for root in roots:
         vercel_cmd = _vercel_build_cmd(repo, root)
         if vercel_cmd:
@@ -83,9 +84,15 @@ def detect_build_cmd(repo):
             return _npx_cmd(repo, root, "nuxi typecheck")
         if os.path.isfile(os.path.join(root, "next.config.js")) or os.path.isfile(os.path.join(root, "next.config.mjs")):
             return _npx_cmd(repo, root, "next build")
-        if scripts:
-            return script_cmd(repo, root, "build")
-    return ""
+        # A package that has scripts but no build-ish script is only a LAST resort.
+        # Returning `npm run build` here used to abort the scan on the first root, so a
+        # monorepo whose root package.json has no "build" script resolved to a command
+        # that always dies with `npm error Missing script: "build"` — the deployable
+        # package one directory over was never reached, and the build gate (and the
+        # production push guard that shares it) could never go green.
+        if scripts and not loose:
+            loose = script_cmd(repo, root, "build")
+    return loose
 
 
 def _package_runner(repo):
@@ -214,11 +221,17 @@ def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
 
 
 def check(project_name, branch):
+    # E: every verdict is recorded so a build gate stuck on one answer alarms in hours.
+    # A broken parser here defaulted to False for 18 days without raising or counting.
+    import gate_liveness
     p = (db.select("projects", {"select": "*", "name": f"eq.{project_name}"}) or [{}])[0]
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
+        gate_liveness.record("build_gate", "skipped_no_repo", branch, project_name)
         return True, "repo not on this machine (skipped)"
-    return run_build(repo, branch, build_cmd_for(p, repo))
+    ok, log = run_build(repo, branch, build_cmd_for(p, repo))
+    gate_liveness.record("build_gate", bool(ok), branch, (log or "")[:400])
+    return ok, log
 
 
 if __name__ == "__main__":

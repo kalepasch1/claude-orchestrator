@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { deriveDecisionBrief } from '~/utils/decisionBrief'
 import type { LogLine } from '~/types/log'
+import FleetHealthBadge from '~/components/FleetHealthBadge.vue'
+import { useFleetHealth } from '~/composables/useFleetHealth'
 definePageMeta({ layout: 'default', alias: ['/index'] })
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
+const { dbUp, refresh: refreshFleetHealth } = useFleetHealth()
 const tasks = ref<any[]>([])
 const approvals = ref<any[]>([])
 const projects = ref<any[]>([])
@@ -38,6 +41,7 @@ const stopLoading = ref(false)
 const panicLoading = ref(false)
 const rotateLoading = ref<Record<string, boolean>>({})
 const feedbackSaving = ref(false)
+const feedbackError = ref('')
 const newFeedback = reactive({ category: 'general', severity: 'low', observation: '', suggestion: '' })
 const budgets = ref<any[]>([])
 const loops = ref<any[]>([])
@@ -58,7 +62,9 @@ async function authedFetch<T = any>(url: string, opts: any = {}): Promise<T> {
   return $fetch<T>(url, { ...opts, headers: { ...(opts.headers || {}), ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) } })
 }
 
-function alive(r: any) { return Date.now() - new Date(r.last_seen).getTime() < 60_000 }
+// 2026-08-03: 60s was tighter than the heartbeat cadence (~1-2 min), so healthy runners
+// flapped to 'dead'. 3 min tolerates one missed beat without hiding a real outage.
+function alive(r: any) { return Date.now() - new Date(r.last_seen).getTime() < 180_000 }
 function ago(ts: string) {
   const minutes = Math.round((Date.now() - new Date(ts).getTime()) / 60_000)
   if (!Number.isFinite(minutes)) return ''
@@ -98,8 +104,15 @@ function readableState(state: string) {
 }
 
 async function loadAll() {
-  const [taskRows, approvalRows, projectRows, runnerRows, spendRows, outcomeRows, controlRows, capabilityRows] = await Promise.all([
-    supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(50),
+  // FIX 2026-08-03 (cowork): this destructuring was misaligned — 20 queries but 8 names,
+  // so runners<-budgets, providerSpend<-runs, outcomes<-v_project_health, controls<-goals.
+  // Every headline metric on Mission Control read the wrong table. Names now match order,
+  // and runner_heartbeats (the real liveness source) is queried instead of nothing.
+  const [taskRows, approvalRows, projectRows, budgetRows, runRows, healthRows, goalRows,
+         actionInboxRows, txnRows, capabilityRows, capabilityInstanceRows, capabilityProvenanceRows,
+         proposalRows, loopRows, sessionActionRows, feedbackRows, providerSpendRows, outcomeRows,
+         controlRows, capabilityAllRows, runnerRows] = await Promise.all([
+    supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(2000),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
     supabase.from('projects').select('*').order('name'),
     supabase.from('budgets').select('*'),
@@ -120,10 +133,12 @@ async function loadAll() {
     supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at,slug').order('created_at', { ascending: false }).limit(500),
     supabase.from('controls').select('*'),
     supabase.from('capabilities').select('*'),
+    supabase.from('runner_heartbeats').select('*').order('last_seen', { ascending: false }),
   ])
   tasks.value = taskRows.data || []; approvals.value = approvalRows.data || []; projects.value = projectRows.data || []
-  runners.value = runnerRows.data || []; providerSpend.value = spendRows.data || []; outcomes.value = outcomeRows.data || []
-  capabilities.value = capabilityRows.data || []; globalPaused.value = (controlRows.data || []).some((c: any) => c.scope === 'global' && c.paused)
+  runners.value = runnerRows.data || []; providerSpend.value = providerSpendRows.data || []; outcomes.value = outcomeRows.data || []
+  capabilities.value = capabilityRows.data || []; budgets.value = budgetRows.data || []; loops.value = loopRows.data || []
+  globalPaused.value = (controlRows.data || []).some((c: any) => c.scope === 'global' && c.paused)
 }
 
 async function submitIntent(projectId?: string) {
@@ -161,6 +176,7 @@ let refreshTimer: any
 let realtimeSub: any
 let logSub: any
 onMounted(async () => {
+  await refreshFleetHealth()
   if (user.value) await loadAll()
   refreshTimer = setInterval(() => { if (user.value) loadAll() }, 30_000)
   realtimeSub = supabase.channel('command-center-live').on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, loadAll).on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, loadAll).subscribe()
@@ -202,14 +218,18 @@ async function rotateKey(providerName: string, keyName: string, project: string 
 async function submitFeedback() {
   if (!newFeedback.observation.trim()) return
   feedbackSaving.value = true
+  feedbackError.value = ''
   try {
-    await supabase.from('orchestrator_feedback').insert({
+    const receipt: any = await authedFetch('/api/feedback', { method: 'POST', body: {
       category: newFeedback.category, severity: newFeedback.severity,
       observation: newFeedback.observation, suggestion: newFeedback.suggestion,
-      source: 'human', status: 'new',
-    })
+    } })
     newFeedback.observation = ''; newFeedback.suggestion = ''
     await loadAll()
+    signalOutcome('success', 'Improvement queued', `Execution task ${receipt.task.slug} is now traceable through QA, merge, and release.`)
+  } catch (error: any) {
+    feedbackError.value = error?.data?.message || error?.message || 'The improvement was not queued.'
+    signalOutcome('error', 'Improvement not queued', feedbackError.value)
   } finally { feedbackSaving.value = false }
 }
 
@@ -560,6 +580,7 @@ watch(user, u => { if (u) loadAll() })
                 :class="runners.some(alive) ? 'bg-green-400 dot-breathe' : 'bg-red-400'"></span>
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
+        <FleetHealthBadge :db-up="dbUp" />
         <span class="text-slate-500 text-sm">
           {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · <span class="font-mono" :class="exactBacklogCount ? 'text-amber-300' : 'text-emerald-400'" title="Exact full-table backlog count from SQL">{{ fmtInt(exactBacklogCount) }}</span> backlog · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono text-cyan-300" title="Estimated prompt/result cache and patch-template savings from recent resource events">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</span> tok avoided · <span class="font-mono" :class="integrateKpi.overall >= 1 ? 'text-emerald-400' : 'text-amber-400'" title="Post-QA merge-rate: passed/non-churn work that actually integrated. Target is 100%; failed drafting attempts are tracked separately as attempt yield.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
         </span>

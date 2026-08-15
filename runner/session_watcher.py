@@ -286,6 +286,13 @@ def scan():
             "next_action": d.get("next_action"), "auto": auto,
         })
 
+        # cont-* auto-continuation fans work out with no convergence gate. Default OFF;
+        # set ORCH_SESSION_AUTOCONTINUE=1 to restore. session_actions still records the
+        # paused/next-step notice either way, so nothing is lost — it just isn't auto-queued.
+        import self_work_gate
+        if auto and not self_work_gate.allow_generator("ORCH_SESSION_AUTOCONTINUE",
+                                                       "session_watcher.scan"):
+            auto = False
         if auto and _cont_backlog() < CONT_QUEUE_MAX:
             proj = db.select("projects", {"select": "id", "name": f"eq.{_project_for(path)}"}) or []
             if proj:
@@ -338,11 +345,16 @@ def recover_paused(limit=200):
 
     queued = hidden = 0
     backlog = _cont_backlog()  # circuit breaker: don't recover into an already-deep continuation queue
+    import self_work_gate
+    # Same gate as scan(): paused sessions are still cleared from the panel, they just don't
+    # mint new cont-* build tasks unless ORCH_SESSION_AUTOCONTINUE=1.
+    allow_cont = self_work_gate.allow_generator("ORCH_SESSION_AUTOCONTINUE",
+                                                "session_watcher.recover_paused")
     for s in rows:
         action = (s.get("next_action") or "").strip()
         project_name = resolve_project(s.get("project"), action)
         pid = projects.get(project_name)
-        if pid and action and not action.startswith("(") and (queued + backlog) < CONT_QUEUE_MAX:
+        if allow_cont and pid and action and not action.startswith("(") and (queued + backlog) < CONT_QUEUE_MAX:
             slug = f"cont-{(s.get('session_id') or s['id'])[:8]}"
             try:
                 db.insert("tasks", _route_if_exhausted(

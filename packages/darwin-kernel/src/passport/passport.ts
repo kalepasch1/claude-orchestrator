@@ -8,7 +8,7 @@
  * OFFLINE — no shared secret, no call back to the issuer. Time-boxed so a stale
  * passport is rejected.
  */
-import { sha256Canonical, contentId } from '../crypto/hash.ts';
+import { sha256Canonical, contentId, canonicalize } from '../crypto/hash.ts';
 import { signDigest, verifyDigest, type Signature } from '../crypto/signing.ts';
 import type { ProductId } from '../types.ts';
 
@@ -51,6 +51,50 @@ export interface Passport {
 
 const DAY = 86_400_000;
 
+/**
+ * Canonical form used for the digest and content id — NOT for storage.
+ *
+ * A passport's digest identifies its CONTENT, and a set of claims is the same set whichever
+ * order it arrives in. Digesting the claims as-given made digest and `id` order-dependent:
+ * the same subject with the same claims produced two different passports depending on array
+ * order, silently breaking dedup, caching, and any equality check built on id/digest.
+ *
+ * Only the hashed view is sorted. The stored `passport.claims` keeps the caller's order,
+ * because callers legitimately read `claims[i]` positionally and reordering the stored array
+ * would change observable behaviour to fix a hashing concern.
+ *
+ * buildPassport and verifyPassport MUST both hash through here — canonicalising on only one
+ * side makes every passport fail its own digest check.
+ *
+ * The comparator must be a TOTAL order over exactly the bytes that get hashed. The scalar
+ * tuple below (kind, issuer, issuedAt, expiresAt, value) is not: it omits `detail`, so two
+ * claims that agree on all five compare equal, `Array.prototype.sort` is stable and therefore
+ * leaves them in caller order, and the digest goes back to being order-dependent — the exact
+ * defect this function exists to prevent. `canonicalize` is the final tie-break because it is
+ * the same key-sorted serialization the digest itself is taken over, so every digest-relevant
+ * field (including `detail`, and any field added later) participates in the ordering by
+ * construction. The scalar tuple is kept ahead of it only because it orders a canonical dump
+ * the way a human would expect to read it, and short-circuits before the serialize in the
+ * common case.
+ */
+function canonicalBody<T extends { claims: Claim[] }>(body: T): T {
+  return {
+    ...body,
+    claims: [...body.claims].sort((a, b) => {
+      const scalar =
+        a.kind.localeCompare(b.kind) ||
+        a.issuer.localeCompare(b.issuer) ||
+        a.issuedAt.localeCompare(b.issuedAt) ||
+        a.expiresAt.localeCompare(b.expiresAt) ||
+        a.value - b.value;
+      if (scalar !== 0) return scalar;
+      const ka = canonicalize(a);
+      const kb = canonicalize(b);
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    }),
+  };
+}
+
 export function buildPassport(params: {
   subject: string;
   claims: Claim[];
@@ -62,9 +106,10 @@ export function buildPassport(params: {
     claims: params.claims,
     issuedAt: params.issuedAt ?? new Date().toISOString(),
   };
-  const digest = sha256Canonical(body);
+  const canonical = canonicalBody(body);
+  const digest = sha256Canonical(canonical);
   return {
-    id: contentId('pass', body),
+    id: contentId('pass', canonical),
     ...body,
     digest,
     signature: signDigest(digest),
@@ -81,14 +126,20 @@ export interface PassportVerification {
 /** Stateless verify: signature + digest integrity + per-claim expiry. */
 export function verifyPassport(passport: Passport, asOf: Date = new Date()): PassportVerification {
   const { id: _id, digest, signature, ...body } = passport;
-  if (sha256Canonical(body) !== digest) {
+  if (sha256Canonical(canonicalBody(body)) !== digest) {
     return { valid: false, reason: 'digest_mismatch', liveClaims: [] };
   }
   if (!verifyDigest(digest, signature)) {
     return { valid: false, reason: 'signature_invalid', liveClaims: [] };
   }
   const now = asOf.getTime();
-  const liveClaims = passport.claims.filter((c) => Date.parse(c.expiresAt) > now);
+  // A claim that had already expired when the passport was MINTED is dead in
+  // every timeline: verifying "as of" an earlier date must not resurrect it,
+  // otherwise a backdated `asOf` turns expired credentials back on.
+  const mintedAt = Date.parse(passport.issuedAt);
+  const liveClaims = passport.claims.filter(
+    (c) => Date.parse(c.expiresAt) > now && Date.parse(c.expiresAt) > mintedAt,
+  );
   if (liveClaims.length === 0) {
     return { valid: false, reason: 'all_claims_expired', liveClaims: [] };
   }

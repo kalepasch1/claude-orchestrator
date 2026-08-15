@@ -265,7 +265,17 @@ def run(limit=BATCH):
     return out
 
 
+#: Interval this daemon is scheduled on; drives the max-runtime kill (interval x1.5).
+TICK_INTERVAL_S = int(os.environ.get("ORCH_BENCHMARK_REDLINES_INTERVAL_S", "3600"))
+
 if __name__ == "__main__":
+    # SINGLE-INSTANCE LOCK (fleet immune system, P0 bullet 2) — see expert_corps.py for the
+    # incident. `ingest` is a one-shot operator command with an explicit file argument, so it
+    # is deliberately NOT gated: locking it would make a human paste block on a stuck daemon.
+    if not (len(sys.argv) > 3 and sys.argv[1] == "ingest"):
+        import lane_guard
+        _deadline = lane_guard.guard_or_exit("benchmark_redlines", interval_s=TICK_INTERVAL_S)
+
     if len(sys.argv) > 3 and sys.argv[1] == "ingest":
         # benchmark_redlines.py ingest <target_id> <path-to-filing.txt> [url]
         with open(sys.argv[3], "r", encoding="utf-8", errors="replace") as f:

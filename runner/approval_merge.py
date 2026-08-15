@@ -18,8 +18,10 @@ Safety:
 """
 import os, sys, re, subprocess, fnmatch, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import shadow_mode
 import db
 import agentic_repair
+import worktree_isolation
 
 MARK = "merge-handler"          # decided_by sentinel => already processed
 MAX_FETCH_RETRIES = 3
@@ -207,6 +209,20 @@ def _free_branch(repo, branch):
         primary = _primary_worktree(repo)
         if primary and os.path.realpath(wt) == os.path.realpath(primary):
             return False
+        # 2026-08-12: exempting only the PRIMARY checkout was not enough. Any
+        # LINKED worktree was fair game here, including one an operator has the
+        # integration branch checked out in — and `--force` does not stop at
+        # uncommitted work. Observed the same night: an agent left
+        # apparently-wt/promote-20260811 (holding orchestrator/dev) with a
+        # conflicted index and raw conflict markers in a tracked file.
+        # Only agent/<slug> checkouts are disposable; that rule now lives in
+        # worktree_isolation so this path and validate_task_worktree cannot
+        # drift apart.
+        reason = worktree_isolation.reserved_worktree_reason(repo, wt)
+        if reason:
+            print(f"[approval_merge] refusing to free branch {branch}: "
+                  f"worktree {wt} is protected because {reason}")
+            return False
         subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
     return True
@@ -253,6 +269,28 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
     """Merge agent/<slug> into `base` correctly, regardless of what's checked out, and (optionally)
     push so Vercel deploys. Frees any leftover worktree first (the real bug)."""
     _free_branch(repo, branch)
+
+    def _verify_or_rollback(pre_base_sha):
+        """ANTI-LOSS GATE (added 2026-08-04): a clean rebase or fast-forward can still
+        silently revert improvements the branch forked before. Fail-closed: on findings
+        (or if the gate stack can't run) move `base` back and keep the branch."""
+        findings = ""
+        try:
+            import auto_conflict_resolver as _acr
+            findings = _acr.verify_merge(repo, pre_base_sha, base, branch, result_ref=base)
+        except Exception as exc:
+            findings = f"verify_merge unavailable (fail-closed): {type(exc).__name__}: {exc}"
+        if findings:
+            if pre_base_sha:
+                subprocess.run(["git", "update-ref", f"refs/heads/{base}", pre_base_sha],
+                               cwd=repo, capture_output=True)
+            print(f"approval_merge: REGRESSION BLOCKED integrating {branch} into {base}: "
+                  f"{findings[:400]}")
+            return False
+        return True
+
+    pre_base = subprocess.run(["git", "rev-parse", base], cwd=repo,
+                              capture_output=True, text=True).stdout.strip()
     # clean fast-forward if the branch is strictly ahead of base (the common case)
     ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
                            cwd=repo, capture_output=True).returncode == 0
@@ -269,6 +307,8 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
         try:
             if subprocess.run(["git", "worktree", "add", "-f", tmp, base], cwd=repo, capture_output=True).returncode != 0:
                 return "CONFLICT"
+            if shadow_mode.refuse("merge-branch", subject=branch, detail=f"--no-ff into {base}"):
+                return {"ok": False, "reason": "shadow mode: merge recorded, not performed"}
             r = subprocess.run(["git", "merge", "--no-ff", "-m", f"merge {branch}", branch],
                                cwd=tmp, capture_output=True)
             if r.returncode != 0:
@@ -277,13 +317,47 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
         finally:
             subprocess.run(["git", "worktree", "remove", "--force", tmp], cwd=repo, capture_output=True)
             shutil.rmtree(tmp, ignore_errors=True)
+    if not _verify_or_rollback(pre_base):
+        return "CONFLICT"
     # push to origin so CI/Vercel deploy — guarded: only when explicitly enabled.
     if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
+        if shadow_mode.refuse("push-base", subject=base, detail=f"{repo} -> origin/{base}"):
+            return {"ok": False, "reason": "shadow mode: push recorded, not performed"}
         push = subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True, text=True)
         if push.returncode != 0:
             return "PUSHFAIL:" + (push.stderr or "")[-120:]
     _free_branch(repo, branch)   # cleanup so worktrees never accumulate again
-    return "MERGED"
+    # Return the sha the merge actually produced. Everything below MERGED here is a LOCAL
+    # ref move: ORCH_PUSH_ON_MERGE defaults to false, so by default origin never advanced.
+    # Without this sha the caller writes a MERGED row with artifact_commit NULL, which is
+    # exactly the phantom-merge shape the 2026-08-04 audit found (see merge_truth).
+    return f"MERGED:{merged_sha(repo, base)}"
+
+
+def _split_result(result):
+    """Split _integrate()'s return into (state, sha).
+
+    _integrate encodes evidence in the return string ("MERGED:<sha>", "PUSHFAIL:<err>"),
+    so the state written to the DB must never be the raw string. Older callers and any
+    bare "MERGED" still work — they simply carry no sha, and merge_truth treats a missing
+    sha as unverifiable rather than as proof.
+    """
+    text = str(result or "").strip()
+    if text.startswith("MERGED:"):
+        return "MERGED", text.split(":", 1)[1].strip()
+    if text.startswith("PUSHFAIL"):
+        return "PUSHFAIL", ""
+    return text, ""
+
+
+def merged_sha(repo, base):
+    """Tip of `base` after integration — the evidence a MERGED row must carry. '' on error."""
+    try:
+        out = subprocess.run(["git", "rev-parse", base], cwd=repo,
+                             capture_output=True, text=True, timeout=30)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:                                        # fail-soft
+        return ""
 
 
 def _notify(msg):
@@ -400,7 +474,19 @@ def run():
             tr = int(t.get("transient_retries") or 0)
             cap = _bounded_int("MERGE_CONFLICT_REDO_CAP", 2, ceiling=_MAX_REDO_CAP)
             if tr < cap:
-                subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True)
+                # FIX 2026-08-04 (cowork audit): a merge CONFLICT is not a reason to destroy
+                # committed work. This force-deleted the branch so the worktree would be
+                # rebuilt, taking the agent's commits with it — the redo then re-generated
+                # them from scratch as a recover-missing-branch-<slug> task. safe_delete
+                # frees the branch NAME (so the rebuild is still clean) while archiving the
+                # tip under refs/archive/, keeping the original commits recoverable by sha.
+                try:
+                    import branch_durability
+                    branch_durability.safe_delete(
+                        repo, branch, reason="approval_merge conflict redo")
+                except Exception as exc:
+                    print(f"[approval_merge] durability guard unavailable for {branch} "
+                          f"({exc}); NOT deleting")
                 patch = agentic_repair.repair_patch(
                     t, f"merge conflict integrating {branch} into {base}",
                     category="conflict",
@@ -419,11 +505,29 @@ def run():
             _notify(f"[merge] {slug}: still conflicts after {cap} redos — needs a look")
             handled += 1
             continue
-        decided_marker = f"{MARK_AUTO}:{result}" if is_auto_candidate else f"{MARK}:{result}"
-        db.update("tasks", {"id": t["id"]}, {"state": result,
-                  "note": f"merge-handler: {result} (approved by {c.get('decided_by') or 'you'})"})
+        state, sha = _split_result(result)
+        decided_marker = f"{MARK_AUTO}:{state}" if is_auto_candidate else f"{MARK}:{state}"
+        patch = {"state": state,
+                 "note": f"merge-handler: {state} (approved by {c.get('decided_by') or 'you'})"}
+        if state == "MERGED":
+            # _integrate only moved a LOCAL ref unless ORCH_PUSH_ON_MERGE was set, so this
+            # write is where a real merge and a phantom one become indistinguishable. Route
+            # it through merge_truth like every other MERGED writer in the fleet: reachable
+            # -> MERGED, not reachable -> PHANTOM_UNVERIFIED with a reason, infra error ->
+            # write nothing and retry next cycle. Was a bare db.update; that gap is what put
+            # 20 branches into a MERGED state master had never received.
+            patch["artifact_commit"] = sha
+            import merge_truth
+            applied = merge_truth.guarded_task_update(t, patch, repo=repo)
+            if applied is None:
+                continue                      # infra error — leave the card for next cycle
+            state = applied.get("state", state)
+            decided_marker = (f"{MARK_AUTO}:{state}" if is_auto_candidate
+                              else f"{MARK}:{state}")
+        else:
+            db.update("tasks", {"id": t["id"]}, patch)
         db.update("approvals", {"id": c["id"]}, {"decided_by": decided_marker})
-        _notify(f"[merge] {slug} -> {base}: {result}")
+        _notify(f"[merge] {slug} -> {base}: {state}")
         handled += 1
     print(f"approval_merge: processed {handled} card(s) ({auto_approved} auto-approved)")
     return handled

@@ -4,8 +4,9 @@ meta_loop.py - the loop ON the loops. Scores how well each app's learning/remedi
 are actually working (from outcomes), tunes their cadence (raises remediate frequency for
 flaky apps, lowers optimize for stable ones), cross-deploys the best-performing loop configs
 from one app to underperforming apps, and auto-tunes the pipeline itself (gates, models, batching)
-based on per-stage cycle_time and first_try_yield metrics, and asks each loop's Claude Code agent
-"how could this app's loop or the app itself be improved?" — routing those answers through feedback_review.
+based on per-stage cycle_time and first_try_yield metrics. Model-generated suggestions are bounded
+to two evidence-backed projects and paused while authenticated operator work is pending; formerly
+the loop asked every app every run and generated more advisory work than the fleet could deliver.
 Schedule daily.
 """
 import os, sys, subprocess, json, uuid, datetime
@@ -33,12 +34,16 @@ CROSS_DEPLOY_GAP = 15
 FIRST_TRY_YIELD_THRESHOLD = 0.60  # if < 60%, consider tuning the pipeline
 CYCLE_TIME_REGRESSION_PCT = 15  # if cycle_time increases >15%, flag for tuning
 PRECEDENT_MATCH_THRESHOLD = 0.85  # if > 85%, consider increasing batch size
+MIN_OUTCOMES = int(os.environ.get("METALOOP_MIN_OUTCOMES", "20"))
+SYNTHETIC_PROJECTS = {"smoke-test", "smoke_test", "test", "example"}
 
 
 def _project_score(project):
+    if str(project or "").strip().lower() in SYNTHETIC_PROJECTS:
+        return None
     rows = db.select("outcomes", {"select": "tests_passed,integrated,rate_limited",
                                   "project": f"eq.{project}", "limit": "300"}) or []
-    if not rows:
+    if len(rows) < MIN_OUTCOMES:
         return None
     n = len(rows)
     passed = sum(1 for r in rows if r.get("tests_passed")) / n
@@ -259,8 +264,25 @@ def run():
                 db.update("loops", {"id": l["id"]}, {"cadence_seconds": new_cad})
                 tuned += 1
                 print(f"meta_loop: tuned {p}/{l['type']} cadence {l['cadence_seconds']}s -> {new_cad}s (score {score})")
-        # Ask for loop improvement suggestions (one per project per meta_loop run)
-        _ask_improvement(p, "remediate")
+    # Never let speculative self-work compete with an authenticated request. When
+    # capacity is available, ask only the two worst evidence-backed projects.
+    operator_pending = []
+    try:
+        operator_pending = db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "submitted_by": "not.is.null", "limit": "1",
+        }) or db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "slug": "like.dropbox-*", "limit": "1",
+        }) or []
+    except Exception:
+        # A telemetry failure is not permission to create more work.
+        operator_pending = [{"id": "unknown"}]
+    if operator_pending:
+        print("meta_loop: operator work pending; skipped speculative model suggestions")
+    else:
+        for project, _score in sorted(rated.items(), key=lambda item: item[1])[:2]:
+            _ask_improvement(project, "remediate")
 
     if len(rated) < 2:
         print(f"meta_loop: tuned {tuned} cadences; not enough projects to cross-deploy")
@@ -268,18 +290,12 @@ def run():
         best = max(rated, key=rated.get)
         worst = min(rated, key=rated.get)
 
-        # write health back + cross-deploy if gap is large
+        # A high score in one app is not causal evidence that its loop config will
+        # improve another app. Per-app cadence tuning above remains active, but the
+        # former cross-deploy approval was both unsafe and unexecutable.
         if rated[best] - rated[worst] > CROSS_DEPLOY_GAP:
-            best_cfg = {l["type"]: {"cadence_seconds": l["cadence_seconds"], "config": l.get("config")}
-                        for l in by_project[best]}
-            db.insert("approvals", {"project": worst, "kind": "self",
-                "title": f"Cross-deploy '{best}' loop config to '{worst}'",
-                "why": f"{best} loop-health {rated[best]} vs {worst} {rated[worst]}.",
-                "value": "Propagate the better-performing learning/remediation cadence.",
-                "risk": "Tune after applying; revertible.",
-                "detail": str(best_cfg)})
-            print(f"meta_loop: proposed cross-deploy {best}({rated[best]}) -> {worst}({rated[worst]})")
-            tuned += 1
+            print(f"meta_loop: health gap {best}({rated[best]}) -> {worst}({rated[worst]}); "
+                  "kept configs isolated and tuned each app from its own evidence")
 
         print(f"meta_loop: {tuned} cadence tunes; best {best}={rated[best]}, worst {worst}={rated[worst]}")
 

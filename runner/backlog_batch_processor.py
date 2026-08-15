@@ -133,6 +133,10 @@ class BacklogBatchProcessor:
 
             tasks = self._fetch_queued_tasks()
             if not tasks:
+                # The recovered tip inlined a literal dict here to add a
+                # "timestamp" key; _summarize_batch already emits one, and it
+                # also carries total_cost_usd / avg_cost_per_task. Newest
+                # implementation wins.
                 return self._summarize_batch([])
 
             results = []

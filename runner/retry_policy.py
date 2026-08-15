@@ -36,6 +36,10 @@ _TRANSIENT = re.compile(
     r"rate.?limit|overload|429|500|502|503|504|"
     r"service unavailable|read timed out|broken pipe|"
     r"budget cap|cost circuit|http error 409|409: conflict|postgrest|high demand|try again|econnreset|"
+    # provider credit/spend exhaustion (e.g. xai 403 permission-denied "used all
+    # available credits / monthly spending limit") — recoverable via provider
+    # rotation or the monthly reset, same class as "budget cap" (canary-codex-4)
+    r"spending limit|available credits|out of credits|insufficient credits|quota exceeded|"
     r"name resolution|dns|ssl|handshake|reset by peer|"
     r"409|conflict|duplicate key|already exists)",
     re.I,

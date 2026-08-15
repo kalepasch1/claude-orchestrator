@@ -1,4 +1,18 @@
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+
+// Analytics only matters on Vercel deploys, where a fresh `npm install` from
+// package.json guarantees the package. The merge-train build gate instead links a
+// pre-warmed node_modules snapshot into its overlay, and a snapshot built before
+// this dependency landed has no @vercel/analytics — a hard modules entry then kills
+// the whole production build over a telemetry nicety. Probe this app's own
+// node_modules (not require resolution, which walks up into unrelated trees) and
+// include the module only when the package is really installed here.
+const vercelAnalytics = existsSync(
+  fileURLToPath(new URL('./node_modules/@vercel/analytics/package.json', import.meta.url))
+)
+  ? ['@vercel/analytics/nuxt']
+  : []
 
 const kernel = (path: string) =>
   fileURLToPath(new URL(`../packages/darwin-kernel/src/${path}`, import.meta.url))
@@ -16,7 +30,7 @@ const appAlias = {
 
 // Nuxt config - hosted control plane (deploys to Vercel out of the box).
 export default defineNuxtConfig({
-  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss', '@vercel/analytics/nuxt'],
+  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss', ...vercelAnalytics],
   ssr: true,
   experimental: { appManifest: false },
   alias: appAlias,
@@ -38,17 +52,43 @@ export default defineNuxtConfig({
   routeRules: {
     // The PKCE verifier lives in the browser; keep the callback entirely
     // client-rendered so no unauthenticated landing state can flash first.
-    '/auth/callback': { ssr: false }
+    '/auth/callback': { ssr: false },
+    // Scoped proof links are private correspondence sent to a named reviewer.
+    // Belt-and-braces with the page-level robots meta and robots.txt: an
+    // X-Robots-Tag keeps them out of indexes even when a crawler reaches one
+    // without parsing the HTML.
+    '/proof/**': {
+      headers: {
+        'x-robots-tag': 'noindex, nofollow',
+        'referrer-policy': 'no-referrer',
+        'cache-control': 'no-store, max-age=0'
+      }
+    }
   },
   css: ['~/assets/main.css'],
   app: {
     pageTransition: { name: 'page', mode: 'out-in' },
     layoutTransition: { name: 'layout', mode: 'out-in' },
     head: {
-      title: 'Madeus — Outcome Orchestration',
-      meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
+      htmlAttrs: { lang: 'en' },
+      // Kept in sync with components/LegoraLanding.vue, which is the public surface.
+      title: 'Madeus — The private operating system for company building',
+      meta: [
+        { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+        { name: 'theme-color', content: '#0b0c0b' },
+        { name: 'format-detection', content: 'telephone=no' },
+        {
+          name: 'description',
+          content:
+            'Madeus is the private operating system for founders running multiple companies — private intelligence, governed execution, and independently verified outcomes. By invitation.'
+        },
+        { name: 'author', content: 'Madeus' },
+        { property: 'og:site_name', content: 'Madeus' },
+        { property: 'og:locale', content: 'en_US' }
+      ],
       link: [
         { rel: 'icon', type: 'image/svg+xml', href: '/madeus-mark.svg' },
+        { rel: 'apple-touch-icon', href: '/madeus-mark.svg' },
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
         { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
         {

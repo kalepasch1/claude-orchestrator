@@ -1,0 +1,52 @@
+# beethoven madeus/web: multi-tenant claude-preneur platform, bidirectional embeds, circular cross-tenant hivemind
+
+SUBMITTED-BY: kalepasch@gmail.com (operator decision 2026-08-04)
+
+ACTIVATED 2026-08-04 by operator decision — the Wave-0 review gate this was held on now exists (commit a8ee6e3f, madeus.cc/waves).
+
+
+ORIGINALLY-SUBMITTED-BY: kale@smrter.us (operator) via Cowork strategy session 2026-07-27.
+
+ROUND-11 SUPERSESSION (strategy 14.5 — read it): the FULL Madeus capability set (universal command, fleet/waves dashboards, sign-offs, steering, tenancy, intercompany/multi-entity coordination, per-department fleet initiation) now surfaces inside Apparently as the "Command" layer so the operator and every org use ONE app; madeus.cc remains the private direct console + engine. Build the embed surfaces to full capability parity (not just the strip); the Apparently-side mount is coordinated with PROMPT-apparently-one-app-unification.
+
+Operator vision of record (UPDATED round 3 — Madeus stays PRIVATE): Madeus (web/ at madeus.cc + runner/) remains the engine/brain for ALL future coordination, but is NOT launched as a public claude-preneur product. madeus.cc stays private — the operator's personal multi-app development cockpit + shared portfolio brain/optimization engine. We do NOT compete in the agent-orchestrator market directly. Instead, Madeus's CAPABILITIES embed into the other apps — primarily Apparently, where the identical machinery serves IN-HOUSE TEAMS building multiple products/services/subsidiaries at once (functionally the same as managing multiple companies). The hivemind is ALL APPARENTLY USERS, not a separate claude-preneur tenant base. So: build the tenancy/isolation/embed machinery below because APPARENTLY needs it (multi-entity in-house teams), keep madeus.cc private, and surface the Madeus strip + fleet capabilities inside Apparently (priority 1), Tomorrow, and Pareto. This SIMPLIFIES scope — no public Madeus onboarding/billing/marketing; the tenancy work lands inside Apparently's multi-entity layer. Strategy ref: Part 4.12e (as revised).
+
+## 1. Tenancy (the productization prerequisite)
+- Today: single operator, one portfolio, repos hardcoded in runner/deployment_bindings.json, tasks have no owner. Build: `tenants` (org) table; `projects` gain tenant_id; `tasks`/`approvals`/`steering_events` scoped by tenant; deployment bindings move from JSON to a tenant-scoped table (keep the JSON as the seed for the founding tenant); per-tenant quotas + usage metering (tasks run, model spend, machines); RLS on all tenant-scoped tables.
+- HARD REQUIREMENT — execution isolation: worktrees, repo access, env/secrets, and knowledge stores never cross tenants. Fleet workers resolve repo credentials per tenant. Add isolation tests (a task in tenant A must be unable to reference tenant B's repo/bindings/knowledge).
+- Proof: migrations apply; isolation tests green; founding-tenant seed reproduces current behavior exactly (no regression for the existing portfolio).
+
+## 2. Multi-entity portfolio dashboard (private Madeus + the Apparently-embedded version)
+- Two consumers of the SAME tenancy machinery: (i) private madeus.cc dashboard for the operator (personal multi-app cockpit — no public onboarding/billing/marketing); (ii) the embedded version inside Apparently for in-house teams running multiple products/services/subsidiaries (this is the real customer surface). Build the shared dashboard: N entities/products; per-entity cards: fleet activity (running/queued), pending approvals, next waves + ETA (reuse waves data), compliance posture strip (item 4), latest shipped. One-screen "what do all my products/entities need from me right now" — cross-entity approvals inbox ordered by urgency.
+- Onboarding (used by Apparently in-house teams, and the operator privately): connect GitHub (App install; repo selection) → connect deploy target + optional Supabase → register project(s)/product(s) → declare the entity constitution (darwin-kernel template picker: fleet may/may-not, materiality, approval rules) → first outcome through the clarify flow. NO public self-serve signup/billing for Madeus itself.
+- Proof: e2e onboarding with a fixture repo; dashboard renders N seeded entities; private vs Apparently-embedded mode both render; vue-tsc clean.
+
+## 3. Madeus embeds OUTWARD (the brain reachable from every app)
+- Build a Madeus embed SDK: the UniversalCommand outcome box + fleet-status/approvals strip as an embeddable widget (`web/pages/embed/command.vue` + postMessage host protocol + tenant-scoped API keys). Any portfolio app (and later any tenant's own app) can mount it so work is initiated anywhere and lands in the one fleet.
+- Note existing one-way precedent: Smarter's fleet inbox already receives orchestrator approval cards (smarter/server/utils/fleetInbox.ts). Extend that channel two-way: approvals decided in Smarter write back decided_by + steering_events here; document the envelope so apparently/pareto can mount the same strip.
+- EMBED-TARGET MATRIX (strategy Part 4.12d) — the Madeus strip is embedded, scoped per host, and always feeds back into the orchestrator when the tenant enables it: **Apparently — priority 1** (in-house teams orchestrating compliance/eng/marketing/payroll/everything across entities, with regulations/compliance/law attached to every fleet task via Illuminati); **Tomorrow — scoped** (war-room + remediation task orchestration); **Pareto — consigliere-facing** (the concierge's execution rail is a fleet; personal outcomes like "plan and book the trip" run the same machinery). One person (the operator's own case) sees personal + portfolio + company work in one queue. Do NOT merge Madeus into Apparently as one codebase — deep embed + shared identity + the intelligence bus (item 5) instead; the control plane's credential/repo/machine-control blast radius stays isolated from client-facing SaaS. Rationale recorded in strategy Part 4.12e.
+- Proof: fixture host page on another origin mounts the widget, submits an outcome, sees it appear in the queue (mocked auth handshake test).
+
+## 4. Portfolio features embed INWARD (every managed startup gets the organs)
+- Per-tenant integration slots, config-driven, all optional and fail-open:
+  (a) Coordination: mount Smarter `/embed/board` in the startup workspace view (Smarter embed surface is being built by HOLD-PROMPT-smarter-embed-and-coordination — integrate behind a feature flag; if the embed isn't live yet, ship the slot + config and a link-out fallback).
+  (b) Interception: Illuminati CADE evaluation default-ON for every tenant task at planning time (the planner co-think hook from the review-gate wave becomes per-tenant configurable: advisory | gate | off; gate creates approval cards).
+  (c) Compliance: an Apparently strip per startup — open findings count, filings/licensing status, compliance radar deep-link — via a tenant-scoped S2S pull from Apparently (env-gated; fail-open with "not connected" state).
+  (d) Risk: when a task/finding carries a quantified material risk (CADE escalate + dollar estimate), surface a "hedge this" deep-link to Tomorrow (link-out only in this pass; no S2S execution).
+- Proof: workspace view renders all four slots in connected + not-connected states from fixtures.
+
+## 5. Circular hivemind (cross-tenant learning with privacy gates)
+- Productize the existing substrate: knowledge_embed.py (pgvector pattern reuse), common_brain.py, the auto-distilled "Learned from merged work" convention blocks, prompt_evolution.py. Build: a `convention_corpus` store where per-tenant distilled conventions/patterns (NOT code) are contributed under explicit tenant opt-in, k-anonymity floor (a pattern must appear across ≥3 tenants before cross-tenant surfacing), and provenance stripping. Planner + agents consult the corpus for the active tenant (own patterns always; cross-tenant patterns only when opted in).
+- Feed steering_events (from the review-gate wave) into routing: track which clarification answers / redirects / rejection rationales correlate with first-pass merge success; surface as planner hints.
+- Flywheel KPI: measure and display pattern-reuse rate and first-pass merge rate per tenant over time (the "your fleet is getting smarter" proof, shown on the portfolio dashboard).
+- Proof: corpus contribution respects opt-in + k-floor (tests); planner consults corpus (mocked); KPI computed from fixture history.
+
+## 5b. Illuminati co-think at ALL build phases (not just planning)
+- The review-gate wave adds Illuminati CADE at planning. Extend to every phase: intake/clarify (legal framing of the objective), planning (per-task legal dimension), DURING build (the live sidecar from the Illuminati prompt — loop-level interception of agent edits + human on-type interception), and pre-merge (final CADE pass gating the release card). One integration, consumed at four points; replaces the drifting local CADE duplication (committees.py/colosseum.py keep running for non-legal deliberation, but the legal/compliance dimension routes to Illuminati). Non-engineers steering in their own vocabulary (Part 4.5 / the "everyone is an engineer" unlock) is realized here: clarification answers, redirects, and approval rationales from lawyers/strategy/finance are first-class attributed steering_events that shape the build.
+- Proof: mocked Illuminati responses attached at all four phases; escalate verdict at any phase creates the right gate/card.
+
+## 6. Positioning/copy pass
+- PublicLanding.vue copy evolves to the claude-preneur pitch: "The operating system for founders running multiple companies. Describe the outcome once — a governed AI fleet builds it, your GC-in-the-loop reviews it, you approve the release." Keep Madeus brand rules (beethoven/AGENTS.md: Legora-inspired black/white/dark-green).
+
+## Notes for the fleet
+- Never push main/master directly; release via the (new) gated release train. All new tables RLS'd + tenant-scoped. No secrets in code; GitHub App/Vercel credentials are operator-provisioned env. Coordinate with (do not duplicate) the review-gate wave's waves.vue, steering_events, and clarify flow — extend them, don't fork them.

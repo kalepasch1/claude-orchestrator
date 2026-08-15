@@ -76,15 +76,15 @@ useHead({
       <div class="hero-grid" aria-hidden="true"><i v-for="n in 24" :key="n" /></div>
       <div class="hero-copy">
         <p class="kicker"><span /> The private operating system for AI-native founders</p>
-        <h1>You steer.<br><em>Your portfolio advances on multiple fronts.</em></h1>
-        <p class="hero-lead">Built for Claude- and GPT-native founders running 5+ startups at once. Madeus turns your direction into coordinated, verified work—while you remain at the helm and your full IP stays invisible to any single AI vendor.</p>
+        <h1>You set the direction.<br><em>Your portfolio advances on multiple fronts.</em></h1>
+        <p class="hero-lead">Built for Claude- and GPT-native founders running 5+ startups at once. Madeus turns your direction into coordinated, verified work—while you remain in control from strategy through execution.</p>
         <div class="hero-actions">
           <button class="button primary" :disabled="signingIn" @click="openAccess">{{ signingIn ? 'Opening workspace…' : 'Request entry' }} <span>→</span></button>
           <a class="button secondary" href="#system">See how it works <span>↓</span></a>
         </div>
         <p v-if="authError" class="auth-error" role="alert">{{ authError }}</p>
         <div class="hero-proof" aria-label="Madeus operating principles">
-          <span><i /> Member referred</span><span>5+ companies</span><span>Cross-vendor IP shielding</span><span>Verified outcomes</span>
+          <span><i /> Member referred</span><span>5+ companies</span><span>Full control, every step</span><span>Verified outcomes</span>
         </div>
       </div>
 
@@ -129,12 +129,12 @@ useHead({
     <section class="outcome-loop">
       <div class="loop-copy">
         <p class="dark-kicker"><i /> Founder at the helm</p>
-        <h2>You choose the destination.<br>The hivemind navigates.</h2>
+        <h2>You choose the destination.<br>The platform navigates.</h2>
         <p>This is the GPS, lane-departure warning, and creative route planner for your portfolio. You keep authority. The platform watches the whole terrain, warns before drift, and continually proposes faster, safer, higher-value routes.</p>
-        <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>CADE</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
+        <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>AI</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
       </div>
       <div class="loop-console">
-        <header><span>madeus / navigation-intelligence network</span><b>FOUNDER CONTROLLED</b></header>
+        <header><span>Founder-led guidance</span><b>YOU DECIDE</b></header>
         <ol>
           <li><time>09:41:08</time><b>DESTINATION</b><span>Founder sets outcome, constraints, and authority</span><i>✓</i></li>
           <li><time>09:41:10</time><b>TERRAIN</b><span>AI maps portfolio effects and hidden dependencies</span><i>✓</i></li>
@@ -275,7 +275,7 @@ useHead({
     </div>
 
     <SystemStatusFooter />
-    <footer class="site-footer"><MadeusLogo /><p>Outcome orchestration for the multi-company founder.</p><div><a href="#system">Platform</a><a href="#governance">Governance</a><span>© {{ new Date().getFullYear() }} Madeus</span></div></footer>
+    <footer class="site-footer"><MadeusLogo /><p>Outcome accountability for the multi-company founder.</p><div><a href="#system">Platform</a><a href="#governance">Governance</a><span>© {{ new Date().getFullYear() }} Madeus</span></div></footer>
   </main>
 </template>
 

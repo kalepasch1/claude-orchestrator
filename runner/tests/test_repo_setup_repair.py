@@ -91,6 +91,40 @@ class TestRepair(unittest.TestCase):
             self.assertIn("healthy", report)
 
 
+class TestRepairGitConfig(unittest.TestCase):
+    def test_sets_repo_owner_identity_not_bot(self):
+        # Vercel blocks deploys authored by non-owner identities; the repair
+        # must install the owner identity, never a bot placeholder.
+        with tempfile.TemporaryDirectory() as d:
+            os.system(f"git init {d} >/dev/null 2>&1")
+            calls = []
+
+            def fake_run(cmd, cwd=None, timeout=30):
+                calls.append(cmd)
+                if len(cmd) == 3 and cmd[1] == "config":
+                    return "", "", 1  # key missing -> triggers repair
+                return "", "", 0
+
+            with patch.object(repo_setup_repair, "_run", side_effect=fake_run):
+                repaired = repo_setup_repair.repair_git_config(d)
+            self.assertEqual(sorted(repaired), ["user.email", "user.name"])
+            set_calls = [c for c in calls if len(c) == 4 and c[1] == "config"]
+            values = {c[2]: c[3] for c in set_calls}
+            self.assertEqual(values.get("user.name"), repo_setup_repair.GIT_IDENTITY_NAME)
+            self.assertEqual(values.get("user.email"), repo_setup_repair.GIT_IDENTITY_EMAIL)
+            self.assertNotIn("orchestrator-bot", values.values())
+            self.assertNotIn("bot@orchestrator.local", values.values())
+
+    def test_identity_env_override(self):
+        with patch.dict(os.environ, {"ORCH_GIT_USER_NAME": "someone", "ORCH_GIT_USER_EMAIL": "s@x.y"}):
+            import importlib
+            importlib.reload(repo_setup_repair)
+            self.assertEqual(repo_setup_repair.GIT_IDENTITY_NAME, "someone")
+            self.assertEqual(repo_setup_repair.GIT_IDENTITY_EMAIL, "s@x.y")
+        importlib_mod = __import__("importlib")
+        importlib_mod.reload(repo_setup_repair)  # restore defaults for other tests
+
+
 class TestRepairIndexLock(unittest.TestCase):
     def test_no_lock(self):
         with tempfile.TemporaryDirectory() as d:
@@ -106,6 +140,126 @@ class TestRepairIndexLock(unittest.TestCase):
                 removed = repo_setup_repair.repair_index_lock(d)
             # pgrep mock returns empty (no git process), so lock should be removed
             self.assertTrue(removed or not os.path.exists(lock))
+
+
+GIT_ID = ["-c", "user.name=test", "-c", "user.email=test@test.local"]
+
+
+def _git(args, cwd=None):
+    import subprocess
+    subprocess.run(["git"] + GIT_ID + args, cwd=cwd, check=True, capture_output=True)
+
+
+def _make_upstream(root, branch="main"):
+    upstream = os.path.join(root, "upstream")
+    _git(["init", "-b", branch, upstream])
+    with open(os.path.join(upstream, "README.md"), "w") as f:
+        f.write("hello\n")
+    _git(["add", "."], cwd=upstream)
+    _git(["commit", "-m", "init"], cwd=upstream)
+    return upstream
+
+
+def _advance_upstream(upstream):
+    with open(os.path.join(upstream, "more.txt"), "w") as f:
+        f.write("more\n")
+    _git(["add", "."], cwd=upstream)
+    _git(["commit", "-m", "advance"], cwd=upstream)
+
+
+class TestRepairRepo(unittest.TestCase):
+    def test_structure(self):
+        result = repo_setup_repair.repair_repo("/tmp/does_not_exist_xyz_999")
+        for key in ("cloned", "fetched", "fast_forwarded", "actions",
+                    "error", "ready", "default_branch", "clean", "current"):
+            self.assertIn(key, result)
+
+    def test_missing_repo_no_remote_url(self):
+        result = repo_setup_repair.repair_repo("/tmp/does_not_exist_xyz_999")
+        self.assertFalse(result["cloned"])
+        self.assertFalse(result["ready"])
+        self.assertIn("no remote_url", result["error"])
+
+    def test_clone_success(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            result = repo_setup_repair.repair_repo(local, remote_url=upstream)
+            self.assertTrue(result["cloned"])
+            self.assertTrue(result["ready"])
+            self.assertEqual(result["default_branch"], "main")
+            self.assertEqual(result["error"], "")
+
+    def test_clone_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            local = os.path.join(root, "local")
+            result = repo_setup_repair.repair_repo(
+                local, remote_url=os.path.join(root, "no_such_upstream"))
+            self.assertFalse(result["cloned"])
+            self.assertFalse(result["ready"])
+            self.assertIn("clone failed", result["error"])
+
+    def test_fast_forward_behind_main(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _advance_upstream(upstream)
+            result = repo_setup_repair.repair_repo(local)
+            self.assertTrue(result["fetched"])
+            self.assertTrue(result["fast_forwarded"])
+            self.assertTrue(result["ready"])
+            self.assertTrue(result["current"])
+
+    def test_fast_forward_behind_develop(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root, branch="develop")
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _advance_upstream(upstream)
+            result = repo_setup_repair.repair_repo(local)
+            self.assertTrue(result["fast_forwarded"])
+            self.assertEqual(result["default_branch"], "develop")
+            self.assertTrue(result["ready"])
+
+    def test_fast_forward_without_switching_branch(self):
+        """A repo parked on a feature branch gets main updated in place."""
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _git(["checkout", "-b", "agent/feature"], cwd=local)
+            _advance_upstream(upstream)
+            result = repo_setup_repair.repair_repo(local)
+            self.assertTrue(result["fast_forwarded"])
+            head = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=local, capture_output=True, text=True).stdout.strip()
+            self.assertEqual(head, "agent/feature")
+
+    def test_dirty_tree_skips_fast_forward(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _advance_upstream(upstream)
+            dirty_file = os.path.join(local, "wip.txt")
+            with open(dirty_file, "w") as f:
+                f.write("uncommitted\n")
+            result = repo_setup_repair.repair_repo(local)
+            self.assertFalse(result["fast_forwarded"])
+            self.assertFalse(result["clean"])
+            self.assertTrue(os.path.exists(dirty_file))
+            self.assertTrue(any("dirty" in a for a in result["actions"]))
+
+    def test_missing_remote_fail_soft(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = _make_upstream(root)  # standalone repo, no origin
+            result = repo_setup_repair.repair_repo(repo)
+            self.assertFalse(result["fetched"])
+            self.assertIn("fetch failed", result["error"])
+            self.assertTrue(result["clean"])
 
 
 def _committed_repo(d, fname="tracked.txt"):
@@ -151,19 +305,23 @@ class TestNodeDependencies(unittest.TestCase):
 
     def test_missing_node_modules(self):
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "package.json"), "w").write("{}")
+            with open(os.path.join(d, "package.json"), "w") as fh:
+                fh.write("{}")
             self.assertTrue(repo_setup_repair.check_node_dependencies(d))
 
     def test_node_modules_present(self):
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "package.json"), "w").write("{}")
+            with open(os.path.join(d, "package.json"), "w") as fh:
+                fh.write("{}")
             os.mkdir(os.path.join(d, "node_modules"))
             self.assertFalse(repo_setup_repair.check_node_dependencies(d))
 
     def test_repair_runs_npm_ci_with_lockfile(self):
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "package.json"), "w").write("{}")
-            open(os.path.join(d, "package-lock.json"), "w").write("{}")
+            with open(os.path.join(d, "package.json"), "w") as fh:
+                fh.write("{}")
+            with open(os.path.join(d, "package-lock.json"), "w") as fh:
+                fh.write("{}")
             with patch.object(repo_setup_repair, "check_tool", return_value=True), \
                  patch.object(repo_setup_repair, "_run", return_value=("", "", 0)) as run:
                 self.assertTrue(repo_setup_repair.repair_node_dependencies(d))

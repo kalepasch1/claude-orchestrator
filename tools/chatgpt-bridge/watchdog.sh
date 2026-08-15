@@ -35,7 +35,23 @@ LAST_ALERT=$(cat "$ALERT_STAMP" 2>/dev/null || echo 0)
 [ $(( NOW - LAST_ALERT )) -lt "$ALERT_EVERY" ] && exit 0
 echo "$NOW" > "$ALERT_STAMP"
 
-MSG="ChatGPT bridge is not running — $REASON. Patches dropped in the folder are NOT reaching GitHub. Most likely ClaudeRunner.app lost Full Disk Access."
+MSG="ChatGPT bridge is not running — $REASON. Patches dropped in the folder are NOT reaching GitHub."
 osascript -e "display notification \"$MSG\" with title \"ChatGPT bridge: BROKEN\" sound name \"Basso\"" 2>/dev/null
-echo "$(date '+%Y-%m-%d %H:%M:%S') ALERT $REASON" >> "$STATE/watchdog.log"
+
+# Record the job's real exit status. Do NOT guess at the cause here: a stale
+# heartbeat has at least three very different explanations and naming only one
+# of them has already cost a full misdiagnosis.
+#   exit 75 (EX_TEMPFAIL) - the sweep ran and failed its own FDA probe, i.e.
+#                           ClaudeRunner.app genuinely lost Full Disk Access.
+#   exit 78 (EX_CONFIG)   - launchd could not spawn the job at all. Almost
+#                           always because StandardOutPath/StandardErrorPath
+#                           point somewhere launchd itself cannot open (e.g.
+#                           under ~/Documents); the app's FDA grant does not
+#                           cover launchd's own stdio setup, and the failure is
+#                           silent precisely because stderr is what failed.
+#   no exit code / absent - the agent is not loaded.
+LABEL="com.claudeorchestrator.chatgptbridge"
+STATUS="$(launchctl list | awk -v l="$LABEL" '$3 == l {print "last_exit=" $2}')"
+[ -n "$STATUS" ] || STATUS="agent not loaded"
+echo "$(date '+%Y-%m-%d %H:%M:%S') ALERT $REASON ($STATUS)" >> "$STATE/watchdog.log"
 exit 1

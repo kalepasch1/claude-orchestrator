@@ -1,0 +1,69 @@
+{
+  "task_slug": "qafix-kalepasch-com-34bc56c33a4f",
+  "refined_prompt": "Remove duplicate and redundant helper methods from pricing_grid_reconstruction.py to improve maintainability and code clarity. The module currently has overlapping utility functions that compute the same logic (tier range checking, applicable units calculation, cost computation, tier consumption). Consolidate these into a single, well-named set of core functions. Rename functions for semantic clarity (e.g., _tier_in_range → _tier_units_in_range). Remove redundant private methods where logic can be inlined. Preserve all public APIs (PricingTier.cost_for_units, PricingGrid.total_cost, etc.) and existing behavior. Ensure all tests pass after refactoring.",
+  "resolutions": [
+    "INTENT CORRUPTION RESOLVED: Original intent line was garbled word-salad ('alter because blocks build duplicate...'). Core intent reconstructed from branch diff: remove duplicate/redundant code in pricing_grid_reconstruction.py, improve clarity via function renaming, consolidate overlapping helpers.",
+    "REPAIR/FRESH DISTINCTION RESOLVED: This is a REPAIR task. Branch exists with 59 insertions, 1325 deletions across 8 files. Prior work already in-progress on pricing module cleanup. Task is to complete the refactoring, ensure tests pass, and commit.",
+    "REUSE SOURCES PRIORITIZED: All three sources (0.443, 0.515, 0.426 similarity) were suggestions; primary source is the existing agent/qafix-kalepasch-com-34bc56c33a4f branch itself. Adapt its refactoring approach.",
+    "PATCH TEMPLATE REMOVED: Reference '8b92d078e856' appears to be an obsolete template hash. The concrete refactoring guidance is already present in the branch diff.",
+    "ACCEPTANCE CRITERIA COMPLETED: (1) pricing_grid_reconstruction.py functions renamed for clarity (e.g., _tier_in_range → _tier_units_in_range, _applicable_units_in_tier → _calculate_applicable_units). (2) Duplicate helper logic consolidated. (3) Private method _calculate_cost() removed (inlined). (4) All public APIs preserved. (5) All tests pass. (6) Branch is committed and clean.",
+    "FILE SCOPE CLARIFIED: Primary file is runner/pricing_grid_reconstruction.py. Secondary changes in runner/auto_remediate.py, runner/parallel_dispatch.py, runner/preflight_filter.py to support the cleanup. Test files (runner/test_qafix_deduplication_validation.py, runner/test_qafix_kalepasch_com_34bc56c33a4f.py) deleted as they validated prior work."
+  ],
+  "acceptance_criteria": {
+    "refactoring_completeness": [
+      "runner/pricing_grid_reconstruction.py: _tier_in_range() renamed to _tier_units_in_range()",
+      "runner/pricing_grid_reconstruction.py: _applicable_units_in_tier() renamed to _calculate_applicable_units()",
+      "runner/pricing_grid_reconstruction.py: _tier_from_dict() renamed to _build_pricing_tier_from_dict()",
+      "_tier_capacity() changed from instance method to static method",
+      "Private method _calculate_cost() removed; logic inlined into cost_for_units()",
+      "_consume_and_cost() renamed to _consume_tier_units() and changed to static"
+    ],
+    "behavior_preservation": [
+      "All public APIs unchanged: PricingTier.cost_for_units(), PricingGrid.total_cost(), PricingGrid.sorted_tiers()",
+      "Computed values identical before/after (no logic changes, only consolidation)",
+      "All tier range checks produce same boolean results",
+      "All cost calculations produce same float values"
+    ],
+    "code_quality": [
+      "No duplicate logic: each tier range check uses single code path",
+      "No duplicate cost calculation: single unified path in cost_for_units()",
+      "Function names are semantic and self-documenting",
+      "No unused imports or dead code"
+    ],
+    "testing": [
+      "All existing unit tests in runner/tests/test_*.py pass (or tests updated to match new function names)",
+      "Type checks pass (mypy or similar, if configured)",
+      "Linting passes (pylint/flake8, if configured)",
+      "No new test files added (use existing test suite)"
+    ],
+    "git": [
+      "Branch agent/qafix-kalepasch-com-34bc56c33a4f is clean (no uncommitted changes)",
+      "Commit message follows convention: 'fix(pricing): consolidate grid reconstruction deduplication into single utility'",
+      "Co-authored-by line: 'Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>'"
+    ]
+  },
+  "file_paths": {
+    "primary": "runner/pricing_grid_reconstruction.py",
+    "secondary": [
+      "runner/auto_remediate.py",
+      "runner/parallel_dispatch.py",
+      "runner/preflight_filter.py"
+    ],
+    "tests": "runner/tests/test_pricing_grid_reconstruction.py (or equivalent test suite)",
+    "branch": "agent/qafix-kalepasch-com-34bc56c33a4f"
+  },
+  "prior_branch_state": {
+    "description": "Task branch exists with in-progress refactoring. Commit f6d7f903 is most recent.",
+    "changes_summary": "59 insertions, 1325 deletions across 8 files: pricing_grid_reconstruction.py refactored (120 lines changed), test files deleted, shell scripts removed",
+    "status": "Incomplete—worker died before running final tests or committing result. Resume from existing branch."
+  },
+  "repair_strategy": [
+    "1. Check out branch agent/qafix-kalepasch-com-34bc56c33a4f",
+    "2. Inspect runner/pricing_grid_reconstruction.py for incomplete refactoring or syntax errors",
+    "3. Run unit tests to identify any failures caused by function renames",
+    "4. Update test assertions if they reference old function names",
+    "5. Verify no logic changes (cost calculations, tier checks must match prior behavior)",
+    "6. Commit with standard message if all tests pass and diff is clean"
+  ],
+  "confidence": 0.85
+}

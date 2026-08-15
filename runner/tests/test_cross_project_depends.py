@@ -11,10 +11,15 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # ── stub heavy imports that db.py pulls in at module level ──────────
+# Only stub what is genuinely missing: clobbering an installed package
+# (e.g. httpx) breaks later-collected test modules that use its real API.
 for mod_name in ("supabase", "postgrest", "httpx", "gotrue", "realtime",
                  "storage3", "supafunc"):
     if mod_name not in sys.modules:
-        sys.modules[mod_name] = types.ModuleType(mod_name)
+        try:
+            __import__(mod_name)
+        except ImportError:
+            sys.modules[mod_name] = types.ModuleType(mod_name)
 
 import db
 

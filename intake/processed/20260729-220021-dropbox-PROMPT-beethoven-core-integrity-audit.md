@@ -1,0 +1,35 @@
+# beethoven: CORE INTEGRITY AUDIT — merge safety, self-protection, CI-on-self, CADE/Testudo/Vigil verification
+
+SUBMITTED-BY: kale@smrter.us (operator) 2026-07-29. Context: PORTFOLIO_ROUND12_NEW_IMPROVEMENTS Part A + tonight's confirmed bugs (7 fixed by hand: whole-file conflict overwrite, intake _autoclear import, fleet_control/config_sync undefined log, ci_dispatch/smoke missing imports, plus the 5 merge-train bugs earlier). The orchestrator+Illuminati+Vigil+CADE stack is the core product — it must be provably solid.
+
+WORKFLOW: governed_heavy
+
+## 1. Merge-safety regression suite (the "wiped improvements" class — killed forever)
+- Build tests that PROVE concurrent same-file improvements survive integration: two fixture branches editing different sections of one file, integrated in both orders → BOTH improvements present after; an add/add source conflict must route to ast_merge/manual, NEVER whole-file ours/theirs (assert the 2026-07-29 fix in auto_conflict_resolver holds); semantic_merge overlap detection must refuse overlapping edits; a stale-base branch must be rebased before merge (assert approval_merge._integrate's rebase path).
+- HISTORICAL DAMAGE SCAN: walk 60 days of dev-branch history per project for the signature of the old bug (a merge commit whose diff REVERTS lines added by an earlier merge in a different section of the same file). Report any found reversions with commit pairs so they can be re-applied. This confirms or clears the operator's suspicion of past silent reverts.
+- Audit remaining whole-file paths: 'regenerate' strategy (checkout --ours on schema.prisma/package.json) must verify the branch's schema deltas are re-applied post-regeneration, not dropped; agentic_repair must never resolve by wholesale file replacement without a 3-way basis.
+
+## 2. Self-protection (Part A items — build all)
+- (a) Sentinel self-modification guard: uncommitted changes to protected runner/** paths are auto-committed to hotfix/<ts> + notified, never stashed/discarded. (b) Write .runner_boot_commit on runner start; sentinel restarts on drift. (c) train_run() boot self-test (dry-run on synthetic project; exception -> critical approval card, never a silent crash-loop). (d) Integration-liveness alarm: merged==0 for >2h while agent/* branches grow -> operator notification. (e) CI on the orchestrator itself: pyflakes/ruff + import-smoke + the undefined-name AST sweep (tonight's tool, productized as a pre-commit + preflight gate for runner/**) + a lambda-arg-aware version to kill false positives. (f) Dedupe the ~4,300 duplicate ADR/decision markdowns by content hash.
+
+## 3. CADE/Consilium + Testudo(Illuminati) + Vigil functional verification (end-to-end, all terminals)
+- CADE: execute a real evaluation through every entry path (orchestrator committees, illuminati intercept API, MCP tool, VS Code path contract) on fixture inputs; assert schema-valid verdicts, receipts chained, attribution recorded. Fix anything broken.
+- Testudo/Illuminati: exercise evaluate/advisory/escalate end-to-end against the deployed API (fixtures); verify the gateway-proxy + stdio-MCP contracts from the queued funnel wave still hold; confirm cross-signup linking works.
+- Vigil engines (pre-merge): run the 43 ported/existing Vitest specs; verify the S2S receiver path on apparently.
+- Deploy path: verify deploy_verify's --force-with-lease usage cannot clobber prod (lease semantics + prod-hold flag honored); migration apply path name-checked.
+- UI/UX + prompting pass on Madeus web: intake flow (with clarify), waves/queue views, approval cards — fix visual/UX defects found; ensure prompts/labels are plain-language (idiom translation where non-engineer users are expected).
+
+## 4. 50-500X hardening beyond the fixes
+- Wire outcome telemetry: every integration outcome (merged/testfail/conflict/reverted-lines-detected) feeds a per-project integration-health score on the waves dashboard; regression suite runs in CI on every runner change; the historical-damage scanner becomes a standing weekly sweep (regression sentinel) so silent reverts can never accumulate unnoticed again.
+- Proof: all new tests green; damage-scan report artifact committed; self-protection behaviors demonstrated in tests (stash-guard, boot marker, liveness alarm firing on fixtures); CADE/Testudo/Vigil e2e fixtures pass; CI gate active on runner/**.
+
+## 5. STASH RECONCILIATION (parallel-session finding 2026-07-29 — 592 unreconciled stashes; highest-density recovery target)
+- Context (verified by a parallel operator session): 592 stashes, write-only — 549 from checkout_guard (07-12→07-25), 43 from pre-runner-restart/pre-force-merge/pre-push/WIP mechanisms; NO code path anywhere pops/applies/lists them. The earlier destructive era (stash push -u, 07-08→07-16) permanently discarded 282 batches. sentinel now has stash_drift_guard (alert-only) — do not duplicate it.
+- BUILD THE TRIAGE ENGINE (never mass-pop — that reintroduces stale code, the exact failure this audit exists to kill): for each stash, oldest-last: diff vs current HEAD → classify: (a) ALREADY LANDED elsewhere (equivalent content in history) → drop with a logged record; (b) CLEANLY RECOVERABLE (applies without conflict AND the AST/undefined-name sweep + compile pass) → apply to a `stash-recovery/<ts>` branch, one commit per stash with provenance, queue as a normal integration card through the (now-fixed) train; (c) CONFLICTED/SUPERSEDED-AMBIGUOUS → flag to a human review queue with the diff attached. Run serially with the repo lock held; resumable; full ledger of dispositions.
+- Cross-reference the §1 historical-damage scan: any stash matching a detected reversion is priority (a)/(b) — that's the lost improvement being recovered.
+- Proof: disposition ledger covering all 592; recovered commits queued through the train; zero mass-applies; human queue populated only with genuine conflicts.
+
+## 6. PUSH VISIBILITY + SUBTRACTION (parallel-session findings — adopt, don't duplicate)
+- Push/auth: the origin remote embeds the GitHub PAT in the URL (leaks via `git remote -v`; single point of silent failure). Move auth to a credential helper / env-injected header, scrub the PAT from all remote URLs and logs, and add a push-failure alarm (any local-only commits > 30min on master/dev → operator notification). restart-fleet.sh error-surfacing is already fixed by the parallel session — verify, don't redo.
+- SUBTRACTION (the real 50-500X per both sessions' evidence): (a) audit the 200+ scheduled jobs against the 2026-07-08 postmortem — disable jobs whose output is predominantly failed releases; target a documented, curated job list; (b) consolidate the FOUR loosely-coordinated quarantine-remediation subsystems (quarantine_gc / rca_engine / stuck_reaper / priority_scorer + any others found) into ONE remediation pipeline with a single ledger — overlap between them has been masking root causes all month; (c) report compute/spend reclaimed.
+- Proof: PAT absent from remotes/logs; push alarm fires on a fixture stall; job audit artifact with before/after counts; one remediation pipeline with the others delegating into it.

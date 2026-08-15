@@ -176,7 +176,13 @@ class _PatternTransfer:
     # -----------------------------------------------------------------------
 
     def auto_transfer_scan(self):
-        """Scan all projects for transferable high-success patterns."""
+        """Scan all projects for transferable high-success patterns.
+
+        The `compiled_patterns` relation is not deployed in this schema. Without the guard below
+        every runner cycle raised MissingRelationError and dumped a full traceback into the log —
+        the same class of noise that hid the genuinely broken jobs for weeks. Pattern transfer is
+        an optimisation, so a missing table means "nothing to transfer", not "fail the cycle".
+        """
         if not _ENABLED:
             return {"transfers_found": 0, "transferred": 0}
         try:
@@ -227,7 +233,11 @@ class _PatternTransfer:
 
             return {"transfers_found": transfers_found, "transferred": transferred}
 
-        except Exception:
+        except Exception as exc:
+            if type(exc).__name__ == "MissingRelationError":
+                # compiled_patterns is not deployed — nothing to transfer, and re-raising a full
+                # traceback every cycle is exactly the log noise that buried real failures.
+                return {"transfers_found": 0, "transferred": 0, "skipped": "missing-relation"}
             _log.exception("auto_transfer_scan failed")
             return {"transfers_found": 0, "transferred": 0}
 

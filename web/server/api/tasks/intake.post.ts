@@ -15,7 +15,7 @@ function inferKind(intent: string) {
 }
 
 export default defineEventHandler(async (event) => {
-  await requireConnectorUser(event)
+  const user = await requireConnectorUser(event)
   const body = await readBody<any>(event)
   const intent = String(body?.intent || '').trim()
   if (intent.length < 3) throw createError({ statusCode: 400, message: 'Describe the outcome you want.' })
@@ -67,6 +67,10 @@ export default defineEventHandler(async (event) => {
     kind,
     state: 'QUEUED',
     note: 'source:intent-console; route:auto; model:auto; vendor:auto; branch:auto; qa:auto; release:auto',
+    // Wave-0 attribution (review-gate spec item 4): persist the authenticated
+    // submitter instead of discarding it.
+    submitted_by: user.id,
+    submitted_by_label: user.email || user.id,
   }).select('id,slug,state,kind,project_id,created_at').single()
   if (error) throw createError({ statusCode: 500, message: error.message })
 

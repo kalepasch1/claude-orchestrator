@@ -7,12 +7,22 @@ _lock = threading.Lock()
 LOCKFILES = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "uv.lock",
              "poetry.lock", "requirements.txt", "Cargo.lock", "go.sum")
 
+
+def _canonical_repo(repo: str) -> str:
+    """One stable identity for '.', relative paths, symlinks, and hook absolute paths."""
+    return os.path.realpath(os.path.abspath(repo or "."))
+
+
+def _repo_name(repo: str) -> str:
+    return os.path.basename(_canonical_repo(repo).rstrip(os.sep))
+
 def _home():
     return os.environ.get("CLAUDE_ORCH_HOME", os.path.join(os.path.dirname(__file__), "..", ".runtime"))
 
 def _path(): return os.path.join(_home(), "patch-proof-graph.jsonl")
 
 def dependency_fingerprint(repo: str) -> str:
+    repo = _canonical_repo(repo)
     h = hashlib.sha256()
     found = False
     for root, dirs, files in os.walk(repo):
@@ -29,7 +39,7 @@ def dependency_fingerprint(repo: str) -> str:
 def record(repo: str, artifact: dict, files) -> dict:
     row = {"at": time.time(), "artifact_id": artifact.get("artifact_id"),
            "commit": artifact.get("commit"), "branch": artifact.get("branch"),
-           "repo": os.path.basename(repo.rstrip(os.sep)),
+           "repo": _repo_name(repo),
            "dependency_fingerprint": dependency_fingerprint(repo),
            "test_cmd": artifact.get("test_cmd"), "files": sorted(files or []),
            "batch": bool(artifact.get("batch")), "patches": int(artifact.get("patches") or 1)}
@@ -41,7 +51,7 @@ def record(repo: str, artifact: dict, files) -> dict:
 def record_release(repo: str, release: dict, success: bool, provider="", url="") -> dict:
     """Attach deployment evidence to the same dependency-addressed proof graph."""
     row = {"at": time.time(), "type": "release", "release_id": release.get("id"),
-           "commit": release.get("to_sha"), "repo": os.path.basename(repo.rstrip(os.sep)) if repo else release.get("project"),
+           "commit": release.get("to_sha"), "repo": _repo_name(repo) if repo else release.get("project"),
            "dependency_fingerprint": dependency_fingerprint(repo) if repo and os.path.isdir(repo) else None,
            "success": bool(success), "provider": provider, "url": url,
            "deploy_status": release.get("deploy_status")}
@@ -52,11 +62,12 @@ def record_release(repo: str, release: dict, success: bool, provider="", url="")
 
 def record_verification(repo: str, commit: str, command: str, kind: str, success: bool) -> dict:
     """Record an exact commit+dependency proof for safe verification reuse."""
-    capsule = hashlib.sha256(json.dumps({"repo": os.path.basename(repo.rstrip(os.sep)),
+    canonical = _canonical_repo(repo)
+    capsule = hashlib.sha256(json.dumps({"repo": _repo_name(canonical),
         "commit": commit, "dependency_fingerprint": dependency_fingerprint(repo),
         "command": command, "kind": kind}, sort_keys=True).encode()).hexdigest()
     row = {"at": time.time(), "type": "verification", "capsule_id": capsule,
-           "repo": os.path.basename(repo.rstrip(os.sep)),
+           "repo": _repo_name(canonical),
            "commit": commit, "dependency_fingerprint": dependency_fingerprint(repo),
            "command": command, "kind": kind, "success": bool(success)}
     os.makedirs(os.path.dirname(_path()), exist_ok=True)
@@ -64,16 +75,17 @@ def record_verification(repo: str, commit: str, command: str, kind: str, success
         f.write(json.dumps(row, separators=(",", ":")) + "\n")
     try:
         import remote_cas
-        remote_cas.put(remote_cas.key(repo, commit, row["dependency_fingerprint"], command, kind), row, success)
+        remote_cas.put(remote_cas.key(canonical, commit, row["dependency_fingerprint"], command, kind), row, success)
     except Exception:
         pass
     return row
 
 def reusable_verification(repo: str, commit: str, command: str, kind: str, limit=5000):
+    canonical = _canonical_repo(repo)
     dep = dependency_fingerprint(repo)
     try:
         import remote_cas
-        cached = remote_cas.get(remote_cas.key(repo, commit, dep, command, kind))
+        cached = remote_cas.get(remote_cas.key(canonical, commit, dep, command, kind))
         if cached:
             return cached
     except Exception:
@@ -85,7 +97,7 @@ def reusable_verification(repo: str, commit: str, command: str, kind: str, limit
         return None
     for row in reversed(rows):
         if (row.get("type") == "verification" and row.get("success")
-                and row.get("repo") == os.path.basename(repo.rstrip(os.sep))
+                and row.get("repo") == _repo_name(canonical)
                 and row.get("commit") == commit and row.get("command") == command
                 and row.get("kind") == kind and row.get("dependency_fingerprint") == dep):
             return row

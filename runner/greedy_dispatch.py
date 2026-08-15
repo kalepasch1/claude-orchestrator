@@ -106,14 +106,45 @@ def dispatch_immediate(task_ids, project_id=None):
     return dispatched
 
 
+def _ensure_child_branches(parent_task, child_task_ids):
+    """Best-effort: pre-create agent/<slug> branches for freshly spawned children.
+
+    The integration sweeper regularly finds finished children whose branch was
+    never created ("missing branch" recovery class); creating the branch at
+    decomposition time removes that loop. Fail-soft: errors never block dispatch.
+    """
+    created = 0
+    try:
+        rows = db.select("projects", {"id": parent_task.get("project_id")}) or []
+        proj = rows[0] if rows else {}
+        repo = proj.get("repo_path")
+        base = proj.get("default_base") or parent_task.get("base_branch") or "master"
+        if not repo or not os.path.isdir(repo):
+            return 0
+        import git_auto_branch  # lazy: avoids import cost on the hot dispatch path
+        for tid in child_task_ids:
+            trows = db.select("tasks", {"id": tid}) or []
+            slug = (trows[0] or {}).get("slug") if trows else None
+            if slug and git_auto_branch.ensure_branch(repo, slug, base):
+                created += 1
+    except Exception:
+        pass  # fail-soft: dispatch already happened; branch creation is advisory
+    return created
+
+
 def on_decomposition_complete(parent_task, child_task_ids):
     """Hook called after decomposition creates child tasks.
 
     Immediately dispatches children to available runners instead of
-    waiting for the next poll cycle.
+    waiting for the next poll cycle, and pre-creates any missing
+    agent/<slug> branches for the children.
     """
     project_id = parent_task.get("project_id")
     dispatched = dispatch_immediate(child_task_ids, project_id)
+
+    # Auto-create missing child branches so the merge train never sees a
+    # finished child without a branch.
+    _ensure_child_branches(parent_task, child_task_ids)
 
     # Log dispatch event for observability
     try:

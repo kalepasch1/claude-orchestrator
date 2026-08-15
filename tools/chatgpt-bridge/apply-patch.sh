@@ -16,15 +16,35 @@
 # checkout — per the orchestrator worktree convention.
 set -uo pipefail
 
-REPO_ROOTS=(
-  "$HOME/Documents/beethoven/claude-orchestrator"
-  "$HOME/Documents/tomorrow/tomorrow"
-  "$HOME/Documents/apparently"
-  "$HOME/Documents/smarter"
-  "$HOME/Documents/illuminati"
-  "$HOME/Documents/vigil"
-  "$HOME/Documents/pareto/2080"
-)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BINDINGS="$HERE/../../runner/deployment_bindings.json"
+
+resolve_repo_root() {
+  python3 -c '
+import json, sys
+path, requested = sys.argv[1], sys.argv[2].lower()
+aliases = {
+  "claude-orchestrator": "beethoven", "orchestrator": "beethoven", "madeus": "beethoven",
+  "2080": "pareto-2080", "pareto": "pareto-2080", "pmi": "prediction-markets-institute",
+  "hisanta": "santas-secret-workshop", "galop": "racefeed", "pasch": "kalepasch-com",
+  "trojun": "illuminati",
+}
+requested = aliases.get(requested, requested)
+with open(path, encoding="utf-8") as fh:
+  rows = json.load(fh).get("targets", [])
+for row in rows:
+  if str(row.get("app", "")).lower() == requested:
+    print(row.get("repo_path", "")); break
+' "$BINDINGS" "$1" 2>/dev/null
+}
+
+known_repos() {
+  python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+  print(" ".join(row.get("app", "") for row in json.load(fh).get("targets", []) if row.get("app")))
+' "$BINDINGS" 2>/dev/null
+}
 
 GIT_NAME="kalepasch1"
 GIT_EMAIL="kalepasch@gmail.com"
@@ -60,11 +80,8 @@ if [ -z "$REPO" ] && [[ "$BASENAME" == *--* ]]; then
 fi
 [ -n "$REPO" ] || die "cannot determine repo. Name the file '<repo>--<slug>.patch' or pass --repo."
 
-ROOT=""
-for r in "${REPO_ROOTS[@]}"; do
-  [ "$(basename "$r")" = "$REPO" ] && ROOT="$r" && break
-done
-[ -n "$ROOT" ] || die "unknown repo '$REPO'. Known: $(for r in "${REPO_ROOTS[@]}"; do basename "$r"; done | tr '\n' ' ')"
+ROOT="$(resolve_repo_root "$REPO")"
+[ -n "$ROOT" ] || die "unknown repo '$REPO'. Known: $(known_repos) (aliases: claude-orchestrator 2080 hisanta galop pasch pmi trojun)"
 [ -d "$ROOT/.git" ] || die "$ROOT is not a git checkout"
 
 # ---- branch name ------------------------------------------------------------

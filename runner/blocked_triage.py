@@ -159,6 +159,203 @@ def run(limit=BATCH):
         release_currency_check()
     except Exception:
         pass
+    try:
+        infra_failure_recovery()
+    except Exception:
+        pass
+    try:
+        fleet_config_secret_audit()
+    except Exception:
+        pass
+    try:
+        env_permission_sweep()
+    except Exception:
+        pass
+    return out
+
+
+def env_permission_sweep(root=None):
+    """Keep every .env on this machine owner-only (0600).
+
+    A one-time chmod does not hold: agent worktrees under {repo}-wt/ are created and
+    destroyed continuously, and each new tree's .env lands with the default 0644 umask.
+    The 2026-08-02 sweep hardened 45 files, and 28 more had already appeared minutes
+    later. Permissions therefore have to be maintained, not fixed.
+
+    Templates (.env.example / .env.sample) are deliberately left alone — they hold no
+    secrets and are meant to be readable.
+    """
+    import stat as _stat
+    root = root or os.path.expanduser("~/Documents")
+    max_depth = int(os.environ.get("ORCH_ENV_SWEEP_DEPTH", "5"))
+    fixed, scanned = [], 0
+    root_depth = root.rstrip("/").count("/")
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        if dirpath.count("/") - root_depth >= max_depth:
+            dirnames[:] = []
+        dirnames[:] = [d for d in dirnames
+                       if d not in ("node_modules", ".git", "Library", ".venv", "venv")]
+        for fn in filenames:
+            if not fn.startswith(".env") or fn.endswith((".example", ".sample")):
+                continue
+            p = os.path.join(dirpath, fn)
+            try:
+                mode = os.stat(p).st_mode
+                scanned += 1
+                if mode & (_stat.S_IRGRP | _stat.S_IROTH | _stat.S_IWGRP | _stat.S_IWOTH):
+                    os.chmod(p, 0o600)
+                    fixed.append(p.replace(os.path.expanduser("~"), "~"))
+            except OSError:
+                continue
+
+    result = {"scanned": scanned, "hardened": len(fixed)}
+    if fixed:
+        print(f"blocked_triage.env_sweep: hardened {len(fixed)} readable .env file(s) to 0600")
+        try:
+            db.insert("coordination_tasks", {
+                "task_type": "env_permission_sweep",
+                "payload": json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                       **result, "paths": fixed[:40]})[:16000]}, upsert=False)
+        except Exception:
+            pass
+    return result
+
+
+def fleet_config_secret_audit():
+    """Standing check that no credential is sitting in fleet_config.
+
+    The db-layer guard blocks NEW writes, but a row planted before the guard existed —
+    or by a future path that bypasses db.py (raw SQL, a psql session, the Supabase
+    dashboard) — would sit there indefinitely. On 2026-08-02 five did, including a
+    GITHUB_PAT with push access to every repo, and nothing ever said so.
+
+    Reports keys and value LENGTHS only; never the material.
+    """
+    try:
+        import fleet_config_guard
+        rows = db.select("fleet_config", {"select": "key,value"}) or []
+    except Exception as e:
+        print(f"blocked_triage: fleet_config audit could not run: {str(e)[:120]}")
+        return {"error": "unreadable"}
+
+    hits = fleet_config_guard.scan_rows(rows)
+    result = {"scanned": len(rows), "credentials_found": len(hits),
+              "keys": [h["key"] for h in hits]}
+    if hits:
+        print(f"blocked_triage: SECRET IN FLEET_CONFIG — {result['keys']}")
+        try:
+            db.insert("approvals", {
+                "project": "ORCHESTRATOR", "kind": "self",
+                "title": "Credential stored in fleet_config",
+                "why": (f"{len(hits)} fleet_config row(s) hold credential material: "
+                        f"{', '.join(h['key'] for h in hits)}. fleet_config is replicated "
+                        f"fleet-wide, echoed into drift reports and config diffs, and has no "
+                        f"row-level protection."),
+                "value": "Rotate the credential at its provider, put the new value in the host "
+                         "env/secret store only, then delete the fleet_config row.",
+                "risk": "Any process that can read fleet config can read the secret.",
+                "command": ""})
+        except Exception:
+            pass  # unique index on (kind,title) rejects duplicates — fine
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure-failure recovery (throughput class, added 2026-08-02)
+# ---------------------------------------------------------------------------
+# A task that burned its 4 attempts because the OAuth session expired, the API
+# rate-limited us, or the DB blipped is NOT a bad task — but the attempt counter
+# cannot tell the difference, so it lands in QUARANTINED and its work is lost.
+# A quarantine audit found 48 tasks in that pool, several with
+# "OAuth session expired and could not be refreshed" as the last log line and 22
+# with no log tail at all (a silent failure — the class this fleet keeps paying
+# for). Those are recoverable; a genuine code failure is not.
+_INFRA_PATTERNS = re.compile(
+    r"oauth|session expired|could not be refreshed|not authenticated|401|403|"
+    r"rate.?limit|usage limit|429|quota|"
+    r"timed? ?out|timeout|connection (reset|refused|aborted)|"
+    r"temporarily unavailable|50[0234] |bad gateway|"
+    r"circuit ?open|call cap|db=down|database is down",
+    re.I)
+_INFRA_MARK = re.compile(r"\[infra-recover:(\d+)\]")
+MAX_INFRA_RECOVERIES = int(os.environ.get("ORCH_MAX_INFRA_RECOVERIES", "2"))
+
+
+def _is_infra_failure(log_tail):
+    """True when the evidence says the platform failed, not the work.
+
+    An EMPTY log tail counts as infrastructure: a task that produced no output at
+    all did not fail code review, it never ran. Treating silence as a real failure
+    is what quietly discarded 22 tasks.
+    """
+    lt = (log_tail or "").strip()
+    if not lt or lt in ("{}", "[]", "null"):
+        return True, "no output — the task never actually ran"
+    m = _INFRA_PATTERNS.search(lt)
+    return (True, m.group(0)[:60]) if m else (False, "")
+
+
+def infra_failure_recovery(limit=None):
+    """Requeue quarantined tasks whose failure was infrastructure, not code.
+
+    Coverage doctrine: the digest NAMES what was recovered AND what was left
+    behind with the reason, so a zero here is never mistaken for a clean pool.
+    """
+    limit = int(limit or os.environ.get("ORCH_INFRA_RECOVERY_BATCH", "40"))
+    try:
+        rows = db.select("tasks", {
+            "select": "id,slug,note,reason,log_tail,attempt,state",
+            "state": "eq.QUARANTINED", "limit": "400"}) or []
+    except Exception as e:
+        print(f"blocked_triage: infra recovery could not read the queue: {str(e)[:120]}")
+        return {"error": "queue_unreadable"}
+
+    out = {"scanned": len(rows), "recovered": 0, "left": 0}
+    recovered, left = [], []
+    for t in rows:
+        blob = f"{t.get('reason') or ''} {t.get('note') or ''}"
+        # Only the attempt-exhaustion pool. Dedupe/supersede quarantines are correct
+        # and must stay quarantined — re-running them would resurrect duplicate work.
+        if "exhausted" not in blob.lower():
+            continue
+        n = int((_INFRA_MARK.search(blob).group(1)) if _INFRA_MARK.search(blob) else 0)
+        if n >= MAX_INFRA_RECOVERIES:
+            left.append({"slug": (t.get("slug") or "")[:60],
+                         "why": f"already recovered {n}x — needs a human"})
+            out["left"] += 1
+            continue
+        is_infra, evidence = _is_infra_failure(t.get("log_tail"))
+        if not is_infra:
+            left.append({"slug": (t.get("slug") or "")[:60], "why": "real code failure"})
+            out["left"] += 1
+            continue
+        if len(recovered) >= limit:
+            left.append({"slug": (t.get("slug") or "")[:60], "why": "batch limit — next sweep"})
+            out["left"] += 1
+            continue
+        try:
+            db.update("tasks", {"id": t["id"]}, {
+                "state": "QUEUED",
+                "attempt": 0,   # the attempts were spent on the platform, not the work
+                "note": (f"{t.get('note') or ''} | [infra-recover:{n + 1}] requeued: "
+                         f"{evidence}")[:2000]})
+            recovered.append({"slug": (t.get("slug") or "")[:60], "evidence": evidence})
+            out["recovered"] += 1
+        except Exception as e:
+            left.append({"slug": (t.get("slug") or "")[:60],
+                         "why": f"update failed: {type(e).__name__}"})
+            out["left"] += 1
+
+    try:
+        db.insert("coordination_tasks", {
+            "task_type": "infra_recovery_digest",
+            "payload": json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                   **out, "recovered": recovered[:40],
+                                   "left_behind": left[:40]})[:16000]}, upsert=False)
+    except Exception:
+        pass
+    print("blocked_triage.infra_recovery: " + json.dumps(out))
     return out
 
 

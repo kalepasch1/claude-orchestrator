@@ -13,6 +13,7 @@
  */
 import { createClient } from '@supabase/supabase-js'
 import { createError, getCookie, getHeader, parseCookies, defineEventHandler } from 'h3'
+import { isPublicProofApiPath } from '../../utils/proofLink'
 
 const ACCESS_COOKIE = 'sb-access-token'
 const PUBLIC_ACCESS_PATHS = new Set([
@@ -73,6 +74,23 @@ export default defineEventHandler(async (event) => {
   // Only protect /api/ routes
   if (!path.startsWith('/api/')) return
   if (PUBLIC_ACCESS_PATHS.has(pathname)) return
+
+  // SCOPED PROOF PORTAL: /api/public/proof/<token> serves an external reviewer
+  // who has no Madeus account. It is exempt from the session check for exactly
+  // one reason — the token in the path IS the credential, and the route itself
+  // verifies it (hashed lookup, expiry, revocation) before returning anything.
+  // The exemption is a single well-formed path, matched by the same helper the
+  // client gate uses: NOT a `/api/public/proof` prefix, so no listing, no
+  // sibling route and no crafted path can inherit it.
+  if (isPublicProofApiPath(pathname)) return
+
+  // FLEET TRANSPORT RELAY (2026-08-04): /api/_fleet-relay/* carries the runner fleet's
+  // Supabase traffic because the operator's LAN blocks *.supabase.co and *.vercel.app
+  // while custom domains stay reachable. It deliberately does NOT take the Supabase
+  // session path — its callers ARE the runners, presenting their own Supabase service
+  // credentials, which the upstream enforces. The route gates itself on FLEET_RELAY_KEY
+  // and an allowlist of project refs; it stores no credentials of its own.
+  if (pathname.startsWith('/api/_fleet-relay')) return
 
   // Vercel cron requests are server-to-server and do not have a Supabase
   // session. Limit this exception to the single scheduled analytics sync and

@@ -1,0 +1,10 @@
+{
+  "verdict": "conditional",
+  "score": 7,
+  "conviction": 9,
+  "basis": "Article 26, EU AI Act 2024/1689 establishes mandatory deployer obligations (monitoring, incident reporting, human oversight, documentation) that attach immediately upon putting a high-risk system into operation; deployers remain subject to these duties regardless of who developed the system.",
+  "opportunity": "Clear statutory framework (Article 26) enables us to operationalize a consistent data-governance posture across all high-risk AI deployments, reducing ad-hoc compliance decisions and positioning us for cross-border deployments.",
+  "risk": "Deploying a high-risk system before Article 26 compliance infrastructure (monitoring, incident routing, escalation, audit trails) is operational creates regulatory exposure—Article 31(9) mandates member-state competent authorities inspect deployer compliance; gaps are readily discoverable.",
+  "conditions": "Confirm via Article 6 + Annex III that the system qualifies as high-risk. Complete the Article 26/35 workstream: map deployer obligations (Articles 26(1)–(8): verification of pre-deployment compliance, monitoring, documentation, incident recording/reporting, human oversight arrangements, log retention, competent-authority notification); confirm provider conformity assessment is complete (prerequisite per Article 6(2)); operationalize monitoring and incident-reporting channels before go-live.",
+  "recommendation": "Proceed with deployment only after (1) high-risk classification is confirmed in writing, (2) Article 26 deployer-obligation roadmap is complete and assigned, and (3) incident-reporting and monitoring infrastructure is in place. Do not deploy a system classified as high-risk without these preconditions met—the Articles 31 inspection regime and Article 72 penalties (up to 3% of global turnover for Article 26 violations) make this non-negotiable."
+}

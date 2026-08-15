@@ -18,12 +18,49 @@ MAX_BODY_LEN = int(os.environ.get("KNOWLEDGE_BUS_MAX_BODY", "4000"))
 DEDUP_WINDOW = int(os.environ.get("KNOWLEDGE_BUS_DEDUP_HOURS", "24"))
 
 
+def _encode_body(body: dict) -> str:
+    """Serialise `body`, keeping the stored payload VALID JSON when it is oversized.
+
+    The previous `json.dumps(body)[:MAX_BODY_LEN]` sliced the encoded string at a fixed
+    byte count, which lands mid-token for any large event — the stored value then failed
+    `json.loads` in subscribe(), whose except-clause silently handed consumers a raw
+    truncated string instead of a dict. A cross-app bus that corrupts exactly its biggest
+    payloads is worse than one that drops them, because the corruption is invisible.
+    Oversized bodies now serialise to a well-formed envelope that says so.
+    """
+    payload = json.dumps(body, default=str)
+    if len(payload) <= MAX_BODY_LEN:
+        return payload
+    marker = {
+        "_truncated": True,
+        "_original_chars": len(payload),
+        "keys": sorted(str(k) for k in body)[:50],
+    }
+    envelope = json.dumps(marker, default=str)
+    if len(envelope) > MAX_BODY_LEN:      # pathological key list — drop the keys too
+        envelope = json.dumps({"_truncated": True, "_original_chars": len(payload)})
+    return envelope
+
+
+def _in_filter(values) -> str:
+    """Build a PostgREST `in.(...)` filter with each value quoted and escaped.
+
+    Unquoted interpolation broke on any topic containing a comma (it silently split
+    into two topics), a parenthesis, or a double quote.
+    """
+    quoted = []
+    for v in values:
+        s = str(v).replace("\\", "\\\\").replace('"', '\\"')
+        quoted.append(f'"{s}"')
+    return f"in.({','.join(quoted)})"
+
+
 def publish(topic: str, body: dict, project: str = "", source: str = "") -> bool:
     """Publish a knowledge event. Returns True on success."""
     if not topic or not body:
         return False
     try:
-        payload = json.dumps(body, default=str)[:MAX_BODY_LEN]
+        payload = _encode_body(body)
         dedup_key = hashlib.sha256(f"{topic}:{payload}".encode()).hexdigest()[:32]
         # skip if duplicate within window
         existing = db.select("knowledge_events", {
@@ -48,7 +85,7 @@ def subscribe(topics: list, since_hours: int = 24, limit: int = 50) -> list:
     try:
         params = {
             "select": "topic,body,project,source,created_at",
-            "topic": f"in.({','.join(topics)})",
+            "topic": _in_filter(topics),
             "created_at": f"gte.{_hours_ago(since_hours)}",
             "order": "created_at.desc",
             "limit": str(limit),

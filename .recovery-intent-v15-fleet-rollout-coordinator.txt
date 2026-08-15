@@ -1,0 +1,4 @@
+recovery-intent: v15-fleet-rollout-coordinator
+template: a214e975da76
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 20260811 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice after agentic aider aliases allowlist approvals approved author backpressure batch beethoven before behavior benchmark blocked blocker bounded build build_fix buildfail bypass cannot canonical capability ce2e8dcd7954 change cheap checks children claim claimed class claude coder complete contains context continuously contract control coordination correctness cross custody deepseek defined delete dependency deployfix detailed diffs drafting duplicating every evidence excerpt existing exists explicit fable facing failed final finish
+base: master

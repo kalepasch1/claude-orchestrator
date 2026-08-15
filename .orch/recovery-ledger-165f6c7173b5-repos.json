@@ -1,0 +1,99 @@
+{
+  "audit_fingerprint": "165f6c7173b5d94520d186103651ae1146b51ab0aa61065abc4676767b5e5fa4",
+  "base": "n/a (whole-repo comparison)",
+  "counts": {
+    "ALREADY_PRESENT": 1,
+    "RECOVERABLE_VALUE": 4
+  },
+  "evidence_kind": "unregistered_local_repo",
+  "items": [
+    {
+      "classification": "RECOVERABLE_VALUE",
+      "created_at": 1786069920,
+      "dirty_paths": 3,
+      "disposition": "unregistered checkout holding 3 uncommitted path(s). Register the project or recover the work through an agent branch. Source repo is READ-ONLY \u2014 do not delete, reset or move it.",
+      "evidence": "3 dirty",
+      "files": [
+        "0 unpushed branch(es)",
+        "3 dirty path(s)"
+      ],
+      "kind": "unregistered_local_repo",
+      "origin": "https://github.com/kalepasch1/claude-orchestrator.git",
+      "ref": "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812",
+      "sha": "8f0a56079815b8d47b87e92180da89fe0dce403b",
+      "subject": "ci: allow manual dispatch \u2014 GITHUB_TOKEN promotions never trigger CI",
+      "unpushed_branches": []
+    },
+    {
+      "classification": "RECOVERABLE_VALUE",
+      "created_at": 1785072225,
+      "dirty_paths": 223,
+      "disposition": "unregistered checkout holding 223 uncommitted path(s). Register the project or recover the work through an agent branch. Source repo is READ-ONLY \u2014 do not delete, reset or move it.",
+      "evidence": "223 dirty",
+      "files": [
+        "0 unpushed branch(es)",
+        "223 dirty path(s)"
+      ],
+      "kind": "unregistered_local_repo",
+      "origin": "https://github.com/kalepasch1/claude-orchestrator.git",
+      "ref": "/Users/kpasch/Documents/_Trojun_archived",
+      "sha": "e3b5c172f8eca44486b43e74b203abc2f4719d91",
+      "subject": "feat: add Multiplayer Hivemind Development System (5-layer)",
+      "unpushed_branches": []
+    },
+    {
+      "classification": "RECOVERABLE_VALUE",
+      "created_at": 1784757681,
+      "dirty_paths": 2,
+      "disposition": "unregistered checkout holding 2 uncommitted path(s). Register the project or recover the work through an agent branch. Source repo is READ-ONLY \u2014 do not delete, reset or move it.",
+      "evidence": "2 dirty",
+      "files": [
+        "0 unpushed branch(es)",
+        "2 dirty path(s)"
+      ],
+      "kind": "unregistered_local_repo",
+      "origin": "https://kalepasch1@github.com/kalepasch1/darwn.git",
+      "ref": "/Users/kpasch/Documents/darwinLife",
+      "sha": "1643c0afbca3b16bb8427fbbf9886de0767f9775",
+      "subject": "docs: require canonical git author for all agents (fixes Vercel BLOCKED deploys)",
+      "unpushed_branches": []
+    },
+    {
+      "classification": "ALREADY_PRESENT",
+      "created_at": 1785948309,
+      "dirty_paths": 0,
+      "disposition": "fully pushed and clean; origin matches a registered project",
+      "evidence": "no unpushed commits, no dirty paths",
+      "files": [
+        "0 unpushed branch(es)",
+        "0 dirty path(s)"
+      ],
+      "kind": "unregistered_local_repo",
+      "origin": "https://github.com/kalepasch1/pasch.git",
+      "ref": "/Users/kpasch/Documents/pasch",
+      "sha": "3a60e6ba6d84b8f3a1ada74c9921f69ec6755685",
+      "subject": "content: add serial fintech founder; correct Prediction Markets Institute name",
+      "unpushed_branches": []
+    },
+    {
+      "classification": "RECOVERABLE_VALUE",
+      "created_at": 1786106930,
+      "dirty_paths": 1,
+      "disposition": "unregistered checkout holding 1 uncommitted path(s). Origin is not a registered project, so no executor or merge train will ever see it. Register the project or recover the work through an agent branch. Source repo is READ-ONLY \u2014 do not delete, reset or move it.",
+      "evidence": "1 dirty",
+      "files": [
+        "0 unpushed branch(es)",
+        "1 dirty path(s)"
+      ],
+      "kind": "unregistered_local_repo",
+      "origin": "https://github.com/kalepasch1/vinci.git",
+      "ref": "/Users/kpasch/Documents/vinci",
+      "sha": "cef2b65f1af561a85438de194b28af4260dccd4e",
+      "subject": "chore: merge remote main before production release",
+      "unpushed_branches": []
+    }
+  ],
+  "registered_project_count": 15,
+  "total": 5,
+  "unknown": 0
+}

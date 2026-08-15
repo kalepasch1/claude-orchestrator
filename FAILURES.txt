@@ -1,0 +1,1775 @@
+FAILURES.txt - failing tests on branch backlog-batch-beethoven-ccacb00
+Generated: 2026-08-07T00:37:59Z
+Command: COLUMNS=500 python3 -m pytest runner/tests tests -q -p no:randomly --timeout=60 --tb=no -rfE
+Result:  739 failed, 5766 passed, 35 skipped, 2 warnings, 1 error in 58.06s
+
+Failing test files: 122   Failing tests: 739   Collection errors: 1
+==============================================================================
+
+## TOP ERROR TYPES
+
+    326  AttributeError
+    159  AssertionError
+     57  TypeError
+     50  ModuleNotFoundError
+     43  ImportError
+     35  NameError
+     20  KeyError
+     19  IndexError
+      7  RuntimeError
+      3  assert 0.99 == 0.0
+      3  assert False
+      2  StopIteration
+      2  assert 1 >= 2
+      1  assert 'minimal_commit.extract' in '#!/usr/bin/env python3\nfrom __future__ import annotations\n"""\nmerge_train.py - the serialized integration train. T... merge_train instance is running"}))\n        sys.exit(0)\n    print(json.dumps(train_run(), indent=2, default=str))\n'
+      1  assert None is not None
+
+## MOST-AFFECTED FILES
+
+     35  runner/tests/test_prompt_assembler.py
+     33  runner/tests/test_relfix_pareto_2080_release_conflict_healing.py
+     30  runner/tests/test_relfix_orchestration_contract.py
+     27  runner/tests/test_zombie_reaper_heartbeat.py
+     23  runner/tests/test_monthly_audit.py
+     22  runner/tests/test_zombie_reaper_integration.py
+     18  runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py
+     18  runner/tests/test_scoreboard_history.py
+     17  runner/tests/test_ci_agent.py
+     17  tests/test_emit_task_log.py
+     16  runner/tests/test_branch_recovery_access.py
+     16  runner/tests/test_value_per_token.py
+     16  runner/tests/test_zombie_reaper_complete.py
+     15  runner/tests/test_account_pool_cooldown.py
+     15  runner/tests/test_merge_train.py
+
+==============================================================================
+
+## COLLECTION ERRORS
+
+  ERROR runner/tests/test_gh_auth.py
+    TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+
+## FAILING TESTS (grouped by file)
+
+### runner/tests/integration/test_tdd_workflow.py  (10 failing)
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_contracts_task_never_gated
+    AssertionError: 'task' != 'contracts'
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_empty_gated_kinds_no_phase_insertion
+    AssertionError: 1 != 2
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_multiple_gated_tasks
+    AssertionError: 'refactor-db-write-tests' not found in ['task']
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_original_task_depends_on_write_tests
+    AssertionError: unexpectedly None
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_plan_inserts_write_tests_phase_for_gated_task
+    AssertionError: 'contracts' not found in ['task']
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_ungated_tasks_unchanged
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_write_tests_task_has_correct_deps
+    AssertionError: unexpectedly None
+  FAILED runner/tests/integration/test_tdd_workflow.py::PlannerTddGatingIntegrationTest::test_write_tests_task_prompt_references_original
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/integration/test_tdd_workflow.py::RegressionTest::test_planner_still_works_without_tdd_gate_module
+    AssertionError: 1 != 2
+  FAILED runner/tests/integration/test_tdd_workflow.py::EdgeCaseIntegrationTest::test_task_with_multiple_dependencies_preserved
+    TypeError: 'NoneType' object is not subscriptable
+
+### runner/tests/test_account_pool_cooldown.py  (15 failing)
+  FAILED runner/tests/test_account_pool_cooldown.py::TestCooldownFunctions::test_cooldown_function_returns_constant
+    AttributeError: module 'account_pool' has no attribute '_cooldown'
+  FAILED runner/tests/test_account_pool_cooldown.py::TestCooldownFunctions::test_cooldown_max_function_returns_constant
+    AttributeError: module 'account_pool' has no attribute '_cooldown_max'
+  FAILED runner/tests/test_account_pool_cooldown.py::TestMarkExhaustedBackoff::test_first_exhaustion_sets_base_cooldown
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestMarkExhaustedBackoff::test_second_exhaustion_doubles_cooldown
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestMarkExhaustedBackoff::test_exponential_backoff_progression
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestMarkExhaustedBackoff::test_cooldown_capped_at_max
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestMarkExhaustedBackoff::test_mark_ok_resets_backoff_counter
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestMarkExhaustedBackoff::test_mark_exhausted_saves_state
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestCooldownIntegration::test_healthy_check_respects_cooldown
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestCooldownIntegration::test_current_account_rotates_on_exhaustion
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestCooldownIntegration::test_all_accounts_exhausted_flag
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestCooldownIntegration::test_stats_reflects_cooldown_state
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestEdgeCases::test_mark_exhausted_with_missing_account_creates_state
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestEdgeCases::test_large_number_of_exhaustion_hits
+    NameError: name '_cooldown' is not defined
+  FAILED runner/tests/test_account_pool_cooldown.py::TestEdgeCases::test_cooldown_calculation_precision
+    NameError: name '_cooldown' is not defined
+
+### runner/tests/test_agentic_repair.py  (13 failing)
+  FAILED runner/tests/test_agentic_repair.py::TestCategoryClassification::test_empty_string_not_replacement
+    AttributeError: module 'agentic_repair' has no attribute 'replacement_required'
+  FAILED runner/tests/test_agentic_repair.py::TestCategoryClassification::test_none_defaults_to_technical
+    AttributeError: module 'agentic_repair' has no attribute 'is_technical'
+  FAILED runner/tests/test_agentic_repair.py::TestCategoryClassification::test_replacement_categories
+    AttributeError: module 'agentic_repair' has no attribute 'replacement_required'
+  FAILED runner/tests/test_agentic_repair.py::TestCategoryClassification::test_technical_categories
+    AttributeError: module 'agentic_repair' has no attribute 'is_technical'
+  FAILED runner/tests/test_agentic_repair.py::TestCategoryClassification::test_unknown_category_not_technical
+    AttributeError: module 'agentic_repair' has no attribute 'is_technical'
+  FAILED runner/tests/test_agentic_repair.py::TestOriginalPrompt::test_basic_prompt_extraction
+    AttributeError: module 'agentic_repair' has no attribute '_original_prompt'
+  FAILED runner/tests/test_agentic_repair.py::TestOriginalPrompt::test_empty_task_does_not_crash
+    AttributeError: module 'agentic_repair' has no attribute '_original_prompt'
+  FAILED runner/tests/test_agentic_repair.py::TestOriginalPrompt::test_missing_prompt_uses_slug
+    AttributeError: module 'agentic_repair' has no attribute '_original_prompt'
+  FAILED runner/tests/test_agentic_repair.py::TestOriginalPrompt::test_prompt_length_bounded
+    AttributeError: module 'agentic_repair' has no attribute '_original_prompt'
+  FAILED runner/tests/test_agentic_repair.py::TestMarkerConstant::test_agentic_artifacts_context_is_fail_soft_on_import_error
+    AttributeError: module 'agentic_repair' has no attribute '_agentic_artifacts_context'
+  FAILED runner/tests/test_agentic_repair.py::TestMarkerConstant::test_marker_in_technical_set
+    AttributeError: module 'agentic_repair' has no attribute 'TECHNICAL_CATEGORIES'
+  FAILED runner/tests/test_agentic_repair.py::TestMarkerConstant::test_repair_prompt_includes_agentic_artifacts_when_available
+    AttributeError: module 'agentic_repair' has no attribute 'repair_prompt'
+  FAILED runner/tests/test_agentic_repair.py::TestMarkerConstant::test_repair_prompt_is_unchanged_when_no_artifacts
+    AttributeError: module 'agentic_repair' has no attribute 'repair_prompt'
+
+### runner/tests/test_anomaly.py  (1 failing)
+  FAILED runner/tests/test_anomaly.py::TestCheck::test_spike_triggers_alert
+    AssertionError: True is not false
+
+### runner/tests/test_auto_rebase_no_drift.py  (6 failing)
+  FAILED runner/tests/test_auto_rebase_no_drift.py::TestNoDrift::test_no_checkout_when_target_branch_checkout_fails
+    AttributeError: <module 'conflict_auto_resolve' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/conflict_auto_resolve.py'> does not have the attribute '_git'
+  FAILED runner/tests/test_auto_rebase_no_drift.py::TestNoDrift::test_restores_even_if_rebase_raises
+    AttributeError: <module 'conflict_auto_resolve' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/conflict_auto_resolve.py'> does not have the attribute '_git'
+  FAILED runner/tests/test_auto_rebase_no_drift.py::TestNoDrift::test_returns_to_non_master_original_branch
+    AttributeError: <module 'conflict_auto_resolve' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/conflict_auto_resolve.py'> does not have the attribute '_git'
+  FAILED runner/tests/test_auto_rebase_no_drift.py::TestNoDrift::test_returns_to_original_branch_on_rebase_failure
+    AttributeError: <module 'conflict_auto_resolve' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/conflict_auto_resolve.py'> does not have the attribute '_git'
+  FAILED runner/tests/test_auto_rebase_no_drift.py::TestNoDrift::test_returns_to_original_branch_on_success
+    AttributeError: <module 'conflict_auto_resolve' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/conflict_auto_resolve.py'> does not have the attribute '_git'
+  FAILED runner/tests/test_auto_rebase_no_drift.py::TestNoDrift::test_skips_when_current_branch_unknown
+    AttributeError: <module 'conflict_auto_resolve' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/conflict_auto_resolve.py'> does not have the attribute '_git'
+
+### runner/tests/test_auto_remediate.py  (3 failing)
+  FAILED runner/tests/test_auto_remediate.py::AutoRemediateRecoveryTest::test_dependency_buildfail_requeued_after_prewarm
+    AssertionError: 'claude' != 'gemini'
+  FAILED runner/tests/test_auto_remediate.py::AutoRemediateRecoveryTest::test_max_turns_escalates_at_cap
+    StopIteration
+  FAILED runner/tests/test_auto_remediate.py::AutoRemediateRecoveryTest::test_max_turns_retries_under_cap
+    StopIteration
+
+### runner/tests/test_auto_tune.py  (3 failing)
+  FAILED runner/tests/test_auto_tune.py::TestCycleTimeRegression::test_detects_cycle_time_increase_above_threshold
+    AssertionError: 0 not greater than 0
+  FAILED runner/tests/test_auto_tune.py::TestMetricsIntegration::test_improvement_measure_collects_cycle_time
+    AttributeError: module 'improvement_measure' has no attribute 'stage_metrics'
+  FAILED runner/tests/test_auto_tune.py::TestMetricsIntegration::test_improvement_measure_tracks_first_try_yield
+    AttributeError: module 'improvement_measure' has no attribute 'stage_metrics'
+
+### runner/tests/test_autopilot.py  (4 failing)
+  FAILED runner/tests/test_autopilot.py::AutopilotTest::test_drain_stall_agent_runs_billing_guard_when_paused_with_queue
+    AttributeError: <module 'autopilot' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/autopilot.py'> does not have the attribute '_exact_queue_counts'
+  FAILED runner/tests/test_autopilot.py::AutopilotTest::test_run_invokes_pressure_agents_and_cheap_improvement_replenisher
+    AssertionError: 'selfcheck' unexpectedly found in {'remediate', 'portfolio', 'rank', 'evidence', 'canary', 'janitor', 'prewarm', 'improve', 'resources', 'selfcheck', 'recovery'}
+  FAILED runner/tests/test_autopilot.py::AutopilotTest::test_snapshot_counts_recovery_improvement_and_canary_pressure
+    KeyError: 'sampled_queued'
+  FAILED runner/tests/test_autopilot.py::AutopilotTest::test_snapshot_prefers_exact_queue_counts_over_sample
+    AssertionError: 1 != 901
+
+### runner/tests/test_backlog_batch_illuminati.py  (1 failing)
+  FAILED runner/tests/test_backlog_batch_illuminati.py::TestBacklogBatchProcessor::test_concurrent_batch_processing_lock
+    TypeError: isinstance() arg 2 must be a type or tuple of types
+
+### runner/tests/test_blast_radius.py  (2 failing)
+  FAILED runner/tests/test_blast_radius.py::TestDependents::test_rg_search_finds_dependents
+    AssertionError: 'user' not found in ['rg', '-l', '(import|require|from).*user']
+  FAILED runner/tests/test_blast_radius.py::TestNoteForTask::test_empty_targets_returns_empty_note
+    AssertionError: "# Blast radius: these files depend on wh[83 chars]\n\n" != ''
+
+### runner/tests/test_blocker_quarantine.py  (6 failing)
+  FAILED runner/tests/test_blocker_quarantine.py::BlockerQuarantineTest::test_deep_rework_chain_escalates_to_human_instead_of_respawning
+    NameError: name 'max_depth' is not defined
+  FAILED runner/tests/test_blocker_quarantine.py::BlockerQuarantineTest::test_legal_blocker_creates_safe_local_rework_and_parks_original
+    NameError: name 'max_depth' is not defined
+  FAILED runner/tests/test_blocker_quarantine.py::BlockerQuarantineTest::test_secret_blocker_preserves_behavior_without_committing_credentials
+    NameError: name 'max_depth' is not defined
+  FAILED runner/tests/test_blocker_quarantine.py::BlockerQuarantineTest::test_slack_secret_replacement_uses_env_var_placeholders
+    AssertionError: None != 1
+  FAILED runner/tests/test_blocker_quarantine.py::BlockerQuarantineTest::test_slack_token_in_log_tail_classified_as_secret
+    AssertionError: 'rework' != 'secret'
+  FAILED runner/tests/test_blocker_quarantine.py::BlockerQuarantineTest::test_strip_rework_noise_removes_nested_prefixes
+    AttributeError: module 'blocker_quarantine' has no attribute '_strip_rework_noise'
+
+### runner/tests/test_branch_creator.py  (3 failing)
+  FAILED runner/tests/test_branch_creator.py::TestCreateBranchScenarios::test_create_branch_successfully
+    AssertionError: False is not true
+  FAILED runner/tests/test_branch_creator.py::TestCreateBranchScenarios::test_handle_branch_already_exists
+    AssertionError: False is not true
+  FAILED runner/tests/test_branch_creator.py::TestCreateBranchScenarios::test_handle_permission_errors
+    AssertionError: 'GITHUB_PAT' not found in 'repo path not found: /tmp/fakerepo'
+
+### runner/tests/test_branch_manager.py  (3 failing)
+  FAILED runner/tests/test_branch_manager.py::TestBranchManager::test_branch_health_report_structure
+    ModuleNotFoundError: No module named 'runner.branch_manager'; 'runner' is not a package
+  FAILED runner/tests/test_branch_manager.py::TestBranchManager::test_detect_base_branch_master
+    ModuleNotFoundError: No module named 'runner.branch_manager'; 'runner' is not a package
+  FAILED runner/tests/test_branch_manager.py::TestBranchManager::test_list_agent_branches
+    ModuleNotFoundError: No module named 'runner.branch_manager'; 'runner' is not a package
+
+### runner/tests/test_branch_recovery_access.py  (16 failing)
+  FAILED runner/tests/test_branch_recovery_access.py::TestRepoAccessValidation::test_repo_not_found_returns_none
+    ImportError: cannot import name 'repo_runnable_here' from 'db' (unknown location)
+  FAILED runner/tests/test_branch_recovery_access.py::TestRepoAccessValidation::test_repo_access_denied_graceful
+    ImportError: cannot import name 'repo_runnable_here' from 'db' (unknown location)
+  FAILED runner/tests/test_branch_recovery_access.py::TestRepoAccessValidation::test_localize_repo_path_missing_on_other_host
+    ImportError: cannot import name 'localize_repo_path' from 'db' (unknown location)
+  FAILED runner/tests/test_branch_recovery_access.py::TestRepoAccessValidation::test_localize_repo_path_respects_disable_flag
+    ImportError: cannot import name 'localize_repo_path' from 'db' (unknown location)
+  FAILED runner/tests/test_branch_recovery_access.py::TestBranchRecoveryWithAccessFailure::test_recover_branch_auth_failure_queues_requeue
+    AssertionError: assert 'pat_unavailable' in ('requeued', 'error')
+  FAILED runner/tests/test_branch_recovery_access.py::TestBranchRecoveryWithAccessFailure::test_sweep_skips_unresolvable_repos
+    AttributeError: module 'db' has no attribute 'localize_repo_path'
+  FAILED runner/tests/test_branch_recovery_access.py::TestMissingBranchAuditWithAccessIssues::test_auto_recover_creates_recovery_task_on_auth_failure_detection
+    AttributeError: <module 'db'> does not have the attribute 'insert'
+  FAILED runner/tests/test_branch_recovery_access.py::TestBranchRepairBotAccessHandling::test_check_task_repo_not_accessible
+    ImportError: cannot import name 'check_task' from 'branch_repair_bot' (/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/branch_repair_bot.py)
+  FAILED runner/tests/test_branch_recovery_access.py::TestBranchRepairBotAccessHandling::test_repair_task_manual_action_on_check_failed
+    ImportError: cannot import name 'repair_task' from 'branch_repair_bot' (/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/branch_repair_bot.py)
+  FAILED runner/tests/test_branch_recovery_access.py::TestBranchRepairBotAccessHandling::test_run_skips_inaccessible_projects
+    ImportError: cannot import name 'run' from 'branch_repair_bot' (/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/branch_repair_bot.py)
+  FAILED runner/tests/test_branch_recovery_access.py::TestRecoveryDecisionLogic::test_recovery_skip_if_already_queued
+    AssertionError: assert 'pat_unavailable' == 'already_requeued'
+  FAILED runner/tests/test_branch_recovery_access.py::TestRecoveryDecisionLogic::test_recovery_prompt_preserves_original_context
+    AttributeError: <module 'db'> does not have the attribute 'insert'
+  FAILED runner/tests/test_branch_recovery_access.py::TestConcurrentAccessAndRaceConditions::test_recovery_upsert_avoids_duplicate_race
+    AttributeError: <module 'db'> does not have the attribute 'insert'
+  FAILED runner/tests/test_branch_recovery_access.py::TestErrorLoggingAndObservability::test_recovery_error_detail_in_result
+    AttributeError: <module 'db'> does not have the attribute 'insert'
+  FAILED runner/tests/test_branch_recovery_access.py::TestEndToEndRecoveryFlows::test_missing_branch_to_recovery_task_creation
+    AttributeError: <module 'db'> does not have the attribute 'insert'
+  FAILED runner/tests/test_branch_recovery_access.py::TestEndToEndRecoveryFlows::test_flow_resilience_to_db_transient_failures
+    AttributeError: module 'db' has no attribute 'localize_repo_path'
+
+### runner/tests/test_branch_recovery_auth.py  (7 failing)
+  FAILED runner/tests/test_branch_recovery_auth.py::TestGitAuthWithInvalidCredentials::test_run_git_command_error_safe
+    AssertionError: assert ('token' not in 'fatal: coul...e with token'
+  FAILED runner/tests/test_branch_recovery_auth.py::TestBranchRecoveryIntegration::test_sweep_handles_auth_gracefully
+    AttributeError: module 'db' has no attribute 'localize_repo_path'
+  FAILED runner/tests/test_branch_recovery_auth.py::TestBranchRecoveryIntegration::test_recovery_task_creation_on_auth_failure
+    AttributeError: <module 'db'> does not have the attribute 'insert'
+  FAILED runner/tests/test_branch_recovery_auth.py::TestBranchRecoveryIntegration::test_no_recovery_without_pat_and_no_remote
+    AssertionError: assert 'dry_run' == 'pat_unavailable'
+  FAILED runner/tests/test_branch_recovery_auth.py::TestErrorMessageSafety::test_git_auth_error_redaction
+    ImportError: cannot import name 'redact_secrets' from 'db' (unknown location)
+  FAILED runner/tests/test_branch_recovery_auth.py::TestErrorMessageSafety::test_recovery_error_messages_safe
+    ImportError: cannot import name 'redact_secrets' from 'db' (unknown location)
+  FAILED runner/tests/test_branch_recovery_auth.py::TestFailSoftBehavior::test_recovery_continues_on_db_error
+    AssertionError: assert 'dry_run' == 'error'
+
+### runner/tests/test_branch_share.py  (6 failing)
+  FAILED runner/tests/test_branch_share.py::BranchShareTest::test_local_only_check_misses_remote_branch
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+  FAILED runner/tests/test_branch_share.py::BranchShareTest::test_materialize_false_when_absent_everywhere
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+  FAILED runner/tests/test_branch_share.py::BranchShareTest::test_merge_train_materializes_local_ref
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+  FAILED runner/tests/test_branch_share.py::BranchShareTest::test_no_repo_is_fail_soft
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+  FAILED runner/tests/test_branch_share.py::BranchShareTest::test_sweeper_sees_remote_branch
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+  FAILED runner/tests/test_branch_share.py::BranchShareTest::test_sweeper_still_false_for_truly_missing
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+
+### runner/tests/test_build_cache.py  (7 failing)
+  FAILED runner/tests/test_build_cache.py::TestCacheKey::test_stable_for_identical_lockfiles
+    AttributeError: module 'build_cache' has no attribute 'cache_key'
+  FAILED runner/tests/test_build_cache.py::TestCacheKey::test_changes_when_lockfile_changes
+    AttributeError: module 'build_cache' has no attribute 'cache_key'
+  FAILED runner/tests/test_build_cache.py::TestCacheKey::test_empty_on_no_lockfile
+    AttributeError: module 'build_cache' has no attribute 'cache_key'
+  FAILED runner/tests/test_build_cache.py::TestCacheKey::test_yarn_lock_also_works
+    AttributeError: module 'build_cache' has no attribute 'cache_key'
+  FAILED runner/tests/test_build_cache.py::TestRestoreSave::test_miss_returns_false
+    AttributeError: module 'build_cache' has no attribute 'restore'
+  FAILED runner/tests/test_build_cache.py::TestRestoreSave::test_save_then_restore
+    AttributeError: module 'build_cache' has no attribute 'save'
+  FAILED runner/tests/test_build_cache.py::TestRestoreSave::test_no_lockfile_save_returns_false
+    AttributeError: module 'build_cache' has no attribute 'save'
+
+### runner/tests/test_build_selfheal.py  (4 failing)
+  FAILED runner/tests/test_build_selfheal.py::TestBuildSelfheal::test_classify_build_error
+    ModuleNotFoundError: No module named 'runner.build_selfheal'; 'runner' is not a package
+  FAILED runner/tests/test_build_selfheal.py::TestBuildSelfheal::test_classify_oom
+    ModuleNotFoundError: No module named 'runner.build_selfheal'; 'runner' is not a package
+  FAILED runner/tests/test_build_selfheal.py::TestBuildSelfheal::test_extract_failing_files
+    ModuleNotFoundError: No module named 'runner.build_selfheal'; 'runner' is not a package
+  FAILED runner/tests/test_build_selfheal.py::TestBuildSelfheal::test_extract_failing_files_empty
+    ModuleNotFoundError: No module named 'runner.build_selfheal'; 'runner' is not a package
+
+### runner/tests/test_canary_heartbeat.py  (1 failing)
+  FAILED runner/tests/test_canary_heartbeat.py::CanaryHeartbeatFileFormatTest::test_deploy_canary_contains_valid_utc_timestamp
+    AssertionError: False is not true
+
+### runner/tests/test_ci_agent.py  (17 failing)
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_build_not_eligible
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_chore_eligible
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_docs_eligible
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_feature_not_eligible
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_lint_eligible
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_mechanical_eligible
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_sensitive_task_excluded
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestCIDispatchEligibility::test_test_kind_eligible
+    AttributeError: module 'ci_dispatch' has no attribute 'is_eligible'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchPayload::test_payload_no_secrets
+    AttributeError: module 'ci_dispatch' has no attribute 'build_dispatch_payload'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchPayload::test_payload_structure
+    AttributeError: module 'ci_dispatch' has no attribute 'build_dispatch_payload'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchPayload::test_prompt_truncated
+    AttributeError: module 'ci_dispatch' has no attribute 'build_dispatch_payload'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchAndPoll::test_complete_removes_from_inflight
+    AttributeError: module 'ci_dispatch' has no attribute '_in_flight'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchAndPoll::test_dispatch_eligible_task
+    AttributeError: module 'ci_dispatch' has no attribute '_in_flight'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchAndPoll::test_dispatch_ineligible_returns_none
+    AttributeError: module 'ci_dispatch' has no attribute '_in_flight'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchAndPoll::test_max_concurrent_cap
+    AttributeError: module 'ci_dispatch' has no attribute '_in_flight'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchAndPoll::test_poll_in_progress
+    AttributeError: module 'ci_dispatch' has no attribute '_in_flight'
+  FAILED runner/tests/test_ci_agent.py::TestDispatchAndPoll::test_poll_unknown
+    AttributeError: module 'ci_dispatch' has no attribute '_in_flight'
+
+### runner/tests/test_ci_pipeline.py  (1 failing)
+  FAILED runner/tests/test_ci_pipeline.py::TestTestCommand::test_requirements_file_exists
+    AssertionError: False is not true : No dependency manifest found
+
+### runner/tests/test_claim_next_rpc.py  (6 failing)
+  FAILED runner/tests/test_claim_next_rpc.py::TestClaimViaRpc::test_flag_off_returns_none
+    AttributeError: module 'db' has no attribute '_claim_via_rpc'
+  FAILED runner/tests/test_claim_next_rpc.py::TestClaimViaRpc::test_flag_on_calls_rpc
+    AttributeError: <module 'db'> does not have the attribute 'rpc'
+  FAILED runner/tests/test_claim_next_rpc.py::TestClaimViaRpc::test_flag_on_rpc_empty_returns_none
+    AttributeError: <module 'db'> does not have the attribute 'rpc'
+  FAILED runner/tests/test_claim_next_rpc.py::TestClaimViaRpc::test_rpc_error_falls_back
+    AttributeError: <module 'db'> does not have the attribute 'rpc'
+  FAILED runner/tests/test_claim_next_rpc.py::TestClaimViaRpc::test_host_affinity_passes_runnable_projects
+    AttributeError: <module 'db'> does not have the attribute 'rpc'
+  FAILED runner/tests/test_claim_next_rpc.py::TestClaimTaskFlagOff::test_flag_off_uses_scan_path
+    AttributeError: <module 'db'> does not have the attribute '_claim_via_rpc'
+
+### runner/tests/test_claim_task_order.py  (1 failing)
+  FAILED runner/tests/test_claim_task_order.py::TestClaimTaskOrder::test_release_fix_beats_recovery_for_deploy_readiness
+    AssertionError: 'recover' != 'relfix'
+
+### runner/tests/test_config_applier.py  (1 failing)
+  FAILED runner/tests/test_config_applier.py::test_persistence_failure_rolls_back_local_canary
+    AttributeError: <module 'db'> has no attribute 'insert'
+
+### runner/tests/test_config_applier_enhanced.py  (2 failing)
+  FAILED runner/tests/test_config_applier_enhanced.py::test_apply_config_applies_safe_key
+    AssertionError: assert 'rejected' == 'applied'
+  FAILED runner/tests/test_config_applier_enhanced.py::test_apply_config_value_coerced_to_string
+    AssertionError: assert 'rejected' == 'applied'
+
+### runner/tests/test_config_drift.py  (5 failing)
+  FAILED runner/tests/test_config_drift.py::ConfigHashTest::test_consistent_hash
+    AttributeError: module 'config_drift' has no attribute '_config_hash'
+  FAILED runner/tests/test_config_drift.py::ConfigHashTest::test_different_data_different_hash
+    AttributeError: module 'config_drift' has no attribute '_config_hash'
+  FAILED runner/tests/test_config_drift.py::CheckDriftTest::test_drift_detected
+    AttributeError: <module 'config_drift' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/config_drift.py'> does not have the attribute '_config_hash'
+  FAILED runner/tests/test_config_drift.py::CheckDriftTest::test_missing_hash_not_flagged
+    AttributeError: <module 'config_drift' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/config_drift.py'> does not have the attribute '_config_hash'
+  FAILED runner/tests/test_config_drift.py::CheckDriftTest::test_no_drift_returns_empty
+    AttributeError: <module 'config_drift' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/config_drift.py'> does not have the attribute '_config_hash'
+
+### runner/tests/test_config_errors.py  (2 failing)
+  FAILED runner/tests/test_config_errors.py::TestMissingDependencies::test_get_bool_handles_dict_value_with_enabled_key
+    AssertionError: False is not true
+  FAILED runner/tests/test_config_errors.py::TestMissingDependencies::test_get_bool_handles_old_schema_paused_field
+    AssertionError: False is not true
+
+### runner/tests/test_config_sync.py  (1 failing)
+  FAILED runner/tests/test_config_sync.py::SyncTest::test_callback_fires_on_change
+    AttributeError: module 'config_sync' has no attribute 'on_change'
+
+### runner/tests/test_conftest_module_isolation.py  (1 failing)
+  FAILED runner/tests/test_conftest_module_isolation.py::TestConftestRestoresEveryFake::test_every_faked_module_is_restorable
+    AssertionError: Items in the first set but not the second:
+
+### runner/tests/test_contract_first.py  (10 failing)
+  FAILED runner/tests/test_contract_first.py::TestContractFirstVerify::test_contracts_task_skipped
+    AttributeError: module 'pipeline_contract' has no attribute 'verify_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstVerify::test_no_test_task_is_ok
+    AttributeError: module 'pipeline_contract' has no attribute 'verify_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstVerify::test_test_task_exists_but_not_in_deps
+    AttributeError: module 'pipeline_contract' has no attribute 'verify_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstVerify::test_valid_dag_with_test_task_in_deps
+    AttributeError: module 'pipeline_contract' has no attribute 'verify_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstVerify::test_verify_with_repo_path_finds_test_file
+    AttributeError: module 'pipeline_contract' has no attribute 'verify_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstVerify::test_verify_with_xfail_test_file
+    AttributeError: module 'pipeline_contract' has no attribute 'verify_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstProofRewrite::test_empty_proof_rewritten
+    AttributeError: module 'pipeline_contract' has no attribute 'rewrite_proof_for_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstProofRewrite::test_generic_proof_rewritten
+    AttributeError: module 'pipeline_contract' has no attribute 'rewrite_proof_for_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstProofRewrite::test_specific_proof_preserved
+    AttributeError: module 'pipeline_contract' has no attribute 'rewrite_proof_for_contract_first'
+  FAILED runner/tests/test_contract_first.py::TestContractFirstPlannerOutputShape::test_tdd_gated_task_gets_test_sibling
+    AssertionError: 'build-widget-write-tests' not found in ['contracts', 'build-widget']
+
+### runner/tests/test_cowork_assemble.py  (2 failing)
+  FAILED runner/tests/test_cowork_assemble.py::TestGetVercelConfig::test_reads_token_from_env
+    AssertionError: '' != 'tok_test'
+  FAILED runner/tests/test_cowork_assemble.py::TestSafeImport::test_returns_module_on_success
+    AssertionError: unexpectedly None
+
+### runner/tests/test_cowork_stage_triage.py  (1 failing)
+  FAILED runner/tests/test_cowork_stage_triage.py::test_cowork_stage_persists_shared_triage_route
+    AttributeError: <module 'pipeline_contract' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/pipeline_contract.py'> has no attribute 'task_fields'
+
+### runner/tests/test_decision_drafts.py  (7 failing)
+  FAILED runner/tests/test_decision_drafts.py::TestParallelProvider::test_parallel_complete_basic
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+  FAILED runner/tests/test_decision_drafts.py::TestParallelProvider::test_parallel_complete_cost_aggregation
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+  FAILED runner/tests/test_decision_drafts.py::TestParallelProvider::test_parallel_complete_provider_error
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+  FAILED runner/tests/test_decision_drafts.py::TestParallelProvider::test_parallel_complete_scoring
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+  FAILED runner/tests/test_decision_drafts.py::TestParallelProvider::test_score_result_heuristics
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+  FAILED runner/tests/test_decision_drafts.py::TestJudgeParallel::test_review_parallel_fallback_on_error
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+  FAILED runner/tests/test_decision_drafts.py::TestJudgeParallel::test_review_sequential_fallback
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+
+### runner/tests/test_delivery_accelerators.py  (1 failing)
+  FAILED runner/tests/test_delivery_accelerators.py::test_accelerators_are_wired_into_delivery_paths
+    assert 'minimal_commit.extract' in '#!/usr/bin/env python3\nfrom __future__ import annotations\n"""\nmerge_train.py - the serialized integration train. T... merge_train instance is running"}))\n        sys.exit(0)\n    print(json.dumps(train_run(), indent=2, default=str))\n'
+
+### runner/tests/test_deploy_canary.py  (4 failing)
+  FAILED runner/tests/test_deploy_canary.py::TestDeployCanary::test_timestamp_format_iso_8601_utc
+    AssertionError: Timestamp 2026-08-07T00:37:10.077850Z does not match ISO 8601 UTC format
+  FAILED runner/tests/test_deploy_canary.py::TestDeployCanary::test_timestamp_has_required_components
+    assert None is not None
+  FAILED runner/tests/test_deploy_canary.py::TestDeployCanary::test_canary_contains_no_hardcoded_values
+    AssertionError: assert None
+  FAILED runner/tests/test_deploy_canary.py::TestDeployCanary::test_canary_creation_workflow_end_to_end
+    AssertionError: assert None
+
+### runner/tests/test_deploy_cost_controls.py  (2 failing)
+  FAILED runner/tests/test_deploy_cost_controls.py::test_web_only_auto_deploys_production_branch
+    KeyError: 'ignoreCommand'
+  FAILED runner/tests/test_deploy_cost_controls.py::test_release_code_enforces_cost_control_floors
+    assert 'release_train.MIN_BATCH = max(10,' in '#!/usr/bin/env python3\n"""\nautopilot.py - autonomous queue/improvement operating bot.\n\nThis is the coordinator th...pshot": snap, "agents": agents}\n\n\nif __name__ == "__main__":\n    print(json.dumps(run(), indent=2, default=str))\n'
+
+### runner/tests/test_emit_task_log.py  (3 failing)
+  FAILED runner/tests/test_emit_task_log.py::EmitTaskLogBehaviorTest::test_fail_soft_on_db_error
+    NameError: name 'os' is not defined
+  FAILED runner/tests/test_emit_task_log.py::EmitTaskLogBehaviorTest::test_inserts_into_run_logs
+    KeyError: 'emit_task_log'
+  FAILED runner/tests/test_emit_task_log.py::EmitTaskLogBehaviorTest::test_truncates_long_message
+    KeyError: 'emit_task_log'
+
+### runner/tests/test_error_taxonomy.py  (1 failing)
+  FAILED runner/tests/test_error_taxonomy.py::TestErrorClassification::test_build_failure
+    AssertionError: 'test_failure' != 'build_failure'
+
+### runner/tests/test_ev_outcome_weighting.py  (1 failing)
+  FAILED runner/tests/test_ev_outcome_weighting.py::TestOutcomeWeightFlagOn::test_higher_success_outranks_lower
+    AssertionError: 2.3637798327832504 not greater than 2.3637798327832504 : Higher realized success should produce higher score
+
+### runner/tests/test_eval_harness_causal.py  (10 failing)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_adopt_despite_raw_regression_with_concurrent_noise
+    AssertionError: False is not true
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_context_empty_change_id
+    AssertionError: 0.0 != 0.1 within 7 places (0.1 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_experiment_with_none_lift_skipped
+    AssertionError: 0.0 != 0.05 within 7 places (0.05 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_large_concurrent_noise
+    AssertionError: 0.0 != 1.0 within 7 places (1.0 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_multiple_concurrent_events
+    AssertionError: 0.0 != 0.02 within 7 places (0.02 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_negative_concurrent_event_masked_improvement
+    AssertionError: 0.0 != -0.2 within 7 places (0.2 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_no_change_id_counts_all
+    AssertionError: 0.0 != 0.1 within 7 places (0.1 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_own_change_excluded_from_noise
+    AssertionError: 0.0 != 0.05 within 7 places (0.05 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_positive_concurrent_event_inflated_delta
+    AssertionError: 0.0 != 0.1 within 7 places (0.1 difference)
+  FAILED runner/tests/test_eval_harness_causal.py::TestCausalAttribution::test_reject_despite_raw_improvement_with_concurrent_boost
+    AssertionError: True is not false
+
+### runner/tests/test_event_stream.py  (1 failing)
+  FAILED runner/tests/test_event_stream.py::TestMigratedEmitters::test_merge_train_can_emit
+    AttributeError: module 'merge_train' has no attribute 'emit'
+
+### runner/tests/test_finance_slice_determine.py  (2 failing)
+  FAILED runner/tests/test_finance_slice_determine.py::RateLimitTest::test_rate_limit_tokens_per_op
+    AssertionError: 7 != 17
+  FAILED runner/tests/test_finance_slice_determine.py::FinanceIntegrationTest::test_integration_cost_report_generation
+    AssertionError: 82.5 != 75.0 within 7 places (7.5 difference)
+
+### runner/tests/test_fleet.py  (3 failing)
+  FAILED runner/tests/test_fleet.py::StatusQueryShapeTest::test_select_requests_desc_order_and_a_limit
+    AssertionError: None != 'last_seen.desc'
+  FAILED runner/tests/test_fleet.py::LivenessAggregationTest::test_contract_skew_is_visible_per_host
+    AssertionError: 2 != None
+  FAILED runner/tests/test_fleet.py::LivenessAggregationTest::test_stale_scheduler_yields_to_current_runner
+    AssertionError: 24 != 1
+
+### runner/tests/test_fleet_control.py  (10 failing)
+  FAILED runner/tests/test_fleet_control.py::TestSafeKey::test_all_target_done_when_expected_hosts_ack
+    NameError: name 'MagicMock' is not defined
+  FAILED runner/tests/test_fleet_control.py::TestLoadConfig::test_update_fleet_config_emits_event_on_orch_key_change
+    NameError: name 'MagicMock' is not defined
+  FAILED runner/tests/test_fleet_control.py::TestLoadConfig::test_update_fleet_config_emits_event_when_key_is_new
+    NameError: name 'MagicMock' is not defined
+  FAILED runner/tests/test_fleet_control.py::TestLoadConfig::test_update_fleet_config_no_event_for_non_orch_key
+    NameError: name 'MagicMock' is not defined
+  FAILED runner/tests/test_fleet_control.py::TestLoadConfig::test_update_fleet_config_no_event_when_value_unchanged
+    NameError: name 'MagicMock' is not defined
+  FAILED runner/tests/test_fleet_control.py::TestLoadConfig::test_update_fleet_config_no_event_without_ws_server
+    NameError: name 'MagicMock' is not defined
+  FAILED runner/tests/test_fleet_control.py::TestControlDone::test_all_target_expected_met
+    AttributeError: module 'fleet_control' has no attribute '_control_done'
+  FAILED runner/tests/test_fleet_control.py::TestControlDone::test_all_target_expected_not_met
+    AttributeError: module 'fleet_control' has no attribute '_control_done'
+  FAILED runner/tests/test_fleet_control.py::TestControlDone::test_all_target_no_expected_not_done
+    AttributeError: module 'fleet_control' has no attribute '_control_done'
+  FAILED runner/tests/test_fleet_control.py::TestControlDone::test_single_target_always_done
+    AttributeError: module 'fleet_control' has no attribute '_control_done'
+
+### runner/tests/test_fleet_topology.py  (2 failing)
+  FAILED runner/tests/test_fleet_topology.py::TestRecommendTopology::test_recommendations_have_action_key
+    AssertionError: 'action' not found in 'current'
+  FAILED runner/tests/test_fleet_topology.py::TestRecommendTopology::test_returns_list
+    AssertionError: {'current': {'machines': 1, 'subscriptions': 4, 'channels': {'cli_runners': 1, 'cowork_terminals': 6, 'api_direct': 1}, 'throughput_per_hour': {'cli': 8, 'cowork': 1080, 'api': 200}, 'total_sub_throughput': 1088, 'total_with_api': 1288, 'monthly_sub_cost': 500}, 'target_tasks_hour': 10, 'gap': 0, 'recommendations': [{'action': 'start_cowork_terminals', 'quantity': 6, 'added_through
+
+### runner/tests/test_galop_freeplay_launch.py  (2 failing)
+  FAILED runner/tests/test_galop_freeplay_launch.py::TestContestAndLeaderboardLoop::test_contest_close_and_settle
+    TypeError: fromisoformat: argument must be str
+  FAILED runner/tests/test_galop_freeplay_launch.py::TestGracefulDegradation::test_degradation_cached_data_freshness_check
+    assert 15.000000016666666 == 15
+
+### runner/tests/test_health.py  (7 failing)
+  FAILED runner/tests/test_health.py::TestScores::test_scores_empty
+    RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY
+  FAILED runner/tests/test_health.py::TestScores::test_scores_none_returns_empty
+    RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY
+  FAILED runner/tests/test_health.py::TestScores::test_scores_returns_rows
+    RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY
+  FAILED runner/tests/test_health.py::TestInbox::test_inbox_returns_items
+    RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY
+  FAILED runner/tests/test_health.py::TestSummary::test_summary_empty
+    RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY
+  FAILED runner/tests/test_health.py::TestSummary::test_summary_single_project
+    RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY
+  FAILED runner/tests/test_health.py::TestSummary::test_summary_with_projects
+    RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY
+
+### runner/tests/test_intake_dropbox.py  (5 failing)
+  FAILED runner/tests/test_intake_dropbox.py::DecomposeFreeformTest::test_all_tasks_non_material_by_default
+    TypeError: <lambda>() got an unexpected keyword argument 'project'
+  FAILED runner/tests/test_intake_dropbox.py::DecomposeFreeformTest::test_renders_tasks_with_dropbox_prefix
+    TypeError: <lambda>() got an unexpected keyword argument 'project'
+  FAILED runner/tests/test_intake_dropbox.py::IngestDropboxPromptsTest::test_decomposition_failure_on_one_file_does_not_block_others
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_intake_dropbox.py::IngestDropboxPromptsTest::test_freeform_prompt_is_decomposed_and_moved
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_intake_dropbox.py::IngestDropboxPromptsTest::test_second_run_does_not_reprocess_moved_file
+    AssertionError: 0 != 1
+
+### runner/tests/test_integration_components.py  (4 failing)
+  FAILED runner/tests/test_integration_components.py::TestValueRouterSpeculativeIntegration::test_high_value_payment_not_speculative
+    KeyError: 'tier'
+  FAILED runner/tests/test_integration_components.py::TestValueRouterSpeculativeIntegration::test_low_value_docs_eligible_for_speculation
+    KeyError: 'tier'
+  FAILED runner/tests/test_integration_components.py::TestValueRouterSpeculativeIntegration::test_medium_value_standard_path
+    KeyError: 'tier'
+  FAILED runner/tests/test_integration_components.py::TestValueRouterStats::test_routing_increments_stats
+    AttributeError: module 'value_router' has no attribute 'stats'
+
+### runner/tests/test_integration_sweeper.py  (8 failing)
+  FAILED runner/tests/test_integration_sweeper.py::TestIntegrationSweeper::test_done_branch_queues_canonical_train_card
+    NameError: name '_active_recovery_index' is not defined
+  FAILED runner/tests/test_integration_sweeper.py::TestIntegrationSweeper::test_missing_branch_queues_reuse_first_recovery_task
+    NameError: name '_active_recovery_index' is not defined
+  FAILED runner/tests/test_integration_sweeper.py::TestIntegrationSweeper::test_recovery_dedup_quarantines_duplicate_active_rows
+    KeyError: 'duplicate_groups'
+  FAILED runner/tests/test_integration_sweeper.py::TestIntegrationSweeper::test_recovery_slug_does_not_create_nested_recovery
+    NameError: name '_active_recovery_index' is not defined
+  FAILED runner/tests/test_integration_sweeper.py::TestLocalBranchAudit::test_classifies_local_branch
+    NameError: name '_fetch_agent_refs' is not defined
+  FAILED runner/tests/test_integration_sweeper.py::TestLocalBranchAudit::test_classifies_missing_branch
+    NameError: name '_fetch_agent_refs' is not defined
+  FAILED runner/tests/test_integration_sweeper.py::TestLocalBranchAudit::test_classifies_remote_only_branch
+    NameError: name '_fetch_agent_refs' is not defined
+  FAILED runner/tests/test_integration_sweeper.py::TestLocalBranchAudit::test_stale_worktree_detection
+    NameError: name '_fetch_agent_refs' is not defined
+
+### runner/tests/test_knowledge_embed.py  (1 failing)
+  FAILED runner/tests/test_knowledge_embed.py::ExtractStillWorksWithFallbackChainTest::test_extract_stores_row_without_embedding_when_all_paths_fail
+    AssertionError: 'embedding' unexpectedly found in {'project': 'proj', 'title': 'Title', 'tags': ['tag1', 'tag2'], 'body': 'body text', 'keywords': ['title', 'tag1', 'tag2', 'body', 'text'], 'embedding': [-0.35328924655914307, -0.7569734454154968, -2.912062168121338, 0.13439732789993286, 0.5196426510810852, -0.33917397260665894, -0.136527851223945...
+
+### runner/tests/test_lean_mode.py  (1 failing)
+  FAILED runner/tests/test_lean_mode.py::LeanModeTest::test_skip_set_covers_named_subsystems_periodic_jobs_only
+    AssertionError: Items in the first set but not the second:
+
+### runner/tests/test_local_branch_audit.py  (2 failing)
+  FAILED runner/tests/test_local_branch_audit.py::TestLocalBranchAudit::test_classifies_local_remote_missing
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+  FAILED runner/tests/test_local_branch_audit.py::TestLocalBranchAudit::test_stale_worktrees_detected
+    AttributeError: module 'integration_sweeper' has no attribute '_FETCHED_AGENT_REFS'
+
+### runner/tests/test_local_model_optimization.py  (2 failing)
+  FAILED runner/tests/test_local_model_optimization.py::TestResourceGovernorRam::test_govern_lifts_throttle_when_final_ram_gauge_recovers
+    NameError: name '_elapsed_ms' is not defined
+  FAILED runner/tests/test_local_model_optimization.py::TestResourceGovernorRam::test_govern_rechecks_ram_after_unloading_local_model
+    NameError: name '_elapsed_ms' is not defined
+
+### runner/tests/test_materialize_branch_worktree.py  (1 failing)
+  FAILED runner/tests/test_materialize_branch_worktree.py::TestMaterializeBranchWorktree::test_worktree_recovery_succeeds
+    AssertionError: False is not true
+
+### runner/tests/test_merge_train.py  (15 failing)
+  FAILED runner/tests/test_merge_train.py::TestCleanMerge::test_already_integrated_card_does_not_count_as_new_merge
+    KeyError: '_already_integrated'
+  FAILED runner/tests/test_merge_train.py::TestCleanMerge::test_approved_card_merges
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_merge_train.py::TestCleanMerge::test_merge_never_forced_when_tests_green_but_ff_and_rebase_used
+    AssertionError: Expected '_rebase_onto_base' to have been called once. Called 0 times.
+  FAILED runner/tests/test_merge_train.py::TestBoundedHandoff::test_redo_consumes_batch_budget_and_releases_lease_for_next_pass
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_merge_train.py::TestSkipsHandledCards::test_freshly_attributed_card_is_still_processed
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_merge_train.py::TestSkipsHandledCards::test_resolve_tasks_batched_into_single_query
+    AssertionError: 0 != 2
+  FAILED runner/tests/test_merge_train.py::TestConflictRedo::test_conflict_past_cap_marks_conflict
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_merge_train.py::TestConflictRedo::test_conflict_under_cap_requeues
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_merge_train.py::TestTestGate::test_testfail_never_merges
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_merge_train.py::TestSerialization::test_low_risk_batches_before_sensitive
+    AssertionError: 0 != 2
+  FAILED runner/tests/test_merge_train.py::TestSerialization::test_oldest_first_within_project
+    AssertionError: 0 != 2
+  FAILED runner/tests/test_merge_train.py::TestSerialization::test_one_project_failure_does_not_block_other_project
+    AssertionError: 0 != 1
+  FAILED runner/tests/test_merge_train.py::TestPushGate::test_dev_push_runs_by_default
+    AssertionError: Expected '_git' to have been called once. Called 0 times.
+  FAILED runner/tests/test_merge_train.py::TestEnsureNodeDepsCumulativeBudget::test_nuxt_package_prepares_worktree_local_types
+    AttributeError: module 'merge_train' has no attribute '_prepare_generated_types'
+  FAILED runner/tests/test_merge_train.py::TestEnsureNodeDepsCumulativeBudget::test_prefix_package_path_is_scoped
+    AttributeError: module 'merge_train' has no attribute '_test_package_paths'
+
+### runner/tests/test_metaopt.py  (4 failing)
+  FAILED runner/tests/test_metaopt.py::test_recommend_low_queue
+    AttributeError: module 'metaopt' has no attribute 'recommend_cadence'
+  FAILED runner/tests/test_metaopt.py::test_recommend_high_queue
+    AttributeError: module 'metaopt' has no attribute 'recommend_cadence'
+  FAILED runner/tests/test_metaopt.py::test_recommend_moderate_queue
+    AttributeError: module 'metaopt' has no attribute 'recommend_cadence'
+  FAILED runner/tests/test_metaopt.py::test_queue_depth_reported
+    AttributeError: module 'metaopt' has no attribute 'recommend_cadence'
+
+### runner/tests/test_moat_loop.py  (1 failing)
+  FAILED runner/tests/test_moat_loop.py::TestMoatActivate::test_activation_from_seed_file
+    AssertionError: assert 5 == 3
+
+### runner/tests/test_model_routing.py  (12 failing)
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_agentic_coders_auto_register_paid_and_local_backends
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_agentic_coders_register_multiple_ollama_models
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_agentic_critical_work_does_not_drop_below_required_capability
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_agentic_disabled_local_model_filtered_from_pool
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_agentic_easy_work_can_route_to_non_claude
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_agentic_material_work_can_use_paid_credits_when_capable
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_auto_coders_hot_lane_excludes_heavy_local_model_on_low_ram_box
+    AssertionError: False is not true
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_gemini_agentic_coder_defaults_to_gemini_4
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_model_catalog_ignores_deprecated_env_models
+    AttributeError: module 'model_gateway' has no attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_model_catalog_ignores_gemini_2x_deprecated_env_models
+    AttributeError: module 'model_gateway' has no attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_model_catalog_uses_current_vendor_value_defaults
+    AttributeError: module 'model_gateway' has no attribute 'available'
+  FAILED runner/tests/test_model_routing.py::ModelRoutingTest::test_router_stats_scores_delivered_value_not_static_cost
+    AssertionError: None != 'value'
+
+### runner/tests/test_monthly_audit.py  (23 failing)
+  FAILED runner/tests/test_monthly_audit.py::TestParseScheduleTable::test_job_has_id_and_script
+    AttributeError: module 'self_review' has no attribute '_parse_schedule_table'
+  FAILED runner/tests/test_monthly_audit.py::TestParseScheduleTable::test_known_jobs_present
+    AttributeError: module 'self_review' has no attribute '_parse_schedule_table'
+  FAILED runner/tests/test_monthly_audit.py::TestParseScheduleTable::test_parses_jobs
+    AttributeError: module 'self_review' has no attribute '_parse_schedule_table'
+  FAILED runner/tests/test_monthly_audit.py::TestProtectedJobs::test_billing_guard_protected
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestProtectedJobs::test_kill_switch_protected
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestProtectedJobs::test_normal_job_not_protected
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestProtectedJobs::test_pause_arbiter_protected
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestProtectedJobs::test_worktreegc_protected
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestJobScoring::test_incidents_by_job_id
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestJobScoring::test_incidents_reduce_score
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestJobScoring::test_negative_contribution_vs_zero
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestJobScoring::test_zero_incidents_neutral_score
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestJobScoring::test_zero_kpi_zero_incidents_not_punished
+    AttributeError: module 'self_review' has no attribute '_score_job'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_all_scores_has_all_jobs
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_audit_approval_detail_is_json
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_audit_approval_is_material
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_audit_files_one_approval
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_audit_returns_report
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_bottom_decile_excludes_protected
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_bottom_decile_size
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_protected_in_all_scores
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_protected_jobs_counted
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+  FAILED runner/tests/test_monthly_audit.py::TestMonthlyAudit::test_total_jobs_count
+    AttributeError: module 'self_review' has no attribute 'monthly_audit'
+
+### runner/tests/test_orchestration_api.py  (3 failing)
+  FAILED runner/tests/test_orchestration_api.py::TransitionValidationTest::test_done_transition_sets_finished_at
+    AssertionError: 'finished_at' not found in {'id': 't1'}
+  FAILED runner/tests/test_orchestration_api.py::QueueStatsTest::test_returns_dict_of_state_counts
+    AttributeError: <module 'db' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/db.py'> does not have the attribute 'sql'
+  FAILED runner/tests/test_orchestration_api.py::QueueStatsTest::test_returns_empty_on_error
+    AttributeError: <module 'db' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/db.py'> does not have the attribute 'sql'
+
+### runner/tests/test_patch_template_conflict_handling.py  (14 failing)
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestMissingBranchDirective::test_missing_branch_does_not_consume_approval_card
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestMissingBranchDirective::test_missing_branch_redo_cap_exhausted_blocks_task
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestMissingBranchDirective::test_missing_branch_redo_increments_transient_retries
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestMissingBranchDirective::test_missing_branch_triggers_agentic_repair
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestConflictDetailPropagation::test_conflict_detail_appears_in_task_note
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestConflictDetailPropagation::test_conflict_detail_in_exhausted_task_note
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestConflictDetailPropagation::test_conflict_detail_in_repair_directive_after_recovery
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestConflictDetailPropagation::test_conflict_with_no_detail_still_requeues
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestConflictCapExhausted::test_cap_1_conflict_exhausted_immediately
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestConflictCapExhausted::test_cap_exhausted_marks_conflict_not_queued
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestRunningTaskWaits::test_running_task_with_missing_branch_waits
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestRecoveryThenCleanMerge::test_recovered_branch_merges_when_rebase_clean
+    IndexError: list index out of range
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestRepairPromptConflictDetail::test_conflict_detail_in_failure_text
+    AttributeError: module 'agentic_repair' has no attribute 'repair_prompt'
+  FAILED runner/tests/test_patch_template_conflict_handling.py::TestRepairPromptConflictDetail::test_repair_prompt_contains_agentic_repair_marker
+    AttributeError: module 'agentic_repair' has no attribute 'repair_prompt'
+
+### runner/tests/test_patch_transplant_relfix_kalepasch_com.py  (1 failing)
+  FAILED runner/tests/test_patch_transplant_relfix_kalepasch_com.py::TestRegressionAndEdgeCases::test_patch_preserves_comments_and_whitespace
+    AssertionError: assert 3 == 4
+
+### runner/tests/test_periodic_execution_leases.py  (1 failing)
+  FAILED runner/tests/test_periodic_execution_leases.py::test_long_trains_have_execution_leases_independent_of_cadence
+    AttributeError: module 'runner' has no attribute '_JOB_INTERVAL'
+
+### runner/tests/test_pinned_tasks.py  (6 failing)
+  FAILED runner/tests/test_pinned_tasks.py::TestPinnedTaskSorting::test_pin_rank_order_respected
+    AssertionError: 'pin-low' != 'pin-high'
+  FAILED runner/tests/test_pinned_tasks.py::TestPinnedTaskSorting::test_pinned_task_claimed_before_normal
+    AssertionError: 'normal-a' != 'pinned-1'
+  FAILED runner/tests/test_pinned_tasks.py::TestPinnedTaskSorting::test_unpinned_tasks_unaffected_without_column
+    AssertionError: 'old' != 'fresh-pin'
+  FAILED runner/tests/test_pinned_tasks.py::TestSetPin::test_set_pin_calls_update_with_correct_fields
+    AttributeError: module 'db' has no attribute 'set_pin'
+  FAILED runner/tests/test_pinned_tasks.py::TestSetPin::test_set_pin_default_rank_is_1
+    AttributeError: module 'db' has no attribute 'set_pin'
+  FAILED runner/tests/test_pinned_tasks.py::TestSetPin::test_set_pin_unpin_when_rank_zero
+    AttributeError: module 'db' has no attribute 'set_pin'
+
+### runner/tests/test_pipeline_observability.py  (5 failing)
+  FAILED runner/tests/test_pipeline_observability.py::TestMergeTrainRecordsMetrics::test_no_metric_on_rebase_conflict
+    IndexError: list index out of range
+  FAILED runner/tests/test_pipeline_observability.py::TestMergeTrainRecordsMetrics::test_records_merged_metric_on_clean_merge
+    IndexError: list index out of range
+  FAILED runner/tests/test_pipeline_observability.py::TestMergeTrainRecordsMetrics::test_records_testfail_metric_on_test_failure
+    IndexError: list index out of range
+  FAILED runner/tests/test_pipeline_observability.py::TestMergeTrainRecordsMetrics::test_summary_includes_test_pipeline_health
+    IndexError: list index out of range
+  FAILED runner/tests/test_pipeline_observability.py::TestMergeTrainRecordsMetrics::test_task_type_in_metric_matches_task_kind
+    IndexError: list index out of range
+
+### runner/tests/test_pipeline_trigger.py  (6 failing)
+  FAILED runner/tests/test_pipeline_trigger.py::TestTestTrigger::test_trigger_is_fail_soft_on_error
+    AttributeError: module 'db' has no attribute 'test_trigger'
+  FAILED runner/tests/test_pipeline_trigger.py::TestTestTrigger::test_trigger_returns_none_on_empty_response
+    AttributeError: module 'db' has no attribute 'test_trigger'
+  FAILED runner/tests/test_pipeline_trigger.py::TestTestTrigger::test_trigger_returns_none_when_already_claimed
+    AttributeError: module 'db' has no attribute 'test_trigger'
+  FAILED runner/tests/test_pipeline_trigger.py::TestTestTrigger::test_trigger_transitions_queued_to_testing
+    AttributeError: module 'db' has no attribute 'test_trigger'
+  FAILED runner/tests/test_pipeline_trigger.py::TestEnqueueFiresTestTrigger::test_trigger_called_immediately_after_insert
+    AttributeError: <module 'db' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/db.py'> does not have the attribute 'test_trigger'
+  FAILED runner/tests/test_pipeline_trigger.py::TestEnqueueFiresTestTrigger::test_trigger_fires_within_two_seconds
+    AttributeError: <module 'db' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/db.py'> does not have the attribute 'test_trigger'
+
+### runner/tests/test_portfolio_digest.py  (11 failing)
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestClustering::test_cluster_and_impact_clamps_invalid_scores
+    AttributeError: module 'claude_cli' has no attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestClustering::test_cluster_and_impact_handles_json_parse_error
+    AttributeError: module 'claude_cli' has no attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestClustering::test_cluster_and_impact_handles_markdown_code_blocks
+    AttributeError: module 'claude_cli' has no attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestClustering::test_cluster_and_impact_handles_model_failure
+    AttributeError: module 'claude_cli' has no attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestClustering::test_cluster_and_impact_limits_to_3_themes
+    AttributeError: module 'claude_cli' has no attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestClustering::test_cluster_and_impact_skips_incomplete_themes
+    AttributeError: module 'claude_cli' has no attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestClustering::test_cluster_and_impact_valid_response
+    AttributeError: module 'claude_cli' has no attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestRun::test_run_clustering_failure
+    AttributeError: <module 'claude_cli'> does not have the attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestRun::test_run_db_insert_failure
+    AttributeError: <module 'claude_cli'> does not have the attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestRun::test_run_happy_path
+    AttributeError: <module 'claude_cli'> does not have the attribute 'run'
+  FAILED runner/tests/test_portfolio_digest.py::TestPortfolioDigestIntegration::test_end_to_end_proposal_to_approval
+    AttributeError: <module 'claude_cli'> does not have the attribute 'run'
+
+### runner/tests/test_preflight_admission.py  (3 failing)
+  FAILED runner/tests/test_preflight_admission.py::test_preflight_rotates_queue_and_refreshes_ordinary_routes
+    AttributeError: <module 'pipeline_contract' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/pipeline_contract.py'> has no attribute 'task_fields'
+  FAILED runner/tests/test_preflight_admission.py::test_preflight_sharpens_no_response_with_scope_info
+    AttributeError: <module 'pipeline_contract' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/pipeline_contract.py'> has no attribute 'task_fields'
+  FAILED runner/tests/test_preflight_admission.py::test_preflight_preserves_scope_for_actionable_tasks
+    AttributeError: <module 'pipeline_contract' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/pipeline_contract.py'> has no attribute 'task_fields'
+
+### runner/tests/test_preview_promote_flow.py  (7 failing)
+  FAILED runner/tests/test_preview_promote_flow.py::TestSmokeTestRunner::test_all_pass
+    ModuleNotFoundError: No module named 'smoke_test_runner.urllib'; 'smoke_test_runner' is not a package
+  FAILED runner/tests/test_preview_promote_flow.py::TestSmokeTestRunner::test_health_fail
+    AttributeError: <module 'smoke_test_runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/smoke_test_runner.py'> does not have the attribute '_http_get'
+  FAILED runner/tests/test_preview_promote_flow.py::TestSmokeTestRunner::test_no_url_fails
+    AttributeError: module 'smoke_test_runner' has no attribute 'run_smoke_tests'
+  FAILED runner/tests/test_preview_promote_flow.py::TestPromotionPipeline::test_promote_no_deployment
+    AttributeError: <module 'promotion_pipeline' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/promotion_pipeline.py'> does not have the attribute '_vreq'
+  FAILED runner/tests/test_preview_promote_flow.py::TestPromotionPipeline::test_promote_success
+    AttributeError: <module 'promotion_pipeline' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/promotion_pipeline.py'> does not have the attribute '_vreq'
+  FAILED runner/tests/test_preview_promote_flow.py::TestPromotionPipeline::test_rollback_no_id
+    AttributeError: module 'promotion_pipeline' has no attribute 'rollback_prod'
+  FAILED runner/tests/test_preview_promote_flow.py::TestPromotionPipeline::test_rollback_success
+    AttributeError: <module 'promotion_pipeline' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/promotion_pipeline.py'> does not have the attribute '_vreq'
+
+### runner/tests/test_pricing_grid_reconstruction_refactor.py  (9 failing)
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_zero_remaining
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_negative_remaining
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_from_unlimited_tier
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_from_limited_tier_full
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_from_limited_tier_partial
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_with_flat_fee
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_high_unit_start
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestConsumeUnits::test_consume_partial_from_high_start_tier
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+  FAILED runner/tests/test_pricing_grid_reconstruction_refactor.py::TestEdgeCasesAndRegressions::test_capacity_calculation_consistency
+    AttributeError: type object 'PricingGrid' has no attribute '_consume_tier_units'
+
+### runner/tests/test_prompt_assembler.py  (35 failing)
+  FAILED runner/tests/test_prompt_assembler.py::CapTest::test_capped_prompt_keeps_head_and_tail
+    AttributeError: module 'prompt_assembler' has no attribute 'MAX_AGENT_PROMPT_CHARS'
+  FAILED runner/tests/test_prompt_assembler.py::CapTest::test_empty_prompt
+    AttributeError: module 'prompt_assembler' has no attribute '_cap'
+  FAILED runner/tests/test_prompt_assembler.py::CapTest::test_long_prompt_truncated_with_marker
+    AttributeError: module 'prompt_assembler' has no attribute 'MAX_AGENT_PROMPT_CHARS'
+  FAILED runner/tests/test_prompt_assembler.py::CapTest::test_none_prompt
+    AttributeError: module 'prompt_assembler' has no attribute '_cap'
+  FAILED runner/tests/test_prompt_assembler.py::CapTest::test_short_prompt_unchanged
+    AttributeError: module 'prompt_assembler' has no attribute '_cap'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_brief_capped_at_max_bytes
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_db_failure_is_fail_soft
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_extracts_bullets_from_claude_md
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_includes_outcomes_signal
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_missing_claude_md_and_no_db_returns_empty
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_no_project_returns_empty
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_no_repo_returns_empty
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::ProjectBriefTest::test_only_recent_bullets_included_not_whole_file
+    AttributeError: module 'prompt_assembler' has no attribute '_project_brief'
+  FAILED runner/tests/test_prompt_assembler.py::DistilledBodyTest::test_import_error_falls_back_to_original
+    AttributeError: module 'prompt_assembler' has no attribute '_distilled_body'
+  FAILED runner/tests/test_prompt_assembler.py::DistilledBodyTest::test_lookup_exception_falls_back_to_original
+    AttributeError: module 'prompt_assembler' has no attribute '_distilled_body'
+  FAILED runner/tests/test_prompt_assembler.py::DistilledBodyTest::test_match_applies_distilled_template
+    AttributeError: module 'prompt_assembler' has no attribute '_distilled_body'
+  FAILED runner/tests/test_prompt_assembler.py::DistilledBodyTest::test_no_match_returns_original_body
+    AttributeError: module 'prompt_assembler' has no attribute '_distilled_body'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_assembly_is_logged
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_caching_prefix_layer_recorded
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_design_sources_are_injected_and_reported
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_distilled_template_layer_recorded_and_used
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_final_prompt_is_capped
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_knowledge_inject_layer_recorded
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_minimal_assembly_returns_prompt_and_token_estimate
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_missing_optional_module_does_not_raise
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_pipeline_contract_layer_recorded_when_it_changes_body
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_regression_inject_layer_recorded
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_task_dict_passed_through_to_distillation_lookup
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::AssembleTest::test_use_retrieval_false_skips_focus_and_blast
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::StatsInvalidateTest::test_corrupt_log_does_not_crash
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::StatsInvalidateTest::test_invalidate_on_missing_log_does_not_raise
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::StatsInvalidateTest::test_invalidate_removes_log
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::StatsInvalidateTest::test_stats_computes_average
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::StatsInvalidateTest::test_stats_empty_log
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+  FAILED runner/tests/test_prompt_assembler.py::StatsInvalidateTest::test_stats_respects_limit
+    AttributeError: module 'prompt_assembler' has no attribute 'ASSEMBLY_LOG'
+
+### runner/tests/test_python39_compat.py  (1 failing)
+  FAILED runner/tests/test_python39_compat.py::TestEveryRunnerModuleImports::test_no_module_fails_to_import_on_this_interpreter
+    AssertionError: Lists differ: ["continuous_merger: TypeError: unsupporte[499 chars]pe'"] != []
+
+### runner/tests/test_queue_counters.py  (1 failing)
+  FAILED runner/tests/test_queue_counters.py::QueueCountersTest::test_exact_counts_include_full_state_and_prefix_pressure
+    KeyError: 'states'
+
+### runner/tests/test_queue_monitor.py  (3 failing)
+  FAILED runner/tests/test_queue_monitor.py::TestQueueMonitor::test_detect_low_merge_rate
+    ModuleNotFoundError: No module named 'runner.queue_monitor'; 'runner' is not a package
+  FAILED runner/tests/test_queue_monitor.py::TestQueueMonitor::test_detect_queue_stalled
+    ModuleNotFoundError: No module named 'runner.queue_monitor'; 'runner' is not a package
+  FAILED runner/tests/test_queue_monitor.py::TestQueueMonitor::test_healthy_queue_no_alerts
+    ModuleNotFoundError: No module named 'runner.queue_monitor'; 'runner' is not a package
+
+### runner/tests/test_recovery_priority.py  (3 failing)
+  FAILED runner/tests/test_recovery_priority.py::TestRecoveryPriority::test_recovery_task_detected
+    ModuleNotFoundError: No module named 'runner.db'; 'runner' is not a package
+  FAILED runner/tests/test_recovery_priority.py::TestRecoveryPriority::test_release_fix_includes_buildfix
+    ModuleNotFoundError: No module named 'runner.db'; 'runner' is not a package
+  FAILED runner/tests/test_recovery_priority.py::TestRecoveryPriority::test_release_fix_includes_qafix
+    ModuleNotFoundError: No module named 'runner.db'; 'runner' is not a package
+
+### runner/tests/test_release_accelerators.py  (1 failing)
+  FAILED runner/tests/test_release_accelerators.py::test_release_fix_holds_are_gate_specific_and_expire
+    AssertionError: assert ['qafix-app-c...ix-app-stale'] == ['qafix-app-running']
+
+### runner/tests/test_release_conflict_validator.py  (1 failing)
+  FAILED runner/tests/test_release_conflict_validator.py::TestAuthMiddlewareDetection::test_nuxt_config_auth_downgrade_detected
+    assert 0 > 0
+
+### runner/tests/test_relfix_orchestration_contract.py  (30 failing)
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_metadata
+    TypeError: test_contract_metadata() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_preflight_triage_model
+    TypeError: test_contract_preflight_triage_model() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_strategy_planner_model
+    TypeError: test_contract_strategy_planner_model() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_agentic_coder_model
+    TypeError: test_contract_agentic_coder_model() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_qa_route_specification
+    TypeError: test_contract_qa_route_specification() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_qa_panel
+    TypeError: test_contract_qa_panel() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_legal_gate
+    TypeError: test_contract_legal_gate() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_merge_and_release_path
+    TypeError: test_contract_merge_and_release_path() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestOrchestrationPipelineContract::test_contract_coordination_rule
+    TypeError: test_contract_coordination_rule() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestModelSelection::test_qpd_leader_selection
+    TypeError: test_qpd_leader_selection() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestModelSelection::test_model_availability_fallback
+    TypeError: test_model_availability_fallback() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestModelSelection::test_cost_optimization
+    TypeError: test_cost_optimization() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestModelSelection::test_author_capability_required
+    TypeError: test_author_capability_required() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCoordinationRules::test_reuse_prior_solutions
+    TypeError: test_reuse_prior_solutions() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCoordinationRules::test_preserve_unrelated_queued_work
+    TypeError: test_preserve_unrelated_queued_work() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCoordinationRules::test_leave_recovered_work_in_queue_until_shipped
+    TypeError: test_leave_recovered_work_in_queue_until_shipped() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCoordinationRules::test_reconcile_with_active_loops
+    TypeError: test_reconcile_with_active_loops() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestLegalGate::test_legal_gate_triggers_on_licensing_change
+    TypeError: test_legal_gate_triggers_on_licensing_change() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestLegalGate::test_legal_gate_triggers_on_registration_requirement
+    TypeError: test_legal_gate_triggers_on_registration_requirement() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestLegalGate::test_legal_gate_triggers_on_custody_change
+    TypeError: test_legal_gate_triggers_on_custody_change() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestLegalGate::test_legal_gate_passes_for_safe_changes
+    TypeError: test_legal_gate_passes_for_safe_changes() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestLegalGate::test_legal_gate_requires_owner_approval
+    TypeError: test_legal_gate_requires_owner_approval() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCrossLearning::test_learned_verify_diff_route
+    TypeError: test_learned_verify_diff_route() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCrossLearning::test_learned_meta_loop_improvement_route
+    TypeError: test_learned_meta_loop_improvement_route() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCrossLearning::test_apply_learned_route_if_applicable
+    TypeError: test_apply_learned_route_if_applicable() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestCrossLearning::test_outcome_signal_tracking
+    TypeError: test_outcome_signal_tracking() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestPatchTransplantSimilarity::test_similarity_threshold_for_adaptation
+    TypeError: test_similarity_threshold_for_adaptation() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestPatchTransplantSimilarity::test_similarity_scoring_factors
+    TypeError: test_similarity_scoring_factors() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestPatchTransplantSimilarity::test_dissimilar_patches_rejected
+    TypeError: test_dissimilar_patches_rejected() takes 0 positional arguments but 1 was given
+  FAILED runner/tests/test_relfix_orchestration_contract.py::TestIntegrationEndToEnd::test_relfix_full_workflow_with_coordination
+    TypeError: test_relfix_full_workflow_with_coordination() takes 0 positional arguments but 1 was given
+
+### runner/tests/test_relfix_pareto_2080_07171927.py  (2 failing)
+  FAILED runner/tests/test_relfix_pareto_2080_07171927.py::TestPatchTransplantFromDeployfix::test_adapt_patch_fleet_config_changes
+    TypeError: a bytes-like object is required, not 'str'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927.py::TestPatchTransplantFromDeployfix::test_adapt_patch_maintains_semantic_intent
+    TypeError: a bytes-like object is required, not 'str'
+
+### runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py  (18 failing)
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestPatchSimilarityMatching::test_highest_similarity_candidate_selected
+    KeyError: 'summary'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestConflictDetectionAndClassification::test_classify_release_branch_clean_merge
+    AssertionError: assert 'config.py' in [b'config.py', b'runner.py']
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestConflictDetectionAndClassification::test_classify_release_branch_partial_conflict
+    AssertionError: assert 3 == 2
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestSecurityValidationGates::test_security_gate_blocks_hardcoded_api_keys
+    AttributeError: <module 'security_check' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/security_check.py'> does not have the attribute 'scan_for_hardcoded_secrets'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestSecurityValidationGates::test_security_gate_blocks_transmission_rule_violations
+    AttributeError: <module 'security_check' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/security_check.py'> does not have the attribute 'scan_for_transmission_rule_violations'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestSecurityValidationGates::test_security_gate_protects_data_custody_rules
+    AttributeError: <module 'security_check' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/security_check.py'> does not have the attribute 'check_custody_boundaries'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestSecurityValidationGates::test_security_gate_requires_orch_prefix_for_fleet_config
+    AttributeError: <module 'security_check' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/security_check.py'> does not have the attribute 'validate_config_keys_safe'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestLegalGateChecking::test_legal_gate_normal_code_change_passes
+    AttributeError: module 'self_healing_merge' has no attribute 'check_legal_gate'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestLegalGateChecking::test_legal_gate_owner_only_licensing_changes
+    AttributeError: module 'self_healing_merge' has no attribute 'check_legal_gate'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestDeployCostRuleEnforcement::test_push_only_task_branch_for_batch_train
+    AttributeError: module 'release_train' has no attribute 'can_push_branch'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestCoordinationRuleEnforcement::test_coordination_rule_dont_overwrite_unrelated_queued_tasks
+    AttributeError: module 'self_healing_merge' has no attribute 'can_proceed_with_merge'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestCoordinationRuleEnforcement::test_reuse_proven_prior_solutions_first
+    KeyError: 'summary'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestAutoMergeToStagingBranch::test_automerge_after_all_qa_gates_pass
+    AttributeError: module 'release_train' has no attribute 'automerge_after_qa'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestAutoMergeToStagingBranch::test_automerge_blocked_if_security_gate_fails
+    AttributeError: module 'release_train' has no attribute 'automerge_after_qa'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestAutoMergeToStagingBranch::test_automerge_to_correct_staging_branch
+    AttributeError: <module 'release_train' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/release_train.py'> does not have the attribute '_target_branch'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestEndToEndWorkflow::test_complete_relfix_pareto_2080_workflow
+    AttributeError: <module 'release_train' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/release_train.py'> does not have the attribute 'automerge_after_qa'
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestErrorHandlingAndFallbacks::test_conflict_classification_timeout_creates_repair_ticket
+    TimeoutError: Classification timeout
+  FAILED runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py::TestSpecialCases::test_very_large_conflict_cluster_creates_focused_repair_tasks
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute '_create_repair_task'
+
+### runner/tests/test_relfix_pareto_2080_release_conflict_healing.py  (33 failing)
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestReleaseConflictDetection::test_classify_files_all_conflicting
+    AssertionError: assert 2 == 0
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestReleaseConflictDetection::test_classify_files_mixed_clean_and_conflicting
+    AssertionError: assert 3 == 2
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSelfHealingDecomposition::test_heal_creates_clean_subbranch_when_partial_clean_exists
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'db'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSelfHealingDecomposition::test_heal_creates_repair_task_for_conflicting_cluster
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'db'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSelfHealingDecomposition::test_heal_returns_partial_when_clean_merged_but_conflicts_remain
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'db'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSelfHealingDecomposition::test_heal_skip_when_disabled_via_env
+    AttributeError: 'TestSelfHealingDecomposition' object has no attribute 'repo'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSelfHealingDecomposition::test_heal_skip_when_too_few_files
+    AttributeError: 'TestSelfHealingDecomposition' object has no attribute 'repo'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSelfHealingDecomposition::test_heal_uses_ephemeral_worktree_never_touches_main_checkout
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'db'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestPatchTransplant::test_adapt_patch_to_target_branch
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestPatchTransplant::test_find_similar_patch_by_similarity_threshold
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestPatchTransplant::test_transplant_patch_applies_cleanly
+    AttributeError: module 'self_healing_merge' has no attribute 'apply_patch'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSecurityValidationGate::test_security_gate_blocks_credentials_in_config
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'validate_no_credentials_in_config'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSecurityValidationGate::test_security_gate_blocks_transmission_rule_violation
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestSecurityValidationGate::test_security_gate_passes_when_no_violations
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'scan_for_hardcoded_secrets'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestLegalGateChecking::test_legal_gate_passes_for_normal_code_change
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestLegalGateChecking::test_legal_gate_requires_owner_approval_for_licensing_change
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestLegalGateChecking::test_legal_gate_requires_owner_for_custody_transfer
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestAutoMergeOrchestration::test_automerge_after_qa_passes
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestAutoMergeOrchestration::test_automerge_blocked_when_qa_fails
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestAutoMergeOrchestration::test_automerge_handles_race_with_concurrent_branches
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestReleaseTrainCoordination::test_merge_to_staging_accumulates_work
+    AttributeError: module 'release_train' has no attribute 'merge_to_staging'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestReleaseTrainCoordination::test_prod_promotion_records_last_good_commit
+    AttributeError: module 'release_train' has no attribute 'promote_staging_to_prod'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestReleaseTrainCoordination::test_staging_branch_rebased_before_merge
+    AttributeError: module 'release_train' has no attribute 'ensure_staging_branch'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestConcurrentMergeRaceSafety::test_concurrent_merges_use_upsert_for_idempotency
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestConcurrentMergeRaceSafety::test_merge_conflict_on_concurrent_attempt_detected
+    AttributeError: module 'self_healing_merge' has no attribute 'attempt_merge'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestFallbackBehavior::test_heal_failure_branch_stays_conflict_for_manual_merge
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestFallbackBehavior::test_heal_failure_creates_repair_ticket
+    ModuleNotFoundError: No module named 'self_healing_merge.db'; 'self_healing_merge' is not a package
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestStatisticsTracking::test_stats_track_failed_heals
+    Exception: timeout
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestStatisticsTracking::test_stats_track_partial_heals
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'db'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestStatisticsTracking::test_stats_track_successful_heals
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'db'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestEdgeCases::test_large_conflict_cluster_creates_multiple_repair_tasks
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute '_create_repair_task'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestEdgeCases::test_release_train_gates_respect_red_gate_cooldown
+    AttributeError: module 'release_train' has no attribute 'check_red_gate'
+  FAILED runner/tests/test_relfix_pareto_2080_release_conflict_healing.py::TestEdgeCases::test_unicode_in_filenames_handled_correctly
+    AttributeError: <module 'self_healing_merge' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/self_healing_merge.py'> does not have the attribute 'db'
+
+### runner/tests/test_relfix_pricing_design_fingerprint.py  (1 failing)
+  FAILED runner/tests/test_relfix_pricing_design_fingerprint.py::TestBackwardCompatibilityPreserved::test_pricing_tier_cost_calculation_unchanged
+    AssertionError: assert 0.0 == 255.0
+
+### runner/tests/test_repo_access_healer.py  (4 failing)
+  FAILED runner/tests/test_repo_access_healer.py::TestRepoAccessHealer::test_diagnose_repo_missing_path
+    ModuleNotFoundError: No module named 'runner.repo_access_healer'; 'runner' is not a package
+  FAILED runner/tests/test_repo_access_healer.py::TestRepoAccessHealer::test_diagnose_repo_nonexistent_dir
+    ModuleNotFoundError: No module named 'runner.repo_access_healer'; 'runner' is not a package
+  FAILED runner/tests/test_repo_access_healer.py::TestRepoAccessHealer::test_diagnose_repo_not_git
+    ModuleNotFoundError: No module named 'runner.repo_access_healer'; 'runner' is not a package
+  FAILED runner/tests/test_repo_access_healer.py::TestRepoAccessHealer::test_is_repo_access_failure_patterns
+    ModuleNotFoundError: No module named 'runner.repo_access_healer'; 'runner' is not a package
+
+### runner/tests/test_repo_lock.py  (2 failing)
+  FAILED runner/tests/test_repo_lock.py::TestRepoLock::test_no_timeout_blocks_until_acquired
+    AssertionError: 0.0002999305725097656 not greater than or equal to 0.3 : blocking hold() should wait for the holder to release
+  FAILED runner/tests/test_repo_lock.py::TestRepoLock::test_timeout_returns_false_when_contended
+    AssertionError: True is not false : second caller should time out while the first holds the lock
+
+### runner/tests/test_repo_setup_check.py  (1 failing)
+  FAILED runner/tests/test_repo_setup_check.py::test_repo_structure_valid
+    assert False is True
+
+### runner/tests/test_reuse_intelligence.py  (2 failing)
+  FAILED runner/tests/test_reuse_intelligence.py::ReuseIntelligenceTest::test_model_catalog_prefers_free_capable_model
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_reuse_intelligence.py::ReuseIntelligenceTest::test_task_slicer_decomposes_long_prompt_and_retire_parent
+    NameError: name '_slice_exists' is not defined
+
+### runner/tests/test_route_consolidation.py  (3 failing)
+  FAILED runner/tests/test_route_consolidation.py::TestRouteConsolidation::test_routing_diagnosis_structure
+    ModuleNotFoundError: No module named 'runner.route_consolidation'; 'runner' is not a package
+  FAILED runner/tests/test_route_consolidation.py::TestRouteConsolidation::test_unified_route_empty_coders
+    ModuleNotFoundError: No module named 'runner.route_consolidation'; 'runner' is not a package
+  FAILED runner/tests/test_route_consolidation.py::TestRouteConsolidation::test_unified_route_fallback
+    ModuleNotFoundError: No module named 'runner.route_consolidation'; 'runner' is not a package
+
+### runner/tests/test_routing_intelligence.py  (7 failing)
+  FAILED runner/tests/test_routing_intelligence.py::RoutingIntelligenceTest::test_crown_jewel_routes_local_only
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_routing_intelligence.py::RoutingIntelligenceTest::test_ollama_calibrator_records_pass_fail_latency_samples
+    AttributeError: <module 'model_gateway'> does not have the attribute 'complete'
+  FAILED runner/tests/test_routing_intelligence.py::RoutingIntelligenceTest::test_route_evidence_explains_disabled_agentic_providers
+    AttributeError: <module 'model_gateway'> does not have the attribute 'available'
+  FAILED runner/tests/test_routing_intelligence.py::RoutingIntelligenceTest::test_router_dedupes_repeated_route_evidence_backfill_rows
+    KeyError: 'deployed'
+  FAILED runner/tests/test_routing_intelligence.py::RoutingIntelligenceTest::test_router_penalizes_token_and_review_waste
+    AssertionError: None != 'efficient'
+  FAILED runner/tests/test_routing_intelligence.py::RoutingIntelligenceTest::test_router_penalizes_train_failures
+    AssertionError: None != 'solid'
+  FAILED runner/tests/test_routing_intelligence.py::RoutingIntelligenceTest::test_router_rewards_deployed_over_test_only
+    AssertionError: None != 'deployer'
+
+### runner/tests/test_runner_repo_path_error_handling.py  (10 failing)
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::BranchExistsOSErrorTest::test_existing_repo_with_existing_branch_returns_true
+    AttributeError: module 'runner' has no attribute '_branch_exists'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::BranchExistsOSErrorTest::test_existing_repo_with_missing_branch_returns_false
+    AttributeError: module 'runner' has no attribute '_branch_exists'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::BranchExistsOSErrorTest::test_missing_repo_path_returns_false_not_raises
+    AttributeError: module 'runner' has no attribute '_branch_exists'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::LocalizeRepoPathTest::test_matches_by_basename_when_name_missing
+    AttributeError: <module 'runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/__init__.py'> does not have the attribute '_CANONICAL_RUNTIME_HOME'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::LocalizeRepoPathTest::test_matches_by_project_name
+    AttributeError: <module 'runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/__init__.py'> does not have the attribute '_CANONICAL_RUNTIME_HOME'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::LocalizeRepoPathTest::test_returns_none_for_empty_repos
+    AttributeError: <module 'runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/__init__.py'> does not have the attribute '_CANONICAL_RUNTIME_HOME'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::LocalizeRepoPathTest::test_returns_none_when_entry_path_does_not_exist
+    AttributeError: <module 'runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/__init__.py'> does not have the attribute '_CANONICAL_RUNTIME_HOME'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::LocalizeRepoPathTest::test_returns_none_when_mesh_missing
+    AttributeError: <module 'runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/__init__.py'> does not have the attribute '_CANONICAL_RUNTIME_HOME'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::RunTaskRepoPathGuardTest::test_requeues_when_repo_missing_and_no_local_equivalent
+    AttributeError: <module 'runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/__init__.py'> does not have the attribute 'projects'
+  FAILED runner/tests/test_runner_repo_path_error_handling.py::RunTaskRepoPathGuardTest::test_uses_localized_path_when_db_path_missing
+    AttributeError: <module 'runner' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/__init__.py'> does not have the attribute 'projects'
+
+### runner/tests/test_safety.py  (5 failing)
+  FAILED runner/tests/test_safety.py::TestKillSwitch::test_global_pause_blocks_all_projects
+    AssertionError: False is not true : global pause must block project checks too
+  FAILED runner/tests/test_safety.py::TestKillSwitch::test_pause_makes_is_paused_true
+    AssertionError: False is not true : global pause must halt runner
+  FAILED runner/tests/test_safety.py::TestKillSwitch::test_project_pause_does_not_affect_other_projects
+    AssertionError: False is not true : paused project must be blocked
+  FAILED runner/tests/test_safety.py::TestCostCapture::test_claude_cli_extracts_cost_from_json
+    AttributeError: <module 'claude_cli'> does not have the attribute '_paused'
+  FAILED runner/tests/test_safety.py::TestCostCapture::test_kill_switch_skips_return_zero_cost
+    AttributeError: <module 'claude_cli'> does not have the attribute '_paused'
+
+### runner/tests/test_scoreboard.py  (3 failing)
+  FAILED runner/tests/test_scoreboard.py::TestScoreboard::test_dashboard_summary_no_data
+    ImportError: cannot import name 'scoreboard' from 'runner' (/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/runner.py)
+  FAILED runner/tests/test_scoreboard.py::TestScoreboard::test_read_history_empty
+    ModuleNotFoundError: No module named 'runner.scoreboard'; 'runner' is not a package
+  FAILED runner/tests/test_scoreboard.py::TestScoreboard::test_read_history_with_data
+    ImportError: cannot import name 'scoreboard' from 'runner' (/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/runner.py)
+
+### runner/tests/test_scoreboard_history.py  (18 failing)
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_30_day_retention
+    AttributeError: module 'scoreboard' has no attribute '_append_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_append_creates_file
+    AttributeError: module 'scoreboard' has no attribute '_append_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_append_failsoft
+    AttributeError: module 'scoreboard' has no attribute '_append_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_append_multiple
+    AttributeError: module 'scoreboard' has no attribute '_append_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_history_corrupt_lines
+    AttributeError: module 'scoreboard' has no attribute 'history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_history_empty_file
+    AttributeError: module 'scoreboard' has no attribute 'history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_history_filters_old
+    AttributeError: module 'scoreboard' has no attribute '_append_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_history_read
+    AttributeError: module 'scoreboard' has no attribute '_append_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_prune_no_file
+    AttributeError: module 'scoreboard' has no attribute '_prune_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestHistoryPersistence::test_prune_removes_old
+    AttributeError: module 'scoreboard' has no attribute '_append_history'
+  FAILED runner/tests/test_scoreboard_history.py::TestLeadTimeMetrics::test_lead_time_failsoft
+    AttributeError: module 'scoreboard' has no attribute '_lead_time_metrics'
+  FAILED runner/tests/test_scoreboard_history.py::TestLeadTimeMetrics::test_no_data_returns_none
+    AttributeError: module 'scoreboard' has no attribute '_lead_time_metrics'
+  FAILED runner/tests/test_scoreboard_history.py::TestLeadTimeMetrics::test_prompt_to_merged_with_data
+    AttributeError: module 'scoreboard' has no attribute '_lead_time_metrics'
+  FAILED runner/tests/test_scoreboard_history.py::TestLeadTimeMetrics::test_result_structure
+    AttributeError: module 'scoreboard' has no attribute '_lead_time_metrics'
+  FAILED runner/tests/test_scoreboard_history.py::TestLeadTimeMetrics::test_tokens_per_task_from_assembler
+    AttributeError: module 'scoreboard' has no attribute '_lead_time_metrics'
+  FAILED runner/tests/test_scoreboard_history.py::TestComputeIntegration::test_compute_has_generated_at
+    AttributeError: module 'scoreboard' has no attribute 'compute'
+  FAILED runner/tests/test_scoreboard_history.py::TestComputeIntegration::test_compute_has_overall
+    AttributeError: module 'scoreboard' has no attribute 'compute'
+  FAILED runner/tests/test_scoreboard_history.py::TestComputeIntegration::test_compute_includes_lead_times
+    AttributeError: module 'scoreboard' has no attribute 'compute'
+
+### runner/tests/test_scoreboard_metrics.py  (6 failing)
+  FAILED runner/tests/test_scoreboard_metrics.py::test_lead_times_empty
+    KeyError: 'median_hours'
+  FAILED runner/tests/test_scoreboard_metrics.py::test_lead_times_with_data
+    KeyError: 'median_hours'
+  FAILED runner/tests/test_scoreboard_metrics.py::test_deploy_rate
+    KeyError: 'deploy_rate'
+  FAILED runner/tests/test_scoreboard_metrics.py::test_knowledge_reuse_none
+    KeyError: 'knowledge_reuse'
+  FAILED runner/tests/test_scoreboard_metrics.py::test_knowledge_reuse_present
+    KeyError: 'knowledge_reuse'
+  FAILED runner/tests/test_scoreboard_metrics.py::test_empty_input
+    KeyError: 'deploy_rate'
+
+### runner/tests/test_self_review_scoring.py  (9 failing)
+  FAILED runner/tests/test_self_review_scoring.py::test_kpi_no_outcomes_returns_zero
+    assert 0.99 == 0.0
+  FAILED runner/tests/test_self_review_scoring.py::test_kpi_all_failures_negative
+    AssertionError: All-fail job should be negative, got 0.99
+  FAILED runner/tests/test_self_review_scoring.py::test_kpi_zero_incident_zero_kpi_vs_negative
+    assert 0.99 == 0.0
+  FAILED runner/tests/test_self_review_scoring.py::test_kpi_db_error_returns_zero
+    assert 0.99 == 0.0
+  FAILED runner/tests/test_self_review_scoring.py::test_incidents_counts_build_failures
+    assert 1 >= 3
+  FAILED runner/tests/test_self_review_scoring.py::test_incidents_counts_postmortems
+    assert 1 >= 2
+  FAILED runner/tests/test_self_review_scoring.py::test_incidents_partial_data_ok
+    assert 1 >= 2
+  FAILED runner/tests/test_self_review_scoring.py::test_incidents_zero_for_clean_job
+    assert 1 == 0
+  FAILED runner/tests/test_self_review_scoring.py::test_incidents_consistent_across_runs
+    assert 1 == 3
+
+### runner/tests/test_session_launcher.py  (3 failing)
+  FAILED runner/tests/test_session_launcher.py::TestSessionLauncher::test_create_and_list
+    ModuleNotFoundError: No module named 'runner.session_launcher'; 'runner' is not a package
+  FAILED runner/tests/test_session_launcher.py::TestSessionLauncher::test_session_lifecycle
+    ModuleNotFoundError: No module named 'runner.session_launcher'; 'runner' is not a package
+  FAILED runner/tests/test_session_launcher.py::TestSessionLauncher::test_to_dict
+    ModuleNotFoundError: No module named 'runner.session_launcher'; 'runner' is not a package
+
+### runner/tests/test_settings_hygiene.py  (5 failing)
+  FAILED runner/tests/test_settings_hygiene.py::TestSettingsHygiene::test_no_allowlist_files_tracked
+    AssertionError: '.claude/settings.local.json' unexpectedly found in '.claude/settings.local.json' : Machine-specific file .claude/settings.local.json found in git tracking: .claude/settings.local.json
+  FAILED runner/tests/test_settings_hygiene.py::TestSettingsHygiene::test_no_allowlist_with_dangerous_commands
+    AssertionError: 'Bash(kill' unexpectedly found in '{\n  "permissions": {\n    "allow": [\n      "Edit",\n      "Write",\n      "Read",\n      "Grep",\n      "Glob",\n      "Bash",\n      "WebFetch",\n      "WebSearch",\n      "Bash(ls -la /Users/kpasch/ 2>&1 | head; echo \\"---\\"; ls -la /Users/kpasch/Documents/ 2>&1 | head; echo \\"---EXIT---\\")",\n      "Read(//Users/**)",\n     ...
+  FAILED runner/tests/test_settings_hygiene.py::TestSettingsHygiene::test_no_secrets_in_tracked_settings
+    AssertionError: Lists differ: ['.vscode/settings.json'] != ['.claude/settings.local.json', '.vscode/settings.json']
+  FAILED runner/tests/test_settings_hygiene.py::TestSettingsHygiene::test_settings_local_not_in_recent_history
+    AssertionError: 21 != 0 : .claude/settings.local.json found in git history (security regression). This file contains overly permissive allowlists with kill commands and database access. It must be removed via git filter-repo. Found in 21 commits.
+  FAILED runner/tests/test_settings_hygiene.py::TestSettingsHygiene::test_settings_local_not_tracked
+    AssertionError: '.claude/settings.local.json' is not false : .claude/settings.local.json is tracked in git (should be ignored): .claude/settings.local.json
+
+### runner/tests/test_settings_security.py  (5 failing)
+  FAILED runner/tests/test_settings_security.py::TestSettingsSecurity::test_dangerous_patterns_in_local_settings
+    AssertionError: 'Bash(kill' unexpectedly found in '{\n  "permissions": {\n    "allow": [\n      "Edit",\n      "Write",\n      "Read",\n      "Grep",\n      "Glob",\n      "Bash",\n      "WebFetch",\n      "WebSearch",\n      "Bash(ls -la /Users/kpasch/ 2>&1 | head; echo \\"---\\"; ls -la /Users/kpasch/Documents/ 2>&1 | head; echo \\"---EXIT---\\")",\n      "Read(//Users/**)",\n   ...
+  FAILED runner/tests/test_settings_security.py::TestSettingsSecurity::test_no_machine_specific_allowlists_tracked
+    AssertionError: 2 != 0 : Found 2 machine-specific files in git: ['.claude/settings.local.json', '.claude/settings.local.json']. These files contain local configuration and dangerous permissions and must be removed.
+  FAILED runner/tests/test_settings_security.py::TestSettingsSecurity::test_no_settings_local_in_recent_commits
+    AssertionError: True is not false : .claude/settings.local.json was found in recent git history. This file must be removed from all commits. Remediation requires: git filter-repo --path .claude/settings.local.json --invert-paths
+  FAILED runner/tests/test_settings_security.py::TestSettingsSecurity::test_settings_local_json_not_tracked
+    AssertionError: '.claude/settings.local.json' != ''
+  FAILED runner/tests/test_settings_security.py::TestSettingsSecurity::test_tracked_settings_files_allowed_list
+    AssertionError: 'local' unexpectedly found in '.claude/settings.local.json' : Tracked settings file '.claude/settings.local.json' appears to be machine-specific (contains 'local'). Only default/safe settings should be tracked.
+
+### runner/tests/test_source_config.py  (1 failing)
+  FAILED runner/tests/test_source_config.py::TestTestingPipelineSetup::test_unittest_loader_finds_tests
+    ImportError: 'test_build_gate' module incorrectly imported from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner'. Expected '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/tests'. Is this module globally installed?
+
+### runner/tests/test_task_lifecycle.py  (7 failing)
+  FAILED runner/tests/test_task_lifecycle.py::TestClaimDependencyResolution::test_task_with_met_deps_is_claimable
+    AttributeError: <module 'db'> does not have the attribute 'repo_runnable_here'
+  FAILED runner/tests/test_task_lifecycle.py::TestClaimDependencyResolution::test_task_with_no_deps_is_claimable
+    AttributeError: <module 'db'> does not have the attribute 'repo_runnable_here'
+  FAILED runner/tests/test_task_lifecycle.py::TestHeartbeatMechanics::test_heartbeat_inserts_record
+    AttributeError: module 'db' has no attribute 'heartbeat'
+  FAILED runner/tests/test_task_lifecycle.py::TestHeartbeatMechanics::test_logical_runners_fan_out
+    AttributeError: module 'db' has no attribute 'heartbeat'
+  FAILED runner/tests/test_task_lifecycle.py::TestConcurrentClaimContention::test_update_conflict_returns_empty
+    AttributeError: <module 'db'> does not have the attribute 'repo_runnable_here'
+  FAILED runner/tests/test_task_lifecycle.py::TestDedupLock::test_dedup_lock_cleanup
+    AttributeError: module 'db' has no attribute '_dedup_lock'
+  FAILED runner/tests/test_task_lifecycle.py::TestDedupLock::test_dedup_lock_is_reentrant_across_slugs
+    AttributeError: module 'db' has no attribute '_dedup_lock'
+
+### runner/tests/test_task_slicer.py  (2 failing)
+  FAILED runner/tests/test_task_slicer.py::PreAgentHookAiIntegrationTest::test_falls_back_to_heuristic_when_ai_fails
+    NameError: name '_slice_exists' is not defined
+  FAILED runner/tests/test_task_slicer.py::PreAgentHookAiIntegrationTest::test_uses_ai_when_enabled
+    NameError: name '_slice_exists' is not defined
+
+### runner/tests/test_task_state_machine.py  (4 failing)
+  FAILED runner/tests/test_task_state_machine.py::TestTaskStateMachine::test_all_states_have_entries
+    ModuleNotFoundError: No module named 'runner.task_state_machine'; 'runner' is not a package
+  FAILED runner/tests/test_task_state_machine.py::TestTaskStateMachine::test_invalid_transitions
+    ModuleNotFoundError: No module named 'runner.task_state_machine'; 'runner' is not a package
+  FAILED runner/tests/test_task_state_machine.py::TestTaskStateMachine::test_merged_is_terminal
+    ModuleNotFoundError: No module named 'runner.task_state_machine'; 'runner' is not a package
+  FAILED runner/tests/test_task_state_machine.py::TestTaskStateMachine::test_valid_transitions
+    ModuleNotFoundError: No module named 'runner.task_state_machine'; 'runner' is not a package
+
+### runner/tests/test_tdd_gate.py  (1 failing)
+  FAILED runner/tests/test_tdd_gate.py::GetRequiredKindsTest::test_caches_result_for_30s
+    AssertionError: 0 != 1
+
+### runner/tests/test_test_suite_runner.py  (5 failing)
+  FAILED runner/tests/test_test_suite_runner.py::test_discover_root_only
+    TypeError: discover_test_modules() got an unexpected keyword argument 'include_subdir'
+  FAILED runner/tests/test_test_suite_runner.py::test_discover_with_subdir
+    TypeError: discover_test_modules() got an unexpected keyword argument 'include_subdir'
+  FAILED runner/tests/test_test_suite_runner.py::test_pattern_filter
+    TypeError: discover_test_modules() got an unexpected keyword argument 'include_subdir'
+  FAILED runner/tests/test_test_suite_runner.py::test_pattern_no_match
+    TypeError: discover_test_modules() got an unexpected keyword argument 'pattern'
+  FAILED runner/tests/test_test_suite_runner.py::test_discover_returns_tuples
+    TypeError: discover_test_modules() missing 1 required positional argument: 'args'
+
+### runner/tests/test_testing_pipeline_setup.py  (1 failing)
+  FAILED runner/tests/test_testing_pipeline_setup.py::TestRepoSetup::test_ci_workflow_references_pytest
+    AssertionError: 'pytest' not found in 'name: CI\n\non:\n  push:\n    branches: [master]\n  pull_request:\n\njobs:\n  darwin-kernel:\n    name: darwin-kernel — test + typecheck\n    runs-on: ubuntu-latest\n    container:\n      image: node:22-alpine\n    defaults:\n      run:\n        working-directory: packages/darwin-kernel\n\n    steps:\n      - uses: actions/checkout@v4\n\n      - name: ...
+
+### runner/tests/test_train_status_backfill.py  (4 failing)
+  FAILED runner/tests/test_train_status_backfill.py::TestTrainStatusBackfill::test_deployed_value_per_minute_basic
+    ModuleNotFoundError: No module named 'runner.train_status_backfill'; 'runner' is not a package
+  FAILED runner/tests/test_train_status_backfill.py::TestTrainStatusBackfill::test_deployed_value_per_minute_empty
+    ModuleNotFoundError: No module named 'runner.train_status_backfill'; 'runner' is not a package
+  FAILED runner/tests/test_train_status_backfill.py::TestTrainStatusBackfill::test_is_deployed_checks_status
+    ModuleNotFoundError: No module named 'runner.train_status_backfill'; 'runner' is not a package
+  FAILED runner/tests/test_train_status_backfill.py::TestTrainStatusBackfill::test_stage_classification
+    ModuleNotFoundError: No module named 'runner.train_status_backfill'; 'runner' is not a package
+
+### runner/tests/test_transient_db_error.py  (4 failing)
+  FAILED runner/tests/test_transient_db_error.py::TestTransientDBError::test_409_raises_transient_db_error
+    ModuleNotFoundError: No module named 'runner.db'; 'runner' is not a package
+  FAILED runner/tests/test_transient_db_error.py::TestTransientDBError::test_insert_swallows_transient_db_error
+    ModuleNotFoundError: No module named 'runner.db'; 'runner' is not a package
+  FAILED runner/tests/test_transient_db_error.py::TestTransientDBError::test_non_409_still_raises_http_error
+    ModuleNotFoundError: No module named 'runner.db'; 'runner' is not a package
+  FAILED runner/tests/test_transient_db_error.py::TestTransientDBError::test_update_swallows_transient_db_error
+    ModuleNotFoundError: No module named 'runner.db'; 'runner' is not a package
+
+### runner/tests/test_value_per_token.py  (16 failing)
+  FAILED runner/tests/test_value_per_token.py::TestRevenueKeywords::test_core_keywords_present
+    ImportError: cannot import name 'revenue_keywords' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestRevenueKeywords::test_returns_set
+    ImportError: cannot import name 'revenue_keywords' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValueScore::test_baseline_task
+    ImportError: cannot import name 'value_score' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValueScore::test_capped_at_10
+    ImportError: cannot import name 'value_score' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValueScore::test_hard_kind_boosts_score
+    ImportError: cannot import name 'value_score' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValueScore::test_revenue_slug_boosts_score
+    ImportError: cannot import name 'value_score' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValueScore::test_tested_and_reviewed_boost
+    ImportError: cannot import name 'value_score' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValuePerToken::test_free_provider_highest_vpt
+    ImportError: cannot import name 'value_per_token' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValuePerToken::test_opus_identified_by_model_name
+    ImportError: cannot import name 'value_per_token' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestValuePerToken::test_positive_for_any_task
+    ImportError: cannot import name 'value_per_token' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestChooseValueRouting::test_high_value_hard_routes_opus
+    ImportError: cannot import name 'choose' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestChooseValueRouting::test_low_value_not_routed_to_opus
+    ImportError: cannot import name 'choose' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestChooseValueRouting::test_no_env_var_no_value_routing
+    ImportError: cannot import name 'choose' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestChooseValueRouting::test_value_routing_off_no_override
+    ImportError: cannot import name 'choose' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestAnalysisIncludesValueRouting::test_analysis_disabled
+    ImportError: cannot import name 'analysis' from 'model_policy' (unknown location)
+  FAILED runner/tests/test_value_per_token.py::TestAnalysisIncludesValueRouting::test_analysis_has_value_routing_key
+    ImportError: cannot import name 'analysis' from 'model_policy' (unknown location)
+
+### runner/tests/test_vendor_portfolio_inclusion.py  (4 failing)
+  FAILED runner/tests/test_vendor_portfolio_inclusion.py::test_grok_alias_enables_xai_without_copying_secret_to_disk
+    AttributeError: module 'model_gateway' has no attribute 'configured'
+  FAILED runner/tests/test_vendor_portfolio_inclusion.py::test_diverse_qa_route_rotates_vendor_families
+    AttributeError: module 'model_policy' has no attribute 'mg'
+  FAILED runner/tests/test_vendor_portfolio_inclusion.py::test_auth_demotion_survives_control_plane_write_failure
+    AttributeError: <module 'db'> has no attribute 'upsert'
+  FAILED runner/tests/test_vendor_portfolio_inclusion.py::test_replacing_auth_credential_releases_old_quarantine
+    AttributeError: <module 'db'> has no attribute 'upsert'
+
+### runner/tests/test_vercel_deploys.py  (7 failing)
+  FAILED runner/tests/test_vercel_deploys.py::TestPreviewCanary::test_no_hardcoded_secret_in_module_source
+    AssertionError: Lists differ: ['"PREVIEW_CANARY_TIMEOUT_S"', '"PREVIEW_C[42 chars]TH"'] != []
+  FAILED runner/tests/test_vercel_deploys.py::TestPreviewCanary::test_query_preview_matches_branch
+    AttributeError: <module 'preview_canary' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/preview_canary.py'> does not have the attribute '_vget'
+  FAILED runner/tests/test_vercel_deploys.py::TestPreviewCanary::test_query_preview_returns_none_for_unknown_branch
+    AttributeError: <module 'preview_canary' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/preview_canary.py'> does not have the attribute '_vget'
+  FAILED runner/tests/test_vercel_deploys.py::TestPreviewCanary::test_query_preview_returns_none_without_token
+    AttributeError: module 'preview_canary' has no attribute 'query_preview'
+  FAILED runner/tests/test_vercel_deploys.py::TestPreviewCanary::test_run_files_approval_on_failed_preview
+    AttributeError: <module 'preview_canary' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/preview_canary.py'> does not have the attribute 'db'
+  FAILED runner/tests/test_vercel_deploys.py::TestPreviewCanary::test_run_skips_gracefully_without_token
+    AttributeError: module 'preview_canary' has no attribute 'run'
+  FAILED runner/tests/test_vercel_deploys.py::TestPreviewCanary::test_run_updates_deploy_health_on_ready_preview
+    AttributeError: <module 'preview_canary' from '/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/backlog-batch-beethoven-ccacb00-fix-failing-tests-identify-failing-tests/runner/preview_canary.py'> does not have the attribute 'db'
+
+### runner/tests/test_web_console.py  (2 failing)
+  FAILED runner/tests/test_web_console.py::TestWebConsole::test_handler_class_exists
+    ModuleNotFoundError: No module named 'runner.web_console'; 'runner' is not a package
+  FAILED runner/tests/test_web_console.py::TestWebConsole::test_snapshot_cache_structure
+    ModuleNotFoundError: No module named 'runner.web_console'; 'runner' is not a package
+
+### runner/tests/test_worktree_gc.py  (2 failing)
+  FAILED runner/tests/test_worktree_gc.py::WorktreeGCTest::test_dirty_worktree_is_never_removed
+    AssertionError: 1 != 0
+  FAILED runner/tests/test_worktree_gc.py::WorktreeGCTest::test_recently_active_worktree_is_never_removed
+    AssertionError: 1 != 0
+
+### runner/tests/test_worktree_isolation.py  (1 failing)
+  FAILED runner/tests/test_worktree_isolation.py::test_repo_lock_fails_closed_when_lock_directory_is_unavailable
+    assert True is False
+
+### runner/tests/test_zombie_reaper_complete.py  (16 failing)
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestDeadRunnerDetection::test_detects_task_with_no_heartbeat
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestDeadRunnerDetection::test_detects_runner_with_expired_heartbeat
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestStaleTaskDetection::test_reclaims_task_over_30_minute_threshold
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestStaleTaskDetection::test_boundary_just_over_30_minutes
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestRetryTaskPromotion::test_promotes_retry_task_over_threshold
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestRetryTaskPromotion::test_promotion_appends_to_existing_note
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestAgenticRepairIntegration::test_calls_repair_patch_for_dead_runner
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestAgenticRepairIntegration::test_repair_prompt_contains_context
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestErrorResilience::test_continues_after_update_failure
+    AssertionError: assert 0 == 2
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestMultipleTaskHandling::test_processes_multiple_stale_tasks
+    AssertionError: assert 0 == 2
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestMultipleTaskHandling::test_processes_multiple_retry_tasks
+    AssertionError: assert 0 == 2
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestMultipleTaskHandling::test_mixes_reclaim_and_promote_in_cycle
+    AssertionError: assert 0 == 2
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestDatabaseQueryStructure::test_running_query_structure
+    IndexError: list index out of range
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestEdgeCases::test_heartbeat_query_exception_falls_back
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestPrintDiagnostics::test_prints_reclaim_summary
+    assert False
+  FAILED runner/tests/test_zombie_reaper_complete.py::TestPrintDiagnostics::test_prints_error_on_failure
+    assert False
+
+### runner/tests/test_zombie_reaper_heartbeat.py  (27 failing)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatMonitoring::test_heartbeat_fresh_status
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatMonitoring::test_heartbeat_stale_status
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatMonitoring::test_heartbeat_ttl_boundary
+    ImportError: cannot import name 'HEARTBEAT_TTL_MINUTES' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatMonitoring::test_heartbeat_upsert_creates_new
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatMonitoring::test_heartbeat_upsert_updates_existing
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatMonitoring::test_heartbeat_inactive_runner
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatMonitoring::test_heartbeat_with_model_metadata
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatPruning::test_prune_stale_heartbeats_deletes_old
+    AttributeError: <module 'db'> does not have the attribute '_req'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatPruning::test_prune_stale_respects_interval
+    AttributeError: <module 'db'> does not have the attribute '_req'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatPruning::test_heartbeat_prune_interval_constant
+    ImportError: cannot import name 'HEARTBEAT_PRUNE_INTERVAL_S' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestZombieProcessDetection::test_detect_expired_heartbeat
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestZombieProcessDetection::test_detect_recent_heartbeat
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestZombieProcessDetection::test_query_stale_runners
+    ImportError: cannot import name 'HEARTBEAT_TTL_MINUTES' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestZombieProcessDetection::test_zombie_classification_rules
+    ImportError: cannot import name 'HEARTBEAT_TTL_MINUTES' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatRecoveryMechanisms::test_heartbeat_write_resilience
+    ImportError: cannot import name 'heartbeat' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestRunnerHeartbeatIntegration::test_runner_heartbeat_loop
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestRunnerHeartbeatIntegration::test_fleet_view_healthy_runners
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatEdgeCases::test_heartbeat_record_with_missing_fields
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestLogicalRunnersHeartbeats::test_logical_runners_lanes_enabled
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestLogicalRunnersHeartbeats::test_heartbeat_compatibility_fallback
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestLogicalRunnersHeartbeats::test_heartbeat_with_contract_metadata
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestConcurrentHeartbeatWrites::test_concurrent_heartbeats_no_race
+    AttributeError: <module 'db'> does not have the attribute 'db'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatFailoverScenarios::test_heartbeat_db_unavailable_recovery
+    ImportError: cannot import name 'is_db_down' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatFailoverScenarios::test_heartbeat_network_timeout_resilience
+    ImportError: cannot import name 'heartbeat' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHeartbeatTableManagement::test_prune_query_uses_timestamp_index
+    AttributeError: <module 'db'> does not have the attribute '_req'
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHealthCheckIntegration::test_health_check_requires_recent_heartbeat
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+  FAILED runner/tests/test_zombie_reaper_heartbeat.py::TestHealthCheckIntegration::test_health_endpoint_aggregates_runner_status
+    ImportError: cannot import name '_fresh' from 'db' (unknown location)
+
+### runner/tests/test_zombie_reaper_integration.py  (22 failing)
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestHeartbeatExpiryBoundaries::test_task_exactly_at_30min_boundary_over
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestHeartbeatExpiryBoundaries::test_dead_runner_at_grace_period_boundary
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestFleetTTLVariations::test_fleet_ttl_s_short_30_seconds
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRetryPromotionThreshold::test_retry_promotion_threshold_1_second
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestConcurrentZombieRecovery::test_large_batch_stale_tasks_all_reclaimed
+    AssertionError: assert 0 == 50
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestConcurrentZombieRecovery::test_mixed_tasks_selective_reclaim
+    AssertionError: assert 0 == 2
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRunnerAccountPatternMatching::test_mac_lan_pattern_matches
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRunnerAccountPatternMatching::test_mandys_macbook_pattern_matches
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRecoveryPatchGeneration::test_dead_runner_patch_includes_correct_signal
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRecoveryPatchGeneration::test_stale_running_patch_includes_correct_signal
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRecoveryPatchGeneration::test_patch_category_orphaned_running
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRecoveryPatchGeneration::test_patch_directive_includes_recovery_guidance
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestScheduledExecution::test_reaper_executes_after_300s_throttle
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestErrorResilience::test_db_select_failure_no_crash
+    assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestErrorResilience::test_repair_patch_failure_doesnt_block_other_tasks
+    AssertionError: assert 0 == 2
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRetryNoteHandling::test_retry_note_appends_promoter_tag
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRetryNoteHandling::test_retry_note_truncated_to_1000_chars
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestRetryNoteHandling::test_retry_note_preserves_state_and_timestamp
+    TypeError: 'NoneType' object is not subscriptable
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestLaneHeartbeatSkipping::test_lane_heartbeats_not_counted_as_live
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestLaneHeartbeatSkipping::test_scheduler_heartbeats_not_counted_as_live
+    AssertionError: assert False
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestLargeScaleRecovery::test_recovers_100_tasks_with_50_retry_in_single_cycle
+    AssertionError: assert 0 == 100
+  FAILED runner/tests/test_zombie_reaper_integration.py::TestLargeScaleRecovery::test_query_limits_respected
+    IndexError: list index out of range
+
+### tests/test_db_connectivity.py  (5 failing)
+  FAILED tests/test_db_connectivity.py::TestNetworkFailures::test_connection_refused
+    AttributeError: <module 'db'> does not have the attribute 'execute'
+  FAILED tests/test_db_connectivity.py::TestNetworkFailures::test_dns_resolution_failure
+    AttributeError: <module 'db'> does not have the attribute 'execute'
+  FAILED tests/test_db_connectivity.py::TestNetworkFailures::test_timeout
+    AttributeError: <module 'db'> does not have the attribute 'execute'
+  FAILED tests/test_db_connectivity.py::TestAuthFailures::test_invalid_credentials_no_secret_leak
+    AttributeError: <module 'db'> does not have the attribute 'execute'
+  FAILED tests/test_db_connectivity.py::TestAuthFailures::test_expired_token_handling
+    AttributeError: <module 'db'> does not have the attribute 'execute'
+
+### tests/test_dependency_prewarm_readiness_validation.py  (1 failing)
+  FAILED tests/test_dependency_prewarm_readiness_validation.py::TestSnapshotValidation::test_ensure_returns_validation_error_when_deps_not_ready
+    AssertionError: assert 'readiness validation' in 'want npm to make any changes and that it should\nnpm error\nnpm error   -w|--workspace\nnpm error     Enable running ...o\nnpm error A complete log of this run can be found in: /Users/kpasch/.npm/_logs/2026-08-07T00_37_46_024Z-debug-0.log'
+
+### tests/test_emit_task_log.py  (17 failing)
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_info_level
+    AssertionError: Should call info method for 'info' level
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_error_level
+    AssertionError: Should call error method for 'error' level
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_warning_level
+    AssertionError: Should call warning method for 'warning' level
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_debug_level
+    AssertionError: Should call debug method for 'debug' level
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_unknown_level_defaults_to_info
+    AssertionError: Should default to info method for unknown levels
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_formats_with_slug_prefix
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_empty_slug
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_empty_message
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_with_special_characters_in_message
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogFunction::test_emit_task_log_does_not_raise_on_none_inputs
+    Failed: emit_task_log should not raise: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogRobustness::test_emit_task_log_with_very_long_slug
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogRobustness::test_emit_task_log_with_very_long_message
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogRobustness::test_emit_task_log_is_idempotent
+    AssertionError: assert 0 == 5
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogRobustness::test_emit_task_log_with_unicode_characters
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestEmitTaskLogRobustness::test_emit_task_log_preserves_format_string_safety
+    AssertionError: assert False
+  FAILED tests/test_emit_task_log.py::TestLogLevelHandling::test_all_standard_log_levels_are_supported
+    AssertionError: assert (False or False or False or False or False)
+  FAILED tests/test_emit_task_log.py::TestLogLevelHandling::test_log_level_is_case_sensitive
+    AssertionError: assert (False or False)
+
+### tests/test_env_safety.py  (1 failing)
+  FAILED tests/test_env_safety.py::TestEnvSafety::test_no_hardcoded_secrets_in_source
+    AssertionError: Lists differ: ['/Users/kpasch/Documents/beethoven/claude[125 chars]:16'] != []
+
+### tests/test_failure_forecast.py  (3 failing)
+  FAILED tests/test_failure_forecast.py::test_three_consecutive_failures_returns_true
+    TypeError: should_skip() got an unexpected keyword argument '_db'
+  FAILED tests/test_failure_forecast.py::test_two_consecutive_failures_returns_false
+    TypeError: should_skip() got an unexpected keyword argument '_db'
+  FAILED tests/test_failure_forecast.py::test_three_failures_then_success_returns_false
+    TypeError: should_skip() got an unexpected keyword argument '_db'
+
+### tests/test_repair_helpers.py  (12 failing)
+  FAILED tests/test_repair_helpers.py::TestRepairPrompt::test_includes_marker
+    AttributeError: module 'agentic_repair' has no attribute 'repair_prompt'
+  FAILED tests/test_repair_helpers.py::TestRepairPrompt::test_includes_failure_context
+    AttributeError: module 'agentic_repair' has no attribute 'repair_prompt'
+  FAILED tests/test_repair_helpers.py::TestRepairPrompt::test_truncates_long_prompts
+    AttributeError: module 'agentic_repair' has no attribute 'MAX_PROMPT_CHARS'
+  FAILED tests/test_repair_helpers.py::TestRepairPrompt::test_strips_prior_marker
+    AttributeError: module 'agentic_repair' has no attribute '_original_prompt'
+  FAILED tests/test_repair_helpers.py::TestChooseCoder::test_forced_coder_wins
+    AssertionError: assert 'claude' == 'gemini'
+  FAILED tests/test_repair_helpers.py::TestChooseCoder::test_existing_model_preserved
+    AssertionError: assert 'claude' == 'gpt-4o'
+  FAILED tests/test_repair_helpers.py::TestChooseCoder::test_default_coder_from_env
+    AttributeError: module 'agentic_repair' has no attribute '_default_coder'
+  FAILED tests/test_repair_helpers.py::TestRepairPatch::test_increments_remediation_count
+    KeyError: 'attempt'
+  FAILED tests/test_repair_helpers.py::TestRepairPatch::test_assigns_coder
+    AssertionError: assert 'claude' == 'ollama'
+  FAILED tests/test_repair_helpers.py::TestCategories::test_technical_categories
+    AttributeError: module 'agentic_repair' has no attribute 'is_technical'
+  FAILED tests/test_repair_helpers.py::TestCategories::test_replacement_categories
+    AttributeError: module 'agentic_repair' has no attribute 'replacement_required'
+  FAILED tests/test_repair_helpers.py::TestCategories::test_unknown_category_is_not_replacement
+    AttributeError: module 'agentic_repair' has no attribute 'replacement_required'
+

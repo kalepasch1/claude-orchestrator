@@ -1,0 +1,4 @@
+recovery-intent: canary-claude-27-slice-3-update-tests-checks-verify-test-is-minimal-remove-redun
+template: 2c247409cc6e
+intent: 0000000 07130635 07190257 100644 20251001 68c04d4 7ce8bfb 95fc17a 95fc17a3 95fc17a356b7 acceptance acting active adapt added advice after against agentic analysis applicable artifacts assertions author backlog batch because becomes beethoven before behavior behaviour below blocked branch branches broad bugfix build build_fix cache canary cannot category cause change changes changing check checks claim class claud claude cloud coder codestral commit committed compiles completion concrete config consolidate consolidation context continue contract coordination correctly cover covers cowork created cross custody debate_compress deepseek defensible defined
+base: main

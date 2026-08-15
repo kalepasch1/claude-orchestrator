@@ -1,0 +1,10 @@
+{
+  "verdict": "conditional",
+  "score": 7,
+  "conviction": 9,
+  "basis": "Deployer obligations under EU AI Act Arts. 26–28 are clear and implementable; proceeding requires completed GDPR Art. 35 DPIA and AI Act Art. 27 FRIA, plus resolution of this deployer's actual status (provider vs. deployer) under Art. 3 definitions.",
+  "opportunity": "Deployer-only status (not provider) caps compliance scope: human oversight + monitoring + record-keeping + instruction adherence avoid the full provider burden (conformity assessment, quality management systems, technical documentation ownership).",
+  "risk": "Absent DPIA/FRIA, we have no evidence of lawful basis (GDPR Art. 6), no assessment of Art. 5 fundamental rights impact, no documentation of necessity/proportionality, and no control flow to mitigate bias/discrimination in outputs affecting protected characteristics. Regulatory action possible in 12–18 months once enforcers resource GDPR+AI Act joint audits.",
+  "conditions": "Before deployment: (1) Completed GDPR Art. 35 DPIA addressing this specific use case, data flows, and retention; (2) Completed EU AI Act Art. 27 FRIA covering fundamental rights, bias, and transparency; (3) Binding legal confirmation of deployer status—if deployer has control over model retraining, output overrides, or significant customization, liability may be provider-equivalent; (4) Signed vendor compliance certificate confirming provider's Art. 28(1) obligations and Art. 30 conformity documentation.",
+  "recommendation": "Adopt conditional position pending DPIA/FRIA completion and status confirmation; if all four conditions are met and deployer status is confirmed, migrate to support. Build contingent approval letter now (to accelerate decision once assessments land) that conditions are tied to specific completion gates, not vague 'regulatory readiness.'"
+}

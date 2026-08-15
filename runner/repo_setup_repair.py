@@ -16,6 +16,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# Repo-owner identity: Vercel blocks production deploys whose commit author is
+# anyone else (see CLAUDE.md "Git identity"), so repairs must never install a
+# bot identity. Env-overridable, ORCH_ prefix per fleet config convention.
+GIT_IDENTITY_NAME = os.environ.get("ORCH_GIT_USER_NAME", "kalepasch1")
+GIT_IDENTITY_EMAIL = os.environ.get("ORCH_GIT_USER_EMAIL", "kalepasch@gmail.com")
+
 # Setup-install-dependencies knobs (fleet-wide via ORCH_ prefix).
 STALE_PATH_REPORT_CAP = 5
 OLLAMA_PULL_TIMEOUT = int(os.environ.get("ORCH_OLLAMA_PULL_TIMEOUT", "900"))
@@ -43,13 +49,35 @@ def check_git(repo):
 
 
 def check_git_config(repo):
-    """Verify essential git config is set."""
+    """Verify essential git config is set (presence only)."""
     issues = []
     for key in ["user.name", "user.email"]:
         out, _, rc = _run(["git", "config", key], cwd=repo)
         if rc != 0 or not out:
             issues.append(key)
     return issues
+
+
+def check_git_identity(repo):
+    """Verify git config carries the OWNER identity, not merely *some* identity.
+
+    Presence is not health. A checkout configured with a blocked platform/bot account passes
+    check_git_config and then produces commits Vercel puts in BLOCKED state,
+    which never deploy -- the failure the 2026-08-02 two-session audit addendum
+    recorded. Compared case-insensitively; email is the field Vercel keys on.
+
+    Returns a list of "<key>:<found-or-unset>" mismatch strings; empty == owner.
+    Fail-soft: an unreadable repo yields [] rather than raising.
+    """
+    mismatches = []
+    for key, expected in [("user.name", GIT_IDENTITY_NAME),
+                          ("user.email", GIT_IDENTITY_EMAIL)]:
+        out, _, rc = _run(["git", "config", key], cwd=repo)
+        if rc != 0 or not out:
+            continue  # absence is check_git_config's finding, not a mismatch
+        if out.strip().lower() != str(expected).strip().lower():
+            mismatches.append(f"{key}:{out.strip()}")
+    return mismatches
 
 
 def check_tool(name):
@@ -118,13 +146,25 @@ def check_ollama_models(required=None):
 
 
 def repair_git_config(repo):
-    """Set missing git config with safe defaults."""
+    """Install the repo-owner identity (deploy-safe author) into repo-LOCAL config.
+
+    Repairs BOTH shapes: unset, and set-but-wrong. Only repairing "unset" left a
+    checkout carrying a bot identity looking healthy forever, because the first
+    (wrong) value it saw satisfied the presence check permanently.
+
+    Writes local config only -- never --global -- so a repair is scoped to the
+    checkout that is about to produce commits.
+    """
     repaired = []
-    for key, default in [("user.name", "orchestrator-bot"), ("user.email", "bot@orchestrator.local")]:
+    for key, default in [("user.name", GIT_IDENTITY_NAME), ("user.email", GIT_IDENTITY_EMAIL)]:
         out, _, rc = _run(["git", "config", key], cwd=repo)
-        if rc != 0 or not out:
+        current = out.strip() if rc == 0 else ""
+        if not current:
             _run(["git", "config", key, default], cwd=repo)
             repaired.append(key)
+        elif current.lower() != str(default).strip().lower():
+            _run(["git", "config", key, default], cwd=repo)
+            repaired.append(f"{key} (was {current})")
     return repaired
 
 
@@ -186,6 +226,110 @@ def repair_ollama_models(required=None):
     return pulled
 
 
+def _remote_default_branch(repo):
+    """Return origin's default branch without assuming main/master."""
+    out, _, rc = _run(
+        ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        cwd=repo,
+    )
+    if rc == 0 and out.startswith("origin/"):
+        return out.split("/", 1)[1]
+    for candidate in ("main", "master", "develop"):
+        _, _, rc = _run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{candidate}"],
+            cwd=repo,
+        )
+        if rc == 0:
+            return candidate
+    return ""
+
+
+def repair_repo(repo, remote_url=None):
+    """Clone or safely fast-forward a repository checkout.
+
+    The active feature branch is never switched.  A dirty checkout is fetched
+    for visibility but not moved, which preserves operator and agent work.
+    Returns one stable status shape on every path and never raises.
+    """
+    result = {
+        "cloned": False,
+        "fetched": False,
+        "fast_forwarded": False,
+        "actions": [],
+        "error": "",
+        "ready": False,
+        "default_branch": "",
+        "clean": False,
+        "current": False,
+    }
+    try:
+        git_dir = os.path.join(repo or "", ".git")
+        if not repo or not os.path.isdir(git_dir):
+            if not remote_url:
+                result["error"] = "repo missing and no remote_url supplied"
+                return result
+            parent = os.path.dirname(os.path.abspath(repo))
+            os.makedirs(parent, exist_ok=True)
+            _, err, rc = _run(["git", "clone", remote_url, repo], cwd=parent, timeout=300)
+            if rc != 0:
+                result["error"] = f"clone failed: {err or 'unknown git error'}"
+                return result
+            result["cloned"] = True
+            result["actions"].append("cloned repository")
+
+        status, err, rc = _run(["git", "status", "--porcelain"], cwd=repo)
+        if rc != 0:
+            result["error"] = f"git status failed: {err or 'not a repository'}"
+            return result
+        result["clean"] = not bool(status)
+
+        current, _, current_rc = _run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], cwd=repo
+        )
+
+        _, err, rc = _run(["git", "fetch", "origin", "--prune"], cwd=repo, timeout=300)
+        if rc != 0:
+            result["error"] = f"fetch failed: {err or 'origin unavailable'}"
+            result["actions"].append("fetch failed")
+            return result
+        result["fetched"] = True
+        result["actions"].append("fetched origin")
+
+        default_branch = _remote_default_branch(repo)
+        result["default_branch"] = default_branch
+        result["current"] = bool(default_branch and current_rc == 0 and current == default_branch)
+        if not default_branch:
+            result["error"] = "origin default branch not found"
+            return result
+        if not result["clean"]:
+            result["actions"].append("dirty checkout; skipped fast-forward")
+            return result
+
+        if result["current"]:
+            _, err, rc = _run(
+                ["git", "merge", "--ff-only", f"origin/{default_branch}"],
+                cwd=repo,
+                timeout=300,
+            )
+        else:
+            # Update the local default ref in place while leaving the currently
+            # checked-out feature branch untouched.
+            _, err, rc = _run(
+                ["git", "branch", "-f", default_branch, f"origin/{default_branch}"],
+                cwd=repo,
+            )
+        if rc != 0:
+            result["error"] = f"fast-forward failed: {err or 'non-fast-forward state'}"
+            return result
+        result["fast_forwarded"] = True
+        result["actions"].append(f"fast-forwarded {default_branch}")
+        result["ready"] = True
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
+
+
 def diagnose(repo):
     """Run all checks on a repo and return a diagnostic report."""
     if not repo or not os.path.isdir(repo):
@@ -198,6 +342,13 @@ def diagnose(repo):
     config_issues = check_git_config(repo)
     if config_issues:
         report["issues"].append(f"missing git config: {', '.join(config_issues)}")
+    identity_issues = check_git_identity(repo)
+    if identity_issues:
+        # Reported separately from "missing": a wrong author is a DEPLOY blocker,
+        # not merely unconfigured setup.
+        report["issues"].append(
+            f"non-owner git identity (Vercel will BLOCK): {', '.join(identity_issues)}")
+    report["identity_ok"] = not identity_issues
     for tool in ["git", "python3", "node"]:
         if not check_tool(tool):
             report["issues"].append(f"tool not found: {tool}")
