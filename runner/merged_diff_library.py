@@ -136,6 +136,35 @@ def record(project, slug, kind, prompt, repo, base, head):
     return False
 
 
+# Wave C Part 4, "transplant-proven-organs": the retrieval floor is 0.55 and
+# low-similarity priors are banned. The floor used to be 0.12, which admitted
+# neighbours sharing only generic orchestration vocabulary. Those hits are still
+# rendered into the prompt as "SOURCE ... adapt this proven diff", so a task whose
+# real specification is one paragraph long arrives wrapped in kilobytes of
+# authoritative-sounding boilerplate that describes someone else's work — the
+# spec's "low-similarity priors hijacked real specs". Overridable fleet-wide, but
+# it never silently drops below the spec floor.
+SIMILARITY_FLOOR = 0.55
+
+
+def similarity_floor():
+    """Effective retrieval floor.
+
+    Reads ORCH_MERGED_DIFF_SIMILARITY_FLOOR (fleet_config) and clamps to
+    [SIMILARITY_FLOOR, 1.0]. Fail-soft: anything unparseable, out of range or
+    below the spec floor falls back to SIMILARITY_FLOOR, so a bad config value
+    can only ever make retrieval stricter, never reopen the hijack path.
+    """
+    raw = os.environ.get("ORCH_MERGED_DIFF_SIMILARITY_FLOOR", "")
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return SIMILARITY_FLOOR
+    if value != value or value > 1.0:  # NaN or nonsense
+        return SIMILARITY_FLOOR
+    return max(value, SIMILARITY_FLOOR)
+
+
 def find(task, limit=3):
     prompt = str((task or {}).get("prompt") or "")
     qwords = _words(prompt)
@@ -153,11 +182,12 @@ def find(task, limit=3):
         if overlap > 0:
             scored.append((overlap, r))
     scored.sort(key=lambda x: -x[0])
+    floor = similarity_floor()
     return [{"similarity": round(s, 3), "project": r.get("project"), "slug": r.get("slug"),
              "kind": r.get("kind"), "summary": (r.get("prompt") or "")[:300],
              "intent_signature": r.get("intent_signature"),
              "adapter_template": r.get("adapter_template"),
-             "diff": (r.get("diff") or "")[:4000]} for s, r in scored[:limit] if s >= 0.12]
+             "diff": (r.get("diff") or "")[:4000]} for s, r in scored[:limit] if s >= floor]
 
 
 def directive(task):
