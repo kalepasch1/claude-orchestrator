@@ -353,5 +353,67 @@ class TestGateLivenessIsOffTheCriticalPath(unittest.TestCase):
         self.assertIs(gate_liveness.record("probe", False, "x"), False)
 
 
+class TestShadowMode(unittest.TestCase):
+    """One switch that stops every shared-ref write and records what would have happened.
+
+    The alternative was four switches (ORCH_PUSH_ON_MERGE, ORCH_PUSH_ON_DEV_MERGE,
+    ORCH_AUTO_MERGE_APPROVALS, ORCH_DISABLED_JOBS) that must all be right across two hosts, a
+    .env and a fleet_config table that outranks it. This codebase has already been bitten by a
+    pin that silently did not apply because the runner inherited a stale value from its parent
+    shell — four coupled switches is not a safety property anyone can verify at a glance."""
+
+    def setUp(self):
+        import shadow_mode
+        self.sm = shadow_mode
+        os.environ.pop("ORCH_SHADOW_MODE", None)
+
+    def tearDown(self):
+        os.environ.pop("ORCH_SHADOW_MODE", None)
+
+    def test_off_by_default(self):
+        # Adding a kill switch must not change behaviour until someone turns it on.
+        self.assertFalse(self.sm.active())
+        self.assertFalse(self.sm.refuse("push", "p", "s", "d"))
+
+    def test_refuses_when_on(self):
+        os.environ["ORCH_SHADOW_MODE"] = "true"
+        self.assertTrue(self.sm.active())
+        self.assertTrue(self.sm.refuse("push-integration-branch", "tomorrow", "main", "x"))
+
+    def test_accepts_the_usual_truthy_spellings(self):
+        for v in ("1", "true", "TRUE", "yes", "on"):
+            os.environ["ORCH_SHADOW_MODE"] = v
+            self.assertTrue(self.sm.active(), v)
+        for v in ("0", "false", "no", "off", ""):
+            os.environ["ORCH_SHADOW_MODE"] = v
+            self.assertFalse(self.sm.active(), v)
+
+    def test_the_intent_is_recorded_not_just_blocked(self):
+        # A shadow run that blocks without recording teaches nothing about trustworthiness.
+        os.environ["ORCH_SHADOW_MODE"] = "true"
+        before = len(self.sm.intents())
+        self.sm.refuse("merge-branch", "apparently", "agent/x", "--no-ff into master")
+        self.assertEqual(len(self.sm.intents()), before + 1)
+        self.assertIn("merge-branch", self.sm.intents()[-1])
+
+    def test_bookkeeping_failure_never_blocks_the_pass(self):
+        os.environ["ORCH_SHADOW_MODE"] = "true"
+        import db
+        saved = db.insert
+        try:
+            db.insert = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("control plane down"))
+            self.assertTrue(self.sm.refuse("push", "p", "s", "d"))
+        finally:
+            db.insert = saved
+
+    def test_the_write_paths_actually_consult_it(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for mod, call in (("merge_train.py", "push-integration-branch"),
+                          ("approval_merge.py", "merge-branch")):
+            src = open(os.path.join(base, mod)).read()
+            self.assertIn("import shadow_mode", src, mod)
+            self.assertIn(call, src, mod)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

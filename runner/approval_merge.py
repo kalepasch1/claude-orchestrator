@@ -18,6 +18,7 @@ Safety:
 """
 import os, sys, re, subprocess, fnmatch, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import shadow_mode
 import db
 import agentic_repair
 import worktree_isolation
@@ -306,6 +307,8 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
         try:
             if subprocess.run(["git", "worktree", "add", "-f", tmp, base], cwd=repo, capture_output=True).returncode != 0:
                 return "CONFLICT"
+            if shadow_mode.refuse("merge-branch", subject=branch, detail=f"--no-ff into {base}"):
+                return {"ok": False, "reason": "shadow mode: merge recorded, not performed"}
             r = subprocess.run(["git", "merge", "--no-ff", "-m", f"merge {branch}", branch],
                                cwd=tmp, capture_output=True)
             if r.returncode != 0:
@@ -318,6 +321,8 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
         return "CONFLICT"
     # push to origin so CI/Vercel deploy — guarded: only when explicitly enabled.
     if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
+        if shadow_mode.refuse("push-base", subject=base, detail=f"{repo} -> origin/{base}"):
+            return {"ok": False, "reason": "shadow mode: push recorded, not performed"}
         push = subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True, text=True)
         if push.returncode != 0:
             return "PUSHFAIL:" + (push.stderr or "")[-120:]

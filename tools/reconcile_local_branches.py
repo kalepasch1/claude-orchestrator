@@ -37,7 +37,15 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
+
+# Strict apply verdict lives in one module so every reconciler agrees on what
+# "still applies" means. See tools/recovery_apply_check.py for why
+# `git apply --check --3way` is not a usable answer.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from recovery_apply_check import apply_verdict, deletes_live_paths, LANDABLE  # noqa: E402
+
 
 # Branches that are never "local-only evidence": the checked-out base itself and
 # scratch refs the tooling creates. Reconciling them would be self-referential.
@@ -171,13 +179,9 @@ def remote_branches_containing(sha: str) -> "list[str]":
     ]
 
 
-def diff_applies(diff_text: str) -> bool:
-    if not diff_text.strip():
-        return False
-    return subprocess.run(
-        ["git", "apply", "--check", "--3way", "-"],
-        input=diff_text, capture_output=True, text=True,
-    ).returncode == 0
+def diff_applies(diff_text: str, base: str = "HEAD", cwd: str = ".") -> bool:
+    """True only when the diff lands WITHOUT conflicts (see recovery_apply_check)."""
+    return apply_verdict(diff_text, base, cwd) in LANDABLE
 
 
 def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
@@ -229,7 +233,7 @@ def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
         return
 
     # 6. Still has value. Does it still apply?
-    if diff_applies(diff_text):
+    if diff_applies(diff_text, base):
         item.classification = "RECOVERABLE_VALUE"
         item.disposition = (
             "range diff applies cleanly to base; recover via isolated worktree "

@@ -39,6 +39,7 @@ except Exception:
 
 import events
 import delivery_lease
+import shadow_mode
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
 import paused_host_guard
@@ -1044,6 +1045,12 @@ def _push_base(repo, base, project=None):
     # fence against the store here, immediately before origin moves.
     delivery_lease.require(delivery_lease.held(project or "", delivery_lease.ROLE_INTEGRATOR),
                            f"push integration branch {base}")
+    # SHADOW MODE: everything up to here has run for real — rebase, tests, build, every
+    # anti-loss gate — so the proposal is fully evaluated. This is the last instant before
+    # origin moves, which makes it the right place to stop and record instead.
+    if shadow_mode.refuse("push-integration-branch", project=project or "",
+                          subject=base, detail=f"{repo} -> origin/{base}"):
+        return ""
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
         return ""
