@@ -415,5 +415,94 @@ class TestShadowMode(unittest.TestCase):
             self.assertIn(call, src, mod)
 
 
+
+class TestPreflightDoesNotDiscardRealSpecs(unittest.TestCase):
+    """preflight quarantined anything that had failed 4 times. Audited 2026-08-15: 139 tasks
+    were destroyed by that rule, every one in the cowork lane, every one carrying a real
+    specification (1,311 to 25,230 characters, median 5,985). Not one was a garbage stub.
+
+    An attempt is consumed by ANY failure, and this fleet spent months failing for reasons that
+    had nothing to do with the task — an orphaned merge-train lock, gates hanging inside their
+    own telemetry, hidden scan windows, cross-host push races."""
+
+    SPEC = "## OBJECTIVE\n" + "Detail line explaining the required behaviour.\n" * 60
+    THIN = "fix it"
+
+    def setUp(self):
+        import preflight_filter
+        self.pf = preflight_filter
+        for k in ("ORCH_PREFLIGHT_MAX_ATTEMPTS", "ORCH_PREFLIGHT_HARD_CEILING",
+                  "ORCH_PREFLIGHT_SUBSTANTIAL_CHARS"):
+            os.environ.pop(k, None)
+
+    def _check(self, prompt, attempt, note=""):
+        return self.pf.preflight_check(
+            {"slug": "t", "prompt": prompt, "attempt": attempt, "note": note})
+
+    def test_a_detailed_spec_survives_repeated_failure(self):
+        self.assertEqual(self._check(self.SPEC, 5), "")
+
+    def test_a_thin_prompt_that_keeps_failing_is_still_rejected(self):
+        self.assertIn("exhausted", self._check(self.THIN, 5))
+
+    def test_nothing_retries_forever(self):
+        self.assertIn("hard ceiling", self._check(self.SPEC, 12))
+
+    def test_garbage_stubs_are_still_caught(self):
+        self.assertIn("PATCH TEMPLATE", self._check("PATCH TEMPLATE deadbeef", 0))
+
+    def test_both_signals_are_required_not_either(self):
+        self.assertEqual(self._check(self.SPEC, 3), "")
+        self.assertEqual(self._check("x" * 600, 5), "")
+
+
+
+class TestSelfMaintenanceQuota(unittest.TestCase):
+    """Lifetime audit 2026-08-15: 57.2% of every merge this system ever made was the fleet
+    working on its own plumbing, and across the owner's four priority apps the split was
+    tomorrow 586, apparently 344, apparently-law 38, PMA/PMI 5.
+
+    The cause is structural: in claim_task's 24-key sort, _portfolio_project_rank — the owner's
+    own project order — is the ELEVENTH key, underneath recovery-reserve, release-fix and
+    blocker ranks, all of which are self-generated classes. The machine's upkeep outranked the
+    products it exists to build."""
+
+    def setUp(self):
+        import db
+        self.db = db
+        os.environ.pop("ORCH_SELF_WORK_MAX_SHARE", None)
+
+    def tearDown(self):
+        os.environ.pop("ORCH_SELF_WORK_MAX_SHARE", None)
+
+    def test_the_classifier_knows_upkeep_from_product_work(self):
+        for slug in ("canary-x", "recover-missing-branch-y", "backlog-batch-z", "rework-a",
+                     "relfix-b", "qafix-c", "gc-d", "dedup-e"):
+            self.assertTrue(self.db._is_self_maintenance({"slug": slug}), slug)
+        for slug in ("dropbox-apparently-licensing", "improve-landing-page", "v15-30-fleet",
+                     "trust-ratchet-per-user-state-tracking"):
+            self.assertFalse(self.db._is_self_maintenance({"slug": slug}), slug)
+
+    def test_an_empty_or_missing_slug_is_not_upkeep(self):
+        # Misclassifying unknown work as upkeep would quietly starve it.
+        self.assertFalse(self.db._is_self_maintenance({}))
+        self.assertFalse(self.db._is_self_maintenance({"slug": None}))
+        self.assertFalse(self.db._is_self_maintenance(None))
+
+    def test_the_quota_is_wired_into_claim_ordering(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "db.py")).read()
+        self.assertIn("ORCH_SELF_WORK_MAX_SHARE", src)
+        # It must filter BEFORE the sort, leaving the 24-key ordering untouched.
+        self.assertLess(src.index("ORCH_SELF_WORK_MAX_SHARE"),
+                        src.index("queued.sort(key=lambda t: (_pinned_rank(t),"))
+
+    def test_a_lane_is_never_idled_just_to_hold_a_ratio(self):
+        # If only upkeep is available, it must still be claimable — an idle machine helps no one.
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "db.py")).read()
+        self.assertIn("never idle a lane just to enforce a ratio", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

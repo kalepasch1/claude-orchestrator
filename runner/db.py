@@ -352,6 +352,19 @@ def _express_capacity():
         return 0
 
 
+SELF_MAINTENANCE_PREFIXES = (
+    "canary-", "smoke-", "cont-", "recover-missing-branch-", "recovery-", "remediate-",
+    "rework-", "relfix-", "qafix-", "copyfix-", "toolchain-repair-", "factory-",
+    "backlog-batch-", "batch-mech-", "salvage-", "stash-", "gate-", "preflight-", "gc-",
+    "dedup-",
+)
+
+
+def _is_self_maintenance(task):
+    """True when this task is the fleet working on its own plumbing rather than on a product."""
+    return str((task or {}).get("slug") or "").startswith(SELF_MAINTENANCE_PREFIXES)
+
+
 def _project_rank_name(name):
     """Return numeric priority for *name* (lower = higher priority, 13 = default/unknown)."""
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 13)
@@ -2158,6 +2171,38 @@ def claim_task(runner_id):
             return elapsed < cooldown_s
         except Exception:
             return False
+
+    # SELF-MAINTENANCE QUOTA (owner directive, 2026-08-15)
+    # -----------------------------------------------------
+    # Lifetime audit: 57.2% of every merge this system has ever made was self-maintenance —
+    # canaries, recovery, rework, relfix, qafix, copyfix, backlog-batch, toolchain repair, GC,
+    # dedup. Of the 42.8% that was product work, the largest single recipient was the
+    # orchestrator's own repo. Across the four apps the owner names as priorities:
+    # tomorrow 586, apparently 344, apparently-law 38, PMA/PMI 5.
+    #
+    # The cause is visible in the sort below: _portfolio_project_rank — the owner's own stated
+    # project order — is the ELEVENTH key, underneath recovery reserve, release-fix and blocker
+    # ranks. Every one of those classes is self-generated, so the machine's own upkeep
+    # systematically outranks the products it exists to build. It was busy, productive, and
+    # pointed at itself.
+    #
+    # Rather than reshuffle 24 carefully-ordered keys (several of which exist to unblock
+    # deploys, and reordering them blind would trade one starvation for another), cap the
+    # SHARE. When self-maintenance already holds its quota of the running lanes, it stops
+    # competing for the next claim and product work takes it. The ordering below is untouched.
+    #
+    # ORCH_SELF_WORK_MAX_SHARE=0 disables the cap; 1.0 restores the old behaviour.
+    try:
+        _self_share = float(os.environ.get("ORCH_SELF_WORK_MAX_SHARE", "0.35") or 0.35)
+    except (TypeError, ValueError):
+        _self_share = 0.35
+    if 0 < _self_share < 1.0 and queued:
+        _running_self = sum(1 for t in (running or []) if _is_self_maintenance(t))
+        _running_all = max(1, len(running or []))
+        if (_running_self / _running_all) >= _self_share:
+            _product = [t for t in queued if not _is_self_maintenance(t)]
+            if _product:                      # never idle a lane just to enforce a ratio
+                queued = _product
 
     queued.sort(key=lambda t: (_pinned_rank(t),                                 # pinned tasks claim first
                                _pin_rank_order(t),                               # among pinned, lower rank wins
