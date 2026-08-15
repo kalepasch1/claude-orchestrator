@@ -74,6 +74,49 @@ class MetricsServerTests(unittest.TestCase):
             with urllib.request.urlopen(self._url(server, "/metrics"), timeout=5) as r:
                 self.assertEqual(r.status, 200)
 
+    def test_metrics_body_reports_canary_last_success_value(self):
+        # The endpoint's contract: a scraper reads the canary_last_success gauge
+        # through GET /metrics. Assert the exposed line carries the value we set,
+        # not merely that some 200 body exists.
+        previous = canary.get_gauge("canary_last_success")
+        try:
+            canary.set_gauge("canary_last_success", 1234.5)
+            server = canary.start_metrics_server()
+            with urllib.request.urlopen(self._url(server, "/metrics"), timeout=5) as r:
+                body = r.read().decode()
+            self.assertIn("canary_last_success 1234.5", body)
+        finally:
+            canary.set_gauge("canary_last_success", previous)
+
+    def test_default_port_is_8000(self):
+        # Contract from the module docstring: with CANARY_METRICS_PORT unset the
+        # server binds 0.0.0.0:8000. Stub HTTPServer so the test never actually
+        # binds a fixed port (parallel runs, occupied ports).
+        os.environ.pop("CANARY_METRICS_PORT", None)
+        captured = {}
+
+        class _StubServer:
+            def __init__(self, addr, handler):
+                captured["addr"] = addr
+
+            def serve_forever(self):
+                pass
+
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        original = canary.HTTPServer
+        canary.HTTPServer = _StubServer
+        try:
+            server = canary.start_metrics_server()
+            self.assertIsNotNone(server)
+            self.assertEqual(captured["addr"], ("0.0.0.0", 8000))
+        finally:
+            canary.HTTPServer = original
+
     # --- Non-blocking startup ---
 
     def test_start_returns_immediately(self):
