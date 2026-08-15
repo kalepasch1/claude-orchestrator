@@ -275,6 +275,45 @@ class TestLaneRelease:
         used, _, _ = express_lane.express_lane_utilization()
         assert used == 0  # Stale entry pruned
 
+    def test_prune_removes_stale_assignments(self, monkeypatch):
+        """Assignments are pruned with their claims, not leaked forever."""
+        monkeypatch.setenv("ORCH_EXPRESS_LANE_ENABLED", "true")
+        express_lane.invalidate()
+        express_lane.set_total_lanes(40)
+
+        express_lane.assign_task_lane("task-old", "runner-1", use_express=True)
+        # Backdate both the claim and its assignment past the staleness bound
+        with express_lane._lock:
+            stale = time.time() - express_lane.stale_claim_seconds() - 10
+            express_lane._active_lanes["express"]["runner-1"][0]["claimed_at"] = stale
+            express_lane._lane_assignments["task-old"]["assigned_ts"] = stale
+
+        express_lane.active_express_lanes()  # triggers prune
+        assert express_lane.get_task_lane_assignment("task-old") is None
+        assert express_lane.stats()["tracked_assignments"] == 0
+
+    def test_fresh_assignments_survive_prune(self, monkeypatch):
+        """A live claim's assignment is untouched by pruning."""
+        monkeypatch.setenv("ORCH_EXPRESS_LANE_ENABLED", "true")
+        express_lane.invalidate()
+        express_lane.set_total_lanes(40)
+
+        express_lane.assign_task_lane("task-live", "runner-1", use_express=True)
+        express_lane.active_express_lanes()  # triggers prune
+        assert express_lane.get_task_lane_assignment("task-live") is not None
+        assert express_lane.stats()["tracked_assignments"] == 1
+
+    def test_stale_window_is_fleet_pushable(self, monkeypatch):
+        """ORCH_EXPRESS_LANE_STALE_SECS overrides the 1800s default; bad values fail soft."""
+        monkeypatch.setenv("ORCH_EXPRESS_LANE_STALE_SECS", "60")
+        assert express_lane.stale_claim_seconds() == 60
+        monkeypatch.setenv("ORCH_EXPRESS_LANE_STALE_SECS", "0")
+        assert express_lane.stale_claim_seconds() == 1  # clamped, never wedges pruning
+        monkeypatch.setenv("ORCH_EXPRESS_LANE_STALE_SECS", "not-a-number")
+        assert express_lane.stale_claim_seconds() == 1800
+        monkeypatch.delenv("ORCH_EXPRESS_LANE_STALE_SECS", raising=False)
+        assert express_lane.stale_claim_seconds() == 1800
+
 
 class TestStats:
     """Test statistics reporting."""
