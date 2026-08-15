@@ -45,6 +45,7 @@ import pipeline_contract
 import autoclear as _autoclear   # FIX 2026-07-29: _autoclear.load_rules() was called with no
                                  # import -> the operator-card path of the drop-box crashed with
                                  # NameError whenever a freeform prompt carried operator items.
+import error_handling_utils
 try:
     import branch_bootstrap_injection as _branch_bootstrap
 except Exception:                # fail-soft: intake must keep queueing even if the
@@ -183,8 +184,18 @@ def _existing_live_slugs(slugs):
 
 
 def ingest_file(path, projects_by_name, existing=None):
-    with open(path, encoding="utf-8", errors="replace") as src:
-        text = src.read()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as src:
+            text = src.read()
+    except PermissionError as exc:
+        # Fail-soft: one unreadable drop-box file must not stop the whole sweep,
+        # and the watcher runs as a daemon so raising here loses every later file.
+        wrapped = error_handling_utils.wrap_error(
+            exc, context=f"ingest_file reading {path}")
+        sys.stderr.write(
+            f"[intake] permission denied reading {path}; fail-soft, skipping "
+            f"({wrapped})\n")
+        return 0, 0
     tasks, operator = parse(text)
     # Only block re-ingestion for tasks in live/completed states. Tasks in failure states
     # (QUARANTINED, DECOMPOSED, SHELVED, BLOCKED, CONFLICT, TESTFAIL, WAITING) allow
@@ -479,6 +490,10 @@ def ingest_dropbox_prompts(projects_by_name):
     for f in sorted(files):
         try:
             text = open(f, encoding="utf-8", errors="replace").read()
+        except PermissionError as e:
+            se = error_handling_utils.wrap_error(e, context=f"dropbox read {f}")
+            sys.stderr.write(f"[intake] permission denied reading {f}; fail-soft, skipping\n")
+            continue
         except Exception as e:
             print(f"intake: dropbox read failed on {f}: {e}"); continue
         if is_canonical(text):
@@ -489,6 +504,10 @@ def ingest_dropbox_prompts(projects_by_name):
         claimed_path = os.path.join(PROCESSED, f"{stamp}-dropbox-{os.path.basename(f)}")
         try:
             shutil.move(f, claimed_path)
+        except PermissionError as e:
+            se = error_handling_utils.wrap_error(e, context=f"dropbox claim {f}")
+            sys.stderr.write(f"[intake] permission denied moving {f} to {claimed_path}; fail-soft, skipping\n")
+            continue
         except Exception as e:
             print(f"intake: dropbox claim failed on {f}: {e}"); continue
 
@@ -565,6 +584,9 @@ def run():
             shutil.move(f, os.path.join(PROCESSED, f"{stamp}-{os.path.basename(f)}"))
             print(f"intake: {os.path.basename(f)} -> {c} queued, {s} skipped")
             total += c
+        except PermissionError as e:
+            se = error_handling_utils.wrap_error(e, context=f"intake move {f}")
+            sys.stderr.write(f"[intake] permission denied processing {f}; fail-soft, skipping\n")
         except Exception as e:
             print(f"intake: failed on {f}: {e}")  # leave the file in place to retry
     return total + dropbox_total

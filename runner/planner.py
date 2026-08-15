@@ -21,6 +21,7 @@ import claude_cli
 import tdd_gate
 import tests_first_gate
 import design_sources
+import error_handling_utils
 
 PLAN_MODEL = os.environ.get("PLAN_MODEL", "claude-opus-4-8")
 
@@ -245,6 +246,14 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
                     lesson = txt[txt.index(marker):][:3000]
                     spec += (f"\n\n# What has merged cleanly here before (bias the plan toward these "
                              f"patterns to maximize first-pass merge rate):\n{lesson}\n\n")
+            except PermissionError as exc:
+                # Named before the bare `except Exception: pass` below so an
+                # unreadable CLAUDE.md is reported rather than silently dropped.
+                wrapped = error_handling_utils.wrap_error(
+                    exc, context=f"reading {cmd_path}")
+                sys.stderr.write(
+                    f"[planner] CLAUDE.md access denied ({wrapped}); "
+                    f"fail-soft, continuing\n")
             except Exception:
                 pass
     # ADAPTIVE WORKFLOW ROUTING (2026-07-28): pick the execution profile for this objective so the

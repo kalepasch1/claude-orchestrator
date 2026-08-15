@@ -703,7 +703,10 @@ class TestBacklogBatchProcessor:
 
         # The lock should exist
         assert hasattr(proc, '_lock')
-        assert isinstance(proc._lock, threading.Lock)
+        # threading.Lock is a factory function, not a class, so it cannot be the
+        # second argument to isinstance() -- that raises TypeError rather than
+        # failing the assertion. Compare against the type of a real lock.
+        assert isinstance(proc._lock, type(threading.Lock()))
 
     def test_model_routing_configuration(self):
         """Models are routed according to task class."""
