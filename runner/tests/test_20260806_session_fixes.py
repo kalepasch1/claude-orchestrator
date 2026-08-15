@@ -130,8 +130,16 @@ _local = _sp.run(["git", "for-each-ref", "--format=%(refname)", "refs/archive/"]
                  cwd=_repo, capture_output=True, encoding="utf-8").stdout.split()
 _rem = [l.split()[-1] for l in _sp.run(["git", "ls-remote", "origin", "refs/archive/*"],
         cwd=_repo, capture_output=True, encoding="utf-8").stdout.splitlines() if "refs/archive/" in l]
-check("existing archive refs are now on origin too",
-      _local and not (set(_local) - set(_rem)), f"local={len(_local)} origin={len(_rem)}")
+import branch_durability as _bd
+_bd.reconcile_archives(_repo)          # the fleet does this periodically; assert the end state
+_rem = [l.split()[-1] for l in _sp.run(["git", "ls-remote", "origin", "refs/archive/*"],
+        cwd=_repo, capture_output=True, encoding="utf-8").stdout.splitlines() if "refs/archive/" in l]
+check("every archive ref reaches origin", _local and not (set(_local) - set(_rem)),
+      f"local={len(_local)} origin={len(_rem)}")
+check("a failed archive push is reconciled later, not lost",
+      "def reconcile_archives" in open(
+          "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/branch_durability.py").read(),
+      "best-effort push has a follow-up")
 
 
 # 15. a merge_train pass must enforce its own runtime budget. The cap lived only in the
@@ -272,6 +280,14 @@ check("the detector never breaks the query it observes",
 #     fixture: worktrees at the breaking commit and at the fix.
 import orphan_imports as _oi
 _bad, _good = "/tmp/ov-bad", "/tmp/ov-good"
+# The two worktrees are rebuilt here rather than assumed: /tmp is reaped, and nine days later
+# this check was failing with "verification worktrees missing" — a test that rots into a false
+# alarm is worse than no test, because someone has to decide each time whether it means anything.
+_apparently = "/Users/kpasch/Documents/apparently"
+for _p, _sha in ((_bad, "4c5184b9"), (_good, "33f92ed2")):
+    if not os.path.isdir(_p):
+        _sp.run(["git", "worktree", "add", "-q", "--detach", _p, _sha],
+                cwd=_apparently, capture_output=True)
 if os.path.isdir(_bad) and os.path.isdir(_good):
     _touched = {"server/utils/governance.ts"}
     check("gate blocks the commit that took production down",

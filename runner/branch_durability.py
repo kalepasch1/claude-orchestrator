@@ -137,6 +137,52 @@ def archive_branch(repo, branch, reason=""):
     return tip
 
 
+def reconcile_archives(repo, limit=500):
+    """Push any archive ref that exists locally but not on origin. Returns how many landed.
+
+    archive_branch() pushes each ref as it makes it, but that push is best-effort by design —
+    archiving happens on the deletion path and must not fail because the network hiccuped. It
+    logs "[local-only]" and moves on, and nothing ever revisited it.
+
+    Measured 2026-08-15: 611 archive refs on this disk, 392 on origin. 219 branches whose only
+    surviving copy was one machine, each of them logged at the time as archived. A guarantee
+    that degrades silently on a transient error is not a guarantee, so something has to come
+    back and finish the job.
+
+    Cheap and idempotent: two ref listings and one push of whatever is missing.
+    """
+    if os.environ.get("ORCH_SHARE_ARCHIVE_REFS", "true").lower() not in ("1", "true", "yes", "on"):
+        return 0
+    try:
+        rc, out, _ = _git(repo, "for-each-ref", "--format=%(refname)", ARCHIVE_NS + "/")
+        if rc != 0:
+            return 0
+        local = [r.strip() for r in (out or "").splitlines() if r.strip()]
+        rc, out, _ = _git(repo, "ls-remote", "origin", ARCHIVE_NS + "/*")
+        if rc != 0:
+            return 0
+        remote = {l.split()[-1] for l in (out or "").splitlines() if ARCHIVE_NS in l}
+        missing = [r for r in local if r not in remote][:max(1, int(limit))]
+        if not missing:
+            return 0
+        pushed = 0
+        for i in range(0, len(missing), 100):        # bounded refspec lists
+            chunk = missing[i:i + 100]
+            rc, _, err = _git(repo, "push", "origin", *[f"{r}:{r}" for r in chunk], timeout=300)
+            if rc == 0:
+                pushed += len(chunk)
+            else:
+                print(f"[branch-durability] archive reconcile: {len(chunk)} ref(s) still "
+                      f"local-only ({str(err)[-160:]})")
+        if pushed:
+            print(f"[branch-durability] archive reconcile: pushed {pushed} ref(s) that had been "
+                  f"archived locally but never reached origin")
+        return pushed
+    except Exception as exc:
+        print(f"[branch-durability] archive reconcile failed ({exc})")
+        return 0
+
+
 def try_share(repo, branch):
     """Best-effort push of *branch* to origin so it stops being local-only."""
     if os.environ.get("ORCH_SHARE_AGENT_BRANCHES", "true").lower() not in (
