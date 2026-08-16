@@ -39,6 +39,8 @@ const PREFIX = argOf('prefix', 'refs/orch-rescue/');
 const OUT = argOf('out', 'docs/recovery-ledger.json');
 const FINGERPRINT = argOf('fingerprint', '');
 const LIMIT = Number(argOf('limit', '0')) || 0;
+/** Hard ceiling on a single `git apply --check`. See the call site for why. */
+const APPLY_CHECK_TIMEOUT_MS = Number(argOf('apply-timeout-ms', '20000')) || 20000;
 
 // Fail-soft git: never throw on a bad ref, return '' instead. The evidence set
 // is untrusted local history and half of it predates the current schema.
@@ -172,7 +174,20 @@ function classify(item, baseSha) {
     const patch = git(['diff', `${mergeBase}..${sha}`, '--', ...files]);
     if (!patch) return false;
     try {
-      execFileSync('git', ['apply', '--check', '--3way', '-'], { input: patch, stdio: ['pipe', 'ignore', 'ignore'] });
+      // Plain `--check`, deliberately not `--3way`. A 3-way check writes blobs
+      // into the object database, so it blocks on `.git/objects/maintenance.lock`
+      // whenever a background `git maintenance` is holding it — observed hanging
+      // for 37 minutes at ~0% CPU, wedging an entire sweep on one ref. `--check`
+      // is a pure dry run and touches no locks.
+      //
+      // The timeout is the belt to that suspenders: this classifier runs
+      // unattended over hundreds of refs, and one pathological patch must
+      // degrade to CONFLICTED_NEEDS_FOCUSED_TASK, never stall the run.
+      execFileSync('git', ['apply', '--check', '-'], {
+        input: patch,
+        stdio: ['pipe', 'ignore', 'ignore'],
+        timeout: APPLY_CHECK_TIMEOUT_MS,
+      });
       return true;
     } catch {
       return false;
