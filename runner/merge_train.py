@@ -50,6 +50,7 @@ import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization
 import concurrent.futures   # FIX 2026-07-28: used by the multi-project ThreadPoolExecutor path, never imported
 import repo_hygiene         # FIX 2026-07-28: used pre-test-run (stray .js cleanup), never imported (fail-soft masked it)
 import semantic_merge       # FIX 2026-07-28: used by the auto-merge path, never imported
+import stderr_digest   # keep the CAUSE in truncated stderr, not just the tail
 try:
     import pipeline_metrics as _pm
 except Exception:
@@ -61,6 +62,57 @@ MARK = "train"                                   # decided_by prefix => handled 
 # make legacy policy cards look like active integrations.
 SKIP_PREFIXES = ("merge-handler", "train", "auto-policy")
 MERGE_KINDS = ("verify", "material", "integrate")
+
+# --- terminal outcomes -------------------------------------------------------------
+# A terminal stamp used to write decided_by and leave status='approved'. That single
+# omission was this fleet's largest defect. _pick_cards() skips decided_by=train:* so the
+# train never re-picked the card -- but _find_existing_card() skips train:* too, so the next
+# producer could not see it either and filed a DUPLICATE. The card meanwhile stayed
+# 'approved' and counted against the backlog forever.
+#
+# Measured 2026-08-16 before the fix: 37,012 approved integrate cards over 4,474 distinct
+# slugs, 100% train-authored. train:dup-card alone held 18,518 cards across 221 slugs --
+# 83.8 copies of the same slug, one slug at 144. Because PostgREST silently caps every read
+# at 1,000 rows, real work sat outside the scan window entirely and the train starved.
+#
+# Retiring the card at stamp time closes the loop: it leaves the approved pool (so the
+# backlog and the scan window stay honest) and _find_existing_card's cooldown below stops
+# the producer re-filing it seconds later.
+TERMINAL_STATUS = os.environ.get("ORCH_CARD_TERMINAL_STATUS", "superseded").strip() or "superseded"
+#: How long a terminally-handled slug stays "already covered" for producers. Prevents the
+#: file -> handle -> re-file loop while still allowing a genuinely new attempt later.
+CARD_REFILE_COOLDOWN_S = int(os.environ.get("ORCH_CARD_REFILE_COOLDOWN_S", "3600") or 3600)
+
+
+def _retire_card(card_id, outcome, extra=None):
+    """Stamp a terminal train outcome AND take the card out of the approved pool.
+
+    Every terminal path must go through here. Writing decided_by alone leaves a card that
+    is invisible to the train but still 'approved' -- the exact shape that produced 37,012
+    cards for 4,474 slugs. Fail-soft: a stamping error must never stall the train.
+    """
+    if not card_id:
+        return False
+    patch = {"decided_by": f"{MARK}:{outcome}", "status": TERMINAL_STATUS}
+    try:
+        patch["decided_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    except Exception:
+        pass
+    if extra:
+        patch.update(extra)
+    try:
+        db.update("approvals", {"id": card_id}, patch)
+        return True
+    except Exception:
+        # Retirement is best-effort, but a card left approved will be re-picked and
+        # re-stamped next cycle, so the loop is self-healing rather than silent.
+        try:
+            db.update("approvals", {"id": card_id}, {"decided_by": f"{MARK}:{outcome}"})
+        except Exception:
+            pass
+        return False
+
+
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 
 def _test_timeout():
@@ -217,7 +269,7 @@ def _freeze_integration_identity(repo, branch, task, slug):
     import task_refs
     rebased_result = _git(repo, "rev-parse", branch)
     if rebased_result.returncode:
-        raise RuntimeError(rebased_result.stderr[-160:] or "rebased commit missing")
+        raise RuntimeError(stderr_digest.digest(rebased_result.stderr) or "rebased commit missing")
     rebased = rebased_result.stdout.strip()
     identity = task_refs.publish(repo, task.get("id") or slug,
                                  task.get("attempt") or 1, rebased,
@@ -473,7 +525,7 @@ def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, 
         except Exception:
             pass
     try:
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSFAIL"})
+        _retire_card(card["id"], "REGRESSFAIL")
     except Exception:
         pass
     _attribute_train_outcome(slug, task, "regressfail", integrated=False)
@@ -940,7 +992,7 @@ def _quarantine_build_failure(repo, card, slug, task, pname, branch, base, detai
         except Exception:
             pass
     try:
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:BUILDFAIL"})
+        _retire_card(card["id"], "BUILDFAIL")
     except Exception:
         pass
     _attribute_train_outcome(slug, task, "buildfail", integrated=False)
@@ -1455,8 +1507,7 @@ def _select_batch(group):
         keep = newest_by_slug.get(slug)
         if keep is not None and card.get("id") != keep[0].get("id"):
             try:
-                db.update("approvals", {"id": card["id"]},
-                          {"decided_by": f"{MARK}:dup-card", "status": "approved"})
+                _retire_card(card["id"], "dup-card")
             except Exception:
                 pass
     annotated = [(card, slug, task, _risk_level(card, task))
@@ -1542,6 +1593,46 @@ def _find_existing_card(slug):
     return None
 
 
+#: Outcomes after which re-filing a card for the same slug is pure duplication. Retryable
+#: failures (TESTFAIL/BUILDFAIL/conflict-exhausted/redo/REGRESSFAIL) are deliberately absent:
+#: new work legitimately produces a new card, and now that the old one is retired at stamp
+#: time it no longer accumulates in the approved pool.
+FINAL_OUTCOMES = ("MERGED", "ALREADY_INTEGRATED", "dup-card", "no-task", "no-slug",
+                  "no-repo", "branch-missing")
+
+
+def _recently_finalised(slug):
+    """The card for `slug` the train FINALLY handled inside the cooldown, or None.
+
+    Producers re-run on a schedule and call ensure_integration_card every cycle. Before
+    retirement existed, a slug the train had just finished with was re-filed minutes later,
+    handled, re-filed... which is how one slug reached 144 approved cards. Retirement alone
+    does not stop that -- the retired card is no longer visible to _find_existing_card
+    either -- so the producer still needs to be told "this is already done".
+    """
+    if not slug or CARD_REFILE_COOLDOWN_S <= 0:
+        return None
+    try:
+        cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(seconds=CARD_REFILE_COOLDOWN_S)).isoformat()
+        rows = db.select("approvals", {
+            "select": "id,slug,decided_by,decided_at",
+            "kind": f"in.({','.join(MERGE_KINDS)})",
+            "slug": f"eq.{slug}",
+            "decided_by": f"like.{MARK}:*",
+            "decided_at": f"gte.{cutoff}",
+            "order": "decided_at.desc",
+            "limit": "1",
+        }) or []
+    except Exception:
+        return None            # never block card creation on a lookup failure
+    for row in rows:
+        outcome = str(row.get("decided_by") or "").split(":", 1)[-1]
+        if outcome in FINAL_OUTCOMES:
+            return row
+    return None
+
+
 def ensure_integration_card_result(project, slug, *, kind="integrate", title=None, why=None,
                                    detail=None, status="approved",
                                    decided_by="canonical-train"):
@@ -1573,6 +1664,11 @@ def ensure_integration_card_result(project, slug, *, kind="integrate", title=Non
                 db.update("approvals", {"id": existing["id"]}, patch)
             except Exception:
                 pass  # the card exists and is live; a failed status nudge is not a strand
+        return CARD_EXISTED
+    # No live card -- but the train may have FINALLY handled this slug moments ago. Filing
+    # again here is what produced 83.8 copies of a single slug. Retryable failures fall
+    # through deliberately (see FINAL_OUTCOMES).
+    if _recently_finalised(slug) is not None:
         return CARD_EXISTED
     row = {"project": project, "kind": kind, "slug": slug, "title": title,
            "status": status, "why": why or "passed tests; queued for canonical merge train",
@@ -1680,17 +1776,35 @@ def _pick_cards():
     _k, _v = unhandled.split("=", 1)
     scans = ({**base, _k: _v}, base)  # narrowed first; unfiltered only as a fallback
 
+    # PAGE, do not widen. PostgREST caps a single response at 1,000 rows however large
+    # `limit` is, so MERGE_TRAIN_SCAN_LIMIT=3000 bought nothing and only hid the truncation.
+    # The dual-order asc+desc scan below was a workaround: it made both ENDS of the backlog
+    # visible while leaving the middle invisible. select_all() pages to exhaustion, so the
+    # window is the whole filtered set. Kept behind a try: a server that will not page must
+    # fall back to the old behaviour rather than take the train down.
+    try:
+        scan_cap = int(str(limit).strip().strip('"'))
+    except (TypeError, ValueError):
+        scan_cap = 3000
+
     cards, seen = [], set()
     for params in scans:
         try:
-            got = []
-            for order in ("created_at.asc", "created_at.desc"):
-                got.extend(db.select("approvals", {**params, "order": order}) or [])
-        except Exception as e:
-            # A server that will not accept the predicate must not take the train down with it.
-            print(f"merge_train: unhandled-card filter unavailable ({e}); "
-                  f"falling back to the unfiltered scan window", flush=True)
-            continue
+            paged = dict(params)
+            paged.pop("limit", None)
+            got = db.select_all("approvals", paged,
+                                order="created_at.asc", max_rows=scan_cap)
+        except Exception:
+            got = None
+        if got is None:
+            try:
+                got = []
+                for order in ("created_at.asc", "created_at.desc"):
+                    got.extend(db.select("approvals", {**params, "order": order}) or [])
+            except Exception as e:
+                print(f"merge_train: unhandled-card filter unavailable ({e}); "
+                      f"falling back to the unfiltered scan window", flush=True)
+                continue
         for c in got:
             cid = c.get("id")
             if cid in seen:
@@ -1764,7 +1878,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     branch = f"agent/{slug}"
 
     if not repo or not os.path.isdir(repo):
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:no-repo"})
+        _retire_card(card["id"], "no-repo")
         _log(pname, slug, "SKIP", "repo missing")
         return "no-repo"
 
@@ -1804,7 +1918,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         # Terminal for THIS card: mark it handled so it stops re-entering every pick cycle
         # (a completed recovery task files a fresh card). Unmarked missing-branch cards were
         # re-selected on every run and starved cards whose branches exist.
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:branch-missing"})
+        _retire_card(card["id"], "branch-missing")
         _log(pname, slug, "BLOCKED", "branch missing")
         return "branch-missing"
 
@@ -1815,8 +1929,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _task_patch(task, {"state": "MERGED",
                            "artifact_commit": integrated_sha,
                            "note": f"train: already integrated in {base} @ {integrated_sha[:12]}"})
-        db.update("approvals", {"id": card["id"]},
-                  {"decided_by": f"{MARK}:ALREADY_INTEGRATED"})
+        _retire_card(card["id"], "ALREADY_INTEGRATED")
         _attribute_merge_outcome(slug, task)
         _attribute_train_outcome(slug, task, "already-integrated", integrated=True)
         approval_merge._free_branch(repo, branch)
@@ -1841,12 +1954,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                            f"code, run tests, and commit.{files_hint}"))
             patch["transient_retries"] = tr + 1
             _task_patch(task, patch)
-            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
+            _retire_card(card["id"], "redo")
             _log(pname, slug, "REDO", f"rebase conflict{files_hint}, rebuild on fresh {base} ({tr+1}/{cap})")
             return "redo"
         _task_patch(task, {"state": "CONFLICT",
                            "note": f"train: still conflicts after {cap} redos - needs manual rebase.{files_hint}"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+        _retire_card(card["id"], "conflict-exhausted")
         _attribute_train_outcome(slug, task, "conflict", integrated=False)
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted{files_hint}")
         return "conflict"
@@ -1857,7 +1970,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     if not reg_ok:
         _task_patch(task, {"state": "BLOCKED",
                            "note": ("train: REGRESSION-RISK — clean rebase deletes recently-merged improvements: " + reg_detail)[:480]})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSION-RISK"})
+        _retire_card(card["id"], "REGRESSION-RISK")
         _log(pname, slug, "BLOCKED", f"regression-risk: {reg_detail[:120]}")
         try:
             import json as _json, time as _time
@@ -1933,7 +2046,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                 pass
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:TESTFAIL"})
+        _retire_card(card["id"], "TESTFAIL")
         _attribute_train_outcome(slug, task, "testfail", integrated=False)
         _log(pname, slug, "TESTFAIL", tail[:120])
         return "testfail"
@@ -1969,11 +2082,11 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                 directive=f"Rebuild the same task on fresh {base}, preserve the intended diff, run tests, and commit.")
             patch["transient_retries"] = tr + 1
             _task_patch(task, patch)
-            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
+            _retire_card(card["id"], "redo")
             _log(pname, slug, "REDO", f"ff refused ({tr+1}/{cap})")
             return "redo"
         _task_patch(task, {"state": "CONFLICT", "note": f"train: base won't fast-forward after {cap} redos"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+        _retire_card(card["id"], "conflict-exhausted")
         _attribute_train_outcome(slug, task, "ff-conflict", integrated=False)
         _log(pname, slug, "CONFLICT", "ff refused, cap exhausted")
         return "conflict"
@@ -2007,7 +2120,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     _task_patch(task, {"state": "MERGED",
                        "artifact_commit": current_candidate_sha,
                        "note": f"train: MERGED into {base} @ {str(current_candidate_sha)[:12]}"})
-    db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
+    _retire_card(card["id"], "MERGED")
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
     if _pm:
@@ -2098,10 +2211,10 @@ def _train_run_unleased():
     for c in cards:
         slug, t = _resolve_task(c, tasks_by_slug)
         if not slug:
-            db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-slug"})
+            _retire_card(c["id"], "no-slug")
             continue
         if not t:
-            db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-task"})
+            _retire_card(c["id"], "no-task")
             continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
 

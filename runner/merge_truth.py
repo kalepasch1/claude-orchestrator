@@ -60,6 +60,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
+import stderr_digest   # keep the CAUSE in truncated stderr, not just the tail
 
 # Verdicts
 OK = "ok"
@@ -107,7 +108,7 @@ def _fetch(repo, branch):
     except OSError as exc:
         return f"fetch origin {branch} failed: {exc}"
     if r.returncode:
-        return f"fetch origin {branch} failed: {(r.stderr or '').strip()[-160:]}"
+        return f"fetch origin {branch} failed: {stderr_digest.digest((r.stderr or '').strip())}"
     _fetched[key] = now
     return None
 
@@ -173,7 +174,7 @@ def verify_merge_reachable(repo, sha, target_branch, fetch=True):
     if anc.returncode == 1:
         return PHANTOM, f"commit {sha[:12]} is not an ancestor of {ref}"
     # Any other exit code is git failing to answer, not answering "no".
-    return INFRA_ERROR, f"merge-base exit {anc.returncode}: {(anc.stderr or '').strip()[-160:]}"
+    return INFRA_ERROR, f"merge-base exit {anc.returncode}: {stderr_digest.digest((anc.stderr or '').strip())}"
 
 
 def _project_row(project_id):

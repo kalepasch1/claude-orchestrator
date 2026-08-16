@@ -39,6 +39,7 @@ Set ORCH_BRANCH_ARCHIVE=0 to disable archiving (not recommended).
 import os
 import subprocess
 import time
+import stderr_digest   # keep the CAUSE in truncated stderr, not just the tail
 
 TIMEOUT = 30
 ARCHIVE = os.environ.get("ORCH_BRANCH_ARCHIVE", "true").lower() in ("1", "true", "yes", "on")
@@ -128,7 +129,7 @@ def archive_branch(repo, branch, reason=""):
             shared = rc_p == 0
             if not shared:
                 print(f"[branch-durability] WARNING archive {ref} is LOCAL-ONLY "
-                      f"(push failed: {str(err_p)[-160:]})")
+                      f"(push failed: {stderr_digest.digest(str(err_p))})")
         except Exception as e:
             print(f"[branch-durability] WARNING archive {ref} is LOCAL-ONLY (push error: {e})")
     print(f"[branch-durability] archived {branch} -> {ref} @ {tip[:12]}"
@@ -173,7 +174,7 @@ def reconcile_archives(repo, limit=500):
                 pushed += len(chunk)
             else:
                 print(f"[branch-durability] archive reconcile: {len(chunk)} ref(s) still "
-                      f"local-only ({str(err)[-160:]})")
+                      f"local-only ({stderr_digest.digest(str(err))})")
         if pushed:
             print(f"[branch-durability] archive reconcile: pushed {pushed} ref(s) that had been "
                   f"archived locally but never reached origin")
