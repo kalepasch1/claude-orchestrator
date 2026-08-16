@@ -158,6 +158,7 @@ import agentic_repair
 import cowork_dispatch
 import worktree_isolation
 import common_utils
+import stderr_digest   # keep the CAUSE in truncated stderr, not just the tail
 try:
     import warm_pool
 except ImportError:
@@ -473,7 +474,7 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             if bcmd:
                 ok, blog = build_gate.run_build(repo, branch, bcmd)
                 if not ok:
-                    print(f"[integrate] build RED for {branch} -> not merging: {blog[-160:]}")
+                    print(f"[integrate] build RED for {branch} -> not merging: {stderr_digest.digest(blog)}")
                     try:
                         import build_fixer
                         build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
@@ -739,7 +740,7 @@ def _durable_share_branch(wt, slug, env=None, attempts=3):
                 except Exception:
                     pass
                 return True
-            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: {err[-160:]}")
+            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: {stderr_digest.digest(err)}")
         except Exception as e:
             print(f"[branch-durability] push {branch} attempt {attempt+1} error: {e}")
         time.sleep(2 * (attempt + 1))
@@ -2465,7 +2466,7 @@ def run_task(t):
                         if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
                             _shared = True
                             break
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {(_pr.stderr or '')[-160:]}")
+                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {stderr_digest.digest((_pr.stderr or ''))}")
                     except Exception as _pe:
                         print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
                     time.sleep(2 * (_attempt + 1))

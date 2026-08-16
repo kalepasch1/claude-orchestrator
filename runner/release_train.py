@@ -29,6 +29,7 @@ import shadow_mode
 import integration_runtime
 import paused_host_guard
 import release_manifest
+import stderr_digest   # keep the CAUSE in truncated stderr, not just the tail
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -863,7 +864,7 @@ def _withdraw_unreleased_merged(p, project, repo, prod, note):
             db.update("tasks", {"id": t["id"]},
                       {"state": "DONE",
                        "note": (f"MERGED withdrawn: {sha[:12]} is not on {remote} after a failed "
-                                f"release push — {(note or '')[-160:]}")})
+                                f"release push — {stderr_digest.digest((note or ''))}")})
             # The old integration card is stamped train:MERGED and therefore terminal.
             # Merely returning the task to DONE leaves it invisible until a bounded sweeper
             # happens to see it; in practice the middle of that window never did.  File a
@@ -922,7 +923,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             _self_heal_release_conflict(p, project, repo, prod, inote)
             _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
                                    f"prod integration conflicted before push — self-heal "
-                                   f"queued: {(inote or '')[-160:]}")
+                                   f"queued: {stderr_digest.digest((inote or ''))}")
             return False, to_sha, (inote or "prod integration conflict")
         if moved:
             # Gates were green on the pre-integration tip. Re-verify the tip we will ship.
@@ -935,7 +936,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                     _self_heal_qa(p, project, repo, STAGING, glog)
                 _insert_failed_release(project, gate, ahead, release_base_sha, integrated_sha,
                                        f"post-integration {gate} red — self-heal queued: "
-                                       f"{(glog or '')[-160:]}")
+                                       f"{stderr_digest.digest((glog or ''))}")
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
             if manifest and release_manifest is not None:
                 try:
@@ -989,7 +990,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             continue
         _self_heal_release_conflict(p, project, repo, prod, plog or "push staging to prod failed")
         _insert_failed_release(project, "push", ahead, release_base_sha, to_sha,
-                               f"push {STAGING}->{prod} failed: {(plog or '')[-160:]}")
+                               f"push {STAGING}->{prod} failed: {stderr_digest.digest((plog or ''))}")
         return False, to_sha, plog or "push staging to prod failed"
     return False, to_sha, "push attempts exhausted"
 
@@ -1324,7 +1325,7 @@ def _run_for_unlocked(project, repo_override=None):
                     qlog = "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1600:]
                     _self_heal_qa(p, project, repo, STAGING, qlog)
                     _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                           f"staging QA dependency prewarm failed — self-heal queued: {qlog[-160:]}")
+                                           f"staging QA dependency prewarm failed — self-heal queued: {stderr_digest.digest(qlog)}")
                     return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
             except Exception:
                 pass
@@ -1370,7 +1371,7 @@ def _run_for_unlocked(project, repo_override=None):
             ).strip()
             _self_heal_qa(p, project, repo, STAGING, qlog)
             _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                   f"staging QA failed (tests required) — self-heal queued: {qlog[-160:]}")
+                                   f"staging QA failed (tests required) — self-heal queued: {stderr_digest.digest(qlog)}")
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
         if manifest:
             release_manifest.record_gate(manifest["id"], "qa", True, command=qa_cmd,
@@ -1443,7 +1444,7 @@ def _run_for_unlocked(project, repo_override=None):
     if not refreshed:
         _self_heal_release_conflict(p, project, repo, prod, refresh_note)
         _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
-                               f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
+                               f"staging/prod refresh failed — self-heal queued: {stderr_digest.digest(refresh_note)}")
         return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
@@ -1491,7 +1492,7 @@ def _run_for_unlocked(project, repo_override=None):
     rel = _insert_release({"project": project, "version": ver, "from_sha": last_good,
                     "to_sha": to_sha, "n_changes": int(ahead), "changelog": changelog,
                     "deploy_status": ("building" if pushed else "failed") if push_on else "pending",
-                    "note": "" if (pushed or not push_on) else (push_log or "push failed")[-160:]})
+                    "note": "" if (pushed or not push_on) else stderr_digest.digest((push_log or "push failed"))})
     withdrawn = []
     if push_on and not pushed:
         # Nothing reached origin, so no task in this batch may keep claiming MERGED.
@@ -1501,7 +1502,7 @@ def _run_for_unlocked(project, repo_override=None):
                   f"commits never reached origin/{prod}")
         return {"project": project, "prod": prod, "released": 0, "pushed": False,
                 "merged_withdrawn": withdrawn,
-                "note": f"release push failed; relfix queued: {(push_log or '')[-160:]}"}
+                "note": f"release push failed; relfix queued: {stderr_digest.digest((push_log or ''))}"}
     print(f"release_train {project}: staged {merged}, released {ahead} changes to {prod} "
           f"(push={'on' if pushed else 'off/local'})")
     return {"project": project, "prod": prod, "released": ahead, "pushed": pushed}
