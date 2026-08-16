@@ -2455,24 +2455,78 @@ def run_task(t):
                 # Verify the ref actually landed on origin; if it never does, leave a durable marker
                 # so the branch is NOT eligible for local GC (governor now refuses to delete unshared).
                 _shared = False
-                for _attempt in range(3):
+                _ref = f"agent/{slug}"
+
+                # FETCH FIRST (2026-08-16). Measured: 710 branch-share pushes, 709 failed --
+                # 374 non-fast-forward and 333 refused by author_identity_guard. BOTH are the
+                # same missing fetch:
+                #   * non-ff: another writer already pushed this ref and this clone did not
+                #     know, so the push is rejected and retrying the IDENTICAL command twice
+                #     more cannot possibly succeed.
+                #   * the guard scopes itself with `<local> --not --remotes`, so with stale
+                #     remote-tracking refs it reads commits that are ALREADY on origin as newly
+                #     pushed. Verified on agent/qafix-darwn-07170636-...: 10 blocked-email
+                #     commits in branch history, ZERO of them new in the push -- all already
+                #     ancestors of origin/main. The guard was right to exist and wrong to fire.
+                try:
+                    subprocess.run(["git", "fetch", "--quiet", "origin", _ref],
+                                   cwd=repo, capture_output=True, text=True, timeout=120)
+                except Exception:
+                    pass   # offline is fine; the push below will report honestly
+
+                def _already_on_origin():
+                    """True when origin already contains this branch's tip. Never raises."""
                     try:
-                        _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
+                        head = subprocess.run(["git", "rev-parse", _ref], cwd=repo,
+                                              capture_output=True, text=True, timeout=30)
+                        if head.returncode != 0:
+                            return False
+                        anc = subprocess.run(
+                            ["git", "merge-base", "--is-ancestor",
+                             (head.stdout or "").strip(), f"origin/{_ref}"],
+                            cwd=repo, capture_output=True, text=True, timeout=30)
+                        return anc.returncode == 0
+                    except Exception:
+                        return False
+
+                if _already_on_origin():
+                    _shared = True          # nothing to do; the work is visible fleet-wide
+
+                for _attempt in range(3):
+                    if _shared:
+                        break
+                    try:
+                        _pr = subprocess.run(["git", "push", "-u", "origin", _ref],
                                              cwd=repo, capture_output=True, text=True, timeout=180)
                         if _pr.returncode == 0:
                             _shared = True
                             break
-                        # non-ff (branch already on origin ahead) counts as shared
                         if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
                             _shared = True
+                            break
+                        # A rejection means origin moved. Re-fetch and re-test rather than
+                        # replaying a command that is guaranteed to fail the same way.
+                        try:
+                            subprocess.run(["git", "fetch", "--quiet", "origin", _ref],
+                                           cwd=repo, capture_output=True, text=True, timeout=120)
+                        except Exception:
+                            pass
+                        if _already_on_origin():
+                            _shared = True   # someone else pushed our commits; genuinely shared
                             break
                         print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {stderr_digest.digest((_pr.stderr or ''))}")
                     except Exception as _pe:
                         print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
                     time.sleep(2 * (_attempt + 1))
+                if not _shared and _already_on_origin():
+                    _shared = True
                 if not _shared:
+                    # Deliberately NOT force-pushing. A diverged agent/<slug> means another
+                    # writer has work here; clobbering it to make this push succeed is exactly
+                    # the "overwrite to make it pass" failure this fleet must not have.
                     print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
-                          f"branch kept local (governor will not GC unshared branches)")
+                          f"branch kept local (governor will not GC unshared branches). "
+                          f"Not force-pushing: origin may hold another writer's work.")
 
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed", project=name)
             POOL.mark_ok(acct)
