@@ -72,8 +72,20 @@ class TestTestingPipelineSetup(unittest.TestCase):
         """unittest loader should discover tests in this directory."""
         loader = unittest.TestLoader()
         test_dir = os.path.dirname(__file__)
-        suite = loader.discover(test_dir, pattern="test_*.py")
-        count = suite.countTestCases()
+        # Discovery executes every test module body, and several install synthetic
+        # control-plane modules at import time (sys.modules["db"] = MockDB()) —
+        # conftest's collectstart restore can't see a mid-test import, so restore
+        # any replaced entries here or later test files run against the fakes.
+        before = dict(sys.modules)
+        try:
+            # top_level_dir=runner qualifies module names as tests.<mod>; without it,
+            # bare names collide with same-named test files that live in runner/ itself.
+            suite = loader.discover(test_dir, pattern="test_*.py", top_level_dir=RUNNER_DIR)
+            count = suite.countTestCases()
+        finally:
+            for name, mod in before.items():
+                if sys.modules.get(name) is not mod:
+                    sys.modules[name] = mod
         self.assertGreater(count, 0, "Test discovery found no tests")
 
     def test_runner_tests_dir_exists(self):

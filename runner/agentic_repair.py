@@ -48,8 +48,10 @@ _REPAIR_CODER_FALLBACK = "claude"
 MAX_PROMPT_CHARS = int(os.environ.get("ORCH_REPAIR_MAX_PROMPT_CHARS", "24000"))
 
 # Categories with a concrete technical signal a coder can act on directly.
-_TECHNICAL_CATEGORIES = frozenset(
-    ("buildfail", "testfail", "timeout", "conflict", "regressfail", "missing-branch"))
+TECHNICAL_CATEGORIES = frozenset(
+    ("buildfail", "testfail", "timeout", "conflict", "regressfail", "missing-branch",
+     "noop", "transient", "rework", "orphaned-running"))
+_TECHNICAL_CATEGORIES = TECHNICAL_CATEGORIES
 
 # Categories where the blocked mechanism must be REPLACED with a safe variant rather than
 # retried verbatim (legal posture, leaked/secret-shaped content, security findings).
@@ -57,8 +59,14 @@ _REPLACEMENT_CATEGORIES = frozenset(("legal", "secret", "security"))
 
 
 def is_technical(category):
-    """True when the repair category carries a concrete technical failure signal."""
-    return str(category or "").lower() in _TECHNICAL_CATEGORIES
+    """True when the repair category carries a concrete technical failure signal.
+
+    None means an unclassified repair — treated as technical by default, since the
+    replacement categories are always set explicitly by the paths that detect them.
+    """
+    if category is None:
+        return True
+    return str(category).lower() in TECHNICAL_CATEGORIES
 
 
 def replacement_required(category):
@@ -123,9 +131,13 @@ def original_prompt(task):
     Stripping at the first marker restores the original text exactly, so a repaired prompt always
     carries exactly one directive: the current one.
     """
-    text = str(task.get("prompt") or "")
+    text = str((task or {}).get("prompt") or "")
     cut = text.find("\n\n" + MARKER + "\n")
-    return (text[:cut] if cut != -1 else text).strip()[:MAX_PROMPT_CHARS]
+    out = (text[:cut] if cut != -1 else text).strip()[:MAX_PROMPT_CHARS]
+    if out:
+        return out
+    slug = str((task or {}).get("slug") or "")
+    return f"Complete the task '{slug}'." if slug else ""
 
 
 # Compat aliases for callers/tests that use the underscore-private name and the
@@ -138,13 +150,45 @@ def repair_prompt(task, failure, directive=None, category="rework"):
     return in_session_prompt(task, failure, category=category, directive=directive)
 
 
+def _agentic_artifacts_context(slug):
+    """Artifacts block for a prior run, recovered from the task_artifacts store.
+
+    Used when the task row itself carries no touched_files/commit_sha (narrow column
+    selections, orphaned runs). Returns "" when the store, the module, or the row is
+    unavailable — fail-soft so prompt building can never break on a missing store.
+    """
+    try:
+        import task_artifacts
+        art = task_artifacts.get_artifacts(slug) if slug else None
+    except Exception:
+        return ""
+    if not art:
+        return ""
+    return _artifacts_block(
+        art.get("touched_files"), art.get("commit_sha"), str(art.get("patch_diff") or ""))
+
+
+def _artifacts_block(touched, sha, diff):
+    return (
+        f"Agentic analysis artifacts from prior run:\n"
+        f"Touched files from prior run: {touched or 'unknown'}\n"
+        f"Prior commit SHA: {sha or 'unknown'}\n"
+        f"Prior patch diff (truncated):\n```diff\n{str(diff or '')[:2000]}\n```\n\n"
+    )
+
+
 def in_session_prompt(task, failure, category="rework", directive=None):
     directive = directive or _DEFAULT_DIRECTIVE
     base = original_prompt(task) or f"Complete the task '{task.get('slug')}'."
-    touched = task.get("touched_files") or "unknown"
-    sha = task.get("commit_sha") or "unknown"
     log = str(task.get("log_tail") or task.get("note") or failure or "")[:1000]
-    diff = str(failure or "")[:2000]
+    # Prior-run artifacts: prefer what the caller's row already carries, fall back to the
+    # artifacts store, and omit the section entirely when neither has anything — a directive
+    # pointing at "unknown" prior work reads as work that never existed (the never-ran loop).
+    if task.get("touched_files") or task.get("commit_sha"):
+        artifacts = _artifacts_block(
+            task.get("touched_files"), task.get("commit_sha"), str(failure or ""))
+    else:
+        artifacts = _agentic_artifacts_context(str(task.get("slug") or ""))
     repair = (
         f"\n\n{MARKER}\n"
         f"Repair category: {category}\n"
@@ -159,10 +203,7 @@ def in_session_prompt(task, failure, category="rework", directive=None):
         f"- If tests/build fail, fix source/config/tests until the relevant checks are green.\n"
         f"- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.\n"
         f"- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.\n\n"
-        f"Agentic analysis artifacts from prior run:\n"
-        f"Touched files from prior run: {touched}\n"
-        f"Prior commit SHA: {sha}\n"
-        f"Prior patch diff (truncated):\n```diff\n{diff}\n```\n\n"
+        f"{artifacts}"
         f"Failure context:\n```\n{log}\n```\n\n"
         f"bugfix"
     )
