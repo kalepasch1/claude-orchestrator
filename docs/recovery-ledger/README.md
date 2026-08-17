@@ -1,7 +1,10 @@
 # Recovery ledger — ChatGPT/Codex local build evidence (beethoven)
 
-One JSON ledger per audit fingerprint, produced by `scripts/reconcile-evidence.mjs`:
-`6e398b6bdfef.json`, `d64eac25eb52.json`, `286879fa5fe4.json`, `44d6bb63e4fc.json`.
+One JSON ledger per audit fingerprint, produced by `scripts/reconcile-evidence.mjs`.
+
+Current ledgers: `0481d68df58a`, `0df18d9279e9`, `170f33cf2458`, `286879fa5fe4`,
+`44d6bb63e4fc`, `696153ef8f37`, `6e398b6bdfef`, `968c9d3ff963`, `9ac0b820e01f`,
+`d64eac25eb52`, **`3b50d1e569de`**.
 
 ## What was done
 
@@ -9,37 +12,52 @@ The task carried a snapshot of local evidence. Rather than classify a snapshot, 
 tool **enumerates the live source** — as the brief requires — and classifies every
 item it actually finds.
 
-**1099–1104 items** classified against `origin/master`, **zero UNKNOWN and zero
-CONFLICTED in every ledger**. The count drifts by a few between runs because the
-repository genuinely changed in the minutes between them — which is the same fact
-the fingerprints report, visible a second way.
-
-Representative counts (`6e398b6bdfef`):
+`3b50d1e569de`: **1554 items** classified against `origin/master` @ `d3a6b47a`,
+**zero UNKNOWN and zero CONFLICTED**.
 
 | classification | count |
 |---|---|
-| ALREADY_PRESENT | 596 |
-| RECOVERABLE_VALUE | 447 |
-| ACTIVE_IN_ANOTHER_TASK | 56 |
-| SUPERSEDED_BY_NEWER | 0 |
+| ALREADY_PRESENT | 878 |
+| RECOVERABLE_VALUE | 675 |
+| SUPERSEDED_BY_NEWER | 1 |
+| ACTIVE_IN_ANOTHER_TASK | 0 |
 | CONFLICTED_NEEDS_FOCUSED_TASK | 0 |
 
-Sources enumerated: 251 local branches, 5145 rescue/archive/orch-rescue/codex refs,
-the stash, and every registered worktree.
+Sources enumerated: local branches, `refs/orch-rescue/*`, `refs/archive/*`,
+`refs/quarantine/*`, `refs/codex/*`, the stash, and every registered worktree.
 
-## Reused, not reforked
+## The snapshot's one item: a worktree whose git metadata is gone
 
-The classifier is the same `scripts/reconcile-evidence.mjs` written for the
-`tomorrow` reconcile tasks, **generalised rather than copied**. It previously
-hard-coded `origin/main`; beethoven's default is `master`, and guessing wrong there
-would have classified every ref against a branch that does not exist and reported
-the entire repository as recoverable — a confidently useless answer. It now resolves
-the default branch from `--default-branch`, else the `origin/HEAD` symref, else the
-two conventional names, and **refuses to run** if none resolves.
+`/Users/kpasch/Documents/Codex/2026-08-07/cons/work/orchestrator-session-fabric`, dated
+2026-08-11. Its `.git` file points at
+`claude-orchestrator/.git/worktrees/orchestrator-session-fabric`, which no longer
+exists, so `git status` fails and no ref-based classifier can reach it. It had to be
+classified by **content**, file by file, against current `master`.
 
-That change belongs in the shared tool. Forking a beethoven-specific copy would have
-left two classifiers to keep in step, which is the duplication the coordination rule
-exists to prevent.
+Result over its 3440 files (excluding `.git`, `node_modules`, `.runtime`):
+
+- **3106 identical** to current `master`
+- **180 differ** — every one an *older* revision of a file `master` has since moved
+  past; `master` is 860+ commits ahead of the date on this tree
+- **0 files present here and absent from `master`**, once dot-marker scratch files
+  (`.canary-*`, `.copyfix-*`, `.deploy-*`) are excluded. The one candidate,
+  `test_template_95fc17a.py`, is a one-line stub that exists on `master` at
+  `runner/tests/test_template_95fc17a.py`
+
+Classification: **SUPERSEDED_BY_NEWER**. It carries nothing `master` lacks, and taking
+any of its 180 differing files would be a partial revert. Nothing was deleted, reset,
+cleaned or moved — the directory is exactly where it was, orphaned metadata and all.
+
+## Why 675 RECOVERABLE_VALUE items are not bulk-integrated
+
+The brief says to apply the *minimum coherent diff* for recoverable value. 675 rescue
+refs are not one coherent diff — they are independent snapshots taken by the periodic
+sweep, most of them mid-flight states of work that later landed by another route.
+Merging them wholesale would be the opposite of minimum and would overwrite current
+code with older trees, which the brief explicitly forbids.
+
+The disposition is **durable provenance, not integration**: every item classified and
+recorded, and every item whose only copy is this disk pushed somewhere it survives.
 
 ## Read-only, and it is enforced
 
@@ -51,28 +69,13 @@ throw with a named reason; `git stash` is permitted only as `list` and `show`.
 
 ## The number that matters
 
-**308 items have no remote copy.** For those, the only copy is this working
-directory. They carry `remotePreserved: false` in the ledger and are the first thing
-to look at if this machine is ever rebuilt.
+**513 tips have no remote copy and content not yet on `origin/master`.** For those the
+only copy is this disk. `preserve-local-only-3b50d1e569de.sh` pushes each to
+`refs/preserved/<name>` — outside `refs/heads/*`, so the merge train, CI and Vercel do
+not enumerate them and nothing deploys by accident. Dry run by default; `APPLY=1` pushes.
 
-Note the 56 `ACTIVE_IN_ANOTHER_TASK` items: those are already represented by a live
-orchestrator task and are deliberately **not** touched here, per the coordination
-rule against duplicating queued work.
+A further 486 tips also have no remote copy but classify ALREADY_PRESENT: `origin/master`
+already holds their commits, so preserving them would protect nothing and would bury the
+513 that matter. They are ledgered, not pushed.
 
-## What is deliberately NOT done
-
-No `RECOVERABLE_VALUE` item was merged. The brief permits recovery only via a newly
-allocated isolated worktree carrying the minimum coherent diff, and 447 items is not
-a minimum coherent diff — it is 447 separate decisions. This task delivers the
-classification and the provenance; each genuinely-wanted item needs its own focused
-task, which is the same rule the brief applies to conflicts.
-
-## Regenerating
-
-```bash
-LIVE_TASK_SLUGS="slug-a,slug-b" node scripts/reconcile-evidence.mjs \
-  --fingerprint <sha> --default-branch master \
-  --json docs/recovery-ledger/<short>.json
-```
-
-Exit code is non-zero if any item is UNKNOWN — the completion bar, enforced.
+Run the script before this machine is ever rebuilt.
