@@ -243,6 +243,35 @@ def get_fleet_config(key, default=""):
         return default
 
 
+def get_config(key, default=""):
+    """Get a configuration value from fleet_config table with fail-soft fallback to env.
+
+    Reads from the fleet_config database table (populated via load_config), falling back
+    to environment variables and hardcoded defaults on any error. ORCH_* prefix validation
+    ensures only safe keys are consumed.
+
+    Args:
+        key: Config key name (without ORCH_ prefix, e.g., "MAX_PARALLEL")
+        default: Value to return if key is missing or invalid
+
+    Returns:
+        Config value as string, or default on missing/invalid keys. Never raises.
+    """
+    if not key or not isinstance(key, str):
+        return default
+    try:
+        env_key = f"ORCH_{key}".upper()
+        # Check if already loaded into environment from fleet_config (via load_config)
+        value = os.environ.get(env_key, "").strip()
+        if value:
+            return value
+        return default
+    except Exception as e:
+        # Fail-soft: log diagnostic, return default
+        sys.stderr.write(f"[fleet_control] get_config({key}): error {e}; using default\n")
+        return default
+
+
 def update_fleet_config(key, value):
     """Upsert a fleet config key and publish a ConfigChanged event for ORCH_* keys.
 

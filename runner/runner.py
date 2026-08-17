@@ -104,6 +104,21 @@ if __name__ == "__main__":
         sys.exit(0)
     _EARLY_SINGLETON_LOCKED = True
 
+    # Load configuration from centralized fleet_config table at startup.
+    # This ensures all ORCH_* prefixed keys from the database take effect without requiring
+    # a manual restart. Configuration is loaded once at startup, then updated periodically
+    # via fleet_control.tick() in the main loop.
+    try:
+        # Import after singleton lock to ensure single-threaded initialization
+        import fleet_control
+        loaded = fleet_control.load_config()
+        if loaded > 0:
+            _log.info("orch-config-startup: loaded %d keys from fleet_config table", loaded)
+        else:
+            _log.debug("orch-config-startup: no keys loaded from fleet_config (empty or inaccessible)")
+    except Exception as e:
+        _log.warning("orch-config-startup: config load failed (fail-soft): %s", e)
+
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
 import provider_banner
@@ -1880,13 +1895,13 @@ def run_task(t):
                             r = agentic_coders.run(coder, draft_prompt, model,
                                                    cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
-                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
                                                cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
-                                               timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                                               timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 if _agentic_repair_continue(

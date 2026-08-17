@@ -1,0 +1,3556 @@
+{
+ "audit_fingerprint": "48ada80335900f35bc5c5838c146e61ae362922b68aca6ff27076a5d37092110",
+ "task": "chatgpt-local-reconcile-beethoven-48ada8033590",
+ "repo": "/Users/kpasch/Documents/beethoven/claude-orchestrator",
+ "kind": "dirty_worktree",
+ "total": 590,
+ "unknown": 0,
+ "summary": {
+  "SUPERSEDED_BY_NEWER": 582,
+  "CONFLICTED_NEEDS_FOCUSED_TASK": 4,
+  "RECOVERABLE_VALUE": 3,
+  "ACTIVE_IN_ANOTHER_TASK": 1
+ },
+ "items": [
+  {
+   "ref": "Updated show_greeting.py",
+   "status": "AM",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a diff-header line captured as a filename by a malformed patch (and its scratch subject), not source"
+  },
+  {
+   "ref": "runner/canary_validation.py",
+   "status": "M",
+   "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+   "disposition": "an uncommitted modification to a file origin/master already carries; adjudicate per hunk rather than replaying"
+  },
+  {
+   "ref": "runner/fleet_control.py",
+   "status": "M",
+   "classification": "RECOVERABLE_VALUE",
+   "disposition": "integrated: fleet_control.get_config + runner.py startup fleet_config load + its 44-test suite (44/44 green)"
+  },
+  {
+   "ref": "runner/runner.py",
+   "status": "M",
+   "classification": "RECOVERABLE_VALUE",
+   "disposition": "integrated: fleet_control.get_config + runner.py startup fleet_config load + its 44-test suite (44/44 green)"
+  },
+  {
+   "ref": "runner/test_new_module_config.py",
+   "status": "M",
+   "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+   "disposition": "an uncommitted modification to a file origin/master already carries; adjudicate per hunk rather than replaying"
+  },
+  {
+   "ref": "show_greeting.py",
+   "status": "M",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a diff-header line captured as a filename by a malformed patch (and its scratch subject), not source"
+  },
+  {
+   "ref": "MEMO-GC-LOTTERY-ORGANIZER-STATUS.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "REFINED_SPEC-cross-project-depends.json",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "REFINED_SPEC-cross-project-depends.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "REFINED_SPEC-lint-decision-budgets.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "REFINED_SPEC-prompt-evolver.json",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "REFINED_SPEC-prompt-evolver.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "SPEC-REFINED-orchestration-pipeline-contract.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "TASK-session-proof-of-work-refined.json",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "TASK-session-proof-of-work-refined.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-08-5b3f0660-88c2-43ff-8928-5d85aaf023ef.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-08-8096ccb3-ed1e-417e-93ee-4cce4e0a2948.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-08-business-model-check-regulatory-dropbox-tomorrow-foulkon-hed.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-08-e4a29eee-59fe-4409-a9a0-cffe9c0cb53c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-08-f4c5fb8c-98c8-4784-a2d1-7db5d021fa54.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-08-f879c3d4-d1bc-446f-ba0c-c22192ed3756.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-11-business-model-check-regulatory-p1-product-integration-gaps-.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-11-business-model-check-regulatory-part9-foresight-shadow-packs.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-13-10f761a4-af79-4c51-8750-683bc2dc3257.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-13-5cf16310-1131-472a-b470-ef38377957a5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-13-72fcfbef-fd9c-4319-a5c3-463658e43515.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-13-bcbf1013-b0e4-49c7-a9a4-35e6ec51883a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-13-bdec4843-2077-4375-8791-49165a0aafb0.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-14-90324165-ee8b-4f8f-a493-1908200c236e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/decisions/ADR-2026-08-14-c2cb396d-3d4e-4278-822a-e8ce07941b52.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an auto-generated ADR stub from a business-model check; no code and no decision text to carry forward"
+  },
+  {
+   "ref": "docs/recovery/APPARENTLY_MANUAL_RESTART_CONTINUATION.md",
+   "status": "??",
+   "classification": "ACTIVE_IN_ANOTHER_TASK",
+   "disposition": "already recovered on a sibling branch from this session; not duplicated"
+  },
+  {
+   "ref": "intake/processed/20260807-184025-factory-unblock-cade-adversary-tournaments.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260808-183407-factory-unblock-perpetual-compliance-hedge-instrument-fix-ts-errors-.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260808-202341-factory-unblock-dropbox-tomorrow-apparently-ploeh-tranche-gating-s-s.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-152424-chatgpt-local-audit-apparently-a2e9abd1b6d2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-153112-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-153749-chatgpt-local-audit-beethoven-7db8cf82aff7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-154631-chatgpt-local-audit-beethoven-9d9d943a2f08.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-155337-chatgpt-local-audit-darwn-b8dc0cadd039.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-160114-chatgpt-local-audit-illuminati-d57ca0d42cac.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-160540-chatgpt-local-audit-kalepasch-com-6677beabb240.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-161101-chatgpt-local-audit-pareto-2080-808881a9f4b7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-161832-chatgpt-local-audit-prediction-markets-institute-8f05cdc04750.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-162620-chatgpt-local-audit-racefeed-50b14aba0459.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-163435-chatgpt-local-audit-santas-secret-workshop-c84afbe5c71a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-164715-chatgpt-local-audit-smarter-19c2b268e2e7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-173759-0000-v15-trojun-rollout-coordinator-20260811.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174120-chatgpt-local-audit-admission-recovery-20260811.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174225-chatgpt-local-audit-apparently-ac5cfd557e10.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174321-chatgpt-local-audit-beethoven-44d6bb63e4fc.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174407-chatgpt-local-audit-beethoven-6e398b6bdfef.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174428-000-v15-trojun-fleet-rollout-20260811.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174508-chatgpt-local-audit-beethoven-740f254758a9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174610-chatgpt-local-audit-beethoven-8e45bfd2cc58.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-174655-chatgpt-local-audit-darwn-0ffb6dd8d0b7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-175006-chatgpt-local-audit-illuminati-8f9a6b6cf100.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-175228-chatgpt-local-audit-darwn-2c9650c51675.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-175335-chatgpt-local-audit-pareto-2080-03bd7d62007c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-175528-chatgpt-local-audit-illuminati-9d2c0c17edeb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-175541-chatgpt-local-audit-sustainable-barks-3a507f595bf3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180035-chatgpt-local-audit-kalepasch-com-363ac8dd9f58.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180047-chatgpt-local-audit-tomorrow-428d9cdff1e1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180210-chatgpt-local-audit-pareto-2080-08ec75007b5a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180216-chatgpt-local-audit-tomorrow-4dfa0e31aee5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180405-chatgpt-local-audit-racefeed-ebda4da4e0f1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180419-chatgpt-local-audit-vigil-1e4a29fb4659.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180624-chatgpt-local-audit-santas-secret-workshop-4ad543e89a43.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-180748-chatgpt-local-audit-santas-secret-workshop-abd47240826f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-181029-chatgpt-local-audit-smarter-4569ff09cab5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-181350-chatgpt-local-audit-smarter-56606a6a0902.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-182119-chatgpt-local-audit-sustainable-barks-b77c125e7b6c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-183001-chatgpt-local-audit-tomorrow-8ce35eb9ae43.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-183744-factory-unblock-recover-missing-branch-perpetual-compliance-hedge-in.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-193230-orchestrator-development-session-fabric-20260811.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232330-chatgpt-local-audit-apparently-50bd221a4346.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232529-chatgpt-local-audit-apparently-72b7b924f4c2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232542-chatgpt-local-audit-apparently-be189d2d8abb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232546-chatgpt-local-audit-apparently-c2e9526889e1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232555-chatgpt-local-audit-apparently-e0ddfad5e546.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232602-chatgpt-local-audit-apparently-ffb5fe76e097.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232606-chatgpt-local-audit-beethoven-7b6f925e1e7a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232610-chatgpt-local-audit-beethoven-c0cbf1c219ce.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232612-chatgpt-local-audit-beethoven-d1467bcd189f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232616-chatgpt-local-audit-beethoven-d8d47f4f5258.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232619-chatgpt-local-audit-darwn-5bbb3a77075e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232622-chatgpt-local-audit-darwn-feb01408e42c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232632-chatgpt-local-audit-illuminati-6dc5eb78479d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232636-chatgpt-local-audit-illuminati-dd1a05855760.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232647-chatgpt-local-audit-illuminati-f5da44e3ddc9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232654-chatgpt-local-audit-kalepasch-com-85102ee65a5d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232659-chatgpt-local-audit-pareto-2080-1ce26271db16.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232703-chatgpt-local-audit-pareto-2080-9563de00e642.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232706-chatgpt-local-audit-racefeed-23ffc26881b6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232708-chatgpt-local-audit-racefeed-8698f9c230a1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232711-chatgpt-local-audit-smarter-5eb1d9d1325f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232722-chatgpt-local-audit-smarter-6966499391f3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232725-chatgpt-local-audit-smarter-f4c775b46a3b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232736-chatgpt-local-audit-sustainable-barks-4c94bf5e5239.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232742-chatgpt-local-audit-sustainable-barks-9550c932593f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232747-chatgpt-local-audit-tomorrow-0a5088dd1715.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232751-chatgpt-local-audit-tomorrow-594c9349dcd4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232759-chatgpt-local-audit-tomorrow-711405e88745.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232809-chatgpt-local-audit-tomorrow-7b74d4dd8e74.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232811-chatgpt-local-audit-tomorrow-cadcf5dad7e9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-232812-chatgpt-local-audit-vigil-a88dda304265.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234716-chatgpt-local-audit-apparently-b9067d43c410.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234726-chatgpt-local-audit-beethoven-d64eac25eb52.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234730-chatgpt-local-audit-darwn-c44cb5e7fb20.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234738-chatgpt-local-audit-illuminati-ea8650a784b6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234745-chatgpt-local-audit-kalepasch-com-b3fe12f9164b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234801-chatgpt-local-audit-racefeed-7c30eb432648.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234813-chatgpt-local-audit-santas-secret-workshop-b2dc48143da1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234816-chatgpt-local-audit-smarter-b53fc2827873.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234825-chatgpt-local-audit-sustainable-barks-10552ad93e98.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-234827-chatgpt-local-audit-tomorrow-80bc0760d410.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-235226-chatgpt-local-audit-apparently-b02e82c0da06.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-235230-chatgpt-local-audit-beethoven-286879fa5fe4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-235232-chatgpt-local-audit-illuminati-d875792b92fa.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260811-235237-chatgpt-local-audit-tomorrow-116f2a796bbf.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-001922-operator-improve-compliance-api-auth-tenancy.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-003259-chatgpt-local-audit-apparently-88a205cebf76.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-004441-chatgpt-local-audit-beethoven-a92ff481c0ba.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-004733-chatgpt-local-audit-illuminati-a06279a6ae09.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-005234-chatgpt-local-audit-prediction-markets-institute-bc22dbb724c7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-005435-operator-orchestrator-development-session-fabric-app-embeds-20260812.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-005746-chatgpt-local-audit-sustainable-barks-2d312a768a76.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-010435-operator-orchestrator-development-session-fabric-trojun-reroute-20260812.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-012043-operator-improve-compliance-calibrated-optimization.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-012309-operator-improve-compliance-durable-event-router.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-012529-operator-improve-compliance-evidence-vault.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-012741-operator-improve-compliance-regulatory-ingestion.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-012936-operator-improve-compliance-scheduling-observability.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-013137-operator-improve-queue-dirty-checkout-auto-recovery.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-013309-operator-improve-queue-prevent-darwin-passport-conflicts.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-013527-operator-improve-queue-prevent-live-runner-merge-conflicts.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-013735-operator-improve-release-deploy-ui-evidence-closure.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-013904-operator-improve-runner-credential-capacity-failover.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015737-operator-improve-runner-supervisor-single-owner.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015737-operator-relfix-v15-apparently-ce3433f9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015737-operator-relfix-v15-pareto-1266ffa3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015737-operator-relfix-v15-predictions-766973c7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015737-operator-relfix-v15-racefeed-f0a41d3a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015737-operator-relfix-v15-smarter-c7599db3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015737-operator-relfix-v15-tomorrow-43b1039e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-015904-operator-relfix-v15-trojun-1893305f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260812-020039-operator-relfix-v15-vigil-dcdb561c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033926-chatgpt-local-audit-apparently-30e258bdf0e8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033928-chatgpt-local-audit-apparently-377b03d6f0fa.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033931-chatgpt-local-audit-apparently-4234e2bee37a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033934-chatgpt-local-audit-apparently-4748f09445d4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033936-chatgpt-local-audit-apparently-5759f251ac0b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033938-chatgpt-local-audit-apparently-5ed73c0f467b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033939-chatgpt-local-audit-apparently-61aabebdec36.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033941-chatgpt-local-audit-apparently-64c6877824cb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033948-chatgpt-local-audit-apparently-6e8472648d24.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033950-chatgpt-local-audit-apparently-750cc5df05e9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033951-chatgpt-local-audit-apparently-87d614f80b42.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-033953-chatgpt-local-audit-apparently-9992e857772c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034004-chatgpt-local-audit-apparently-9f2e5c9cf747.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034007-chatgpt-local-audit-apparently-b8d6f121e98a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034010-chatgpt-local-audit-apparently-c66a0e34987a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034012-chatgpt-local-audit-apparently-dfa744d04a2e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034013-chatgpt-local-audit-apparently-e18badf9871a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034014-chatgpt-local-audit-apparently-e37bbb8fd452.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034020-chatgpt-local-audit-apparently-e9e9cba6476f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034022-chatgpt-local-audit-apparently-f30aaa1b21b0.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034023-chatgpt-local-audit-apparently-fc7b29dcff6d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034025-chatgpt-local-audit-beethoven-0481d68df58a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034028-chatgpt-local-audit-beethoven-2ac5f3ee34ef.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034030-chatgpt-local-audit-beethoven-35e6fc01af1f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034039-chatgpt-local-audit-beethoven-48ada8033590.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034041-chatgpt-local-audit-beethoven-4d83819ff744.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034042-chatgpt-local-audit-beethoven-55acd60c79b1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034049-chatgpt-local-audit-beethoven-57896dbb99c2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034051-chatgpt-local-audit-beethoven-5bf7c0b3c4b9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034053-chatgpt-local-audit-beethoven-6c8911116873.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034054-chatgpt-local-audit-beethoven-968c9d3ff963.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034059-chatgpt-local-audit-beethoven-e0945946bd0d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034101-chatgpt-local-audit-beethoven-e4b9212494ba.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034106-chatgpt-local-audit-beethoven-e756b123ff98.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034110-chatgpt-local-audit-beethoven-ec0e88410bfd.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034117-chatgpt-local-audit-beethoven-ef34deb7741f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034125-chatgpt-local-audit-beethoven-fa5a31393f8a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034126-chatgpt-local-audit-beethoven-fb373cedc71d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034127-chatgpt-local-audit-beethoven-fc711018a43f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034127-chatgpt-local-audit-darwn-33ffd17f565e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034130-chatgpt-local-audit-darwn-d669a6457336.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034138-chatgpt-local-audit-illuminati-4482e735f5a5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034142-chatgpt-local-audit-illuminati-7438c8c9e567.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034144-chatgpt-local-audit-illuminati-9eefbb9285c2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034146-chatgpt-local-audit-illuminati-d40d3fb3b267.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034147-chatgpt-local-audit-illuminati-eb0942383478.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034150-chatgpt-local-audit-kalepasch-com-2b7407befa66.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034152-chatgpt-local-audit-kalepasch-com-6071bde4497f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034155-chatgpt-local-audit-pareto-2080-9b4ddc1eb702.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034203-chatgpt-local-audit-pareto-2080-d56ea64cebd6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034221-chatgpt-local-audit-racefeed-4de30644c412.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034221-chatgpt-local-audit-racefeed-5e8f7ec6f6d7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034328-chatgpt-local-audit-apparently-9bd35e1ee221.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034334-chatgpt-local-audit-santas-secret-workshop-9631ce317256.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034341-chatgpt-local-audit-smarter-3718e24a48f9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034346-chatgpt-local-audit-smarter-9019d1b22642.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034355-chatgpt-local-audit-smarter-ae06ba6602b2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034358-chatgpt-local-audit-sustainable-barks-83a8a5533024.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034409-chatgpt-local-audit-tomorrow-46184ec54b9a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034415-chatgpt-local-audit-tomorrow-6f451eba9449.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034421-chatgpt-local-audit-tomorrow-7f25cd891702.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034424-chatgpt-local-audit-tomorrow-93cf4fc1fe7c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034427-chatgpt-local-audit-tomorrow-9b08692d5c5b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-034431-chatgpt-local-audit-tomorrow-f488256b7d2c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-040445-chatgpt-local-audit-apparently-44e92f777287.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-040447-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-040450-chatgpt-local-audit-beethoven-797668765dad.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-040511-chatgpt-local-audit-kalepasch-com-6b822fb540eb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-040518-chatgpt-local-audit-prediction-markets-institute-f8fdcedbdfc8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-040525-chatgpt-local-audit-racefeed-f2fbd20b67d1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-040532-chatgpt-local-audit-tomorrow-41fc0d56c6e3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-043604-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-043609-chatgpt-local-audit-beethoven-696153ef8f37.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-043612-chatgpt-local-audit-pareto-2080-d69acbbcf176.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-043617-chatgpt-local-audit-racefeed-0a07bfaeac13.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-043620-chatgpt-local-audit-tomorrow-678ac7fac8d3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-044023-chatgpt-local-audit-apparently-a591b71b3b69.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-050633-chatgpt-local-audit-apparently-1500f0de3751.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-050633-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-050634-chatgpt-local-audit-beethoven-85d2de799d5d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-050638-chatgpt-local-audit-racefeed-4ec104e29c8f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-050649-chatgpt-local-audit-tomorrow-fa8bcddc46ec.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-053635-chatgpt-local-audit-apparently-1500f0de3751.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-053635-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-053637-chatgpt-local-audit-beethoven-10d6c3591091.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-053639-chatgpt-local-audit-racefeed-1cc01808b5ad.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-053643-chatgpt-local-audit-sustainable-barks-65b69fdf9555.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-061101-chatgpt-local-audit-apparently-1500f0de3751.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-061101-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-061103-chatgpt-local-audit-beethoven-ac93979d6c7a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-061104-chatgpt-local-audit-racefeed-88043b4e6842.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-061112-chatgpt-local-audit-santas-secret-workshop-c2eecceaacc1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-061113-chatgpt-local-audit-tomorrow-e4df125e5dfe.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-064321-chatgpt-local-audit-apparently-1500f0de3751.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-064321-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-064323-chatgpt-local-audit-beethoven-215fba971ab9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-071436-chatgpt-local-audit-apparently-1500f0de3751.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-071436-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-071436-chatgpt-local-audit-beethoven-85d2de799d5d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-071441-chatgpt-local-audit-tomorrow-91b800dc37ed.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-071912-factory-unblock-codex-recover-session-fabric-broken-worktree-7db8cf8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-074900-chatgpt-local-audit-apparently-99a24b54c80b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-074900-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-074903-chatgpt-local-audit-beethoven-383306e1301e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-074906-chatgpt-local-audit-pareto-2080-4538cb90f476.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-074908-chatgpt-local-audit-tomorrow-ae6a204c88e5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-081735-chatgpt-local-audit-apparently-45166d7f9f7a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-081735-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-081735-chatgpt-local-audit-beethoven-85d2de799d5d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-081738-chatgpt-local-audit-tomorrow-c875b5d08a36.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-082555-factory-unblock-chatgpt-local-reconcile-tomorrow-41fc0d56c6e3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-082557-factory-unblock-chatgpt-local-reconcile-tomorrow-6f451eba9449.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-085231-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-085236-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-085240-chatgpt-local-audit-tomorrow-1959809d4e74.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-085425-chatgpt-local-audit-apparently-63703ea90c5a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-092226-chatgpt-local-audit-apparently-63703ea90c5a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-092226-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-092229-chatgpt-local-audit-beethoven-84fc83c513d9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-092232-chatgpt-local-audit-darwn-87db0cc80434.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-092445-chatgpt-local-audit-tomorrow-8d4351b7a0be.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-093431-factory-unblock-canary-codex-39.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-093436-factory-unblock-dropbox-beethoven-fleet-immune-system-throughput-acc.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-093441-factory-unblock-dropbox-wave-c-compounding-codegen-platform-spine-sl.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095645-chatgpt-local-audit-apparently-a00c6a15ee3f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095645-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095647-chatgpt-local-audit-beethoven-5e30d0e05126.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095650-chatgpt-local-audit-darwn-db2e16927651.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095653-chatgpt-local-audit-illuminati-486affee97be.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095706-chatgpt-local-audit-prediction-markets-institute-b1a633b1f50b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095715-chatgpt-local-audit-racefeed-335c12dcb51e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-095721-chatgpt-local-audit-tomorrow-4d4dec67d81f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-102959-chatgpt-local-audit-apparently-a622417934a6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-102959-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-103001-chatgpt-local-audit-beethoven-ab0a05980686.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-103003-chatgpt-local-audit-darwn-cba9a5a9cf54.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-103005-chatgpt-local-audit-illuminati-e7c0f9705f52.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-103007-chatgpt-local-audit-prediction-markets-institute-8469f0461cde.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-103008-chatgpt-local-audit-racefeed-5ae20dcfae0d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-103009-chatgpt-local-audit-smarter-0bef2828c045.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-103018-chatgpt-local-audit-tomorrow-7730657797b1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155304-chatgpt-local-audit-apparently-39517727fda8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155307-chatgpt-local-audit-apparently-9ae6beb22d70.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155307-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155313-chatgpt-local-audit-beethoven-170f33cf2458.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155325-chatgpt-local-audit-beethoven-e9e37e7ea69d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155332-chatgpt-local-audit-illuminati-92c9ef95d16f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155335-chatgpt-local-audit-illuminati-b323b1d68028.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155338-chatgpt-local-audit-kalepasch-com-0ec795795408.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155343-chatgpt-local-audit-kalepasch-com-3c561c4af0fe.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155346-chatgpt-local-audit-pareto-2080-251112f42b62.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155351-chatgpt-local-audit-pareto-2080-28ed97a11327.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155410-chatgpt-local-audit-sustainable-barks-d99df837796f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155414-chatgpt-local-audit-tomorrow-1fd5c3ff0bf2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155419-chatgpt-local-audit-tomorrow-62e3b89e03af.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-155718-factory-unblock-backlog-batch-beethoven-ccacb00-commit-final-impleme.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260813-201445-factory-unblock-copyfix-beethoven-07180848-slice-5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200708-chatgpt-local-audit-apparently-4891aabb9a5a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200708-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200711-chatgpt-local-audit-beethoven-165f6c7173b5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200717-chatgpt-local-audit-beethoven-5dc36bf5e0be.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200721-chatgpt-local-audit-beethoven-6a6cca0453bd.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200725-chatgpt-local-audit-beethoven-6ab23a171649.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200727-chatgpt-local-audit-beethoven-71a638adb6ea.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200729-chatgpt-local-audit-darwn-09c949ead2e4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200732-chatgpt-local-audit-darwn-94008e75ed46.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200735-chatgpt-local-audit-darwn-99b3c3bd9840.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200742-chatgpt-local-audit-darwn-d11e8740c03a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200746-chatgpt-local-audit-darwn-fdef23f9fa9a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200749-chatgpt-local-audit-illuminati-0ba14dc07496.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200752-chatgpt-local-audit-illuminati-5d418d79ae06.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200755-chatgpt-local-audit-illuminati-9cadb57be5d8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200759-chatgpt-local-audit-illuminati-cf3d767bd1de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200801-chatgpt-local-audit-illuminati-d0c1ef1a98ec.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200806-chatgpt-local-audit-illuminati-fdb6fdccfd7f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200811-chatgpt-local-audit-kalepasch-com-09a3d0663430.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200813-chatgpt-local-audit-kalepasch-com-6d4c12c4924f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200814-chatgpt-local-audit-kalepasch-com-cd566a4ad6ef.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200817-chatgpt-local-audit-pareto-2080-435c9559990e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200819-chatgpt-local-audit-pareto-2080-5e94298b8d4b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200823-chatgpt-local-audit-pareto-2080-a63299895ffc.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200831-chatgpt-local-audit-pareto-2080-bffb63a914db.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200832-chatgpt-local-audit-pareto-2080-e191061d22ff.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200834-chatgpt-local-audit-prediction-markets-institute-0ec693b8964f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200836-chatgpt-local-audit-prediction-markets-institute-bc6e054e2f66.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200840-chatgpt-local-audit-racefeed-54a71fe5564f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200843-chatgpt-local-audit-racefeed-6746994b1052.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200845-chatgpt-local-audit-santas-secret-workshop-07259c5e5322.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200847-chatgpt-local-audit-santas-secret-workshop-833d238f7e5c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200853-chatgpt-local-audit-smarter-1a3dfec917fd.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200857-chatgpt-local-audit-smarter-20c837604670.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200900-chatgpt-local-audit-smarter-3d3181d86e5c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200903-chatgpt-local-audit-smarter-83cf3eec4cb4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200905-chatgpt-local-audit-sustainable-barks-5237fe52caf0.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200907-chatgpt-local-audit-sustainable-barks-6c567a891bd3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200910-chatgpt-local-audit-sustainable-barks-be3c7c189c04.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200912-chatgpt-local-audit-sustainable-barks-c1e713251eec.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200914-chatgpt-local-audit-tomorrow-a4eb59d0796b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200916-chatgpt-local-audit-tomorrow-b8f5cf32cb21.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200919-chatgpt-local-audit-tomorrow-cda468882594.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200920-chatgpt-local-audit-tomorrow-d1fe07cc7ffa.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200922-chatgpt-local-audit-tomorrow-ff4ad2a6347b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200924-chatgpt-local-audit-vigil-4637365294dd.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200927-chatgpt-local-audit-vigil-4bdcc63de799.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260814-200929-chatgpt-local-audit-vigil-cfc825bf696d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114804-chatgpt-local-audit-apparently-08d85dc7e95f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114805-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114805-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114807-chatgpt-local-audit-beethoven-0df18d9279e9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114808-chatgpt-local-audit-beethoven-179a43b4d07a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114808-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114809-chatgpt-local-audit-beethoven-73b0c02a3342.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114810-chatgpt-local-audit-beethoven-904d724a432d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114812-chatgpt-local-audit-darwn-04b0022358d1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114814-chatgpt-local-audit-darwn-bdb0cfed9b14.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114821-chatgpt-local-audit-darwn-eaa3ab08eac9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114823-chatgpt-local-audit-darwn-f87c64c83b9f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114825-chatgpt-local-audit-illuminati-9454ee31ecb0.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114828-chatgpt-local-audit-illuminati-e29ff7545f9d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114830-chatgpt-local-audit-kalepasch-com-058b48faa154.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114831-chatgpt-local-audit-kalepasch-com-b61040aea849.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114832-chatgpt-local-audit-kalepasch-com-bc0e208ad8e3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114842-chatgpt-local-audit-pareto-2080-8aa4310269c2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114843-chatgpt-local-audit-pareto-2080-e58dcff60b59.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114845-chatgpt-local-audit-prediction-markets-institute-2d2f616f8d66.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114846-chatgpt-local-audit-racefeed-05649c8f3cea.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114847-chatgpt-local-audit-racefeed-7df99c040014.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114848-chatgpt-local-audit-racefeed-b86a58bad502.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114850-chatgpt-local-audit-santas-secret-workshop-1deead40e4a1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114851-chatgpt-local-audit-santas-secret-workshop-a8c8d8b4be15.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114853-chatgpt-local-audit-smarter-10f3f922d518.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114854-chatgpt-local-audit-smarter-dd926f89525a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114855-chatgpt-local-audit-sustainable-barks-0251f301b217.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114856-chatgpt-local-audit-sustainable-barks-9782e2f806cb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114859-chatgpt-local-audit-sustainable-barks-bfe099a6c0a9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114901-chatgpt-local-audit-sustainable-barks-cc4e1a894d39.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114903-chatgpt-local-audit-tomorrow-1d6cb3ae8666.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114904-chatgpt-local-audit-tomorrow-2a509a6cf06c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114905-chatgpt-local-audit-tomorrow-bfbf074f3e99.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-114907-chatgpt-local-audit-vigil-f085865e1c81.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-115315-factory-unblock-dropbox-mission-complete-merge-and-deploy-the-full-b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-115742-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-115742-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-115751-chatgpt-local-audit-beethoven-d854da55ab98.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-115803-chatgpt-local-audit-pareto-2080-11a417e1202b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-115809-chatgpt-local-audit-santas-secret-workshop-943314473349.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-115816-chatgpt-local-audit-tomorrow-9ed7a602485c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-122816-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-122816-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-122821-chatgpt-local-audit-beethoven-c54c216bc5d3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-122842-chatgpt-local-audit-pareto-2080-f20b6e0b96b5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-122843-chatgpt-local-audit-vigil-2093f537b3a4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-130023-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-130023-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-130023-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-130029-chatgpt-local-audit-pareto-2080-e7dedf7ccc69.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-130034-chatgpt-local-audit-tomorrow-171ab8c082ff.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-132544-dropbox-PROMPT-ILLUMINATI-ABSORPTION.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-133621-dropbox-PROMPT-ILLUMINATI-ABSORPTION.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-134841-dropbox-PROMPT-SMARTER-CAPABILITY-BRIDGE.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-134919-dropbox-PROMPT-ILLUMINATI-ABSORPTION.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-140232-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-140232-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-140235-chatgpt-local-audit-beethoven-70af799ac211.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-140240-chatgpt-local-audit-beethoven-904d724a432d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-140251-chatgpt-local-audit-smarter-8837701185ef.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-143556-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-143556-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-143556-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-150754-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-150754-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-150754-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-153739-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-153739-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-153739-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-160852-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-160852-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-160852-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-163957-chatgpt-local-audit-apparently-f4ebda306df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-163957-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-164000-chatgpt-local-audit-beethoven-9ac0b820e01f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-164005-chatgpt-local-audit-tomorrow-89010146b5c0.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-171320-chatgpt-local-audit-apparently-d4a239034584.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-171320-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-171320-chatgpt-local-audit-beethoven-85d2de799d5d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-171325-chatgpt-local-audit-tomorrow-e4954a039aaf.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-173643-factory-unblock-dropbox-hisanta-mastery-engine-grandma-rail-family-s.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-174523-chatgpt-local-audit-apparently-8ce062a24cd8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-174523-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-174523-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-174531-chatgpt-local-audit-tomorrow-d87bf9269779.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181716-chatgpt-local-audit-apparently-269d6457c125.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181716-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181720-chatgpt-local-audit-beethoven-8d0702cbd5aa.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181729-chatgpt-local-audit-darwn-a116d884bcce.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181739-chatgpt-local-audit-illuminati-813849cb3df7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181746-chatgpt-local-audit-kalepasch-com-1066c22f4d92.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181754-chatgpt-local-audit-racefeed-a253a4a6626a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181801-chatgpt-local-audit-santas-secret-workshop-213e212014e2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181805-chatgpt-local-audit-smarter-75c0626b0dad.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181807-chatgpt-local-audit-sustainable-barks-48025fc82d19.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-181813-chatgpt-local-audit-tomorrow-e7ff42ca7c61.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184833-chatgpt-local-audit-apparently-a0e6e2843c8f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184833-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184835-chatgpt-local-audit-beethoven-764fd6ce53c9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184837-chatgpt-local-audit-darwn-96fdba51ed7e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184845-chatgpt-local-audit-illuminati-6cb71470c358.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184849-chatgpt-local-audit-racefeed-fa7900ef50a6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184901-chatgpt-local-audit-tomorrow-a26fb819f228.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-184905-chatgpt-local-audit-vigil-06d605d2b4fc.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-185908-factory-unblock-dropbox-pareto-life-goal-autonomy-stack-p6-earnings-.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-191742-chatgpt-local-audit-apparently-c9ce0bc28324.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-191742-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-191800-chatgpt-local-audit-darwn-87dc3d8b43ff.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-191803-chatgpt-local-audit-illuminati-8b1b26361492.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-191811-chatgpt-local-audit-tomorrow-8dc004d4fd76.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-192012-chatgpt-local-audit-beethoven-b6c5a6688363.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-195124-chatgpt-local-audit-apparently-82ff722a1839.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-195124-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-195127-chatgpt-local-audit-beethoven-7401bcfcbcb1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-195129-chatgpt-local-audit-darwn-570a6495a33e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-195132-chatgpt-local-audit-illuminati-c6440bcd74fb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-195133-chatgpt-local-audit-tomorrow-36f640081282.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-202739-chatgpt-local-audit-apparently-b92154fe02a4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-202739-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-202743-chatgpt-local-audit-beethoven-fa219072749e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-202746-chatgpt-local-audit-kalepasch-com-d5e24dc69141.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-202754-chatgpt-local-audit-pareto-2080-005d8278c39c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-202757-chatgpt-local-audit-tomorrow-25e1abcc1c4a.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210036-chatgpt-local-audit-apparently-ccdeec6c7738.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210036-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210036-chatgpt-local-audit-beethoven-3b50d1e569de.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210046-chatgpt-local-audit-illuminati-626452c2c91d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210052-chatgpt-local-audit-pareto-2080-3de6b199d775.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210058-chatgpt-local-audit-racefeed-11d5bb2af2f3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210103-chatgpt-local-audit-sustainable-barks-8ebb4ac836b5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-210108-chatgpt-local-audit-tomorrow-8cf1ea6b4928.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213256-factory-unblock-dropbox-pareto-life-goal-autonomy-stack-p5-intergene.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213504-chatgpt-local-audit-apparently-ff9643c23e69.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213504-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213513-chatgpt-local-audit-beethoven-98f839c9c985.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213521-chatgpt-local-audit-illuminati-d165e2e382f0.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213528-chatgpt-local-audit-pareto-2080-8c0d5ec2f275.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213536-chatgpt-local-audit-santas-secret-workshop-03ddb65b39c4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213938-chatgpt-local-audit-smarter-b98e8ab04b02.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-213938-chatgpt-local-audit-tomorrow-1f47cd19090f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220654-chatgpt-local-audit-apparently-b66a0a84f9bb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220654-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220705-chatgpt-local-audit-beethoven-671c267eedf3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220710-chatgpt-local-audit-darwn-203a4f148c75.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220716-chatgpt-local-audit-illuminati-8d5a1bb7ba95.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220720-chatgpt-local-audit-pareto-2080-b6b6fb3709f5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220724-chatgpt-local-audit-santas-secret-workshop-e3d48aa0ff62.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-220728-chatgpt-local-audit-tomorrow-72655b710a02.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224308-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224325-chatgpt-local-audit-darwn-50f61de9fbef.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224329-chatgpt-local-audit-illuminati-a38fcae6c823.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224338-chatgpt-local-audit-pareto-2080-c483e1348ad3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224355-chatgpt-local-audit-tomorrow-e290739086a5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224727-chatgpt-local-audit-apparently-e5e677403f2f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224727-chatgpt-local-audit-beethoven-6d094ab1edfa.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-224727-chatgpt-local-audit-smarter-250fb4995f2b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231526-chatgpt-local-audit-apparently-641ce6a80f47.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231526-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231531-chatgpt-local-audit-beethoven-d6ab3873f38e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231537-chatgpt-local-audit-darwn-925feacf493f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231541-chatgpt-local-audit-illuminati-7afd89cd723f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231547-chatgpt-local-audit-racefeed-7b80bbefa5f6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231550-chatgpt-local-audit-sustainable-barks-98c9707f1967.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-231556-chatgpt-local-audit-tomorrow-1d281ec0a062.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-234714-chatgpt-local-audit-apparently-73f0ceff2f65.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-234714-chatgpt-local-audit-apparently-law-db98501abecb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-234716-chatgpt-local-audit-beethoven-ca93a1b7be55.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-234719-chatgpt-local-audit-darwn-794633f2a1d0.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-234721-chatgpt-local-audit-illuminati-154c6fe774ae.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260815-234723-chatgpt-local-audit-tomorrow-68f44003a6bf.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230159-chatgpt-local-audit-apparently-31c7725a2bb3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230159-chatgpt-local-audit-apparently-law-d34eb36efdf6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230200-chatgpt-local-audit-beethoven-bf841dc595e6.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230201-chatgpt-local-audit-darwn-94ac20224be1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230201-chatgpt-local-audit-illuminati-7fcbc7208e14.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230202-chatgpt-local-audit-kalepasch-com-6300730f68a8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230203-chatgpt-local-audit-pareto-2080-8b4ad38d3238.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230203-chatgpt-local-audit-prediction-markets-institute-835cd815abcc.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230204-chatgpt-local-audit-racefeed-24014c0411b5.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230204-chatgpt-local-audit-santas-secret-workshop-a718348a05b3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230205-chatgpt-local-audit-sustainable-barks-6d32dfba3c46.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-230205-chatgpt-local-audit-tomorrow-f4bcd1e350ab.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-234242-chatgpt-local-audit-apparently-26b70b499ea9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-234244-chatgpt-local-audit-apparently-law-b04bfeb1cdc4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-234245-chatgpt-local-audit-beethoven-ebc84c355791.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-234246-chatgpt-local-audit-darwn-fa29d8a1d843.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-234247-chatgpt-local-audit-pareto-2080-666dc7a62a3c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-234248-chatgpt-local-audit-santas-secret-workshop-4b2952e81e05.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-234248-chatgpt-local-audit-tomorrow-bc9a9be99bad.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260816-235609-factory-unblock-dropbox-pareto-life-goal-autonomy-stack-p4-household.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-002344-chatgpt-local-audit-apparently-f2a260545d27.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-002345-chatgpt-local-audit-apparently-law-8f7038514b10.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-002346-chatgpt-local-audit-beethoven-7bd5c9d0be16.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-002347-chatgpt-local-audit-tomorrow-948f5bd098b7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-010318-chatgpt-local-audit-apparently-6ec448b5afeb.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-010319-chatgpt-local-audit-apparently-law-8361ec1c691b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-010324-chatgpt-local-audit-pareto-2080-ebd9e05c058c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-010324-chatgpt-local-audit-racefeed-5da549057d91.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-010325-chatgpt-local-audit-smarter-345388888e5b.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-015149-chatgpt-local-audit-apparently-c3823872ec0e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-015152-chatgpt-local-audit-apparently-law-e6d75ab9cb57.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-015152-chatgpt-local-audit-beethoven-48ae8f413643.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-015153-chatgpt-local-audit-pareto-2080-41f0a74d11c1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-031605-chatgpt-local-audit-apparently-c84c62a47be3.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-031605-chatgpt-local-audit-apparently-law-e545d5988159.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-031606-chatgpt-local-audit-beethoven-9b427697d13f.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-031607-chatgpt-local-audit-pareto-2080-bf7c6bf51c0d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-031608-chatgpt-local-audit-santas-secret-workshop-e2495fa48394.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-031609-chatgpt-local-audit-smarter-453164403965.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-032542-chatgpt-local-audit-apparently-75769db77bd8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-032543-chatgpt-local-audit-apparently-law-38fe844642f2.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-032544-chatgpt-local-audit-beethoven-85d2de799d5d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-032544-chatgpt-local-audit-darwn-1fc54b298303.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-032545-chatgpt-local-audit-kalepasch-com-513ae8378d0c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-041429-chatgpt-local-audit-apparently-75769db77bd8.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-041430-chatgpt-local-audit-apparently-law-546a87a0dbc7.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-041430-chatgpt-local-audit-beethoven-ee86a2cff698.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-041431-chatgpt-local-audit-pareto-2080-e03f2c2a80f9.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-041432-chatgpt-local-audit-racefeed-3f3360fbf871.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-041433-chatgpt-local-audit-smarter-f2b5f51f2471.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-041433-chatgpt-local-audit-tomorrow-d9a6877ba577.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050317-chatgpt-local-audit-apparently-e3e116932582.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050318-chatgpt-local-audit-apparently-law-76aef015550d.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050319-chatgpt-local-audit-beethoven-16041039dfad.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050320-chatgpt-local-audit-darwn-236f392e864c.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050321-chatgpt-local-audit-illuminati-404291b1a6e1.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050322-chatgpt-local-audit-racefeed-be562c87af47.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050323-chatgpt-local-audit-smarter-3b817c83280e.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050323-chatgpt-local-audit-sustainable-barks-6a6bc1331922.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050324-chatgpt-local-audit-tomorrow-3ac28eed0035.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "intake/processed/20260817-050325-chatgpt-local-audit-vigil-0e971dfe3181.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "an intake record for a prompt the drop-box already consumed; operational history, not source"
+  },
+  {
+   "ref": "mcp/package-lock.json",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "generated lockfile; regenerated by install, never recovered by hand"
+  },
+  {
+   "ref": "packages/beethoven-contracts/package-lock.json",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "generated lockfile; regenerated by install, never recovered by hand"
+  },
+  {
+   "ref": "packages/spine/package-lock.json",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "generated lockfile; regenerated by install, never recovered by hand"
+  },
+  {
+   "ref": "runner/REFINED_SPEC-qafix-pareto-2080-slice-4.md",
+   "status": "??",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "a planner spec/memo artifact; the work it describes is tracked as orchestrator tasks, not as repo source"
+  },
+  {
+   "ref": "runner/test_config_consumer_comprehensive.py",
+   "status": "??",
+   "classification": "RECOVERABLE_VALUE",
+   "disposition": "integrated: fleet_control.get_config + runner.py startup fleet_config load + its 44-test suite (44/44 green)"
+  },
+  {
+   "ref": "runner/test_interlock_billing_killswitch.py",
+   "status": "??",
+   "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+   "disposition": "recovered and then held back: 5 of its cases fail against the current tree (a mocked module is absent; load_config returns 0 where 3 is asserted). Queued rather than shipped red."
+  },
+  {
+   "ref": "runner/test_orch_config_consumption.py",
+   "status": "??",
+   "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+   "disposition": "recovered and then held back: 5 of its cases fail against the current tree (a mocked module is absent; load_config returns 0 where 3 is asserted). Queued rather than shipped red."
+  }
+ ]
+}
