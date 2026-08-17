@@ -108,6 +108,42 @@ def _poll_loop():
         time.sleep(POLL_INTERVAL)
 
 
+def poll_once():
+    """
+    Run exactly one synchronous polling pass over every watched table and
+    dispatch whatever changed.
+
+    The background thread in `start()` is only usable from a long-lived
+    process. The Mac runner does not have one — every runner-side job is a
+    short-lived `periodic.py <job>` invocation — so without a single-pass
+    entry point this module had no way to be driven and sat at zero callers.
+
+    Fail-soft: never raises. Returns {table: rows_changed} and advances the
+    watermarks, so consecutive calls behave like the loop would.
+    """
+    if not ENABLED:
+        return {}
+    changed = {}
+    for table, params in _WATCHED.items():
+        try:
+            rows = _poll_table(table, params)
+        except Exception as e:  # defensive: _poll_table is already fail-soft
+            _log.debug("realtime_sync: poll_once %s failed: %s", table, e)
+            continue
+        changed[table] = len(rows)
+        if rows:
+            _stats["changes_detected"] += len(rows)
+            _dispatch(table, rows)
+    _stats["polls"] += 1
+    return changed
+
+
+def reset_watermarks():
+    """Drop all change-detection watermarks (test/operator hook)."""
+    with _lock:
+        _watermarks.clear()
+
+
 def start():
     """Start the background sync thread."""
     global _running, _thread
