@@ -27,7 +27,9 @@
  * Completion bar: ZERO items classified UNKNOWN.
  */
 import { execFileSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 
 // ─── The read-only guarantee ─────────────────────────────────────────────────
 
@@ -265,6 +267,213 @@ export function classifyStash(entry, ctx) {
   }
 }
 
+// ─── Evidence that git cannot enumerate for itself ───────────────────────────
+//
+// The two classifiers below exist because the snapshot the brief hands us keeps
+// containing items that `enumerateEvidence()` structurally cannot find:
+//
+//   - a `broken_codex_git_worktree`: a directory whose `.git` file points at a
+//     `worktrees/<name>` gitdir that has since been pruned. `git worktree list`
+//     will never mention it — the registration is exactly what is gone — so
+//     without an explicit classifier it falls off the end of the run and lands in
+//     the UNKNOWN bucket, which is the one outcome the completion bar forbids.
+//
+//   - a `chatgpt_bridge_artifact`: a dropbox zip in `_applied/` or `_failed/`.
+//     It is not a git object at all, but it is a carrier of code, and whether its
+//     contents survived depends on whether the bridge's push landed.
+//
+// Both are supplied by path rather than discovered, because a tool that went
+// hunting across the filesystem for candidate directories would be guessing.
+
+/**
+ * Extensions the bridge writes. `.zip` was the only one this file knew about, and
+ * the bridge has since started emitting bare `.patch` payloads — an artifact kind
+ * it could not see is an artifact kind it silently reports nothing about, which is
+ * the UNKNOWN bucket wearing a different hat.
+ */
+const ARTIFACT_EXT = /\.(zip|patch|diff)$/
+
+/** Content identity for artifacts, which is the only identity that survives a rename. */
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+/**
+ * The branch the bridge says it pushed, from the `<artifact>.result.txt` sidecar.
+ * Returns null when there is no receipt — absence is not evidence of failure, it
+ * just means we fall back to matching on the name.
+ */
+export function readBridgeReceipt(artifactPath) {
+  const receipt = `${artifactPath}.result.txt`
+  if (!existsSync(receipt)) return null
+  const text = readFileSync(receipt, 'utf8')
+  return /^\[chatgpt-bridge\] pushed branch (.+)$/m.exec(text)?.[1]?.trim() ?? null
+}
+
+/** Refs whose name ends in `/<name>` or equals `<name>` — the checkout's likely home. */
+function refsNamed(name) {
+  const all = runGit(['for-each-ref', '--format=%(refname)'], { allowFail: true }) ?? ''
+  return all.split('\n').filter((r) => r.endsWith(`/${name}`))
+}
+
+/**
+ * Classify a worktree directory supplied by path, including one whose git
+ * metadata no longer resolves.
+ *
+ * The load-bearing idea: **a worktree is a checkout, not a copy.** Its committed
+ * content lives in the ref it was checked out from, so a broken registration is
+ * only a real loss if that ref is also gone. What a broken worktree genuinely
+ * costs is its *uncommitted* drift — unreadable once the gitdir is pruned, and
+ * therefore reported as such rather than quietly assumed to be nothing.
+ */
+export function classifyExternalWorktree(path, ctx) {
+  const { liveTaskSlugs, remoteBranches } = ctx
+  const name = basename(path)
+
+  if (!existsSync(path)) {
+    return {
+      ref: path,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      reason:
+        'the evidence path no longer exists on disk. Nothing here can be read, and a ' +
+        'vanished source is a question for a human, not a silent pass.',
+    }
+  }
+
+  const dotGit = join(path, '.git')
+  const gitdir = existsSync(dotGit)
+    ? /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))?.[1]?.trim() ?? dotGit
+    : null
+  const metadataLive = gitdir ? existsSync(gitdir) : false
+
+  // A live registration needs no special handling — the normal worktree path covers it.
+  if (metadataLive) {
+    return {
+      ref: path,
+      sha: null,
+      classification: 'ALREADY_PRESENT',
+      reason: 'git metadata still resolves; the registered-worktree pass already covers it.',
+    }
+  }
+
+  // Is a task already on this? Recovering it twice is what the coordination rule forbids.
+  const owningTask =
+    liveTaskSlugs.find((slug) => slug.includes(name) || name.includes(slug)) ??
+    [...remoteBranches].find((b) => b.includes(name))
+
+  const homes = refsNamed(name).filter((r) => resolve(r))
+
+  if (owningTask) {
+    return {
+      ref: path,
+      sha: homes[0] ? resolve(homes[0]) : null,
+      classification: 'ACTIVE_IN_ANOTHER_TASK',
+      owningTask,
+      preservedIn: homes,
+      gitdirMissing: gitdir,
+      reason:
+        `git metadata at ${gitdir} is gone, but "${owningTask}" already represents this ` +
+        `recovery${homes.length ? ` and ${homes.length} ref(s) still carry the content` : ''}. ` +
+        'Left untouched rather than recovered a second time.',
+    }
+  }
+
+  if (homes.length === 0) {
+    return {
+      ref: path,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      gitdirMissing: gitdir,
+      reason:
+        `git metadata at ${gitdir} is gone and no ref anywhere in the repository is named ` +
+        `for "${name}". The files on disk may be the only copy and they cannot be diffed ` +
+        'without the gitdir — this needs a focused task, not a classification.',
+    }
+  }
+
+  return {
+    ref: path,
+    sha: resolve(homes[0]),
+    classification: 'RECOVERABLE_VALUE',
+    preservedIn: homes,
+    gitdirMissing: gitdir,
+    uncommittedDriftUnreadable: true,
+    reason:
+      `git metadata at ${gitdir} is gone. The committed content survives in ${homes.length} ` +
+      `ref(s) (${homes[0]}), so the checkout itself is not the loss — but any UNCOMMITTED ` +
+      'drift in this directory cannot be read without the gitdir and is not accounted for here.',
+  }
+}
+
+/**
+ * Classify a ChatGPT-bridge dropbox artifact.
+ *
+ * `_applied/` means the bridge reported success, but "the script exited 0" and "the
+ * code is durably on a remote" are different claims. The one that matters is the
+ * second, so the branch the artifact names is checked against the remote before the
+ * artifact is called safe.
+ */
+export function classifyBridgeArtifact(artifactPath, ctx) {
+  const { remoteBranches } = ctx
+  const file = basename(artifactPath)
+  const bucket = basename(join(artifactPath, '..'))
+  // `<ts>--<repo>--<slug>.<ext>`
+  const slug = file.replace(ARTIFACT_EXT, '').split('--').slice(2).join('--')
+
+  if (!existsSync(artifactPath)) {
+    return {
+      ref: artifactPath,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      reason: 'artifact named by the evidence snapshot is no longer on disk.',
+    }
+  }
+
+  // Prefer the bridge's own receipt over inference from the filename.
+  //
+  // Every artifact has a `<name>.result.txt` sidecar holding the exact branch the
+  // bridge pushed, and reading it beats reconstructing that branch from the file
+  // name: the bridge appends a run suffix (`…-20260812` becomes
+  // `…-20260812-08120203`), so name-matching is a guess that happens to work.
+  // A guess that usually works is the worst kind here — it fails silently on the
+  // one artifact whose naming drifted, and reports it as unrecoverable.
+  const declaredBranch = readBridgeReceipt(artifactPath)
+  const landedFromReceipt =
+    declaredBranch && remoteBranches.has(declaredBranch) ? [declaredBranch] : []
+
+  const landed = landedFromReceipt.length
+    ? landedFromReceipt
+    : slug
+      ? [...remoteBranches].filter((b) => b.startsWith(`chatgpt/${slug}`) || b.includes(slug))
+      : []
+
+  if (landed.length > 0) {
+    return {
+      ref: artifactPath,
+      sha: resolve(`origin/${landed[0]}`),
+      classification: 'ALREADY_PRESENT',
+      bucket,
+      preservedIn: landed.map((b) => `origin/${b}`),
+      reason:
+        `the bridge pushed this payload to origin/${landed[0]}, so its contents are durable ` +
+        'independently of the zip. The archive is kept as provenance, not as the only copy.',
+    }
+  }
+
+  return {
+    ref: artifactPath,
+    sha: null,
+    classification: bucket === '_failed' ? 'CONFLICTED_NEEDS_FOCUSED_TASK' : 'RECOVERABLE_VALUE',
+    bucket,
+    reason:
+      bucket === '_failed'
+        ? 'the bridge failed to apply this payload and no remote branch carries it.'
+        : `marked applied, but no remote branch matches "${slug}" — the exit code said yes and ` +
+          'the remote says otherwise. The zip is currently the only copy.',
+  }
+}
+
 // ─── Duplicate-snapshot collapse ─────────────────────────────────────────────
 
 /** Which kind of evidence is the most durable carrier of a given tree. */
@@ -361,6 +570,201 @@ export function enumerateEvidence() {
   return { branches, rescueRefs, stashes, worktrees }
 }
 
+/** Collect every `--flag <value>` occurrence, so the flags are repeatable. */
+export function collectFlag(args, flag) {
+  const out = []
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === flag && args[i + 1] && !args[i + 1].startsWith('--')) out.push(args[i + 1])
+  }
+  return out
+}
+
+/**
+ * Every zip the bridge has already touched, under `<dropbox>/_applied` and
+ * `<dropbox>/_failed`. Enumerated rather than taken from the snapshot, for the
+ * same reason the refs are: a snapshot is a photograph, and the brief asks about
+ * the live source.
+ */
+export function enumerateBridgeArtifacts(dropboxDir) {
+  if (!dropboxDir || !existsSync(dropboxDir)) return []
+  return ['_applied', '_failed'].flatMap((bucket) => {
+    const dir = join(dropboxDir, bucket)
+    if (!existsSync(dir)) return []
+    return readdirSync(dir)
+      // `.result.txt` sidecars sit beside the payloads and are not payloads.
+      .filter((f) => ARTIFACT_EXT.test(f))
+      .map((f) => join(dir, f))
+  })
+}
+
+/**
+ * Classify a Codex output artifact — a patch Codex wrote into its own
+ * `<session>/outputs/` directory, upstream of the dropbox.
+ *
+ * These are named `<repo>--<slug>.patch`, with no timestamp prefix and no
+ * `.result.txt` receipt: Codex writes the patch, and only later does the bridge
+ * copy it into the dropbox, rename it with a timestamp, apply it and record where
+ * it landed. So the same bytes exist twice under two different names, and the
+ * copy that knows its fate is the other one.
+ *
+ * Matching by name across that rename would be guesswork. Matching by **content
+ * hash** is not: if the bytes are identical, it is the same patch, and whatever
+ * the bridge did with one it did with both.
+ *
+ * The failure this avoids is specific. A Codex output whose dropbox twin already
+ * landed on a remote is safe, but nothing in its own filename says so — classified
+ * on its own it looks like an unreferenced patch sitting in a scratch directory,
+ * which reads as either "the only copy" (needless recovery work) or "some leftover"
+ * (quietly dropping a real one). Hashing settles it.
+ */
+export function classifyCodexOutput(artifactPath, ctx, bridgeArtifacts = []) {
+  if (!existsSync(artifactPath)) {
+    return {
+      ref: artifactPath,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      reason: 'Codex output named by the evidence snapshot is no longer on disk.',
+    }
+  }
+
+  const digest = sha256File(artifactPath)
+  const twin = bridgeArtifacts.find(
+    (p) => p !== artifactPath && existsSync(p) && sha256File(p) === digest,
+  )
+
+  if (twin) {
+    const viaBridge = classifyBridgeArtifact(twin, ctx)
+    return {
+      ...viaBridge,
+      ref: artifactPath,
+      sha256: digest,
+      identicalTo: twin,
+      reason:
+        `byte-identical (sha256 ${digest.slice(0, 12)}) to the dropbox artifact ` +
+        `${basename(twin)}, so it shares its fate. ${viaBridge.reason}`,
+    }
+  }
+
+  // No twin: fall back to the repo/slug encoded in the name.
+  const slug = basename(artifactPath).replace(ARTIFACT_EXT, '').split('--').slice(1).join('--')
+  const landed = slug ? [...ctx.remoteBranches].filter((b) => b.includes(slug)) : []
+
+  if (landed.length > 0) {
+    return {
+      ref: artifactPath,
+      sha: resolve(`origin/${landed[0]}`),
+      sha256: digest,
+      classification: 'ALREADY_PRESENT',
+      preservedIn: landed.map((b) => `origin/${b}`),
+      reason:
+        `no dropbox artifact carries these bytes, but origin/${landed[0]} matches the ` +
+        'slug in the filename. The content ships.',
+    }
+  }
+
+  return {
+    ref: artifactPath,
+    sha: null,
+    sha256: digest,
+    classification: 'RECOVERABLE_VALUE',
+    reason:
+      'a Codex output patch that never reached the dropbox and matches no remote ' +
+      'branch. It was written and then nothing carried it — this file is the only copy.',
+  }
+}
+
+// ─── Turning "no remote copy" into something you can act on ──────────────────
+
+/**
+ * The run already ends by printing how many items have NO remote copy. That number
+ * has been in the hundreds for every fingerprint so far, and a number is not a
+ * remedy — if this disk dies the report is an obituary, not a recovery.
+ *
+ * So emit the remedy: an idempotent script that pushes each local-only tip to
+ * `refs/preserved/<name>` on origin.
+ *
+ * The namespace is the whole safety argument. `refs/preserved/*` is NOT under
+ * `refs/heads/*`, so it is not a branch: the merge train, branch protection, CI
+ * triggers and Vercel's Git integration all enumerate branches and will never see
+ * these. Pushing 30 recovered tips as real branches would hand the merge train 30
+ * things to integrate and could trip a production deploy. Pushing them as preserved
+ * refs makes them survive a dead disk and change nothing else.
+ *
+ * The generated script defaults to a dry run for the same reason this tool is
+ * read-only: the operator should see the plan before it executes.
+ */
+export function buildPreservationPlan(items, { namespace = 'refs/preserved' } = {}) {
+  // Every ref-shaped item, not just `kind === 'branch'`. That filter was the hole:
+  // on this repository it reported "518 items have NO remote copy — the only copy is
+  // on this disk" and then generated a plan covering 11 of them, because the other 507
+  // were rescue/archive refs. A sweep ref is the *most* at-risk kind of evidence there
+  // is — it exists precisely because the work was never on a branch — so excluding it
+  // inverted the tool's own warning.
+  //
+  // Worktrees and stashes are still excluded: they have no ref to push.
+  const PUSHABLE = new Set(['branch', 'rescue_ref', 'archive_ref', 'quarantine_ref', 'codex_ref'])
+  const atRisk = items.filter(
+    (i) =>
+      PUSHABLE.has(i.kind) &&
+      i.classification === 'RECOVERABLE_VALUE' &&
+      i.remotePreserved === false &&
+      i.sha &&
+      typeof i.ref === 'string' &&
+      i.ref.startsWith('refs/'),
+  )
+
+  const lines = [
+    '#!/usr/bin/env bash',
+    '# GENERATED by scripts/reconcile-evidence.mjs --preserve-plan. Do not hand-edit.',
+    '#',
+    '# Pushes every local-only tip — branches AND rescue/archive/quarantine refs — to a',
+    '# PRESERVED ref on origin so it survives this machine. `refs/preserved/*` is not',
+    '# `refs/heads/*`, so none of these become branches: the merge train, CI and Vercel',
+    '# enumerate branches and will not see them.',
+    '#',
+    '#   ./preserve-local-only.sh            # dry run, prints what it would push',
+    '#   APPLY=1 ./preserve-local-only.sh    # actually pushes',
+    '#',
+    '# Idempotent: re-running pushes the same sha to the same ref, which is a no-op.',
+    'set -euo pipefail',
+    '',
+    'APPLY="${APPLY:-0}"',
+    'REMOTE="${REMOTE:-origin}"',
+    '',
+    'push() {',
+    '  local sha="$1" ref="$2"',
+    '  if [ "$APPLY" = "1" ]; then',
+    '    git push "$REMOTE" "$sha:$ref"',
+    '  else',
+    '    echo "would push $sha -> $ref"',
+    '  fi',
+    '}',
+    '',
+    `# ${atRisk.length} tip(s) with no remote copy.`,
+  ]
+
+  for (const item of atRisk) {
+    // `refs/heads/x` -> `x`, but `refs/orch-rescue/x` -> `orch-rescue/x`. Keeping the
+    // source namespace for non-branch refs stops two different kinds of evidence that
+    // happen to share a trailing name from colliding on one preserved ref.
+    const name = item.ref.startsWith('refs/heads/')
+      ? item.ref.slice('refs/heads/'.length)
+      : item.ref.slice('refs/'.length)
+    lines.push(`push ${item.sha} ${namespace}/${name}   # ${item.uniqueCommits ?? '?'} unique commit(s)`)
+  }
+
+  if (atRisk.length === 0) {
+    lines.push('echo "nothing at risk: every recoverable tip already has a remote copy."')
+  } else {
+    lines.push('')
+    lines.push(
+      `echo "${atRisk.length} tip(s) handled. Nothing was deleted, reset or moved."`,
+    )
+  }
+
+  return { script: `${lines.join('\n')}\n`, atRisk: atRisk.length }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 function main() {
@@ -369,7 +773,15 @@ function main() {
   const jsonOut = args.includes('--json') ? args[args.indexOf('--json') + 1] : null
 
   if (!fingerprint || fingerprint.startsWith('--')) {
-    console.error('usage: node scripts/reconcile-evidence.mjs --fingerprint <sha> [--json out]')
+    console.error(
+      'usage: node scripts/reconcile-evidence.mjs --fingerprint <sha> [--json out]\n' +
+        '                 [--default-branch <name>]\n' +
+        '                 [--external-worktree <path>]...  worktrees git can no longer list\n' +
+        '                 [--bridge-artifact <path>]...    a single dropbox zip\n' +
+        '                 [--dropbox <dir>]                enumerate _applied/ and _failed/\n' +
+        '                 [--preserve-plan <path>]         write a push plan for local-only tips\n' +
+        '                 [--codex-output <path>]...       a patch in a Codex session outputs dir',
+    )
     process.exit(2)
   }
 
@@ -424,6 +836,15 @@ function main() {
   const ctx = { mainSha, localDefaultSha, liveTaskSlugs, remoteBranches }
   const { branches, rescueRefs, stashes, worktrees } = enumerateEvidence()
 
+  // Evidence git cannot enumerate for itself — see the classifiers above.
+  const externalWorktrees = collectFlag(args, '--external-worktree')
+  const dropboxDir = collectFlag(args, '--dropbox')[0] ?? null
+  const bridgeArtifacts = [
+    ...collectFlag(args, '--bridge-artifact'),
+    ...enumerateBridgeArtifacts(dropboxDir),
+  ].filter((p, i, a) => a.indexOf(p) === i)
+  const codexOutputs = collectFlag(args, '--codex-output')
+
   const items = collapseDuplicateTrees([
     ...branches.map((b) => ({ kind: 'branch', ...classifyRef(b, ctx) })),
     ...rescueRefs.map((r) => ({ kind: 'rescue_ref', ...classifyRef(r, ctx) })),
@@ -433,6 +854,18 @@ function main() {
       ref: w.path,
       branch: w.branch,
       ...classifyRef(w.branch === 'DETACHED' ? 'HEAD' : w.branch, ctx),
+    })),
+    ...externalWorktrees.map((p) => ({
+      kind: 'external_worktree',
+      ...classifyExternalWorktree(p, ctx),
+    })),
+    ...bridgeArtifacts.map((p) => ({
+      kind: 'bridge_artifact',
+      ...classifyBridgeArtifact(p, ctx),
+    })),
+    ...codexOutputs.map((p) => ({
+      kind: 'codex_output',
+      ...classifyCodexOutput(p, ctx, bridgeArtifacts),
     })),
   ])
 
@@ -473,6 +906,16 @@ function main() {
   }
 
   console.log('\n  Nothing was popped, dropped, reset or moved. The evidence is where it was.\n')
+
+  const planOut = collectFlag(args, '--preserve-plan')[0] ?? null
+  if (planOut) {
+    const { script, atRisk } = buildPreservationPlan(items)
+    writeFileSync(planOut, script, { mode: 0o755 })
+    console.log(
+      `  preservation plan → ${planOut} (${atRisk} tip(s), dry-run by default; ` +
+        'APPLY=1 to push)\n',
+    )
+  }
 
   if (jsonOut) {
     writeFileSync(jsonOut, `${JSON.stringify(ledger, null, 2)}\n`)
