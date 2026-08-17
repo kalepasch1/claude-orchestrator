@@ -192,7 +192,21 @@ class MainTest(unittest.TestCase):
              patch.object(isw, "sweep") as sweep:
             rc = isw.main(["--verify-phantom", "--project", "beethoven", "--limit", "100"])
         self.assertEqual(rc, 0)
-        vp.assert_called_once_with(project="beethoven", limit=100, dry_run=False)
+        # include_quarantined is new (2026-08-17) and defaults to False, so the DEFAULT CLI
+        # invocation must still scan PHANTOM_UNVERIFIED only. Pinned exactly rather than
+        # loosened to ANY: this assertion exists to catch the CLI quietly gaining reach over
+        # rows nobody asked it to touch, and a loose matcher would stop catching that.
+        vp.assert_called_once_with(project="beethoven", limit=100, dry_run=False,
+                                   include_quarantined=False)
+        sweep.assert_not_called()
+
+    def test_main_passes_include_quarantined_when_the_flag_is_given(self):
+        with patch.object(isw, "verify_phantom", return_value={"scanned": 0, "merged": [],
+                                                              "requeued": []}) as vp, \
+             patch.object(isw, "sweep") as sweep:
+            rc = isw.main(["--verify-phantom", "--include-quarantined", "--limit", "10"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(vp.call_args.kwargs["include_quarantined"])
         sweep.assert_not_called()
 
     def test_main_without_flags_runs_the_sweep(self):
