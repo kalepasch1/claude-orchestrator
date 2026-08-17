@@ -324,3 +324,49 @@ def test_case_summary_defaults_to_the_normalized_event():
     monitor.handle_regime_event("user-free", "free", BREACH_EVENT)
     assert "CA" in monitor.escalations[0]["case_summary"]
     assert "late filing" in monitor.escalations[0]["case_summary"]
+
+
+class TestPackagePublicSurface:
+    """The acceptance criterion imports DocumentUpdater from the package, not the module.
+
+    The package used to export the oracle helpers but not the class they exist to feed,
+    so `from household_legal import DocumentUpdater` — the obvious spelling — raised
+    ImportError while the implementation underneath was fine. A capability that is only
+    reachable if you already know the sys.path convention is not a public surface.
+    """
+
+    def test_document_updater_is_importable_from_the_package(self):
+        import household_legal
+
+        assert hasattr(household_legal, "DocumentUpdater")
+        assert household_legal.DocumentUpdater is du.DocumentUpdater
+
+    def test_document_updater_is_advertised_in_all(self):
+        import household_legal
+
+        assert "DocumentUpdater" in household_legal.__all__
+
+    def test_the_oracle_helpers_are_still_exported(self):
+        """Adding the class must not quietly narrow what was already public."""
+        import household_legal
+
+        for name in ("get_regime_oracle", "safe_consume_regime_event",
+                     "normalize_regime_event", "safe_subscribe", "NoOpRegimeOracle"):
+            assert name in household_legal.__all__
+            assert hasattr(household_legal, name)
+
+    def test_the_acceptance_fixture_runs_off_the_package_import(self):
+        """The literal acceptance case, driven through the public surface."""
+        from household_legal import DocumentUpdater
+
+        updater = DocumentUpdater()
+        ok, template = updater.update_lease_template(
+            {"regime": "CA", "effective_date": "2026-09-01"})
+
+        assert ok is True
+        assert template
+        assert "CA" in str(template)
+        assert "2026-09-01" in str(template)
+
+        updater.fire_notification("user-1", "CA lease clauses updated 2026-09-01")
+        assert len(updater.notification_queue) == 1
