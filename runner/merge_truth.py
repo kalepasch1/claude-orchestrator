@@ -117,20 +117,41 @@ def invalidate_fetch_cache():
     _fetched.clear()
 
 
-def _resolve_target_ref(repo, target_branch):
-    """Prefer origin/<target_branch>; fall back to the local ref if origin is not present.
+def _resolve_target_refs(repo, target_branch):
+    """EVERY ref that could carry the work, in preference order.
 
-    Returns (ref, err). A repo with neither is an infra error, not a phantom: it means we
+    Returns (refs, err). A repo with none is an infra error, not a phantom: it means we
     cannot ask the question, not that the answer is no.
+
+    This used to return only the FIRST ref that resolved (2026-08-17). Because
+    `origin/<target>` almost always resolves, the local branch was effectively never
+    consulted — the documented "fall back to the local ref" only ever triggered when
+    origin was entirely absent. Under the deliberate dev->prod freeze the staging branch
+    is landed locally and NOT pushed, so origin resolves but is stale, and every commit
+    landed since the last promotion was declared PHANTOM despite being demonstrably
+    reachable from the local branch it was merged into.
+
+    That made the caller's guard actively harmful: integration_sweeper would correctly
+    identify work as integrated, call guarded_task_update to record MERGED, and this
+    check would silently downgrade the write to PHANTOM_UNVERIFIED — so the evidence
+    trail recorded the opposite of what was verified. Returning all candidates lets
+    verify_merge_reachable answer "is it on ANY ref that counts", which is the actual
+    question.
     """
+    refs, seen = [], set()
     for ref in (f"origin/{target_branch}", target_branch):
+        if ref in seen:
+            continue
+        seen.add(ref)
         try:
             r = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
         except (subprocess.TimeoutExpired, OSError) as exc:
             return None, f"rev-parse {ref} failed: {exc}"
         if r.returncode == 0:
-            return ref, None
-    return None, f"neither origin/{target_branch} nor {target_branch} resolves in {repo}"
+            refs.append(ref)
+    if not refs:
+        return None, f"neither origin/{target_branch} nor {target_branch} resolves in {repo}"
+    return refs, None
 
 
 def verify_merge_reachable(repo, sha, target_branch, fetch=True):
@@ -160,20 +181,36 @@ def verify_merge_reachable(repo, sha, target_branch, fetch=True):
     if exists.returncode != 0:
         return PHANTOM, f"commit {sha[:12]} does not exist in {repo}"
 
-    ref, err = _resolve_target_ref(repo, target_branch)
+    refs, err = _resolve_target_refs(repo, target_branch)
     if err:
         return INFRA_ERROR, err
 
-    try:
-        anc = _git(repo, "merge-base", "--is-ancestor", sha, ref)
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return INFRA_ERROR, f"merge-base failed: {exc}"
-    if anc.returncode == 0:
-        return OK, f"{sha[:12]} is an ancestor of {ref}"
-    if anc.returncode == 1:
-        return PHANTOM, f"commit {sha[:12]} is not an ancestor of {ref}"
-    # Any other exit code is git failing to answer, not answering "no".
-    return INFRA_ERROR, f"merge-base exit {anc.returncode}: {(anc.stderr or '').strip()[-160:]}"
+    # PHANTOM only when EVERY candidate ref says no. Testing a single ref meant work
+    # that had landed locally but was not yet pushed read as never having landed.
+    checked = []
+    for ref in refs:
+        try:
+            anc = _git(repo, "merge-base", "--is-ancestor", sha, ref)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return INFRA_ERROR, f"merge-base failed: {exc}"
+        if anc.returncode == 0:
+            return OK, f"{sha[:12]} is an ancestor of {ref}"
+        if anc.returncode == 1:
+            checked.append(ref)
+            continue
+        # Any other exit code is git failing to answer, not answering "no". Returning
+        # here rather than continuing keeps a broken git from being read as a negative.
+        # Conflict resolution note (2026-08-17): the original commit called
+        # stderr_digest.digest(...) here. runner/stderr_digest.py does not exist on
+        # master -- it shipped in a layer of PR #24 that is NOT part of this branch --
+        # so importing it would make this module unimportable. Kept master's existing
+        # [-160:] tail truncation, which is what every other error path in this file
+        # already uses. Swap to stderr_digest only if that module actually lands.
+        return INFRA_ERROR, (
+            f"merge-base exit {anc.returncode}: "
+            f"{(anc.stderr or '').strip()[-160:]}"
+        )
+    return PHANTOM, f"commit {sha[:12]} is not an ancestor of any of {', '.join(checked)}"
 
 
 def _project_row(project_id):
