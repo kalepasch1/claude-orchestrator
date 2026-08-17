@@ -138,7 +138,7 @@ useHead({
         <ol>
           <li><time>09:41:08</time><b>DESTINATION</b><span>Founder sets outcome, constraints, and authority</span><i>✓</i></li>
           <li><time>09:41:10</time><b>TERRAIN</b><span>AI maps portfolio effects and hidden dependencies</span><i>✓</i></li>
-          <li><time>09:41:13</time><b>ROUTES</b><span>Hivemind compares cost, quality, speed, and risk</span><i>✓</i></li>
+          <li><time>09:41:13</time><b>ROUTES</b><span>AI compares cost, quality, speed, and risk</span><i>✓</i></li>
           <li class="live"><time>09:41:16</time><b>GUIDANCE</b><span>Better route found · 31% faster · $4,820 less</span><i>●</i></li>
           <li><time>—</time><b>GUARDRAIL</b><span>Lane warning before customer-impacting change</span><i>○</i></li>
           <li><time>—</time><b>ARRIVAL</b><span>Independent proof confirms the destination</span><i>○</i></li>
