@@ -38,6 +38,14 @@ Public API
     classify(repo, item, ctx)                    -> dict
     reconcile(repo, fingerprint, ...)            -> dict report
     write_ledger(records, fingerprint, db=None)  -> dict
+    regression_report(repo, result_ref, ...)     -> dict  (delivery-time safety gate)
+
+Delivery gate
+-------------
+Classification says whether an evidence ref still carries value. It does not say the
+branch you built from it is safe to ship. A ref that is far behind the base merges
+cleanly and still deletes live code if its tree is checked out rather than rebased, so
+`regression_report()` must be run on the produced branch before it is marked DONE.
 
 Environment
 -----------
@@ -220,6 +228,88 @@ def _superseded(repo: str, ref: str, base_ref: str, paths: list) -> bool:
     return True
 
 
+def _behind(repo: str, ref: str, base_ref: str) -> int:
+    """How many base commits the ref has never seen."""
+    res = _git(["git", "rev-list", "--count", f"{ref}..{base_ref}"], repo)
+    out = (res.stdout or "").strip()
+    return int(out) if out.isdigit() else 0
+
+
+def _numstat_removed(repo: str, base_ref: str, ref: str, paths=None) -> tuple:
+    """(removed_lines, removed_files) that taking `ref`'s tree verbatim would delete.
+
+    This is the two-dot diff on purpose. `base_ref...ref` asks "what did this ref add
+    since it forked", which is what a merge would apply and is always reassuring.
+    `base_ref..ref` asks "what would the working tree look like if I checked this ref
+    out over base" — and that is the operation a recovery executor actually performs
+    when it copies files out of an evidence ref, so it is the one that has to be
+    audited.
+    """
+    args = ["git", "diff", "--numstat", base_ref, ref]
+    if paths:
+        args += ["--", *paths]
+    removed_lines = 0
+    removed_files = []
+    for line in _lines(_git(args, repo)):
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added, deleted, path = parts[0], parts[1], parts[2]
+        if not deleted.isdigit():          # binary file: "-\t-\tpath"
+            continue
+        deleted_n = int(deleted)
+        added_n = int(added) if added.isdigit() else 0
+        if deleted_n > added_n:
+            removed_lines += deleted_n - added_n
+            removed_files.append(path)
+    return removed_lines, removed_files
+
+
+def regression_report(repo: str, result_ref: str, base_ref: str = "",
+                      *, base: str = "") -> dict:
+    """Would delivering `result_ref` as-is delete code that exists on the current base?
+
+    This is the gate that was missing. Classification alone is not enough: an evidence
+    ref can be genuinely RECOVERABLE_VALUE and still produce a regression, because
+    `_applies_cleanly` proves that a *three-way merge* is safe while a recovery executor
+    that checks the ref's tree out over the base performs something else entirely. When
+    the ref is thousands of commits behind, that difference is the whole diff — the
+    branch lands looking like a feature (386 insertions) and is in fact a partial revert
+    (140 deletions of code the base still needs).
+
+    Returns a dict; `safe` is False when the branch is behind the base AND its two-dot
+    diff nets out to removed lines. Callers should refuse to mark such a branch DONE and
+    rebuild it on the current base instead.
+    """
+    base = base or default_branch(repo)
+    if not base_ref:
+        base_ref = f"origin/{base}"
+        if _git(["git", "rev-parse", "--verify", "--quiet", base_ref], repo).returncode != 0:
+            base_ref = base
+    report = {
+        "ref": result_ref, "base_ref": base_ref, "behind": 0,
+        "removed_lines": 0, "removed_files": [], "safe": True, "detail": "",
+    }
+    if _git(["git", "rev-parse", "--verify", "--quiet", result_ref], repo).returncode != 0:
+        report["safe"] = False
+        report["detail"] = f"ref not resolvable: {result_ref}"
+        return report
+    report["behind"] = _behind(repo, result_ref, base_ref)
+    removed_lines, removed_files = _numstat_removed(repo, base_ref, result_ref)
+    report["removed_lines"] = removed_lines
+    report["removed_files"] = removed_files[:40]
+    if report["behind"] and removed_lines:
+        report["safe"] = False
+        report["detail"] = (
+            f"{result_ref} is {report['behind']} commit(s) behind {base_ref} and its tree "
+            f"removes {removed_lines} net line(s) across {len(removed_files)} file(s); "
+            f"rebase onto {base_ref} instead of delivering this tree verbatim")
+    elif report["behind"]:
+        report["detail"] = (f"{report['behind']} commit(s) behind {base_ref} but removes "
+                            f"nothing; rebase before delivery")
+    return report
+
+
 def _applies_cleanly(repo: str, ref: str, base_ref: str) -> tuple:
     """Read-only merge dry run via `git merge-tree`. Returns (clean, detail).
 
@@ -257,6 +347,10 @@ def classify(repo: str, item: dict, ctx: dict) -> dict:
         "branch": "",
         "commit": "",
         "detail": "",
+        "behind": 0,
+        "would_remove_lines": 0,
+        "would_remove_files": [],
+        "apply_mode": "",
     }
     ref = item.get("ref", "")
     base_ref = ctx["base_ref"]
@@ -313,8 +407,24 @@ def classify(repo: str, item: dict, ctx: dict) -> dict:
 
     # 5. Real, unclaimed, applicable value.
     record["classification"] = "RECOVERABLE_VALUE"
+    # How the recovery must be performed is part of the classification, not an
+    # implementation detail left to the executor. merge-tree proved a three-way merge is
+    # clean; it proved nothing about checking this tree out over the base, which is what
+    # a stale ref makes catastrophic. Carry the numbers so the delivery step can assert.
+    behind = _behind(repo, ref, base_ref)
+    removed_lines, removed_files = _numstat_removed(repo, base_ref, ref, paths)
+    record["behind"] = behind
+    record["would_remove_lines"] = removed_lines
+    record["would_remove_files"] = removed_files[:40]
+    record["apply_mode"] = "rebase" if behind else "fast-forward"
+    warning = ""
+    if behind and removed_lines:
+        warning = (f"; WARNING: {behind} commit(s) behind {ctx['base']} and taking this "
+                   f"tree verbatim would delete {removed_lines} line(s) from "
+                   f"{len(removed_files)} file(s) — rebase, never check out")
     record["disposition"] = (f"{len(unique)} unique commit(s) across {len(paths)} path(s) "
-                             f"apply cleanly; deliver via a new isolated worktree + agent branch")
+                             f"apply cleanly; deliver via a new isolated worktree + agent "
+                             f"branch rebased onto {ctx['base_ref']}{warning}")
     return record
 
 
