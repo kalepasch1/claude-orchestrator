@@ -31,6 +31,11 @@ ENV FLAGS
 ---------
   ORCH_JOURNEY_ENABLED        default ON  — run journeys and require them for promotion
   ORCH_JOURNEY_ALLOW_FLAKY    default OFF — treat a flaky verdict as a pass
+  ORCH_JOURNEY_ALLOW_MISSING  default OFF — promote a task that NEVER DECLARED a journey on
+                                            release evidence alone. Covers the undeclared
+                                            case only: a malformed declaration, a FAIL and a
+                                            FLAKY all still block. Every task it promotes
+                                            carries a note saying behaviour was not proven.
   ORCH_JOURNEY_MAX_STEPS      default 8
   ORCH_JOURNEY_STEP_TIMEOUT   default 20  (seconds)
   ORCH_JOURNEY_BUDGET_S       default 120 (seconds, whole journey)
@@ -57,6 +62,13 @@ SKIPPED = "skipped"
 # A journey that was never declared or never ran. Distinct from FAIL: nothing proved it
 # broken, but nothing proved it worked either, and that must not promote.
 MISSING = "missing"
+
+# WHY a receipt is MISSING. The two cases are not equivalent and must not be governed by one
+# switch: UNDECLARED means nobody ever wrote a journey for this task, MALFORMED means somebody
+# wrote one and it does not parse. An operator may reasonably choose to let the first through
+# on release evidence alone; letting the second through would be ignoring a broken declaration.
+REASON_UNDECLARED = "undeclared"
+REASON_MALFORMED = "malformed"
 
 PROBE_HTTP = "http"
 PROBE_COMMAND = "command"
@@ -440,11 +452,17 @@ def _finalise(spec, steps, verdict, sha, base_url, environment, total_ms, note="
 
 
 def receipt_missing(*, sha="", base_url="", environment=None, reason="no journey declared",
-                    slug=""):
-    """The explicit 'nothing proved this' receipt. Never promotes."""
-    return _finalise({"slug": slug, "probe": PROBE_NONE, "required": True,
-                      "environment": environment, "justification": ""},
-                     [], MISSING, sha, base_url, environment, 0, note=reason)
+                    slug="", reason_code=REASON_UNDECLARED):
+    """The explicit 'nothing proved this' receipt.
+
+    Promotes only under ORCH_JOURNEY_ALLOW_MISSING, and then only when `reason_code` is
+    UNDECLARED — a malformed declaration is a defect, not an absence.
+    """
+    receipt = _finalise({"slug": slug, "probe": PROBE_NONE, "required": True,
+                         "environment": environment, "justification": ""},
+                        [], MISSING, sha, base_url, environment, 0, note=reason)
+    receipt["reason_code"] = reason_code
+    return receipt
 
 
 # ------------------------------------------------------------------- the gate
@@ -454,12 +472,35 @@ HTTP_200_ONLY_REASON = (
     "release health (HTTP 200 + live SHA) is necessary but not sufficient: "
     "no passing production journey receipt for this task")
 
+# The allowance says out loud, in the note that lands on every task it promotes, that the
+# behaviour was NOT proven. A promotion whose own record admits what it did not check is a
+# very different object from one that reads like a pass.
+UNDECLARED_ALLOWED_REASON = (
+    "no production journey was ever declared for this task; promoted under "
+    "ORCH_JOURNEY_ALLOW_MISSING on release evidence alone (the change shipped and was not "
+    "rolled back) — BEHAVIOUR WAS NOT PROVEN")
+
+
+def _is_undeclared(receipt):
+    """True only for the never-declared case.
+
+    Receipts written before `reason_code` existed carry no code, so fall back to the exact
+    default note. Anything else — a malformed spec, an unrecognised note — is deliberately
+    NOT treated as undeclared: the allowance must not silently widen to cover defects.
+    """
+    code = receipt.get("reason_code")
+    if code:
+        return code == REASON_UNDECLARED
+    return str(receipt.get("note") or "").strip().lower() == "no journey declared"
+
 
 def gate(receipt, *, required=True):
     """(ok, reason). The single place promotion asks 'did the journey prove it?'"""
     if not _on("ORCH_JOURNEY_ENABLED"):
         return True, "journeys disabled (ORCH_JOURNEY_ENABLED=0)"
     if not receipt:
+        if required and _on("ORCH_JOURNEY_ALLOW_MISSING", "0"):
+            return True, UNDECLARED_ALLOWED_REASON
         return (False, HTTP_200_ONLY_REASON) if required else (True, "no journey required")
     verdict = receipt.get("verdict")
     if verdict == PASS:
@@ -470,6 +511,20 @@ def gate(receipt, *, required=True):
         return False, ("journey flaky: production was observed in two states within one "
                        "run; a retry-only pass is not delivery")
     if verdict == MISSING:
+        # THE GATE HAD NO KEY (2026-08-13 -> 2026-08-17).
+        #
+        # `spec_for_task` reads `task["journey"]`. The `tasks` table has no such column and
+        # nothing populates one, so EVERY task got a MISSING receipt and every task was
+        # refused from the day this gate landed. A gate nothing can pass is not a standard,
+        # it is an outage; DEPLOYED_AND_VERIFIED stopped moving entirely on 2026-08-07.
+        #
+        # ORCH_JOURNEY_ALLOW_MISSING (default OFF) covers ONLY the never-declared case, and
+        # says so in the reason it writes onto the task. FAIL and FLAKY still block whatever
+        # it is set to — that boundary is the whole point. Turning this on is a decision to
+        # promote on delivery evidence while journeys are being written, not a decision that
+        # journeys do not matter.
+        if _on("ORCH_JOURNEY_ALLOW_MISSING", "0") and _is_undeclared(receipt):
+            return True, UNDECLARED_ALLOWED_REASON
         return (False, HTTP_200_ONLY_REASON) if (required or receipt.get("required")) \
             else (True, "no journey required")
     failed = receipt.get("failed_assertions") or []
@@ -570,7 +625,8 @@ def verify_task(task, *, base_url="", sha="", environment="production", store_re
     except JourneySpecError as e:
         receipt = receipt_missing(sha=sha, base_url=base_url, environment=environment,
                                   slug=str((task or {}).get("slug") or ""),
-                                  reason=f"invalid journey spec: {e}")
+                                  reason=f"invalid journey spec: {e}",
+                                  reason_code=REASON_MALFORMED)
         if store_receipt:
             store(receipt)
         return receipt
