@@ -481,6 +481,49 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+#: How long a single framework-type generation may take. Configurable because a cold
+#: prepare on a large monorepo package legitimately exceeds the old hard-coded 180s.
+PREPARE_TIMEOUT_S = int(os.environ.get("ORCH_PREPARE_TIMEOUT_S", "420") or 420)
+
+
+def _local_bin(start, name, stop_at=None):
+    """Nearest node_modules/.bin/<name> at or above `start`. None if absent. Never raises.
+
+    QA runs in an ephemeral overlay -- a clean checkout of a git ref. node_modules is
+    gitignored, so the overlay has none; _link_shared_runtime symlinks it at the worktree
+    ROOT only. _prepare_generated_types then runs once per PACKAGE root, and a monorepo
+    sub-package has no node_modules of its own, so `npx nuxi` fell through to downloading
+    nuxi from the registry and hit the 180s timeout. Walking up finds the linked root.
+    """
+    try:
+        current = os.path.abspath(start)
+        stop_at = os.path.abspath(stop_at) if stop_at else None
+        while True:
+            candidate = os.path.join(current, "node_modules", ".bin", name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+            parent = os.path.dirname(current)
+            # Test the PARENT, not the current directory: testing `current` lets the walk
+            # step one level ABOVE stop_at before noticing, which would pick up a
+            # node_modules belonging to a different checkout.
+            if parent == current or (stop_at and not parent.startswith(stop_at)):
+                return None
+            current = parent
+    except Exception:
+        return None
+
+
+def _prepare_cmd(root, worktree):
+    """The cheapest command that can generate Nuxt types, and a label for the log."""
+    local = _local_bin(root, "nuxi", worktree) or _local_bin(root, "nuxt", worktree)
+    if local:
+        # Direct exec: no npx resolution, no registry round-trip, no login shell.
+        return [local, "prepare"], f"local {os.path.basename(local)}"
+    # --no-install fails fast instead of silently downloading for minutes. A missing
+    # toolchain is a real condition the release should surface, not wait out.
+    return ["bash", "-lc", "npx --no-install nuxi prepare"], "npx --no-install"
+
+
 def _prepare_generated_types(worktree):
     """Generate checkout-local framework types for every typed Nuxt package root."""
     roots = [worktree]
@@ -505,10 +548,16 @@ def _prepare_generated_types(worktree):
             return False, str(e)
         if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
             continue
-        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
-                              capture_output=True, text=True, timeout=180)
+        cmd, how = _prepare_cmd(root, worktree)
+        try:
+            proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                                  timeout=PREPARE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            logs.append(f"[{os.path.relpath(root, worktree)}] via {how}: "
+                        f"timed out after {PREPARE_TIMEOUT_S}s")
+            return False, "\n".join(logs)
         log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
+        logs.append(f"[{os.path.relpath(root, worktree)}] via {how}\n{log}")
         generated = os.path.join(root, ".nuxt", "tsconfig.json")
         if proc.returncode != 0 or not os.path.exists(generated):
             return False, "\n".join(logs)
