@@ -20,9 +20,46 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+class _StubDbSelect:
+    """Swap a module's `db` handle for a fake whose `select` is the given callable.
+
+    Deliberately exposes no `count`, so callers exercise the same bounded-select fallback
+    they use when the relay does not support count=exact.
+    """
+
+    def __init__(self, module, fn):
+        self.module, self.fn, self._real = module, fn, None
+
+    def __enter__(self):
+        self._real = self.module.db
+        self.module.db = types.SimpleNamespace(select=self.fn)
+        return self.module.db
+
+    def __exit__(self, *exc):
+        self.module.db = self._real
+        return False
+
+
+def _apply_floor(rows, params, ts_col):
+    """Emulate the server-side range filter PostgREST would apply, so a test can prove the
+    floor is pushed down rather than applied after the window has already been chosen."""
+    cond = str(params.get(ts_col) or "")
+    out = list(rows)
+    if cond.startswith("gte."):
+        out = [r for r in out if str(r.get(ts_col)) >= cond[4:]]
+    elif cond.startswith("lt."):
+        out = [r for r in out if str(r.get(ts_col)) < cond[3:]]
+    try:
+        limit = int(params.get("limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    return out[:limit] if limit else out
 
 
 class TestRegenerableArtifacts(unittest.TestCase):
@@ -731,24 +768,67 @@ class TestFunnelIgnoresSentinelTimestamps(unittest.TestCase):
         src = self._src()
         self.assertIn("ORCH_FUNNEL_MAX_SANE_AGE_H", src)
 
-    def test_it_looks_past_a_sentinel_instead_of_reporting_it(self):
-        # A limit of 1 cannot skip anything; the window has to be wide enough to walk.
-        src = self._src()
-        block = src[src.index("def _oldest("):src.index("def snapshot(")]
-        self.assertIn('"limit": "25"', block)
-        self.assertIn("age > sane", block)
+    # BEHAVIOURAL, NOT SOURCE-TEXT (2026-08-17). The three tests that used to live here
+    # asserted on the SOURCE of the buggy branch — one of them required the literal string
+    # "Every row in the window was a sentinel" to be present. That pins the bug in place:
+    # the only way to make the all-sentinel path stop reporting 6.6 years was to delete the
+    # branch those tests demanded. Assert on what the function RETURNS instead.
 
-    def test_skipped_rows_are_counted_not_silently_dropped(self):
-        # Dropping rows quietly is how a monitor starts lying in the other direction.
-        src = self._src()
-        self.assertIn("_SENTINELS", src)
-        self.assertIn("impossible created_at walked past", src)
+    def _funnel(self):
+        import pipeline_funnel
+        return pipeline_funnel
 
-    def test_an_all_sentinel_window_still_reports_something(self):
-        # Reporting "empty" for a stage that has rows would be a worse lie than a big number.
-        src = self._src()
-        block = src[src.index("def _oldest("):src.index("def snapshot(")]
-        self.assertIn("Every row in the window was a sentinel", block)
+    def test_a_sentinel_never_becomes_the_reported_age(self):
+        pf = self._funnel()
+        rows = [{"created_at": "2020-01-01T00:00:04+00:00"},
+                {"created_at": "2026-08-01T00:00:00+00:00"}]
+        with _StubDbSelect(pf, lambda table, params: _apply_floor(rows, params, "created_at")):
+            age = pf._oldest("tasks", {"state": "eq.QUEUED"}, "created_at", stage="ingest")
+        self.assertIsInstance(age, float)
+        self.assertLess(age, pf._sane_age_h())
+
+    def test_an_all_sentinel_stage_is_unmeasurable_not_a_healthy_dash(self):
+        # 46 sentinels exist; a window of 25 can be entirely made of them. Reporting the 25th
+        # one's age reproduced the 6.6-year number, and reporting None would render as a
+        # healthy '-' over a stage that is holding work. Neither is acceptable.
+        pf = self._funnel()
+        rows = [{"created_at": "2020-01-01T00:00:04+00:00"}] * 30
+        with _StubDbSelect(pf, lambda table, params: _apply_floor(rows, params, "created_at")):
+            age = pf._oldest("tasks", {"state": "eq.QUEUED"}, "created_at", stage="ingest")
+        self.assertEqual(age, pf.UNMEASURABLE)
+        self.assertIn("NOT empty", pf._UNMEASURABLE_WHY["ingest"])
+
+    def test_a_genuinely_empty_stage_is_none_not_unmeasurable(self):
+        pf = self._funnel()
+        with _StubDbSelect(pf, lambda table, params: []):
+            age = pf._oldest("tasks", {"state": "eq.QUEUED"}, "created_at", stage="ingest")
+        self.assertIsNone(age)
+
+    def test_the_floor_is_pushed_server_side(self):
+        # The 25 oldest rows must be the 25 oldest REAL rows. Filtering after the fact cannot
+        # guarantee that once a stage holds more sentinels than the window is wide.
+        pf = self._funnel()
+        calls = []
+
+        def capture(table, params):
+            calls.append(dict(params))
+            return [{"created_at": "2026-08-01T00:00:00+00:00"}]
+
+        with _StubDbSelect(pf, capture):
+            pf._oldest("tasks", {"state": "eq.QUEUED"}, "created_at", stage="ingest")
+        self.assertTrue(str(calls[0].get("created_at", "")).startswith("gte."))
+        self.assertEqual(calls[0].get("order"), "created_at.asc")
+
+    def test_sentinel_counts_are_keyed_by_stage_not_by_table(self):
+        # ingest, draft and card all read `tasks`. Keyed by table, ingest's count was
+        # reported again on draft and on card — three stages accusing each other.
+        pf = self._funnel()
+        pf._reset_probe_state()
+        pf._SENTINELS["ingest"] = 46
+        self.assertNotIn("draft", pf._SENTINELS)
+        self.assertNotIn("tasks", pf._SENTINELS)
+        pf._reset_probe_state()
+        self.assertEqual(pf._SENTINELS, {})
 
 
 
