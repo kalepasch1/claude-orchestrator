@@ -1864,7 +1864,7 @@ def run_task(t):
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
                                 cwd=wt,
-                                timeout=int(os.environ.get("TASK_TIMEOUT", "900")),
+                                timeout=int(os.environ.get("TASK_TIMEOUT", "3600")),
                                 mode=_swarm_mode,
                             )
                             r["coder"] = f"swarm:{_swarm_provider}"
@@ -1880,13 +1880,13 @@ def run_task(t):
                             r = agentic_coders.run(coder, draft_prompt, model,
                                                    cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
-                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
                                                cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
-                                               timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                                               timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 if _agentic_repair_continue(
