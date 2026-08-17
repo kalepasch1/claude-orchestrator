@@ -56,6 +56,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -82,6 +83,14 @@ _GIT_TIMEOUT_S = int(os.environ.get("ORCH_MERGE_TRUTH_GIT_TIMEOUT_S", "30") or 3
 # would otherwise fetch once per task.
 _FETCH_TTL_S = int(os.environ.get("ORCH_MERGE_TRUTH_FETCH_TTL_S", "120") or 120)
 _fetched: dict = {}
+
+# Same reasoning for the `projects` row: one gated task reads it twice (resolve_target for
+# the integration branch, gate_merged_patch for the production branch) and the reconciler
+# walks hundreds of tasks per cycle. Set the TTL to 0 to disable caching entirely.
+_PROJECT_ROW_TTL_S = int(os.environ.get("ORCH_MERGE_TRUTH_PROJECT_TTL_S", "60") or 60)
+_PROJECT_ROW_CACHE_MAX = 512
+_project_rows: dict = {}
+_project_rows_lock = threading.Lock()
 
 
 def _git(repo, *args, timeout=None):
@@ -225,15 +234,54 @@ def verify_merge_reachable(repo, sha, target_branch, fetch=True, also_branches=(
     return PHANTOM, f"commit {sha[:12]} is not an ancestor of any of {', '.join(checked)}"
 
 
-def _project_row(project_id):
+def invalidate_project_cache():
+    """Drop the project-row TTL cache (tests, and processes that outlive a projects edit)."""
+    with _project_rows_lock:
+        _project_rows.clear()
+
+
+def _project_row(project_id, use_cache=True):
+    """The `projects` row for `project_id`, or None. Fail-soft: never raises.
+
+    Cached for `_PROJECT_ROW_TTL_S` (2026-08-17). A single gated task read this row twice --
+    once inside `resolve_target()` for the integration branch, once in `gate_merged_patch()`
+    for the production branch -- so every task cost two control-plane round-trips to answer
+    one question about one immutable-in-practice row. The reconciler walks hundreds of tasks
+    per cycle, so that is hundreds of avoidable REST calls against Supabase.
+
+    Threading the row through as a fourth parameter would be the obvious fix and is the wrong
+    one: `resolve_target(task, repo, prod_branch)`'s 3-arg signature is public and is stubbed
+    by name in the suite, so widening it breaks callers that have every right to exist. A
+    cache keeps the signature and removes the duplicate read.
+
+    Only positive results are cached. A miss is usually a genuinely new or misconfigured
+    project, and pinning "not resolvable" for a TTL would keep the gate refusing to write
+    long after the row appeared.
+    """
+    if project_id is None:
+        return None
+    now = time.time()
+    if use_cache and _PROJECT_ROW_TTL_S > 0:
+        with _project_rows_lock:
+            hit = _project_rows.get(project_id)
+        if hit and now - hit[0] < _PROJECT_ROW_TTL_S:
+            return hit[1]
     try:
         rows = db.select("projects", {
             "select": "id,name,repo_path,staging_branch,prod_branch,default_base",
             "id": f"eq.{project_id}",
         }) or []
-        return rows[0] if rows else None
+        row = rows[0] if rows else None
     except Exception:
         return None
+    if row is not None and _PROJECT_ROW_TTL_S > 0:
+        with _project_rows_lock:
+            # The fleet has ~16 projects; the bound guards against a caller passing
+            # unbounded ids, it is not a real eviction policy worth tuning.
+            if len(_project_rows) >= _PROJECT_ROW_CACHE_MAX:
+                _project_rows.clear()
+            _project_rows[project_id] = (now, row)
+    return row
 
 
 def resolve_target(task, repo=None, prod_branch=None):
