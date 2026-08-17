@@ -21,7 +21,7 @@ Be specific to THIS codebase; no trivial nits."""
 
 def rice(o):
     try:
-        return round(o["reach"] * o["impact"] * o["confidence"] / max(0.5, o["effort_days"]), 1)
+        return round(o["reach"] * o["impact"] * o["confidence"] / max(0.5, o["effort_days"]), 2)
     except Exception:
         return 0.0
 
