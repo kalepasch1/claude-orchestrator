@@ -12,6 +12,8 @@ from unittest.mock import patch, MagicMock
 from io import StringIO
 import pytest
 
+import runner_modules
+
 # Add runner directory to path so we can import runner.py
 _RUNNER_DIR = os.path.join(os.path.dirname(__file__), "..", "runner")
 sys.path.insert(0, _RUNNER_DIR)
@@ -41,11 +43,11 @@ def _runner_module():
     whatever runs next.
     """
     saved = sys.modules.get("runner")
-    spec = importlib.util.spec_from_file_location("runner", _RUNNER_PY)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["runner"] = module
+    # Delegated to tests/runner_modules.py rather than re-implementing the spec dance here:
+    # it is the shared answer to this exact ambiguity, and a second private copy of the logic
+    # is one more place for the two to drift apart.
+    module = runner_modules.load("runner")
     try:
-        spec.loader.exec_module(module)
         yield module
     finally:
         if saved is not None:
