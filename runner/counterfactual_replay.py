@@ -157,20 +157,22 @@ def run_replay(lookback_days=None, limit=None, apply=False):
 
 
 def _apply_policy_updates(results):
-    """Persist routing policy updates for diverged decisions."""
-    import db
+    """Persist routing policy updates for diverged decisions via fleet_config."""
+    import json
+    import fleet_control
     updates = [r for r in results if r["changed"]]
     for u in updates:
         try:
-            db.upsert({
-                "key": f"route_override:{u['task_kind']}",
-                "value": {
-                    "preferred_model": u["recommended"],
-                    "quality": u["best_quality"],
-                    "updated_by": "counterfactual_replay",
-                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                },
+            policy_value = json.dumps({
+                "preferred_model": u["recommended"],
+                "quality": u["best_quality"],
+                "updated_by": "counterfactual_replay",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
+            fleet_control.update_fleet_config(
+                f"ORCH_ROUTE_OVERRIDE_{u['task_kind'].upper()}",
+                policy_value
+            )
         except Exception as exc:
             _log.warning("failed to apply route update for %s: %s", u["task_kind"], exc)
 

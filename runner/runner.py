@@ -159,6 +159,7 @@ import cowork_dispatch
 import worktree_isolation
 import common_utils
 import stderr_digest   # keep the CAUSE in truncated stderr, not just the tail
+import counterfactual_replay
 try:
     import warm_pool
 except ImportError:
@@ -1865,7 +1866,7 @@ def run_task(t):
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
                                 cwd=wt,
-                                timeout=int(os.environ.get("TASK_TIMEOUT", "900")),
+                                timeout=int(os.environ.get("TASK_TIMEOUT", "3600")),
                                 mode=_swarm_mode,
                             )
                             r["coder"] = f"swarm:{_swarm_provider}"
@@ -1881,13 +1882,13 @@ def run_task(t):
                             r = agentic_coders.run(coder, draft_prompt, model,
                                                    cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
-                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
                                                cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
-                                               timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                                               timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 if _agentic_repair_continue(
@@ -3897,6 +3898,7 @@ def main():
     _mem_log_t = 0.0
     _reload_t = 0.0
     _restart_log_t = 0.0
+    _replay_t = 0.0  # counterfactual replay periodic check
     import resource_governor
     # WARM POOL: eagerly pre-load CLAUDE.md context for active projects
     try:
@@ -3935,6 +3937,23 @@ def main():
                 hot_reload.maybe_reload(active_slugs=active)
             except Exception as e:
                 _log.debug("hook hot_reload failed: %s", e)
+        # COUNTERFACTUAL REPLAY: periodically re-run past routing decisions with current model data.
+        # Fail-soft: replay errors never block task execution. Interval is configurable via ORCH_REPLAY_INTERVAL_S.
+        if time.time() - _replay_t > int(os.environ.get("ORCH_REPLAY_INTERVAL_S", "1800")):
+            _replay_t = time.time()
+            try:
+                result = counterfactual_replay.run_replay(
+                    lookback_days=int(os.environ.get("ORCH_REPLAY_LOOKBACK_DAYS", "7")) or 7,
+                    limit=int(os.environ.get("ORCH_REPLAY_SAMPLE_SIZE", "100")) or 100,
+                    apply=os.environ.get("ORCH_REPLAY_AUTO_APPLY", "false").lower() in ("1", "true", "yes")
+                )
+                if result.get("decisions_diverged", 0) > 0:
+                    _log.info("[replay] %d divergences detected (%.1f%%), %d applied",
+                              result.get("decisions_diverged", 0),
+                              result.get("divergence_rate", 0) * 100,
+                              len(result.get("top_changes", [])) if result.get("applied") else 0)
+            except Exception as e:
+                _log.debug("hook counterfactual_replay failed: %s", e)
         # SELF-DEPLOY: graceful exec-into-new-code when self_deploy requested it (canary-gated)
         # and no tasks are mid-flight; keepalive.sh restarts us into the new commit.
         try:
