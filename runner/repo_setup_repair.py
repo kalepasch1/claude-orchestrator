@@ -61,7 +61,9 @@ def check_git_config(repo):
 def check_git_identity(repo):
     """Verify git config carries the OWNER identity, not merely *some* identity.
 
-    Presence is not health. A checkout configured with a blocked platform/bot account passes
+    Presence is not health. A checkout configured with a blocked platform/bot account
+    (the addresses named in ``git_identity.BLOCKED_EMAILS`` -- listed there and nowhere
+    else, so the set cannot drift between copies) passes
     check_git_config and then produces commits Vercel puts in BLOCKED state,
     which never deploy -- the failure the 2026-08-02 two-session audit addendum
     recorded. Compared case-insensitively; email is the field Vercel keys on.
