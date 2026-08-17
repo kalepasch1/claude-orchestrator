@@ -36,9 +36,11 @@ Set any to 0 to disable (they are safety rails, so they default ON, unlike the
 self-work gates in self_work_gate.py).
 """
 import os
+import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -93,13 +95,87 @@ def _prod_url(project, project_row=None, health=None):
     return url
 
 
-def http_ok(url, timeout=20):
-    """(status_code, ok) for a plain GET. A 200 is required — 3xx/4xx/5xx are not delivery."""
+# eTLD+1 approximation. Not the full Public Suffix List — a dependency-free subset covering
+# the multi-label suffixes and the deployment-platform suffixes this fleet actually meets. Under
+# it, `web-abc.vercel.app` and `vercel.com` are different sites (which is the case that matters),
+# and so are two different `*.vercel.app` preview hosts.
+_MULTI_LABEL_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "co.jp", "or.jp", "ne.jp",
+    "com.au", "net.au", "org.au", "co.nz", "co.za", "com.br", "com.mx", "co.in",
+    "com.sg", "com.hk", "co.kr", "com.tr", "com.cn", "co.il", "com.ar", "com.tw",
+    # platform ("private") suffixes: each subdomain is an independent site
+    "vercel.app", "netlify.app", "pages.dev", "workers.dev", "github.io",
+    "herokuapp.com", "fly.dev", "onrender.com", "railway.app",
+})
+
+_IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def registrable_domain(host):
+    """eTLD+1 for `host` — the unit that decides whether a redirect stayed on the same site."""
+    host = str(host or "").strip().lower().rstrip(".")
+    if not host:
+        return ""
+    if ":" in host or _IPV4.match(host):     # literal IPs have no registrable domain
+        return host
+    parts = host.split(".")
+    if len(parts) < 3:
+        return host
+    if ".".join(parts[-2:]) in _MULTI_LABEL_SUFFIXES:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+class _SameSiteOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only while they stay on the same registrable domain.
+
+    Refusing ALL redirects was the first attempt and was wrong: apex -> www is a DNS
+    convention, not a delivery failure, and rejecting it would pin healthy projects red.
+    Refusing only OFF-SITE hops keeps that working while making an auth wall visible.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        here = registrable_domain(urllib.parse.urlsplit(req.full_url).hostname)
+        there = registrable_domain(urllib.parse.urlsplit(newurl).hostname)
+        if here != there:
+            # Surface the hop as the 3xx it is. The caller must see "302", not the 200 that
+            # the destination happens to serve.
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAME_SITE_OPENER = None
+
+
+def _same_site_opener():
+    global _SAME_SITE_OPENER
+    if _SAME_SITE_OPENER is None:
+        _SAME_SITE_OPENER = urllib.request.build_opener(_SameSiteOnlyRedirect)
+    return _SAME_SITE_OPENER
+
+
+def http_ok(url, timeout=20, opener=None):
+    """(status_code, ok) for a GET. A 200 is required — 3xx/4xx/5xx are not delivery.
+
+    THE DOCSTRING WAS TRUE, THE CODE WAS NOT (fixed 2026-08-17).
+    -----------------------------------------------------------
+    `urlopen` follows redirects by default, so a 3xx was never seen here — only whatever the
+    final hop returned. Releases record `vercel_url` as the per-deployment hostname, and that
+    hostname sits behind Vercel Deployment Protection:
+
+        web-e9w9viunp-...vercel.app  ->  302  ->  https://vercel.com/login  ->  200
+
+    This function returned (200, True). The release-health half of promotion was being
+    satisfied by Vercel's login page — a page that proves the deployment is NOT reachable.
+
+    Same-site redirects are still followed, because apex -> www is a convention rather than a
+    fault. `opener` is injectable so the redirect chain can be reproduced hermetically.
+    """
     if not url:
         return None, False
     req = urllib.request.Request(url, headers={"User-Agent": "beethoven-deploy-verify/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with (opener or _same_site_opener()).open(req, timeout=timeout) as r:
             return r.status, r.status == 200
     except urllib.error.HTTPError as e:
         return e.code, False
@@ -107,33 +183,121 @@ def http_ok(url, timeout=20):
         return None, False
 
 
-def sha_is_live(project, sha, vercel_project=None):
-    """True only if Vercel's READY production deployment carries exactly this commit SHA.
+def live_production_sha(project, vercel_project=None):
+    """(sha, reason) for the commit Vercel's READY production deployment was built from.
 
-    This is the 'the changed behavior is actually present' check at its minimum honest
-    form: the build serving production was built from this commit, not merely 'a deploy
-    happened around then'.
+    Split out so ancestry can read the live sha STRUCTURALLY. It used to be recoverable
+    only by regexing it back out of `sha_is_live`'s human-readable reason string, which is
+    a parser for prose — it breaks the moment the wording changes, and it breaks silently.
     """
-    if not sha:
-        return False, "no release sha"
     try:
         import deploy_verify
         vproj = vercel_project or deploy_verify._vercel_project(project)
-        dep = deploy_verify._latest_deploy(vproj, sha=sha)
+        dep = deploy_verify._latest_deploy(vproj)
     except Exception as e:
-        return False, f"vercel lookup failed: {e}"
+        return "", f"vercel lookup failed: {e}"
     if not dep or dep.get("_auth_error"):
-        return False, (dep or {}).get("_auth_error") or "no production deployment found"
+        return "", (dep or {}).get("_auth_error") or "no production deployment found"
     state = dep.get("state") or dep.get("readyState")
     if state not in ("READY",):
-        return False, f"production deployment state={state}"
-    meta = dep.get("meta") or {}
-    live = str(meta.get("githubCommitSha") or "")
+        return "", f"production deployment state={state}"
+    live = str((dep.get("meta") or {}).get("githubCommitSha") or "")
     if not live:
-        return False, "deployment reports no commit sha"
-    if live == str(sha) or live.startswith(str(sha)[:12]) or str(sha).startswith(live[:12]):
-        return True, f"sha {live[:12]} live"
-    return False, f"live sha {live[:12]} != release sha {str(sha)[:12]}"
+        return "", "deployment reports no commit sha"
+    return live, f"sha {live[:12]} live"
+
+
+def _sha_eq(a, b):
+    a, b = str(a or ""), str(b or "")
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b[:12]) or b.startswith(a[:12])
+
+
+def sha_is_live(project, sha, vercel_project=None, live_sha=None):
+    """True only if Vercel's READY production deployment carries exactly this commit SHA.
+
+    IDENTITY semantics, kept deliberately: this answers "which release is serving right
+    now", and things like rollback detection and release dashboards need exactly that.
+    It is NOT the promotion gate — see `sha_reached_production`.
+    """
+    if not sha:
+        return False, "no release sha"
+    if live_sha is None:
+        live_sha, why = live_production_sha(project, vercel_project)
+    else:
+        why = f"sha {str(live_sha)[:12]} live" if live_sha else "no live production sha"
+    if not live_sha:
+        return False, why
+    if _sha_eq(live_sha, sha):
+        return True, f"sha {str(live_sha)[:12]} live"
+    return False, f"live sha {str(live_sha)[:12]} != release sha {str(sha)[:12]}"
+
+
+def _repo_path(project):
+    """Local checkout for a project, or "" — fail-soft, never raises."""
+    try:
+        row = (db.select("projects", {"select": "repo_path", "name": f"eq.{project}"}) or [{}])[0]
+        path = row.get("repo_path") or ""
+    except Exception:
+        return ""
+    try:
+        path = db.localize_repo_path(path)
+    except Exception:
+        pass
+    return path or ""
+
+
+def sha_reached_production(project, sha, repo=None, vercel_project=None, live_sha=None):
+    """(ok, reason) — did this commit ACTUALLY reach production and stay there?
+
+    WHY THIS EXISTS (2026-08-17)
+    ----------------------------
+    Promotion used to require `sha_is_live`: byte-identity with the commit serving
+    production. Promotion scans the 25 most recent green releases, so at most one of them
+    could ever satisfy that — and only until the next deploy. Release volume went from
+    ~5/day to ~390/day, which shrank the exactly-live window from hours to minutes.
+    Nothing reached DEPLOYED_AND_VERIFIED after 2026-08-07 12:34Z while merges continued at
+    14/24h and beethoven shipped 21 green releases in 11 days; 259 of its 263 MERGED task
+    commits are ancestors of the last green release sha.
+
+    Ancestor-of-live is not a weaker test than identity, it is a STRICTER one. Identity says
+    "this build is on the box this second". Ancestry says "this commit shipped AND has not
+    been reverted or rolled back out from under us since" — a commit that was deployed and
+    then rolled back stops being an ancestor of live, and correctly stops promoting.
+
+    Falls back to False, never to True: an unavailable repo or an absent commit means we
+    cannot prove delivery, and unproven must not promote.
+    """
+    if not sha:
+        return False, "no release sha"
+    if live_sha is None:
+        live_sha, why = live_production_sha(project, vercel_project)
+    else:
+        why = f"sha {str(live_sha)[:12]} live" if live_sha else "no live production sha"
+    if not live_sha:
+        return False, why
+    s, l = str(sha), str(live_sha)
+    if _sha_eq(s, l):
+        return True, f"sha {l[:12]} is the live production build"
+    repo = repo if repo is not None else _repo_path(project)
+    if not repo or not os.path.isdir(repo):
+        return False, (f"live sha {l[:12]} != release sha {s[:12]} and no local repo is "
+                       f"available to check ancestry")
+    if not _commit_exists(repo, s):
+        return False, f"release sha {s[:12]} is absent from the repo; delivery unprovable"
+    if not _commit_exists(repo, l):
+        return False, f"live sha {l[:12]} is absent from the repo; ancestry unprovable"
+    try:
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", s, l],
+                           cwd=repo, capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return False, f"ancestry check failed: {e}"
+    if r.returncode == 0:
+        return True, (f"sha {s[:12]} is an ancestor of the live build {l[:12]} — it shipped "
+                      f"and has not been rolled back")
+    return False, (f"sha {s[:12]} is not an ancestor of the live build {l[:12]} — it never "
+                   f"reached production, or was rolled back out")
 
 
 def verify_release(release, project_row=None, health=None, journey=None):
@@ -147,17 +311,32 @@ def verify_release(release, project_row=None, health=None, journey=None):
     """
     project = release.get("project")
     sha = release.get("to_sha")
-    url = release.get("vercel_url") or _prod_url(project, project_row, health)
+    # PREFER THE PRODUCTION DOMAIN over the per-deployment alias. `vercel_url` is the
+    # `web-<hash>-<team>.vercel.app` hostname, which sits behind Deployment Protection and
+    # answers with a login redirect for anyone without a Vercel session — including us. The
+    # production domain is what a user actually reaches, which is the thing being verified.
+    url = _prod_url(project, project_row, health) or release.get("vercel_url") or ""
     if url and not url.startswith("http"):
         url = "https://" + url
     status, ok200 = http_ok(url)
-    live, why = sha_is_live(project, sha)
+    # One Vercel lookup, two questions. DELIVERY (ancestor-of-live) is what gates promotion;
+    # IDENTITY (exactly-live) is still reported because "which release is serving" is a
+    # different and separately useful fact.
+    the_live_sha, live_why = live_production_sha(project)
+    delivered, why = sha_reached_production(project, sha, live_sha=the_live_sha)
+    identical, _ = sha_is_live(project, sha, live_sha=the_live_sha)
     out = {"project": project, "sha": sha, "url": url, "http_status": status,
-           "http_ok": ok200, "sha_live": live, "sha_reason": why,
-           "ok": bool(ok200 and live),
+           "http_ok": ok200,
+           "live_sha": the_live_sha, "live_sha_reason": live_why,
+           "sha_delivered": delivered, "sha_identical": identical,
+           # `sha_live` predates the delivery/identity split. It gates `ok`, so it keeps
+           # tracking the gate, i.e. delivery. Read `sha_identical` for exactly-live.
+           "sha_live": delivered, "sha_reason": why,
+           "ok": bool(ok200 and delivered),
            "release_health_only": True,
-           "reason": ("release healthy (HTTP 200 + sha live); per-task journeys still required"
-                      if (ok200 and live) else f"http={status} sha_live={live} ({why})")}
+           "reason": ("release healthy (HTTP 200 + sha delivered to production); per-task "
+                      "journeys still required"
+                      if (ok200 and delivered) else f"http={status} sha_delivered={delivered} ({why})")}
     # A release-level journey, when the release itself declares one, gates the release.
     if journey is not None:
         out["journey"] = journey

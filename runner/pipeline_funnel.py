@@ -98,64 +98,123 @@ def _count(table, params):
         return -1
 
 
-_SENTINELS = {}   # table -> how many impossible-age rows were walked past
+_WINDOW = 25      # rows pulled per stage probe
+
+_SENTINELS = {}          # stage -> how many impossible-age rows exist in that stage
+_UNMEASURABLE_WHY = {}   # stage -> why the probe could not produce a real age
 
 
-def _oldest(table, params, ts_col):
-    """Age in hours of the oldest item, None if the stage is genuinely empty.
+def _reset_probe_state():
+    """Per-snapshot bookkeeping. Module dicts that are never cleared turn a monitor into a
+    log: one stage's sentinel count would still be attached to a later, unrelated run."""
+    _SENTINELS.clear()
+    _UNMEASURABLE_WHY.clear()
 
-    Raises nothing, but MUST distinguish "no rows" from "could not measure". Returning None
-    for both let a transient DB error render as a healthy dash — the funnel would report `ok`
-    precisely when it had lost the ability to see anything, which is the silent-failure mode
-    this module exists to catch. A failed probe now returns the sentinel below and is treated
-    as unhealthy.
+
+def _sane_age_h():
+    try:
+        return float(os.environ.get("ORCH_FUNNEL_MAX_SANE_AGE_H", "17520") or 17520)  # 2 years
+    except (TypeError, ValueError):
+        return 17520.0
+
+
+def _sane_floor_iso(sane=None):
+    """The oldest created_at/updated_at a row may carry and still be believed."""
+    sane = _sane_age_h() if sane is None else sane
+    return (_now() - datetime.timedelta(hours=sane)).isoformat()
+
+
+def _oldest(table, params, ts_col, stage=None):
+    """Age in hours of the oldest REAL item, None if the stage is genuinely empty.
+
+    Raises nothing, but MUST distinguish three things that a single None used to collapse:
+    "no rows", "could not measure", and "rows exist but every one of them is a sentinel".
+    Returning None for all three let a transient DB error — or a stage full of pinned rows —
+    render as a healthy dash. The funnel would report `ok` precisely when it had lost the
+    ability to see anything, which is the silent-failure mode this module exists to catch.
+
+    SENTINEL TIMESTAMPS POISON THIS METRIC (2026-08-15, corrected 2026-08-17).
+    ----------------------------------------------------------------------
+    The ingest stage was reporting an oldest item of 58,054.7 hours — 6.6 years, predating the
+    project. One row was responsible: prompt-evolution-bandit, created_at 2020-01-01T00:00:04.
+    46 tasks carry a pre-2026 date like that, and they are not corrupt — it is a deliberate
+    hack, because every claim scan orders by created_at ASC, so an impossible past date pins a
+    task to the front of the queue forever.
+
+    The first fix walked past sentinels INSIDE a 25-row window. That only works while fewer
+    than 25 of the 46 sentinels sit in one stage. Put 25 of them in a single state and every
+    visible row is a sentinel, the skip loop falls through, and the fallback reported the 25th
+    sentinel's age — 6.6 years, the exact number the fix existed to suppress. Latent today
+    (2 sentinels are QUEUED), and latent is not fixed.
+
+    So push the floor SERVER-SIDE: ask for rows at or after the sane floor, and the 25 oldest
+    rows returned are the 25 oldest REAL rows no matter how many sentinels the stage holds.
+    Sentinels are then counted with their own exact query rather than inferred from whatever
+    happened to fit in the window, so the note reports 46 when there are 46.
     """
-    # SENTINEL TIMESTAMPS POISON THIS METRIC (2026-08-15).
-    #
-    # The ingest stage was reporting an oldest item of 58,054.7 hours — 6.6 years, predating the
-    # project. One row was responsible: prompt-evolution-bandit, created_at 2020-01-01T00:00:04.
-    # 46 tasks carry a pre-2026 date like that, and they are not corrupt — it is a deliberate
-    # hack, because every claim scan orders by created_at ASC, so an impossible past date pins a
-    # task to the front of the queue forever.
-    #
-    # The cost lands here. One sentinel makes the stage permanently STALLED and buries the real
-    # figure, which was 47 days: still bad, but bad in a way somebody could act on. A monitor
-    # reporting 6.6 years is one nobody reads.
-    #
-    # So walk past sentinels rather than reporting them as the answer. They are counted and named
-    # in the note, because silently dropping rows is how a monitor starts lying in the other
-    # direction — and because the pinning trick itself is worth someone deciding about on
-    # purpose rather than inheriting.
-    sane = float(os.environ.get("ORCH_FUNNEL_MAX_SANE_AGE_H", "17520") or 17520)   # 2 years
+    stage = stage or table
+    sane = _sane_age_h()
+    floor = _sane_floor_iso(sane)
+
+    # Only push the floor down when nothing else already constrains this column — two
+    # predicates on one column need PostgREST's and=() form, and silently overwriting the
+    # caller's filter would be a worse bug than not applying the floor.
+    use_floor = ts_col not in params
+    query = {**params, "select": ts_col, "order": f"{ts_col}.asc", "limit": str(_WINDOW)}
+    if use_floor:
+        query[ts_col] = f"gte.{floor}"
+
+    def _sentinel_count():
+        if not use_floor:
+            return 0
+        n = _count(table, {**params, ts_col: f"lt.{floor}"})
+        return n if n and n > 0 else 0
+
     for attempt in range(3):                 # the shared relay rate-limits under fleet load
         try:
-            rows = db.select(table, {**params, "select": ts_col, "order": f"{ts_col}.asc",
-                                     "limit": "25"}) or []
+            rows = db.select(table, query) or []
             if not rows:
+                # Empty UNDER THE FLOOR is not empty. Distinguish the two, because a stage
+                # holding nothing but pinned rows is holding work, and rendering it as a
+                # healthy dash is the same lie in the opposite direction.
+                if use_floor:
+                    n_sent = _sentinel_count()
+                    if n_sent:
+                        _SENTINELS[stage] = n_sent
+                        _UNMEASURABLE_WHY[stage] = (
+                            f"every row in this stage ({n_sent}) carries a pinned "
+                            f"pre-{floor[:10]} timestamp — real age is unmeasurable, and the "
+                            f"stage is NOT empty")
+                        return UNMEASURABLE
                 return None
-            skipped = 0
+            n_sent = _sentinel_count()
+            if n_sent:
+                _SENTINELS[stage] = n_sent
             for row in rows:
                 age = _age_h(row.get(ts_col))
                 if age is UNMEASURABLE or age is None:
                     continue
-                if age > sane:
-                    skipped += 1
+                if age > sane:               # belt-and-braces if the floor did not apply
+                    _SENTINELS[stage] = max(_SENTINELS.get(stage, 0), 1)
                     continue
-                if skipped:
-                    _SENTINELS[table] = skipped
                 return age
-            # Every row in the window was a sentinel; report the newest of them rather than
-            # claiming the stage is empty.
-            _SENTINELS[table] = len(rows)
-            return _age_h(rows[-1].get(ts_col))
-        except Exception:
+            _UNMEASURABLE_WHY[stage] = (
+                f"all {len(rows)} rows in the probe window have unusable or pinned "
+                f"timestamps — real age is unmeasurable, and the stage is NOT empty")
+            return UNMEASURABLE
+        except Exception as e:
             if attempt == 2:
+                _UNMEASURABLE_WHY[stage] = (
+                    f"probe failed after 3 attempts ({type(e).__name__}) — funnel is BLIND "
+                    f"for this stage")
                 return UNMEASURABLE
             time.sleep(1.5 * (attempt + 1))
+    _UNMEASURABLE_WHY[stage] = "probe failed after 3 attempts — funnel is BLIND for this stage"
     return UNMEASURABLE
 
 
 def snapshot():
+    _reset_probe_state()
     stages = []
 
     def add(name, table, params, ts_col, note=""):
@@ -163,7 +222,7 @@ def snapshot():
             "stage": name,
             "table": table,
             "count": _count(table, params),
-            "oldest_h": _oldest(table, params, ts_col),
+            "oldest_h": _oldest(table, params, ts_col, stage=name),
             "threshold_h": THRESHOLD_H.get(name),
             "note": note,
         })
@@ -208,15 +267,22 @@ def snapshot():
     })
 
     for s in stages:
-        n_sent = _SENTINELS.get(s.get("table") or "", 0)
+        # Keyed by STAGE, not by table. `ingest`, `draft` and `card` all read `tasks`, so a
+        # table-keyed count reported ingest's sentinels again on draft and on card — three
+        # stages accusing each other of the same 46 rows.
+        n_sent = _SENTINELS.get(s["stage"], 0)
         if n_sent:
+            s["sentinels"] = n_sent
             s["note"] = ((s.get("note") or "") +
-                         f"  [{n_sent} row(s) with an impossible created_at walked past — "
+                         f"  [{n_sent} row(s) with an impossible created_at excluded — "
                          f"pinned-to-front sentinels, not real age]").strip()
         thr, age = s.get("threshold_h"), s.get("oldest_h")
         if age == UNMEASURABLE:
             s["healthy"] = False
-            s["note"] = "probe failed after 3 attempts — funnel is BLIND for this stage"
+            # Say WHICH kind of blindness this is: a failed probe and a stage made entirely of
+            # pinned rows are both unmeasurable, and they call for different action.
+            s["note"] = _UNMEASURABLE_WHY.get(
+                s["stage"], "probe failed after 3 attempts — funnel is BLIND for this stage")
         else:
             s["healthy"] = not (thr and age is not None and age > thr)
 
