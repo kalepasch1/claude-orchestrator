@@ -61,7 +61,16 @@ jobs:
         env:
           SUPABASE_URL: ''
           SUPABASE_SERVICE_KEY: ''
-        run: python -m pytest tests/test_ci_offline.py -q --no-header
+        # The three suites after test_ci_offline.py cover the failure modes that stalled
+        # delivery for ten days: a monitor that reported 6.6 years, a promotion gate nothing
+        # could pass, and an HTTP check satisfied by Vercel's login page. All hermetic — no
+        # network, no credentials — so they belong in the blocking gate, not behind it.
+        run: |
+          python -m pytest -q --no-header \
+            tests/test_ci_offline.py \
+            tests/test_pipeline_funnel_sentinels.py \
+            tests/test_promotion_unblocked.py \
+            tests/test_release_health_no_redirect.py
 
       - name: Syntax-check every runner module
         working-directory: runner
