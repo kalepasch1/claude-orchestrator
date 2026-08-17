@@ -118,8 +118,16 @@ def invalidate_fetch_cache():
     _fetched.clear()
 
 
-def _resolve_target_refs(repo, target_branch):
+def _resolve_target_refs(repo, target_branch, extra_branches=()):
     """EVERY ref that could carry the work, in preference order.
+
+    `extra_branches` carries the project's PRODUCTION branch (2026-08-17). Only the
+    integration branch was consulted, so work that had been promoted — and whose agent
+    branch was then deleted, or whose integration branch was later reset — read as
+    never having landed, even though it was sitting in production. A commit reachable
+    from prod is integrated by definition; excluding prod meant this check was
+    rejecting its own strongest proof. Observed on pareto-2080, whose work lives on
+    refs/heads/main while its configured integration branch is orchestrator/dev.
 
     Returns (refs, err). A repo with none is an infra error, not a phantom: it means we
     cannot ask the question, not that the answer is no.
@@ -140,7 +148,11 @@ def _resolve_target_refs(repo, target_branch):
     question.
     """
     refs, seen = [], set()
-    for ref in (f"origin/{target_branch}", target_branch):
+    candidates = []
+    for branch in (target_branch, *(extra_branches or ())):
+        if branch:
+            candidates.extend((f"origin/{branch}", branch))
+    for ref in candidates:
         if ref in seen:
             continue
         seen.add(ref)
@@ -155,7 +167,7 @@ def _resolve_target_refs(repo, target_branch):
     return refs, None
 
 
-def verify_merge_reachable(repo, sha, target_branch, fetch=True):
+def verify_merge_reachable(repo, sha, target_branch, fetch=True, also_branches=()):
     """Is `sha` really on `target_branch`? Returns (verdict, reason).
 
     Deliberately three-valued. Collapsing infra_error into phantom is what would let a
@@ -182,7 +194,7 @@ def verify_merge_reachable(repo, sha, target_branch, fetch=True):
     if exists.returncode != 0:
         return PHANTOM, f"commit {sha[:12]} does not exist in {repo}"
 
-    refs, err = _resolve_target_refs(repo, target_branch)
+    refs, err = _resolve_target_refs(repo, target_branch, also_branches)
     if err:
         return INFRA_ERROR, err
 
@@ -301,7 +313,16 @@ def gate_merged_patch(task, patch, repo=None, prod_branch=None, fetch=True):
         print(f"[merge-truth] {task.get('slug')}: {err}; leaving state unchanged")
         return None
 
-    verdict, reason = verify_merge_reachable(repo, sha, target_branch, fetch=fetch)
+    # The project's production branch counts as evidence too. A commit reachable from
+    # prod is integrated by definition — refusing to look there was the check rejecting
+    # its own strongest proof, and it is why promoted work whose integration branch was
+    # later reset kept reading back as a phantom.
+    _row = _project_row(task.get("project_id")) or {}
+    _prod = _row.get("prod_branch")
+    verdict, reason = verify_merge_reachable(
+        repo, sha, target_branch, fetch=fetch,
+        also_branches=(_prod,) if _prod and _prod != target_branch else (),
+    )
 
     if verdict == OK:
         return patch
