@@ -524,10 +524,6 @@ class TestTemplateIDsConstant(unittest.TestCase):
         self.assertGreater(len(prompt_evolver.TEMPLATE_IDS), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestBanditConverges(unittest.TestCase):
     """The property the +inf seeding destroyed: recorded reward must be able to win.
 
@@ -580,3 +576,7 @@ class TestBanditConverges(unittest.TestCase):
             with patch('runner.db.select', return_value=rows):
                 picks.add(prompt_evolver.select_template("k", "p")[1])
         self.assertEqual(picks, {"base"})
+
+
+if __name__ == "__main__":
+    unittest.main()
