@@ -351,6 +351,24 @@ class TestHealthEndpoint(_OutboxCase):
 
 
 class TestReadinessRoute(_OutboxCase):
+    """Liveness is unauthenticated; readiness is not.
+
+    The gateway grew principal-based auth and tenancy after these jobs were first
+    written. `/health` is answered before the auth block on purpose — a restart
+    supervisor must be able to ask "is the process alive" without a credential, and the
+    answer carries nothing tenant-specific. `/readiness` sits inside the auth block and
+    stays there: backlog age, consumer lag and outbox failure counts are operational
+    detail about a tenant's data path, and loosening that gate to make a probe
+    convenient is not a trade worth making. These tests therefore dispatch readiness
+    with a read-scoped principal, which is how a monitoring caller reaches it.
+    """
+
+    @staticmethod
+    def _probe_principal():
+        import compliance_auth
+        return compliance_auth.Principal(name="readiness-probe", tenant="default",
+                                         scopes=frozenset({compliance_auth.READ}),
+                                         via="test")
 
     def test_liveness_stays_ok_while_degraded(self):
         from compliance_api_gateway import gateway
@@ -358,25 +376,41 @@ class TestReadinessRoute(_OutboxCase):
             status, _body = gateway.dispatch("GET", "/compliance/v1/health")
         self.assertEqual(status, 200, "liveness must not fail on a backlog")
 
+    def test_liveness_needs_no_credential(self):
+        """Pins the exemption, so nobody moves /health behind auth by accident."""
+        from compliance_api_gateway import gateway
+        status, _body = gateway.dispatch("GET", "/compliance/v1/health")
+        self.assertEqual(status, 200)
+
+    def test_readiness_is_not_anonymous(self):
+        """The other half of that pin: readiness must stay behind the auth gate."""
+        from compliance_api_gateway import gateway
+        with patch.object(cp, "health", return_value={"status": "ok", "breached": []}):
+            status, _body = gateway.dispatch("GET", "/compliance/v1/readiness")
+        self.assertNotEqual(status, 200, "readiness must not answer unauthenticated")
+
     def test_readiness_returns_503_when_degraded(self):
         from compliance_api_gateway import gateway
         with patch.object(cp, "health",
                           return_value={"status": "degraded", "breached": ["outbox_backlog"]}):
-            status, body = gateway.dispatch("GET", "/compliance/v1/readiness")
+            status, body = gateway.dispatch("GET", "/compliance/v1/readiness",
+                                            principal=self._probe_principal())
         self.assertEqual(status, 503)
         self.assertEqual(body["status"], "degraded")
 
     def test_readiness_returns_200_when_ok(self):
         from compliance_api_gateway import gateway
         with patch.object(cp, "health", return_value={"status": "ok", "breached": []}):
-            status, body = gateway.dispatch("GET", "/compliance/v1/readiness")
+            status, body = gateway.dispatch("GET", "/compliance/v1/readiness",
+                                            principal=self._probe_principal())
         self.assertEqual(status, 200)
         self.assertEqual(body["status"], "ok")
 
     def test_readiness_never_500s_on_probe_failure(self):
         from compliance_api_gateway import gateway
         with patch.object(cp, "health", side_effect=RuntimeError("probe exploded")):
-            status, body = gateway.dispatch("GET", "/compliance/v1/readiness")
+            status, body = gateway.dispatch("GET", "/compliance/v1/readiness",
+                                            principal=self._probe_principal())
         self.assertEqual(status, 200)
         self.assertEqual(body["status"], "unknown")
 
