@@ -23,6 +23,12 @@ def emit(kind, **fields):
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 THROTTLE_FILE = os.path.join(HOME, "throttle")
 
+# Fleet-wide threshold defaults (named constants per convention).
+# Each can be overridden via env-var for fleet-wide tuning via fleet_control.
+DEFAULT_DISK_SOFT_PCT = 80.0
+DEFAULT_DISK_HARD_PCT = 90.0
+DEFAULT_RAM_HARD_PCT = 82.0
+
 # 2026-07-11: CEILING/DISK_*/RAM_* used to be module-level constants snapshotted ONCE at import
 # time. fleet_control.load_config() pushes fleet-wide tuning (MAX_PARALLEL_CEILING, PER_TASK_GB,
 # RAM_FLOOR_GB, ...) into os.environ live every loop, but a long-running process never re-read
@@ -41,17 +47,17 @@ def _ceiling():
 
 def _disk_soft():
     """Disk-usage % at which automatic pruning kicks in (worktrees, logs, caches)."""
-    return float(os.environ.get("DISK_SOFT_PCT", "80"))
+    return float(os.environ.get("DISK_SOFT_PCT", str(DEFAULT_DISK_SOFT_PCT)))
 
 
 def _disk_hard():
     """Disk-usage % at which concurrency is throttled to 1 and an alert is emitted."""
-    return float(os.environ.get("DISK_HARD_PCT", "90"))
+    return float(os.environ.get("DISK_HARD_PCT", str(DEFAULT_DISK_HARD_PCT)))
 
 
 def _ram_hard():
     """RAM-usage % at which aggressive throttling engages."""
-    return float(os.environ.get("RAM_HARD_PCT", "82"))
+    return float(os.environ.get("RAM_HARD_PCT", str(DEFAULT_RAM_HARD_PCT)))
 
 
 # Fleet-wide default, overridable centrally via the ORCH_RAM_FLOOR_GB fleet_config key

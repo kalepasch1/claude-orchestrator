@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "generated_from": "CLAUDE.md",
+  "repo": "claude-orchestrator",
+  "rules": [
+    {
+      "id": "advisory_do_not_introduce_hardcoded_secrets_or_cr",
+      "kind": "advisory",
+      "source": "**DO NOT** introduce hardcoded secrets or credentials in the configuration keys.",
+      "severity": "off",
+      "message": "**DO NOT** introduce hardcoded secrets or credentials in the configuration keys."
+    },
+    {
+      "id": "advisory_avoid_using_manual_ssh_or_second_termina",
+      "kind": "advisory",
+      "source": "**AVOID** using manual SSH or second-terminal steps for configuration management; use the centralized gateway (`fleet_control.py`) instead.",
+      "severity": "off",
+      "message": "**AVOID** using manual SSH or second-terminal steps for configuration management; use the centralized gateway (`fleet_control.py`) instead."
+    },
+    {
+      "id": "advisory_avoid_introducing_model_specific_logic_t",
+      "kind": "advisory",
+      "source": "**AVOID** introducing model-specific logic that can wedge the runner on errors; instead, use fail-soft error handling.",
+      "severity": "off",
+      "message": "**AVOID** introducing model-specific logic that can wedge the runner on errors; instead, use fail-soft error handling."
+    },
+    {
+      "id": "advisory_avoid_forcing_callers_to_handle_unavaila",
+      "kind": "advisory",
+      "source": "**AVOID** forcing callers to handle unavailability\u2014design for graceful degradation (missing file \u2192 return `\"\"` instead of raising)",
+      "severity": "off",
+      "message": "**AVOID** forcing callers to handle unavailability\u2014design for graceful degradation (missing file \u2192 return `\"\"` instead of raising)"
+    },
+    {
+      "id": "advisory_avoid_blocking_the_caller_on_slow_i_o_if",
+      "kind": "advisory",
+      "source": "**AVOID** blocking the caller on slow I/O\u2014if a cache miss is likely, accept it and fall back rather than synchronous disk waits",
+      "severity": "off",
+      "message": "**AVOID** blocking the caller on slow I/O\u2014if a cache miss is likely, accept it and fall back rather than synchronous disk waits"
+    },
+    {
+      "id": "advisory_avoid_using_magic_numbers_use_constants",
+      "kind": "advisory",
+      "source": "Avoid using magic numbers; use constants or enums instead.",
+      "severity": "off",
+      "message": "Avoid using magic numbers; use constants or enums instead."
+    },
+    {
+      "id": "advisory_avoid",
+      "kind": "advisory",
+      "source": "AVOID:",
+      "severity": "off",
+      "message": "AVOID:"
+    },
+    {
+      "id": "advisory_avoid_using_ambiguous_or_unclear_languag",
+      "kind": "advisory",
+      "source": "Avoid using ambiguous or unclear language that may lead to misinterpretation.",
+      "severity": "off",
+      "message": "Avoid using ambiguous or unclear language that may lead to misinterpretation."
+    },
+    {
+      "id": "advisory_do_not_introduce_new_risks_or_uncertaint",
+      "kind": "advisory",
+      "source": "Do not introduce new risks or uncertainties without proper mitigation strategies.",
+      "severity": "off",
+      "message": "Do not introduce new risks or uncertainties without proper mitigation strategies."
+    },
+    {
+      "id": "advisory_avoid_unlogged_broad_excepts_corrected_t",
+      "kind": "advisory",
+      "source": "**AVOID** *unlogged* broad excepts. **Corrected:** the original block said to avoid",
+      "severity": "off",
+      "message": "**AVOID** *unlogged* broad excepts. **Corrected:** the original block said to avoid"
+    },
+    {
+      "id": "advisory_avoid_undocumented_module_level_state_co",
+      "kind": "advisory",
+      "source": "**AVOID** *undocumented* module-level state. **Corrected:** the original block flagged",
+      "severity": "off",
+      "message": "**AVOID** *undocumented* module-level state. **Corrected:** the original block flagged"
+    }
+  ],
+  "enforce": [],
+  "counts": {
+    "total": 11,
+    "checkable": 0,
+    "advisory": 11
+  }
+}

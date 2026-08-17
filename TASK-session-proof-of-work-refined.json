@@ -1,0 +1,80 @@
+{
+  "refined_prompt": "TASK: Extend subprocess timeout to allow session completion before 11:10pm America/New_York deadline\n\n**Change Required:** Update `runner/runner.py` to increase the default TASK_TIMEOUT from 900 seconds (15 minutes) to 3600 seconds (1 hour).\n\n**Exact File Locations:**\n- Line 1868: subprocess timeout for Claude CLI invocation\n- Line 1884: agentic coder timeout (first attempt)\n- Line 1890: agentic coder timeout (retry)\n\nReplace all instances of:\n  timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"900\"))\nWith:\n  timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"3600\"))\n\n**Rationale:** Long-running build/test tasks (20-45 min) need sufficient execution time to complete before the wall-clock 11:10pm ET deadline. The 15-minute default is too short; 1 hour is a reasonable ceiling.\n\n**Acceptance Tests:**\n1. A 30+ minute build task completes successfully (state='DONE', no timeout errors)\n2. Fast tasks (< 2 min) still complete without timeout\n3. Environment variable override (TASK_TIMEOUT=<seconds>) still works\n4. No spurious timeout entries in Supabase run_logs for completed tasks\n5. Commit merges to master without conflicts\n\n**Important:** Do NOT include unrelated refactoring (no deleting stderr_digest, no removing error handlers). This change is timeout-only. The prior branch failed because it mixed timeout fix with large deletions, causing merge conflicts.\n\n**Verification:** After committing, run: `pytest runner/tests/test_*.py` and trigger a long build task to confirm it completes before timeout.",
+  "resolutions": [
+    {
+      "ambiguity": "Does 'session timeout to be later than 11:10pm' mean extend duration, set deadline, or push session end?",
+      "resolution": "EXTEND DURATION: Change subprocess timeout duration from 900s (15 min) to 3600s (1 hour) so tasks have enough elapsed time to complete their work before the 11:10pm ET wall-clock deadline."
+    },
+    {
+      "ambiguity": "Which session system is affected (subprocess timeout, server session, DB connection, CI/CD)?",
+      "resolution": "SUBPROCESS TIMEOUT: The process execution timeout in runner/runner.py that controls Claude Code CLI runtime. Lines 1868, 1884, 1890 use TASK_TIMEOUT environment variable (default 900s)."
+    },
+    {
+      "ambiguity": "What is current timeout and what should it be changed to?",
+      "resolution": "CURRENT: 900 seconds (15 minutes) via os.environ.get('TASK_TIMEOUT', '900'). TARGET: 3600 seconds (1 hour) as new default. Rationale: build/test tasks frequently exceed 15 min; 1 hour is reasonable ceiling."
+    },
+    {
+      "ambiguity": "Which specific build task should be run to verify?",
+      "resolution": "AUTO-DETECTED: Use the project's standard build command detected by build_gate.detect_build_cmd() (typically 'npm run build && npm run test'). Verification is implicit in the build gate's success at line 473-483. Test with any 30+ minute task."
+    },
+    {
+      "ambiguity": "Is runner.py line 222 still the correct location, or has codebase changed?",
+      "resolution": "CORRECTED: Prior patch reference is stale. Current locations are lines 1868, 1884, 1890 in runner.py where TASK_TIMEOUT is read. Line 222 no longer exists in context (the file has ~3500 lines). All three timeout instances must be changed."
+    },
+    {
+      "ambiguity": "What is the human-readable reason for 11:10pm wall-clock timeout?",
+      "resolution": "OPERATIONAL DEADLINE: The task queue or job scheduler shuts down at 11:10pm ET. Tasks must complete before then. The subprocess timeout is a failsafe: tasks that can't finish within 1 hour are canceled rather than running indefinitely. Operators must start tasks early enough (before ~10:10pm) to complete within the 1-hour window."
+    },
+    {
+      "ambiguity": "Should timeout be fixed duration or sho[uld it scale dynamically]?",
+      "resolution": "FIXED DURATION: 3600 seconds as the new default. Operators can override per-run with 'export TASK_TIMEOUT=<seconds>' before python3 runner.py if needed. No dynamic scaling logic required."
+    }
+  ],
+  "missing_acceptance_criteria_addressed": [
+    {
+      "criterion": "Specific timeout value to set",
+      "resolution": "3600 seconds (1 hour). Change default in three locations in runner.py (lines 1868, 1884, 1890)."
+    },
+    {
+      "criterion": "Definition of 'succeeds without hitting session limit'",
+      "resolution": "Supabase task state='DONE' (not 'RUNNING' after deadline, not 'TIMEOUT'). Supabase run_logs has no 'timeout' level entries for that task. Task artifact_commit is recorded."
+    },
+    {
+      "criterion": "Regression criteria: what must NOT break",
+      "resolution": "Fast tasks (< 2 min) must complete without timeout. Timeout error handling (lines 1893-1900) produces same error messages. Env var override TASK_TIMEOUT still works. No deletion of stderr_digest or error handlers."
+    },
+    {
+      "criterion": "Timezone-aware or timezone-agnostic",
+      "resolution": "TIMEZONE-AGNOSTIC: Subprocess timeout is a duration (seconds), not wall-clock aware. The 11:10pm ET deadline is an operational constraint on the task queue, not enforced by the code. Operator responsibility: start tasks early enough."
+    },
+    {
+      "criterion": "One-time fix or persistent configuration",
+      "resolution": "PERSISTENT: Change the hardcoded default in source code (lines 1868, 1884, 1890). All future runner.py invocations inherit 3600s default. Operators can override per-run with TASK_TIMEOUT env var."
+    }
+  ],
+  "file_changes": [
+    {
+      "file": "runner/runner.py",
+      "line": 1868,
+      "old_value": "timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"900\"))",
+      "new_value": "timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"3600\"))",
+      "reason": "Main Claude CLI subprocess timeout"
+    },
+    {
+      "file": "runner/runner.py",
+      "line": 1884,
+      "old_value": "timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"900\"))",
+      "new_value": "timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"3600\"))",
+      "reason": "Agentic coder first attempt timeout"
+    },
+    {
+      "file": "runner/runner.py",
+      "line": 1890,
+      "old_value": "timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"900\"))",
+      "new_value": "timeout=int(os.environ.get(\"TASK_TIMEOUT\", \"3600\"))",
+      "reason": "Agentic coder retry timeout"
+    }
+  ],
+  "confidence": 0.95,
+  "confidence_rationale": "High confidence based on: (1) codebase inspection showing exact timeout locations, (2) prior patch confirming 3600s target, (3) clear understanding of why prior attempt failed (unrelated deletions caused conflicts), (4) straightforward 3-line fix with no architecture changes. Minor uncertainty (5%) only because the actual 11:10pm deadline reason wasn't found in code (it's operational, not technical), but the solution is sound."
+}

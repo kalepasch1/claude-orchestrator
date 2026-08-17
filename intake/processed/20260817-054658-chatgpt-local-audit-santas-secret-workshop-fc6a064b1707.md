@@ -1,0 +1,333 @@
+PROJECT: santas-secret-workshop
+
+- id: chatgpt-local-reconcile-santas-secret-workshop-fc6a064b1707
+  title: Reconcile local ChatGPT/Codex build evidence for santas-secret-workshop
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `fc6a064b17073bdd05a5aeebd61727c6645da7a8e1fd5b6664b6fb00fc7390fd`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "branches": [
+          {
+            "committed_at": 1786794178,
+            "ref": "agent/chatgpt-local-reconcile-santas-secret-workshop-07259c5e5322",
+            "sha": "a593a76c943cb535db164dfbffa0235cf71c47ad",
+            "subject": "agent: chatgpt-local-reconcile-santas-secret-workshop-07259c5e5322"
+          },
+          {
+            "committed_at": 1786805768,
+            "ref": "agent/chatgpt-local-reconcile-santas-secret-workshop-1deead40e4a1",
+            "sha": "e6efb78c6749cac9cf4120d70696716707e58b6f",
+            "subject": "agent: chatgpt-local-reconcile-santas-secret-workshop-1deead40e4a1 \u2014 verified ledger, 42 items, 0 unknown"
+          },
+          {
+            "committed_at": 1786838645,
+            "ref": "agent/chatgpt-local-reconcile-santas-secret-workshop-213-slice-1",
+            "sha": "7d297ce00c185bb4a52ad736258346ecd5688e77",
+            "subject": "recovery-intent-stub: chatgpt-local-reconcile-santas-secret-workshop-213-slice-1"
+          },
+          {
+            "committed_at": 1786108646,
+            "ref": "agent/consensus-engine-spec-fix-auto-filer-409-handler",
+            "sha": "a89ad6dc12c1c64c0f130df80a3c10702ad522a5",
+            "subject": "Merge branch 'agent/dropbox-santas-secret-workshop-hisanta-premium-pri-slice-4' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786678911,
+            "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-env-key-disable",
+            "sha": "f597405084fa876079bfd5c339e6e0096871dd85",
+            "subject": "Merge branch 'agent/dropbox-santas-secret-workshop-hisanta-premium-pri-slice-4' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786829036,
+            "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-keepalive-single-supervisor",
+            "sha": "7ffef20076142bcab2ec4f598cc7420cc35b51b9",
+            "subject": "Merge branch 'agent/chatgpt-local-reconcile-santas-secret-workshop-213e212014e2' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786678926,
+            "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-p5-interlock-tests",
+            "sha": "33f60c91c6e5e9f8f088127076c88e29052fcf65",
+            "subject": "Merge branch 'agent/dropbox-santas-secret-workshop-hisanta-premium-pricing-earnable-free-group-2' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786678921,
+            "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-p5-pause-arbiter",
+            "sha": "f1d3a729d2b519e92e3c350f659f8ba902dd0b4b",
+            "subject": "Merge branch 'agent/consensus-engine-spec-fix-auto-filer-409-handler' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786838284,
+            "ref": "agent/orch-config-consumption",
+            "sha": "acbf58af69d36e7e0cb97d20b6f00c14fc1b7358",
+            "subject": "Merge branch 'agent/rework-secret-relfix-santas-secret-workshop-08151650-4a38f10' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786805768,
+            "ref": "agent/relfix-santas-secret-workshop-08151152",
+            "sha": "e6efb78c6749cac9cf4120d70696716707e58b6f",
+            "subject": "agent: chatgpt-local-reconcile-santas-secret-workshop-1deead40e4a1 \u2014 verified ledger, 42 items, 0 unknown"
+          },
+          {
+            "committed_at": 1786835567,
+            "ref": "agent/relfix-santas-secret-workshop-08151650",
+            "sha": "ec5cfef9d6adb64e8bb002c5cf7f70368567e522",
+            "subject": "relfix: reconcile diverged production (master) into release-fix branch"
+          },
+          {
+            "committed_at": 1786920393,
+            "ref": "agent/relfix-santas-secret-workshop-08151843",
+            "sha": "7b601feecf0d5c5cd107e91c66e2de3daf6e83dc",
+            "subject": "relfix: merge origin/master (5dd55308) to reconcile staging/prod divergence"
+          },
+          {
+            "committed_at": 1786108655,
+            "ref": "agent/rework-noop-reroute-model-keys-mock-darwin-live-model-env-gate-e9f7544",
+            "sha": "2b6c00c21bd4110470c79ad4e9d6e5bc691f8c65",
+            "subject": "Merge branch 'agent/dropbox-santas-secret-workshop-hisanta-premium-pricing-earnable-free-group-2' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786922643,
+            "ref": "agent/rework-secret-chatgpt-local-reconcile-santas-secret-workshop-833-slice-1-a865a35",
+            "sha": "b973cc456bff2267ecf343dd50bef04fb1758c5c",
+            "subject": "regen-from-cache(template): rework-secret-chatgpt-local-reconcile-santas-secret-workshop-833-slice-1-a865a35"
+          },
+          {
+            "committed_at": 1786835932,
+            "ref": "agent/rework-secret-relfix-santas-secret-workshop-08151152-6bbca4a",
+            "sha": "48f9a0c3455203eb6c647f2196b7f9976ccd0635",
+            "subject": "Merge branch 'orchestrator/dev' into agent/rework-secret-relfix-santas-secret-workshop-08151152-6bbca4a"
+          },
+          {
+            "committed_at": 1786818014,
+            "ref": "backup/orchestrator-dev-pre-authorfix-08151650",
+            "sha": "b406dbabe5e4213641998a9cfa8ee9d90c2b08db",
+            "subject": "release-train: refresh orchestrator/dev from origin/master"
+          },
+          {
+            "committed_at": 1786838284,
+            "ref": "master",
+            "sha": "acbf58af69d36e7e0cb97d20b6f00c14fc1b7358",
+            "subject": "Merge branch 'agent/rework-secret-relfix-santas-secret-workshop-08151650-4a38f10' (auto-resolved)"
+          },
+          {
+            "committed_at": 1786805768,
+            "ref": "tmp-authorfix",
+            "sha": "4196bdbbdf748c84318bb2a96656cba20d48962e",
+            "subject": "agent: chatgpt-local-reconcile-santas-secret-workshop-1deead40e4a1 \u2014 verified ledger, 42 items, 0 unknown"
+          }
+        ],
+        "count": 18,
+        "kind": "local_only_branch_tips",
+        "repo": "/Users/kpasch/Documents/hisanta"
+      },
+      {
+        "count": 132,
+        "items_digest": "313f621c74a54ba183b9c3d27277f2a001092f66b458eeff6a6e1425b15c58f1",
+        "items_sample": [
+          {
+            "created_at": 1785715629,
+            "ref": "refs/orch-rescue/20260803T000709-cade-mirror-negotiation",
+            "sha": "e4a48b8cfaf4761dc233f729c088924a199fa51e",
+            "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715629,
+            "ref": "refs/orch-rescue/20260803T000709-hisanta",
+            "sha": "6282b9cd8382f93fbd60fe449819ce6d18441052",
+            "subject": "On master: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715630,
+            "ref": "refs/orch-rescue/20260803T000710-cc-legacy-margin-removal",
+            "sha": "a3cb5c85fa8172a9fc3f209833cf676678083135",
+            "subject": "On agent/cc-legacy-margin-removal: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715630,
+            "ref": "refs/orch-rescue/20260803T000710-cc-mutual-default-fund",
+            "sha": "3f3b27e2f5b3fbc4db06a2a49f6adf7eb4afec3e",
+            "subject": "On agent/cc-mutual-default-fund: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715630,
+            "ref": "refs/orch-rescue/20260803T000710-convention-conformance-lints",
+            "sha": "57db212862687cc05400e83ce71b4cbd9963dc08",
+            "subject": "On agent/convention-conformance-lints: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715631,
+            "ref": "refs/orch-rescue/20260803T000711-economic-scheduler-revenue",
+            "sha": "6f85ee27ef78a454bd29b25e96588567d8f27925",
+            "subject": "On agent/economic-scheduler-revenue: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715631,
+            "ref": "refs/orch-rescue/20260803T000711-ensemble-on-hard",
+            "sha": "bcfe5ea65623af479e10b13601ae07edf2183df2",
+            "subject": "On agent/ensemble-on-hard: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715631,
+            "ref": "refs/orch-rescue/20260803T000711-hive-enforcement-velocity-index",
+            "sha": "d3c2eff0ab60b4b4a96d0a485a46b077c5d4f55f",
+            "subject": "On agent/hive-enforcement-velocity-index: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715631,
+            "ref": "refs/orch-rescue/20260803T000711-hive-support-entity-relationship-source",
+            "sha": "7ee07372233513fa7872461d2845642117c973c7",
+            "subject": "On agent/hive-support-entity-relationship-source: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715632,
+            "ref": "refs/orch-rescue/20260803T000712-merged-diff-memory",
+            "sha": "162196d44e8fcb747c4ac3206c8d1d0ffee82689",
+            "subject": "On agent/merged-diff-memory: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715632,
+            "ref": "refs/orch-rescue/20260803T000712-orch-config-consumption",
+            "sha": "bb5e028490fb1794bf5598e2cd2ada36d77e4e41",
+            "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715632,
+            "ref": "refs/orch-rescue/20260803T000712-pinned-express-lane",
+            "sha": "5b0abea0ce4d77857598b5ada4dad87f1391fec0",
+            "subject": "On agent/pinned-express-lane: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715633,
+            "ref": "refs/orch-rescue/20260803T000713-ploeh-s2s-bridge-tomorrow",
+            "sha": "29be53cb51132b4105e9be29fbb7e0d97ec84d14",
+            "subject": "On agent/ploeh-s2s-bridge-tomorrow: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715633,
+            "ref": "refs/orch-rescue/20260803T000713-prompt-evolution-bandit",
+            "sha": "c5d00630df07753b295d99efb47ef557041dcbd8",
+            "subject": "On agent/prompt-evolution-bandit: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715633,
+            "ref": "refs/orch-rescue/20260803T000713-smarter-5-95",
+            "sha": "14dc89ea0d0f90944425feb887f4b0d3057a62f2",
+            "subject": "On agent/smarter-5-95: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715669,
+            "ref": "refs/orch-rescue/20260803T000749-cade-mirror-negotiation",
+            "sha": "416fa1a202c4f1541857ed7b37c87139f69cd377",
+            "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715669,
+            "ref": "refs/orch-rescue/20260803T000749-cc-legacy-margin-removal",
+            "sha": "2a32223b43cccfd8b21a85cd2dc9617db1fc521c",
+            "subject": "On agent/cc-legacy-margin-removal: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715669,
+            "ref": "refs/orch-rescue/20260803T000749-cc-mutual-default-fund",
+            "sha": "7962ced547a1fe9bb22e9f0f5b29ef0d4b56d9cf",
+            "subject": "On agent/cc-mutual-default-fund: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715669,
+            "ref": "refs/orch-rescue/20260803T000749-convention-conformance-lints",
+            "sha": "c9e2c244606e19b7f0b31692bc39845bf5537c59",
+            "subject": "On agent/convention-conformance-lints: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715669,
+            "ref": "refs/orch-rescue/20260803T000749-hisanta",
+            "sha": "ad4eed11860b52cbd3d91bad375b564326ce1dd0",
+            "subject": "On master: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-economic-scheduler-revenue",
+            "sha": "0d3f53184791676c06309438b358dc399b02c44e",
+            "subject": "On agent/economic-scheduler-revenue: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-ensemble-on-hard",
+            "sha": "a6e99529d5deded67234c68cf6ab145c6938cd94",
+            "subject": "On agent/ensemble-on-hard: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-hive-enforcement-velocity-index",
+            "sha": "4257a8947bfb540105c663fc4d039a2b13b1e524",
+            "subject": "On agent/hive-enforcement-velocity-index: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-hive-support-entity-relationship-source",
+            "sha": "ba394d8684627381c0d0008812f94106c6103b2b",
+            "subject": "On agent/hive-support-entity-relationship-source: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-merged-diff-memory",
+            "sha": "6782049e421d41ed59f4afe795dbd3595f375e25",
+            "subject": "On agent/merged-diff-memory: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-orch-config-consumption",
+            "sha": "8f2d65b918134f1fe8fef840dcff49cda754b0ff",
+            "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-pinned-express-lane",
+            "sha": "96149c3f45650715510ae1901c2d0c8b92079d54",
+            "subject": "On agent/pinned-express-lane: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-ploeh-s2s-bridge-tomorrow",
+            "sha": "0a131a81f528ed9b788ba074b0d8964ff056941b",
+            "subject": "On agent/ploeh-s2s-bridge-tomorrow: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-prompt-evolution-bandit",
+            "sha": "fdc9baf9d82dacedfdbdd568f68f4f447e713451",
+            "subject": "On agent/prompt-evolution-bandit: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715670,
+            "ref": "refs/orch-rescue/20260803T000750-smarter-5-95",
+            "sha": "57039b03461c0546d8ea9f445af03f7f82eb0809",
+            "subject": "On agent/smarter-5-95: orch-rescue: periodic sweep"
+          }
+        ],
+        "items_total": 132,
+        "kind": "orchestrator_rescue_refs",
+        "repo": "/Users/kpasch/Documents/hisanta"
+      }
+    ]

@@ -243,6 +243,15 @@ def get_fleet_config(key, default=""):
         return default
 
 
+def get_config(key, default=""):
+    """Get a fleet_config value from environment (alias to get_fleet_config).
+
+    Reads ORCH_{key} from env (loaded via load_config). Returns default on
+    missing/invalid keys. Never raises — fail-soft by design.
+    """
+    return get_fleet_config(key, default)
+
+
 def update_fleet_config(key, value):
     """Upsert a fleet config key and publish a ConfigChanged event for ORCH_* keys.
 

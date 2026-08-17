@@ -1,0 +1,556 @@
+PROJECT: pareto-2080
+
+- id: chatgpt-local-reconcile-pareto-2080-08ec75007b5a
+  title: Reconcile local ChatGPT/Codex build evidence for pareto-2080
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `08ec75007b5acff98e001913eb8bef86d4b03934b3baf52c23ef0bc0781bae80`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "branch": "agent/rls-regression-ci-gate",
+        "change_count": 66,
+        "changes_digest": "94fd8d744156e735c5d8ff6bada214f365ceca9c6151042382b25eb199fe3585",
+        "changes_sample": [
+          ".commit-message",
+          ".commit_msg",
+          ".deploy-canary",
+          ".gitignore.bak",
+          ".recovery-intent-adversarial-second-opinion-split-the-build-task-in-slice-5-match-prior-artifact.txt",
+          ".recovery-intent-adversarial-second-opinion-split-the-build-task-into-smaller-indepe.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-1259f9c.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-5643cef-locate-owner-module.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-a02d210-apply-patch-template.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-c20f077-slice-2-categorize-stale-backlog-items-apply-c.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-c20f077-slice-2-categorize-stale-backlog-items-validat.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-c20f077-slice-2-create-remediation-for-complex-stale-i.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-c20f077-slice-5-identify-pricing-grid-build-duplicates.txt",
+          ".recovery-intent-canary-pareto-2080-20260722.txt",
+          ".recovery-intent-canary-pareto-2080-20260726-update-build-script.txt",
+          ".recovery-intent-canary-pareto-2080-20260727.txt",
+          ".recovery-intent-canary-pareto-2080-20260730.txt",
+          ".recovery-intent-curation-snapshot-diff-alerts.txt",
+          ".recovery-intent-dropbox-merge-train-throughput-recovery-drive-581-skipped-to-merged--contracts.txt",
+          ".recovery-intent-dropbox-wave-f-universal-coverage-doctrine-kill-the-silence-reads-as-contracts.txt",
+          ".recovery-intent-fix-remaining-engine-tests-fix-roth-conversion-and-estimated-tax-estimated-tax-c.txt",
+          ".recovery-intent-fix-remaining-engine-tests-fix-roth-conversion-and-estimated-tax-roth-tax-consta.txt",
+          ".recovery-intent-gate-esm-cjs-guard-document-esm-only-policy.txt",
+          ".recovery-intent-improve-mesh-pareto-optimization-market.txt",
+          ".recovery-intent-qafix-pareto-2080-07222359.txt",
+          ".recovery-intent-qafix-pareto-2080-07232039.txt",
+          ".recovery-intent-qafix-pareto-2080-07240134-fix-fdic-spreading-endpoint.txt",
+          ".recovery-intent-qafix-pareto-2080-07240134-test-causal-experimentation-utility.txt",
+          ".recovery-intent-qafix-pareto-2080-3c05a8d323cd.txt",
+          ".recovery-intent-qafix-pareto-2080-71110ec81a5b-adapt-existing-implementation-extract-minimal-pat.txt"
+        ],
+        "changes_total": 66,
+        "head": "875f2c1dd0ea3e0f52ffaf4453fc301798c19a46",
+        "kind": "dirty_worktree",
+        "newest_change_mtime": 0,
+        "path": "/Users/kpasch/Documents/pareto/2080-wt/rls-regression-ci-gate"
+      },
+      {
+        "branch": "agent/smarter-5-95",
+        "change_count": 55,
+        "changes_digest": "5ff29889dd07cd93c41b05170eb68d4a668a8d781d61c7d7276bb7cca3f3fa47",
+        "changes_sample": [
+          ".commit-message",
+          ".commit_msg",
+          ".deploy-canary",
+          ".gitignore.bak",
+          ".recovery-intent-adversarial-second-opinion-split-the-build-task-in-slice-5-match-prior-artifact.txt",
+          ".recovery-intent-adversarial-second-opinion-split-the-build-task-into-smaller-indepe.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-a02d210-apply-patch-template.txt",
+          ".recovery-intent-backlog-batch-pareto-2080-c20f077-slice-5-identify-pricing-grid-build-duplicates.txt",
+          ".recovery-intent-canary-pareto-2080-20260722.txt",
+          ".recovery-intent-canary-pareto-2080-20260726-update-build-script.txt",
+          ".recovery-intent-canary-pareto-2080-20260727.txt",
+          ".recovery-intent-canary-pareto-2080-20260730.txt",
+          ".recovery-intent-curation-snapshot-diff-alerts.txt",
+          ".recovery-intent-dropbox-merge-train-throughput-recovery-drive-581-skipped-to-merged--contracts.txt",
+          ".recovery-intent-dropbox-wave-f-universal-coverage-doctrine-kill-the-silence-reads-as-contracts.txt",
+          ".recovery-intent-gate-esm-cjs-guard-document-esm-only-policy.txt",
+          ".recovery-intent-improve-mesh-pareto-optimization-market.txt",
+          ".recovery-intent-qafix-pareto-2080-07222359.txt",
+          ".recovery-intent-qafix-pareto-2080-07232039.txt",
+          ".recovery-intent-qafix-pareto-2080-07240134-fix-fdic-spreading-endpoint.txt",
+          ".recovery-intent-qafix-pareto-2080-07240134-test-causal-experimentation-utility.txt",
+          ".recovery-intent-qafix-pareto-2080-3c05a8d323cd.txt",
+          ".recovery-intent-recover-missing-branch-fix-quarantine-invariant-slice-4-identify-missing-files.txt",
+          ".recovery-intent-recover-missing-branch-fix-quarantine-invariant-slice-4-prepare-for-integration.txt",
+          ".recovery-intent-recover-missing-branch-fix-quarantine-invariant-slice-4.txt",
+          ".recovery-intent-recover-missing-branch-fix-quarantine-invariant-slice-5.txt",
+          ".recovery-intent-recover-missing-branch-gate-esm-cjs-guard-slice-2.txt",
+          ".recovery-intent-relfix-pareto-2080-07171927-resolve-conflict-analyze-conflict-and-plan.txt",
+          ".recovery-intent-relfix-pareto-2080-07171927-resolve-conflict-apply-resolution-and-remove-markers.txt",
+          ".recovery-intent-relfix-pareto-2080-07171927-resolve-conflict-run-tests-to-validate-resolution.txt"
+        ],
+        "changes_total": 55,
+        "head": "a49fdb16172ba49066103230a916ab18e75ddc4b",
+        "kind": "dirty_worktree",
+        "newest_change_mtime": 0,
+        "path": "/Users/kpasch/Documents/pareto/2080-wt/smarter-5-95"
+      },
+      {
+        "branches": [
+          {
+            "committed_at": 1786157244,
+            "ref": "agent/backlog-batch-pareto-2080-5643cef-add-tax-velocity-section",
+            "sha": "1dce4281ffd31588cd9e9828fd2e32e21ce759e1",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-5643cef-add-tax-velocity-section"
+          },
+          {
+            "committed_at": 1786160723,
+            "ref": "agent/backlog-batch-pareto-2080-5643cef-analyze-prior-merged-patterns",
+            "sha": "04373ead9821deff81013376821149e7e6eeb606",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-5643cef-analyze-prior-merged-patterns"
+          },
+          {
+            "committed_at": 1786155917,
+            "ref": "agent/backlog-batch-pareto-2080-5643cef-buildfail-patch-template",
+            "sha": "496b740c20fbf9c371ebbb2554d4232b2b7f89ed",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-5643cef-buildfail-patch-template"
+          },
+          {
+            "committed_at": 1786157752,
+            "ref": "agent/backlog-batch-pareto-2080-5643cef-identify-existing-owner-module",
+            "sha": "cc320db8c6c948d35717fec7578ddcc2fed7978b",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-5643cef-identify-existing-owner-module"
+          },
+          {
+            "committed_at": 1786163807,
+            "ref": "agent/backlog-batch-pareto-2080-5643cef-integrate-agentic-coder-configuration",
+            "sha": "22a8f412b95c580a635ad1a590c399046f000ab6",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-5643cef-integrate-agentic-coder-configuration"
+          },
+          {
+            "committed_at": 1786202487,
+            "ref": "agent/backlog-batch-pareto-2080-5643cef-setup-orchestration-pipeline-contract",
+            "sha": "b7b9afe324baef5cb634da35a5cef8be4c63078b",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-5643cef-setup-orchestration-pipeline-contract"
+          },
+          {
+            "committed_at": 1786167889,
+            "ref": "agent/backlog-batch-pareto-2080-5643cef-stale-backlog-manifest-recovery",
+            "sha": "cbd489cbf73955eb0e4681e0a1ca76b70cd15a98",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-5643cef-stale-backlog-manifest-recovery"
+          },
+          {
+            "committed_at": 1786164549,
+            "ref": "agent/backlog-batch-pareto-2080-a19cca3-apply-agentledger-esm-cjs-guard",
+            "sha": "36c0c2e214eb03827a25dd5863589e37df1d337b",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-a19cca3-apply-agentledger-esm-cjs-guard"
+          },
+          {
+            "committed_at": 1786164317,
+            "ref": "agent/backlog-batch-pareto-2080-a19cca3-remove-duplicate-pricing-grid-reconstruc",
+            "sha": "9485a00ba04c3e412bfe4e59fa18ed81045b27cc",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-a19cca3-remove-duplicate-pricing-grid-reconstruc"
+          },
+          {
+            "committed_at": 1786188734,
+            "ref": "agent/backlog-batch-pareto-2080-f133ba9",
+            "sha": "1ac69cb14833bb958d23fbdd13faf94808244f0a",
+            "subject": "recovery-intent-stub: backlog-batch-pareto-2080-f133ba9"
+          },
+          {
+            "committed_at": 1786148762,
+            "ref": "agent/canary-pareto-2080-20260722-reclaim-stale-running-canaries",
+            "sha": "bd820616c997686355d811207ea8cae0d0e34143",
+            "subject": "recovery-intent-stub: canary-pareto-2080-20260722-reclaim-stale-running-canaries"
+          },
+          {
+            "committed_at": 1786149855,
+            "ref": "agent/fix-remaining-engine-tests-fix-charitable-bunching-and-asset-locati-correct-asse",
+            "sha": "baa6aac58aa9501be59e55ec2c7fba2ae41ed248",
+            "subject": "recovery-intent-stub: fix-remaining-engine-tests-fix-charitable-bunching-and-asset-locati-correct-asse"
+          },
+          {
+            "committed_at": 1786143782,
+            "ref": "agent/fix-remaining-engine-tests-fix-charitable-bunching-and-asset-locati-correct-char",
+            "sha": "1b0ad0bc918d7d21cd055bd3136903b8a9397487",
+            "subject": "recovery-intent-stub: fix-remaining-engine-tests-fix-charitable-bunching-and-asset-locati-correct-char"
+          },
+          {
+            "committed_at": 1786155292,
+            "ref": "agent/fix-remaining-engine-tests-fix-money-velocity-and-mega-backdoor-rot-adapt-existi",
+            "sha": "17af8b56d50adc82a03f1b5e6cf0b53bec0d2b68",
+            "subject": "recovery-intent-stub: fix-remaining-engine-tests-fix-money-velocity-and-mega-backdoor-rot-adapt-existi"
+          },
+          {
+            "committed_at": 1786150779,
+            "ref": "agent/gate-esm-cjs-guard-document-esm-only-policy-add-esm-only-statement",
+            "sha": "e311b4682a1af73120dfea094ec6976150cf2981",
+            "subject": "recovery-intent-stub: gate-esm-cjs-guard-document-esm-only-policy-add-esm-only-statement"
+          },
+          {
+            "committed_at": 1786199146,
+            "ref": "agent/gate-esm-cjs-guard-document-esm-only-policy-locate-esm-section",
+            "sha": "a07b2407323ecf31f68ccf6392ac17c721f8cf77",
+            "subject": "recovery-intent-stub: gate-esm-cjs-guard-document-esm-only-policy-locate-esm-section"
+          },
+          {
+            "committed_at": 1786141725,
+            "ref": "agent/gate-esm-cjs-guard-integrate-esm-linter-npm-test-test-cjs-file-detection",
+            "sha": "a34450591421ede2a76eb415e436189444770afe",
+            "subject": "recovery-intent-stub: gate-esm-cjs-guard-integrate-esm-linter-npm-test-test-cjs-file-detection"
+          },
+          {
+            "committed_at": 1786161138,
+            "ref": "agent/gate-esm-cjs-guard-integrate-esm-linter-npm-test-verify-lint-esm-script",
+            "sha": "ca45ce421f73e3c03f15f6046fe5586eeca8b712",
+            "subject": "recovery-intent-stub: recover-missing-branch-gate-esm-cjs-guard-integrate-esm-linter-npm-test-verify-lint-esm-script"
+          },
+          {
+            "committed_at": 1786115392,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-1-slice-1-slice-2-patch-00ab3aa2c67a",
+            "sha": "46563c7d7aef2416668a8c8b57d2473d21d437ab",
+            "subject": "regen-from-cache(template): qafix-pareto-2080-07062319-slice-1-slice-1-slice-2-patch-00ab3aa2c67a"
+          },
+          {
+            "committed_at": 1786117436,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-1-slice-1-slice-5",
+            "sha": "5c78fb2258c5654598f3dfb676c01d132bada7e8",
+            "subject": "patch-recovery: qafix-pareto-2080-07062319-slice-1-slice-1-slice-5"
+          },
+          {
+            "committed_at": 1786118653,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-1-slice-2-repair-repo-setup",
+            "sha": "407fd526401d73fc5336b7e8feaf357356c15b16",
+            "subject": "regen-from-cache(template): qafix-pareto-2080-07062319-slice-1-slice-2-repair-repo-setup"
+          },
+          {
+            "committed_at": 1786118739,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-1-slice-4-repair-repo-setup",
+            "sha": "d9ec1a1fcd3ae7f6e3be9af250447c3156302d64",
+            "subject": "regen-from-cache(template): qafix-pareto-2080-07062319-slice-1-slice-4-repair-repo-setup"
+          },
+          {
+            "committed_at": 1786118800,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-5-add-agentledger-tests",
+            "sha": "dd44aa8f74f4fe56236078faef44189c2910db84",
+            "subject": "regen-from-cache(template): qafix-pareto-2080-07062319-slice-5-add-agentledger-tests"
+          },
+          {
+            "committed_at": 1786118869,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-5-add-newutilities-tests",
+            "sha": "60d2f7a27c92e948ac2026683a3a76b0edba962f",
+            "subject": "patch-recovery: qafix-pareto-2080-07062319-slice-5-add-newutilities-tests"
+          },
+          {
+            "committed_at": 1786118879,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-5-add-pricinggrid-tests",
+            "sha": "8875019f3cb3e1337bbc31ba513f5155d848302b",
+            "subject": "patch-recovery: qafix-pareto-2080-07062319-slice-5-add-pricinggrid-tests"
+          },
+          {
+            "committed_at": 1786118947,
+            "ref": "agent/qafix-pareto-2080-07062319-slice-5-fix-bookingsaga-test",
+            "sha": "1501a6f1233548c338d180d6f0521ff892b2733f",
+            "subject": "regen-from-cache(template): qafix-pareto-2080-07062319-slice-5-fix-bookingsaga-test"
+          },
+          {
+            "committed_at": 1786161138,
+            "ref": "agent/recover-missing-branch-gate-esm-cjs-guard-integrate-esm-linter-npm-test-verify-lint-esm-script",
+            "sha": "ca45ce421f73e3c03f15f6046fe5586eeca8b712",
+            "subject": "recovery-intent-stub: recover-missing-branch-gate-esm-cjs-guard-integrate-esm-linter-npm-test-verify-lint-esm-script"
+          },
+          {
+            "committed_at": 1786117426,
+            "ref": "agent/recover-missing-branch-qafix-pareto-2080-07062319-slice-1-slice-1-slice-5",
+            "sha": "c94ac42bff35e9dbf3dead0e9db34aa373353551",
+            "subject": "recovery-intent-stub: recover-missing-branch-qafix-pareto-2080-07062319-slice-1-slice-1-slice-5"
+          },
+          {
+            "committed_at": 1786133889,
+            "ref": "agent/rework-secret-experience-passport-3765ba6",
+            "sha": "863c41828e1bc5b195412c61994bffe8cfde2bea",
+            "subject": "patch-recovery: rework-secret-experience-passport-3765ba6"
+          }
+        ],
+        "count": 29,
+        "kind": "local_only_branch_tips",
+        "repo": "/Users/kpasch/Documents/pareto/2080"
+      },
+      {
+        "count": 99,
+        "items_digest": "31300c401a3a49b5130d5acf93e391a55f6a78e7f42548532e1a37f08ca9496a",
+        "items_sample": [
+          {
+            "created_at": 1785715438,
+            "ref": "refs/orch-rescue/20260803T000634-2080",
+            "sha": "d370931770b0bf541803d79d31c3828962c6e947",
+            "subject": "fix(p0): provision Profiles on first login \u2014 the app was unusable for every real new user"
+          },
+          {
+            "created_at": 1785715438,
+            "ref": "refs/orch-rescue/20260803T000735-2080",
+            "sha": "d370931770b0bf541803d79d31c3828962c6e947",
+            "subject": "fix(p0): provision Profiles on first login \u2014 the app was unusable for every real new user"
+          },
+          {
+            "created_at": 1785715438,
+            "ref": "refs/orch-rescue/20260803T001456-2080-d3709317",
+            "sha": "d370931770b0bf541803d79d31c3828962c6e947",
+            "subject": "fix(p0): provision Profiles on first login \u2014 the app was unusable for every real new user"
+          },
+          {
+            "created_at": 1785718612,
+            "ref": "refs/orch-rescue/20260803T005652-economic-scheduler-revenue-3208fcb2",
+            "sha": "3208fcb2366d643e784abe33deb5b10b4fb76cb7",
+            "subject": "On agent/economic-scheduler-revenue: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785725915,
+            "ref": "refs/orch-rescue/20260803T030119-2080-0649ca7a",
+            "sha": "0649ca7a27b89c5979beec7170538a616ef8aa45",
+            "subject": "Merge branch 'agent/toolchain-repair-79ca9d54-adapt-and-apply-patch' (auto-resolved)"
+          },
+          {
+            "created_at": 1785726493,
+            "ref": "refs/orch-rescue/20260803T030813-orch-config-consumption-75f8355d",
+            "sha": "75f8355d7a2a2a9648ab08cd3f0d03358b4f1f09",
+            "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785728776,
+            "ref": "refs/orch-rescue/20260803T065005-2080-defc57ae",
+            "sha": "defc57aeaa3df592077dd22b585e7145547dc2f1",
+            "subject": "Merge branch 'recover-missing-branch-underwriting-reconstruction-slice-2' (continuous-merger)"
+          },
+          {
+            "created_at": 1785758561,
+            "ref": "refs/orch-rescue/20260803T124445-2080-6416da20",
+            "sha": "6416da20132d84f2b7a24e6923514df5389272e2",
+            "subject": "Merge remote-tracking branch 'origin/main'"
+          },
+          {
+            "created_at": 1785801388,
+            "ref": "refs/orch-rescue/20260803T235628-economic-scheduler-revenue-ae986e49",
+            "sha": "ae986e499d4ded6bdf7a5ea84022d1d10a677cbb",
+            "subject": "On agent/economic-scheduler-revenue: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785802090,
+            "ref": "refs/orch-rescue/20260804T000848-2080-fe8d1e61",
+            "sha": "fe8d1e617a610caa0b112f7e535057249f14831f",
+            "subject": "Merge branch 'agent/shadow-f52d31ee-cowork' (auto-resolved)"
+          },
+          {
+            "created_at": 1785802464,
+            "ref": "refs/orch-rescue/20260804T001424-ext-streaming-terms-49ab2694",
+            "sha": "49ab269447d24c4fc93b5a0fb923577cebc362cc",
+            "subject": "On agent/ext-streaming-terms: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785802854,
+            "ref": "refs/orch-rescue/20260804T002222-2080-60915add",
+            "sha": "60915adda50ac8781683ad3f2873ab2a5c53f035",
+            "subject": "Merge branch 'agent/rework-buildfail-qafix-pareto-2080-07062319-slice-4-a7288db' (auto-resolved)"
+          },
+          {
+            "created_at": 1785802854,
+            "ref": "refs/orch-rescue/20260804T030550-regen-qafix-pareto-2080-07222359-60915add",
+            "sha": "60915adda50ac8781683ad3f2873ab2a5c53f035",
+            "subject": "Merge branch 'agent/rework-buildfail-qafix-pareto-2080-07062319-slice-4-a7288db' (auto-resolved)"
+          },
+          {
+            "created_at": 1785814696,
+            "ref": "refs/orch-rescue/20260804T033817-pinned-express-lane-07584068",
+            "sha": "07584068e6042035b15c7bc0d2c5fe8e83a1e495",
+            "subject": "On agent/pinned-express-lane: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785814698,
+            "ref": "refs/orch-rescue/20260804T033818-smarter-5-95-83fc9096",
+            "sha": "83fc90964b5c7ba68cd25dd393c8d9b19ed2da18",
+            "subject": "On agent/smarter-5-95: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785818992,
+            "ref": "refs/orch-rescue/20260804T045025-2080-39a3ea7e",
+            "sha": "39a3ea7ec362ee4dfc0794c8576a59def279c591",
+            "subject": "Merge branch 'recover-missing-branch-gate-esm-cjs-guard-slice-2' (continuous-merger)"
+          },
+          {
+            "created_at": 1785802854,
+            "ref": "refs/orch-rescue/20260804T045647-relfix-pareto-2080-07171927-verify-release-verify-vercel-deployment-60915add",
+            "sha": "60915adda50ac8781683ad3f2873ab2a5c53f035",
+            "subject": "Merge branch 'agent/rework-buildfail-qafix-pareto-2080-07062319-slice-4-a7288db' (auto-resolved)"
+          },
+          {
+            "created_at": 1785819677,
+            "ref": "refs/orch-rescue/20260804T050117-relfix-pareto-2080-07171927-verify-release-verify-vercel-deployment-e45426ae",
+            "sha": "e45426aeeeccb8c061d1949813508d8399e71a05",
+            "subject": "On agent/relfix-pareto-2080-07171927-verify-release-verify-vercel-deployment: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785820387,
+            "ref": "refs/orch-rescue/20260804T051314-2080-c17aec6e",
+            "sha": "c17aec6e25a124ba78332635bd48db4c161128d3",
+            "subject": "Merge branch 'recover-missing-branch-fix-quarantine-invariant-slice-3' (continuous-merger)"
+          },
+          {
+            "created_at": 1785821384,
+            "ref": "refs/orch-rescue/20260804T052944-relfix-pareto-2080-07171927-verify-release-run-integration-and-e2e-tests-1b54d4c8",
+            "sha": "1b54d4c88a2998a71dfc2746ec940829478dfd45",
+            "subject": "On agent/relfix-pareto-2080-07171927-verify-release-run-integration-and-e2e-tests: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785821697,
+            "ref": "refs/orch-rescue/20260804T053457-relfix-pareto-2080-07171927-verify-release-run-integration-and-e2e-tests-c4798e0f",
+            "sha": "c4798e0f4c81c888e6337fb1b0d437b4d8620180",
+            "subject": "On agent/relfix-pareto-2080-07171927-verify-release-run-integration-and-e2e-tests: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785849723,
+            "ref": "refs/orch-rescue/20260804T133356-2080-b8baae48",
+            "sha": "b8baae4818b25da109e39eb8fa42a0e93476e57d",
+            "subject": "Merge branch 'agent/relfix-pareto-2080-07171927-verify-release-verify-merge-integrity' (auto-resolved)"
+          },
+          {
+            "created_at": 1785858165,
+            "ref": "refs/orch-rescue/20260804T154342-2080-11ddc0e9",
+            "sha": "11ddc0e920c210490aa7244172008412c6f1ea4f",
+            "subject": "Merge branch 'agent/qafix-pareto-2080-07240134-fix-dependency-readiness-issue' (auto-resolved)"
+          },
+          {
+            "created_at": 1785862903,
+            "ref": "refs/orch-rescue/20260804T170143-hive-arbitrage-enforcement-hook-edeadc15",
+            "sha": "edeadc1547370f63d5cdcbd5c3a33cfd248afebb",
+            "subject": "On agent/hive-arbitrage-enforcement-hook: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785862903,
+            "ref": "refs/orch-rescue/20260804T170143-hive-enforcement-velocity-index-3683b3ce",
+            "sha": "3683b3ce64f1a753d0497ca5b6f39c47a2884819",
+            "subject": "On agent/hive-enforcement-velocity-index: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785865519,
+            "ref": "refs/orch-rescue/20260804T174909-2080-3a497d92",
+            "sha": "3a497d92f2272b4ad152d1b2e2b2b1d4a22bf343",
+            "subject": "Merge branch 'agent/relfix-pareto-2080-07171927-resolve-conflict-resolve-remaining-conflicts-playboo' (auto-resolved)"
+          },
+          {
+            "created_at": 1785869547,
+            "ref": "refs/orch-rescue/20260804T185451-2080-4d254a6b",
+            "sha": "4d254a6bae200dc7d7787117b25caae886308f07",
+            "subject": "feat(insights): ship tier-gated track-record surface at /insights/accuracy"
+          },
+          {
+            "created_at": 1785870154,
+            "ref": "refs/orch-rescue/20260804T191000-2080-17565f77",
+            "sha": "17565f77f29a0920993342493cef9137317efcdb",
+            "subject": "fix(insights): render /insights/accuracy without the default layout"
+          },
+          {
+            "created_at": 1785891798,
+            "ref": "refs/orch-rescue/20260805T010319-2080-38099d02",
+            "sha": "38099d021c98bbbe9956f795bee7699ad021cdaa",
+            "subject": "On main: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785892733,
+            "ref": "refs/orch-rescue/20260805T012825-2080-d65fd85f",
+            "sha": "d65fd85f81c41b68e691119e6eb82bf03bb25fff",
+            "subject": "fix(treasury): create missing treasury_trust_lane table"
+          }
+        ],
+        "items_total": 99,
+        "kind": "orchestrator_rescue_refs",
+        "repo": "/Users/kpasch/Documents/pareto/2080"
+      },
+      {
+        "count": 11,
+        "items": [
+          {
+            "created_at": 1785327985,
+            "ref": "stash@{0}",
+            "sha": "eb91eabb81460fd8984c9413cbfbbdcde18cc024",
+            "subject": "WIP on main: 18aba45 fix: replace bg-white/3 with bg-white/5 (invalid Tailwind opacity)"
+          },
+          {
+            "created_at": 1784956957,
+            "ref": "stash@{1}",
+            "sha": "8e161aa126b1f139d1c59149f9b72851c943dcee",
+            "subject": "WIP on main: ce4f9c8 Add personal.json stub to fix serverless function initialization"
+          },
+          {
+            "created_at": 1784879115,
+            "ref": "stash@{2}",
+            "sha": "29a2b38a2dc31c33fb6cb76c1b821934e4b8d80d",
+            "subject": "WIP on agent/fix-remaining-engine-tests-fix-money-velocity-and-mega-backdoor-rot: ac2c671 fix: moneyVelocity import path + megaBackdoorRoth 2025 IRS limits"
+          },
+          {
+            "created_at": 1784860083,
+            "ref": "stash@{3}",
+            "sha": "60472267b81a867e647b722b925b326b4a7cb500",
+            "subject": "WIP on main: 55ea901 feat: activate household intelligence and CADE panel"
+          },
+          {
+            "created_at": 1784684649,
+            "ref": "stash@{4}",
+            "sha": "cda225ee8904cdec2ef369480d97ff1a367391c6",
+            "subject": "On main: pre-force-merge"
+          },
+          {
+            "created_at": 1784416759,
+            "ref": "stash@{5}",
+            "sha": "8c75777029212eeb12915f1a7a61a1d06257b7e7",
+            "subject": "WIP on agent/recover-missing-branch-pricing-grid-reconstruction-slice-5: b53b4c1 agent: recover-missing-branch-pricing-grid-reconstruction-slice-5"
+          },
+          {
+            "created_at": 1784177653,
+            "ref": "stash@{6}",
+            "sha": "05397f1a3ba648843465da7ce6cbcf0cabb6a6e0",
+            "subject": "WIP on recovery/concurrent-primary-20260715-pareto: 97e78a3 recovery: preserve final Pareto source state"
+          },
+          {
+            "created_at": 1784138565,
+            "ref": "stash@{7}",
+            "sha": "24a9077aca9b11b99556213d458253a6adff2e8e",
+            "subject": "WIP on main: c4435d0 fix: resolve federated household identity"
+          },
+          {
+            "created_at": 1783987002,
+            "ref": "stash@{8}",
+            "sha": "4160a395d345cc64595af2c19797ec9e115aaac1",
+            "subject": "WIP on agent/recover-missing-branch-ci-writeback-gate-slice-3: b3574ff feat: add CSP frame-ancestors for orchestrator iframe"
+          },
+          {
+            "created_at": 1783986650,
+            "ref": "stash@{9}",
+            "sha": "c4c3720d6307a6c60f706de7734726061e16977d",
+            "subject": "On agent/recover-missing-branch-negative-space-optimizer-fix-annual-cost-usd-and-u-slice-5: manual-restore-1783986650"
+          },
+          {
+            "created_at": 1783986595,
+            "ref": "stash@{10}",
+            "sha": "c6434e9de4b896a5d25f389b60d67485749b4e77",
+            "subject": "On agent/recover-missing-branch-negative-space-optimizer-fix-annual-cost-usd-and-u-slice-5: manual-restore-1783986595"
+          }
+        ],
+        "kind": "stashes",
+        "repo": "/Users/kpasch/Documents/pareto/2080"
+      }
+    ]
