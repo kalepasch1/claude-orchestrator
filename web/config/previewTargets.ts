@@ -7,9 +7,16 @@ export type PreviewTarget = { url: string; label: string }
  */
 export const PREVIEW_TARGETS: Readonly<Record<string, PreviewTarget>> = Object.freeze({
   apparently: { url: 'https://www.apparently.cc', label: 'Apparently' },
+  'apparently-law': { url: 'https://www.apparentlylaw.com', label: 'Apparently Law' },
   beethoven: { url: 'https://www.madeus.cc', label: 'Madeus' },
   darwn: { url: 'https://www.darwn.us', label: 'Darwn' },
+  illuminati: { url: 'https://illuminati-kalepasch1s-projects.vercel.app', label: 'Illuminati' },
+  'kalepasch-com': { url: 'https://www.kalepasch.com', label: 'Kale Pasch' },
   'pareto-2080': { url: 'https://www.joinpareto.us', label: 'Pareto' },
+  // CANONICAL HOST ONLY. www.predictionmarketsADVISORS.com (plural "markets") 302s to the
+  // singular www.predictionmarketadvisors.com. Those are different registrable domains, so
+  // the plural reads as an off-site redirect and would pin this project red forever.
+  'prediction-markets-institute': { url: 'https://www.predictionmarketadvisors.com', label: 'Prediction Market Advisors' },
   racefeed: { url: 'https://racefeed-sepia.vercel.app', label: 'Racefeed' },
   'santas-secret-workshop': { url: 'https://santas-workshop.vercel.app', label: "Santa's Secret Workshop" },
   smarter: { url: 'https://www.smrter.us', label: 'Smarter' },
