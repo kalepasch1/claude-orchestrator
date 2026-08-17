@@ -1,0 +1,38 @@
+[
+  {
+    "rank": 1,
+    "category": "fail-soft-error-handling",
+    "file": "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/merged_diff_memory.py",
+    "line": 57,
+    "function": "_log_error()",
+    "issue_title": "Error logging function silently swallows exceptions",
+    "issue_description": "The _log_error() function (which is responsible for capturing errors) silently catches and passes on all exceptions at line 57. This defeats error observability when the error logging system itself fails \u2014 no diagnostic is recorded. Per CLAUDE.md fail-soft convention, broad except catches must log before swallowing.",
+    "suggested_action": "Add logger.exception() or print() before pass to capture the diagnostic. Example: except Exception as e: logger.warning('_log_error failed: %s', e); pass",
+    "effort_estimate": "5 min",
+    "risk_level": "low"
+  },
+  {
+    "rank": 2,
+    "category": "fail-soft-error-handling",
+    "file": "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/merged_diff_memory.py",
+    "line": 43,
+    "function": "_ensure_dirs()",
+    "issue_title": "Silent exception in directory creation utility",
+    "issue_description": "The _ensure_dirs() function silently catches and ignores exceptions when creating directories at line 43. If directory creation fails (e.g., permission denied, disk full), no diagnostic is logged, making it invisible to operators. Per CLAUDE.md fail-soft convention, logging is required before returning.",
+    "suggested_action": "Add logger.warning() before pass to document when directory creation fails. Example: except Exception as e: logger.warning('Failed to ensure dirs: %s', e); pass",
+    "effort_estimate": "5 min",
+    "risk_level": "low"
+  },
+  {
+    "rank": 3,
+    "category": "fail-soft-error-handling",
+    "file": "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.py",
+    "line": 328,
+    "function": "set_state()",
+    "issue_title": "Unlogged exception in soft dependency speculation cleanup",
+    "issue_description": "During task completion (set_state -> DONE), a soft-dep-spec integrity check runs at line 328 inside an except block that silently swallows any error. If soft_dep_spec.on_dep_done() fails (e.g., due to DB issues), the task incorrectly proceeds as DONE without invalidating dependent tasks. The failure is invisible. Per CLAUDE.md fail-soft convention, this must be logged.",
+    "suggested_action": "Add _log.debug() before pass: except Exception as _e: _log.debug('soft-dep-spec cleanup failed: %s', _e); pass",
+    "effort_estimate": "5 min",
+    "risk_level": "medium"
+  }
+]
