@@ -160,21 +160,12 @@ def _integration_evidence(repo, slug):
         # FAIL CLOSED: unable to prove integration => not integrated. The failure mode we
         # are designing against is falsely closing real work as MERGED.
         return None
-    targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
-                           os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
-                           "main", "master") if t]
-    refs = []
-    for tgt in targets:
-        ref = f"origin/{tgt}"
-        try:
-            probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
-                                   capture_output=True)
-        except OSError:
-            # FAIL CLOSED: repo path missing or unspawnable => cannot prove integration.
-            # A bad repo_path must not crash the whole sweep (it strands every other project).
-            return None
-        if probe.returncode == 0:
-            refs.append(ref)
+    # Single source of truth for "what counts as upstream" — see _upstream_refs(). It
+    # probes origin/<target> AND refs/heads/<target>, because under the dev->prod freeze
+    # the staging branch is landed locally and deliberately not pushed. strict=True keeps
+    # this call site FAIL CLOSED: repo path missing or unspawnable => cannot prove
+    # integration (None), rather than crashing the sweep and stranding every other project.
+    refs = _upstream_refs(repo, strict=True)
     if not refs:
         return None
     try:
@@ -188,18 +179,55 @@ def _already_integrated(repo, slug):
     return _integration_evidence(repo, slug) is not None
 
 
-def _integration_targets(repo):
-    """Existing refs that count as 'upstream' for this repo, in preference order."""
+def _upstream_refs(repo, strict=False):
+    """Refs that count as 'upstream' for this repo, in preference order.
+
+    LOCAL REFS COUNT (2026-08-17). This used to probe only `origin/<target>`. Under the
+    deliberate dev->prod freeze the staging branch (orchestrator/dev) is landed locally
+    and NOT pushed, so `origin/orchestrator/dev` lags by however many commits have landed
+    since the last operator-triggered promotion. Every one of those commits was invisible
+    to the ancestry test, so genuinely integrated work was reported as "branch lost and
+    recovery exhausted" and QUARANTINED. That false negative is TERMINAL: sweep_passed()
+    only ever re-selects DONE/BLOCKED/RUNNING, so a quarantined row is never re-examined
+    and never recovers even after the branch is pushed. Three verified shadow-* landings
+    (aab8797f, 34a0ad90, b3d04dcf) were destroyed this way on 2026-08-12.
+
+    Reachability from the LOCAL staging branch is the same tree-level ground truth as
+    reachability from origin: if the tip is an ancestor of local orchestrator/dev then
+    every commit on the branch is on the branch the fleet actually lands on. origin is
+    still probed FIRST because it additionally proves promotion, and the caller persists
+    whichever ref matched — so "integrated locally" and "integrated upstream" stay
+    distinguishable in the note rather than being silently conflated.
+
+    strict=True preserves the fail-closed contract _integration_evidence() depends on: an
+    unspawnable git (OSError) returns None — "cannot prove integration" — rather than an
+    empty list, so a broken repo_path can never be read as "nothing is integrated".
+    """
     targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
                            os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
                            "main", "master") if t]
     refs = []
+    seen = set()
     for tgt in targets:
-        ref = f"origin/{tgt}"
-        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
-                          capture_output=True).returncode == 0:
-            refs.append(ref)
+        for ref in (f"origin/{tgt}", f"refs/heads/{tgt}"):
+            if ref in seen:
+                continue
+            try:
+                probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                                       cwd=repo, capture_output=True)
+            except OSError:
+                if strict:
+                    return None
+                continue
+            if probe.returncode == 0:
+                seen.add(ref)
+                refs.append(ref)
     return refs
+
+
+def _integration_targets(repo):
+    """Existing refs that count as 'upstream' for this repo, in preference order."""
+    return _upstream_refs(repo) or []
 
 
 def _merged_branch_evidence(repo, branch):
@@ -990,7 +1018,7 @@ def _note_attempts(task):
     return int(m.group(1)) if m else 0
 
 
-def verify_phantom(project=None, limit=100, dry_run=False):
+def verify_phantom(project=None, limit=100, dry_run=False, include_quarantined=False):
     """Batch-verify PHANTOM_UNVERIFIED tasks against real git evidence.
 
     For each task: look for boundary-exact, tree-changing integration evidence via the
@@ -1016,8 +1044,17 @@ def verify_phantom(project=None, limit=100, dry_run=False):
         out["error"] = f"project lookup failed: {e}"
         return out
 
+    # QUARANTINED rows are scanned too (2026-08-17), making the demotion IDEMPOTENT.
+    # sweep() re-selects only DONE/BLOCKED/RUNNING, so a row it closed as "branch lost and
+    # recovery exhausted" was never looked at again — the demotion was one-way and terminal.
+    # When that verdict came from the origin-only ancestry defect (see _upstream_refs) the
+    # work was in fact integrated, and nothing in the fleet could ever notice or recover it.
+    # Re-verifying here is safe in both directions: evidence restores the row, and ABSENCE
+    # OF EVIDENCE CHANGES NOTHING — a quarantined row is never requeued for rebuild, because
+    # it was closed deliberately and resurrecting it is the churn quarantine exists to stop.
+    states = [PHANTOM_STATE, "QUARANTINED"] if include_quarantined else [PHANTOM_STATE]
     query = {"select": "id,slug,project_id,state,note,kind,base_branch",
-             "state": f"eq.{PHANTOM_STATE}", "order": "updated_at.asc", "limit": str(limit)}
+             "state": f"in.({','.join(states)})", "order": "updated_at.asc", "limit": str(limit)}
     if project:
         pid = next((p["id"] for p in projects.values() if p.get("name") == project), None)
         if pid is None:
@@ -1062,6 +1099,15 @@ def verify_phantom(project=None, limit=100, dry_run=False):
                 print(f"[verify-phantom] {slug}: merge write failed: {e}")
             continue
 
+        if (t.get("state") or "") == "QUARANTINED":
+            # No evidence for a deliberately-closed row. Leave it EXACTLY as it is: do not
+            # requeue (that is the recovery churn quarantine exists to stop) and do not
+            # bump an attempt counter, so re-running this pass is a no-op rather than a
+            # slow march toward rebuilding dead work.
+            out["still_unproven"].append({"slug": slug, "state": "QUARANTINED",
+                                          "action": "left closed"})
+            continue
+
         attempts = max(_verify_attempts(t), _note_attempts(t))
         if attempts + 1 >= VERIFY_ATTEMPT_CAP:
             out["requeued"].append({"slug": slug, "attempts": attempts + 1})
@@ -1098,6 +1144,10 @@ def _build_parser():
                         help="report what would change without writing")
     parser.add_argument("--no-train", action="store_true",
                         help="sweep without running the merge train afterwards")
+    parser.add_argument("--include-quarantined", action="store_true",
+                        help="with --verify-phantom, also re-verify QUARANTINED rows. "
+                             "Evidence restores them to MERGED; absence of evidence leaves "
+                             "them closed and untouched (never requeued)")
     return parser
 
 
@@ -1112,7 +1162,8 @@ def main(argv=None):
     if args.verify_phantom:
         result = verify_phantom(project=args.project,
                                 limit=args.limit if args.limit is not None else 100,
-                                dry_run=args.dry_run)
+                                dry_run=args.dry_run,
+                                include_quarantined=args.include_quarantined)
         print(json.dumps(result, indent=2, default=str))
         for row in result.get("merged", []):
             print(f"MERGED   {row['slug']} <- {row['sha'][:12]} in {row['ref']}")
