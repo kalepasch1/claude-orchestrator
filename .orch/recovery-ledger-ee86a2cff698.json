@@ -1,0 +1,31 @@
+{
+ "audit_fingerprint": "ee86a2cff698f1f6b7902e3670e20a536916b2c23e29ca374cfc8711bfebca7d",
+ "task": "chatgpt-local-reconcile-beethoven-ee86a2cff698",
+ "repo": "/Users/kpasch/Documents/beethoven/claude-orchestrator",
+ "total": 3,
+ "unknown": 0,
+ "summary": {
+  "SUPERSEDED_BY_NEWER": 1,
+  "ACTIVE_IN_ANOTHER_TASK": 2
+ },
+ "items": [
+  {
+   "ref": "/Users/kpasch/Documents/Codex/2026-08-07/cons/work/orchestrator-session-fabric",
+   "kind": "broken_codex_git_worktree",
+   "classification": "SUPERSEDED_BY_NEWER",
+   "disposition": "enumerated all 3440 files: 147 paths are absent from origin/master, and every one is a dotfile, a log, or garbage. The only three source-shaped paths are runner/utils/auto_branch_cleanup.py and runner/utils/backlog_batch.py (both EMPTY, 0 bytes) and test_template_95fc17a.py (contains only its own filename) \u2014 artifacts of a malformed patch application, not lost work. Nothing recoverable. Directory left untouched; the defect it represents was fixed instead (see runner/worktree_gc.py orphan detection)."
+  },
+  {
+   "ref": "/Users/kpasch/Documents/chatgpt-dropbox/_applied/20260811-160222--claude-orchestrator--chatgpt-local-queue-bridge-20260811.zip",
+   "kind": "chatgpt_bridge_artifact",
+   "classification": "ACTIVE_IN_ANOTHER_TASK",
+   "disposition": "already applied by the bridge and pushed as origin/chatgpt/chatgpt-local-queue-bridge-20260811-08111602 (PR #20, 12 files / 1081 insertions, still open and NOT merged into master). Durably represented by a remote branch, so not duplicated here."
+  },
+  {
+   "ref": "/Users/kpasch/Documents/chatgpt-dropbox/_applied/20260811-172514--claude-orchestrator--chatgpt-local-intake-receipt-safety-20260811.zip",
+   "kind": "chatgpt_bridge_artifact",
+   "classification": "ACTIVE_IN_ANOTHER_TASK",
+   "disposition": "already applied by the bridge and pushed as origin/chatgpt/chatgpt-local-intake-receipt-safety-20260811-08111725 (PR #21, 2 files / 111 insertions, still open and NOT merged into master). Durably represented by a remote branch, so not duplicated here."
+  }
+ ]
+}
