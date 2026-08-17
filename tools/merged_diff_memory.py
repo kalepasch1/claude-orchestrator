@@ -6,12 +6,17 @@ and writes structured memory files to ~/.claude/projects/<project>/memory/ for o
 
 Idempotent by commit hash: re-running never duplicates entries for the same merge commit.
 No secrets/credentials are extracted (validates against common patterns before writing).
+
+Candidate selection is centralised in `is_merge_candidate` (message level) and
+`is_merge_candidate_commit` (record level) so the scanner, the extractor and any future
+consumer agree on exactly which merges carry reusable signal.
 """
 from __future__ import annotations
 import os
 import re
 import sys
 import json
+import fnmatch
 import hashlib
 import datetime
 import subprocess
@@ -20,6 +25,38 @@ from typing import Optional
 
 AGENT_BRANCH_PATTERN = re.compile(r"^agent/")
 MERGE_COMMIT_PATTERN = re.compile(r"^Merge branch ['\"]agent/([^'\"]+)['\"]")
+
+# Message prefixes that never carry reusable signal, even on an agent/* merge.
+EXCLUDED_MESSAGE_PATTERN = re.compile(r"^(revert|wip|fixup!|squash!|amend!)\b", re.IGNORECASE)
+
+# Changed paths with no reusable signal: lockfiles, vendored deps, build output, binaries.
+IGNORED_PATH_GLOBS = (
+    "*.lock",
+    "*.min.js",
+    "*.min.css",
+    "*.map",
+    "*.snap",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.ico",
+    "*.pdf",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    ".DS_Store",
+)
+IGNORED_PATH_SEGMENTS = (
+    "node_modules",
+    "__pycache__",
+    ".git",
+    ".venv",
+    "vendor",
+    "dist",
+    "build",
+    "coverage",
+)
 SECRET_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|secret|token|password|credential|aws_|private_key|oauth)", re.IGNORECASE),
     re.compile(r"(-----BEGIN|-----END)", re.IGNORECASE),
@@ -55,6 +92,75 @@ def _sanitize_diff(diff_text: str, max_chars: int = 50000) -> str:
     return "\n".join(lines)
 
 
+def _extra_ignored_globs() -> tuple[str, ...]:
+    """Operator-supplied extra ignore globs (comma-separated) from MERGED_DIFF_IGNORED_GLOBS."""
+    raw = os.environ.get("MERGED_DIFF_IGNORED_GLOBS", "")
+    return tuple(g.strip() for g in raw.split(",") if g.strip())
+
+
+def _is_ignored_path(path: str) -> bool:
+    """True when a changed file carries no reusable signal. Unusable input counts as ignored."""
+    if not path or not isinstance(path, str):
+        return True
+    normalized = path.strip().replace("\\", "/").lstrip("./")
+    if not normalized:
+        return True
+    segments = [s for s in normalized.split("/") if s]
+    if any(seg in IGNORED_PATH_SEGMENTS for seg in segments):
+        return True
+    name = segments[-1] if segments else normalized
+    for pattern in IGNORED_PATH_GLOBS + _extra_ignored_globs():
+        if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(normalized, pattern):
+            return True
+    return False
+
+
+def _merge_candidate_branch(commit_message: str) -> Optional[str]:
+    """Return the agent branch name a merge commit message refers to, or None if not a candidate."""
+    if not commit_message or not isinstance(commit_message, str):
+        return None
+    first_line = commit_message.strip().split("\n", 1)[0].strip()
+    if not first_line:
+        return None
+    if EXCLUDED_MESSAGE_PATTERN.match(first_line):
+        return None
+    m = MERGE_COMMIT_PATTERN.match(first_line)
+    if not m:
+        return None
+    branch = m.group(1).strip()
+    return branch or None
+
+
+def is_merge_candidate(commit_message: str) -> bool:
+    """True when `commit_message` identifies a merged agent/* branch worth learning from.
+
+    Rejects, fail-soft and never raising: non-strings, blank messages, ordinary (non-merge)
+    commits, merges of non-agent branches, reverts, and WIP/fixup/squash noise.
+    """
+    return _merge_candidate_branch(commit_message) is not None
+
+
+def is_merge_candidate_commit(commit: dict) -> bool:
+    """True when an extracted merge-commit record is worth writing into merged-diff memory.
+
+    A candidate needs a commit hash, a message accepted by `is_merge_candidate`, a non-empty
+    diff, and at least one changed file that is not an ignored path. Malformed records are
+    rejected rather than raising.
+    """
+    if not isinstance(commit, dict):
+        return False
+    if not str(commit.get("commit_hash") or "").strip():
+        return False
+    if not is_merge_candidate(str(commit.get("merge_message") or "")):
+        return False
+    if not str(commit.get("diff") or "").strip():
+        return False
+    files = commit.get("files")
+    if not isinstance(files, (list, tuple)):
+        return False
+    return any(not _is_ignored_path(f) for f in files)
+
+
 def get_recent_merged_agent_branches(repo: str, limit: int = 50) -> list[dict]:
     """Find recent merge commits of agent/* branches.
 
@@ -85,11 +191,10 @@ def get_recent_merged_agent_branches(repo: str, limit: int = 50) -> list[dict]:
             continue
         commit_hash, message, author_date = lines[0], lines[1], lines[2]
 
-        # Extract branch name from merge message
-        m = MERGE_COMMIT_PATTERN.match(message)
-        if not m:
+        # Extract branch name from merge message; skips non-candidates (reverts, WIP, non-agent)
+        branch_name = _merge_candidate_branch(message)
+        if branch_name is None:
             continue
-        branch_name = m.group(1)
 
         results.append({
             "commit_hash": commit_hash,
@@ -164,7 +269,7 @@ def extract_merged_diffs(repo: str, limit: int = 50) -> list[dict]:
 
         files = get_changed_files(repo, commit_hash)
 
-        results.append({
+        record = {
             "commit_hash": commit_hash,
             "branch_name": branch_info["branch_name"],
             "merge_message": branch_info["merge_message"],
@@ -172,7 +277,12 @@ def extract_merged_diffs(repo: str, limit: int = 50) -> list[dict]:
             "files": files,
             "author_date": branch_info["author_date"],
             "extracted_at": datetime.datetime.utcnow().isoformat(),
-        })
+        }
+        # Drop empty-diff merges and merges that only touch lockfiles/build output
+        if not is_merge_candidate_commit(record):
+            continue
+
+        results.append(record)
     return results
 
 
