@@ -116,7 +116,15 @@ export function verifyPassport(passport: Passport, asOf: Date = new Date()): Pas
     return { valid: false, reason: 'signature_invalid', liveClaims: [] };
   }
   const now = asOf.getTime();
-  const liveClaims = passport.claims.filter((c) => Date.parse(c.expiresAt) > now);
+  // Fail-closed expiry: a claim must be unexpired at `asOf` AND unexpired at the
+  // passport's own issue time. A claim that was already dead when the passport
+  // was minted can never be live, whatever `asOf` is passed — so backdating the
+  // evaluation date cannot resurrect a stale claim.
+  const mintedAt = Date.parse(passport.issuedAt);
+  const liveClaims = passport.claims.filter((c) => {
+    const exp = Date.parse(c.expiresAt);
+    return exp > now && exp > mintedAt;
+  });
   if (liveClaims.length === 0) {
     return { valid: false, reason: 'all_claims_expired', liveClaims: [] };
   }
