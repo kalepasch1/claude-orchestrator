@@ -1220,6 +1220,17 @@ def run_shipped():
     import shipped_metrics; return shipped_metrics.run()
 
 
+def run_markersentinel():
+    """Zero-token swarm bot #1: file a tier-1 remediation task if tracked conflict
+    markers reach master (one such file breaks every compile/collection/canary gate)."""
+    import conflict_marker_sentinel, enqueue
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    res = conflict_marker_sentinel.sweep(repo, enqueue.enqueue_task)
+    if res.get("found"):
+        print(f"conflict_marker_sentinel: {len(res['found'])} file(s) with conflict "
+              f"markers on HEAD; remediation filed={res['filed']}")
+
+
 JOBS = {
     "deployterminal": run_deployterminal,
     "shipped": run_shipped,
@@ -1252,6 +1263,7 @@ JOBS = {
     "embedretry": run_embedretry,
     "dedup": run_dedup,
     "conflictresolve": run_conflictresolve,
+    "markersentinel": run_markersentinel,
     "contcompact": run_contcompact,
     "backlogcompact": run_backlogcompact,
     "canaryecon": run_canaryecon,
@@ -1349,7 +1361,7 @@ if __name__ == "__main__":
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
         "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "remotegc",
-        "priority_scorer", "quarantine_gc",
+        "priority_scorer", "quarantine_gc", "markersentinel",
         "relationshipcrm",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
