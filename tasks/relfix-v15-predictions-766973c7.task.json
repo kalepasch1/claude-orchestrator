@@ -1,0 +1,10 @@
+{
+  "project": "prediction-markets-institute",
+  "slug": "relfix-v15-predictions-766973c7",
+  "kind": "bugfix",
+  "source": "operator-v15-recovery",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "material": false,
+  "prompt": "Repair the current Predictions release blocker at 766973c7: production could not fast-forward from staging. Fetch the current branch graph, preserve all unique production and staging commits, reconcile through the established integration branch with a normal merge or reviewed rebase as repository policy requires, run the production build and release preflight, and return the reconciled head to the release train. Never force-push, discard commits, or deploy directly. Record before/after SHAs and ancestry proof.",
+  "proof": "Production can advance from the reconciled staging head without force or commit loss; build/preflight pass; the release train records a successful Predictions release newer than 766973c7."
+}

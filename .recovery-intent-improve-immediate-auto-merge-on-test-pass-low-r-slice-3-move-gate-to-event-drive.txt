@@ -1,4 +1,0 @@
-recovery-intent: improve-immediate-auto-merge-on-test-pass-low-r-slice-3-move-gate-to-event-drive
-template: 1688d200878c
-intent: 07130635 07190257 20251001 53375a0cecde __init__ active adapt address advice after agentic analysis apierror approve artifacts attempt author available b4fa25c7 batch beethoven before behavior below branch break broad bugfix build build_fix category cause change changes changing checks claim class claud claude cloud coder commit compiled completion concrete config context continue contract coordination credits cross currently custody deepseek delete denied dependencies deployfix diffs directive drafting drive driven either ensure equivalent error event excerpt exhausted existing exists fable failed failure files final finish
-base: main

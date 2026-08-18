@@ -13,7 +13,12 @@ describe('orchestrator capability registry', () => {
   })
 
   it('generates canonical command destinations without exposing routing mechanics', () => {
-    expect(CAPABILITY_DESTINATIONS.length).toBe(ORCHESTRATOR_CAPABILITIES.length * 4)
+    // One landing destination per capability plus one per action. The old `* 4` hard-coded
+    // "every capability has exactly 3 actions", which contradicts the `>= 3` invariant
+    // asserted above and broke the moment legal-orchestrator grew to 6 actions.
+    const expectedDestinations = ORCHESTRATOR_CAPABILITIES
+      .reduce((total, capability) => total + 1 + capability.actions.length, 0)
+    expect(CAPABILITY_DESTINATIONS.length).toBe(expectedDestinations)
     expect(CAPABILITY_DESTINATIONS.every(item => item.to.startsWith('/orchestrators/'))).toBe(true)
     expect(JSON.stringify(CAPABILITY_DESTINATIONS).toLowerCase()).not.toContain('colosseum')
   })

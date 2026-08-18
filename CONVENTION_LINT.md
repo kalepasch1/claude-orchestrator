@@ -221,6 +221,23 @@ CI. Full classification: `docs/scan-window-audit-2026-08-06.md`.
 
 ---
 
+## Test files
+
+`FAIL_SOFT_ERROR` and `HARDCODED_SECRET` do not fire inside test files
+(`test_*.py`, `*_test.py`, anything under a `tests/` directory).
+
+A test that asserts a function raises has to contain a raise, and a fixture named
+`secret` is a fixture, not a credential — so those hits were the suite working as
+designed. Measured 2026-08-12: 246 violations, of which **178 (72%) were inside test
+files**. Since this linter is a pre-commit hook that exits 1, a mostly-false report did
+not make the gate strict; it made it something to route around with `--no-verify`, which
+enforces nothing. After the exemption: 66 violations, all in production code.
+
+Every other rule still applies everywhere, including in tests — a real singleton bug
+hiding in a test module is still a real bug. New rules inherit this behaviour
+automatically because all reporting goes through `ConventionChecker._record`; add a rule
+to `TEST_EXEMPT_RULES` only when a correct test genuinely must trip it.
+
 ## Suppressing a violation
 
 `# noqa` on the offending line, either bare or rule-scoped:

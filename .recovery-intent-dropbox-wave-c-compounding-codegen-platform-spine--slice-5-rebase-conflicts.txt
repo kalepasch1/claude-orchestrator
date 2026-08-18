@@ -1,4 +1,0 @@
-recovery-intent: dropbox-wave-c-compounding-codegen-platform-spine--slice-5-rebase-conflicts
-template: 03f85afebaaa
-intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice after agentic aider allowlist appropriate author batch beethoven before behavior blocked blocker branch build build_fix buildfail ce2e8dcd7954 change claim class claude clean coder conflicts context contract coordination cross custody darwin debate_compress deepseek delete deployfix develop diffs doesn drafting ensure errors excerpt existing exists explore fable files first flash focusing force further gemini generated google haiku implementation improvement improvements independent instead intent introduce judge kernel latest
-base: master

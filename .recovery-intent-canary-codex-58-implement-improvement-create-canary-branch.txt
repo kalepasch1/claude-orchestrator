@@ -1,0 +1,4 @@
+recovery-intent: canary-codex-58-implement-improvement-create-canary-branch
+template: 582d661105ad
+intent: 07130635 07190257 20251001 53375a0cecde acceptance active adapt advice after agent agentic analysis apierror artifacts author available avoid b4fa25c7 based batch beethoven before behavior below branch broad bugfix build build_fix canary category cause change changes changing cheap checked checks claim clarify class claud claude coder codex collisions comment commit completion concrete config conflict context continue contract coordination could cowork create credits cross custody debate_compress deepseek delete denied dependencies deployfix diffs directive docstring drafting either element equivalent error excerpt existing exists fable
+base: main

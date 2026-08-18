@@ -138,10 +138,16 @@ def commit_authors(repo, local_sha, remote_sha, limit=None):
     """[(sha, name, email)] for commits this push would add. Empty on any failure."""
     limit = ORCH_AUTHOR_IDENTITY_MAX_COMMITS if limit is None else limit
     if remote_sha and remote_sha != ZERO_SHA:
-        rev = f"{remote_sha}..{local_sha}"
+        revs = [f"{remote_sha}..{local_sha}"]
     else:
-        rev = local_sha
-    out = _git(repo, "log", f"--max-count={limit}", "--format=%H%x1f%an%x1f%ae", rev)
+        # A first push of a new branch reports an all-zero remote SHA. Inspecting
+        # ``local_sha`` by itself treats the repository's entire ancestry as newly
+        # pushed and can reject a correctly-authored one-commit branch because an
+        # unrelated commit already on origin used a historical email. Compare the
+        # branch against every remote-tracking ref instead: only locally introduced
+        # commits are subject to this push-time gate.
+        revs = [local_sha, "--not", "--remotes"]
+    out = _git(repo, "log", f"--max-count={limit}", "--format=%H%x1f%an%x1f%ae", *revs)
     authors = []
     for line in out.splitlines():
         parts = line.split("\x1f")

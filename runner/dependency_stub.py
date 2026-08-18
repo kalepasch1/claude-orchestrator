@@ -71,10 +71,45 @@ def _try_reflog_recovery(repo, branch):
     return None
 
 
+def _fetch(repo, branch, timeout=120):
+    """Fetch one branch from origin, through the repo's authenticated git helper.
+
+    REUSES `git_auth.run_git`, which injects GIT_ASKPASS / the PAT env before
+    shelling out. The bare `_git()` below does not: it is a plain
+    `subprocess.run(["git", ...])` with the ambient environment, which is correct
+    for the LOCAL operations in this module (branch, rev-parse, config, reflog)
+    but wrong for the one operation that talks to a remote.
+
+    Against a private origin an unauthenticated fetch fails, the failure is
+    swallowed by the caller's bare `except`, and `synthesize_stub` falls through
+    to the identity stub — silently substituting "base branch as-is" for a real
+    dependency branch that origin was holding all along. The dependency looks
+    resolved and its actual changes are simply absent from the merge.
+
+    Falls back to the unauthenticated path when git_auth is unavailable, so a
+    public remote keeps working exactly as before.
+
+    Returns True when the fetch command reported success.
+    """
+    try:
+        import git_auth
+        rc, _out, _err = git_auth.run_git(
+            ["fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+            repo, timeout=timeout)
+        return rc == 0
+    except Exception:
+        try:
+            return _git(repo, "fetch", "origin",
+                        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+                        timeout=timeout).returncode == 0
+        except Exception:
+            return False
+
+
 def _try_remote_recovery(repo, branch):
     """Try fetching the branch from origin."""
     try:
-        _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
+        _fetch(repo, branch)
         r = _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}")
         if r.returncode == 0:
             return r.stdout.strip()

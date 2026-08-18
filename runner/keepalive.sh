@@ -188,6 +188,12 @@ trap 'ka_release_supervisor_lock' EXIT
 trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; term_forensics; ka_release_supervisor_lock; exit 143' INT TERM
 
 while true; do
+  # Re-check inside the restart loop.  A supervisor that predates a recovery
+  # lock must not resurrect runner.py after the writer exits or crashes.
+  if [[ -e "$MAINTENANCE_LOCK" ]]; then
+    echo "[keepalive] maintenance lock appeared at $MAINTENANCE_LOCK; restart blocked at $(date)" >> "$RUNNER_LOG"
+    exit 75
+  fi
   if is_live_runner; then
     if stay_resident; then
       wait_for_runner_release "runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null)"

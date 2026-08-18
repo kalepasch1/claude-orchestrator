@@ -374,16 +374,12 @@ describe('updateHiveSourceCadence', () => {
       window_start: new Date(Date.now() - 604800_000).toISOString(),
       window_end: new Date().toISOString(),
     }
-    expect(async () => {
-      await updateHiveSourceCadence(
-        sourceId,
-        domain,
-        jurisdiction,
-        velocity,
-        18,
-        mockFailDb
-      )
-    }).rejects
+    // `expect(fn).rejects` with no matcher and no await asserts nothing: it invoked the
+    // callback and dropped the resulting promise, which surfaced as an unhandled
+    // rejection ("DB connection lost") that polluted every run.
+    await expect(
+      updateHiveSourceCadence(sourceId, domain, jurisdiction, velocity, 18, mockFailDb)
+    ).rejects.toThrow('DB connection lost')
   })
 
   it('applies ceiling constraint if specified', async () => {
@@ -418,9 +414,14 @@ describe('enforcement-velocity integration', () => {
     const mockDb = vi.fn().mockResolvedValue({ success: true })
 
     const arrivals: RegFactArrival[] = [
-      { timestamp: new Date(now.getTime() - 259200_000), domain: 'securities', jurisdiction: 'US-SEC', fact_type: 'enforcement' }, // 3d
-      { timestamp: new Date(now.getTime() - 172800_000), domain: 'securities', jurisdiction: 'US-SEC', fact_type: 'enforcement' }, // 2d
-      { timestamp: new Date(now.getTime() - 86400_000), domain: 'securities', jurisdiction: 'US-SEC', fact_type: 'enforcement' }, // 1d
+      // Intervals must SHRINK for computeVelocity to report acceleration, and the mean
+      // interval must stay under ~32h for velocity_score to be large enough to actually
+      // pull the cadence below 24h. The previous fixture was evenly spaced 24h apart, so
+      // recentAvg === earlyAvg and neither assertion below could ever hold.
+      // Spacing is now 48h, 24h, 12h -> mean 28h, score 16, cadence 24 -> 20.
+      { timestamp: new Date(now.getTime() - 302400_000), domain: 'securities', jurisdiction: 'US-SEC', fact_type: 'enforcement' }, // 84h
+      { timestamp: new Date(now.getTime() - 129600_000), domain: 'securities', jurisdiction: 'US-SEC', fact_type: 'enforcement' }, // 36h
+      { timestamp: new Date(now.getTime() - 43200_000), domain: 'securities', jurisdiction: 'US-SEC', fact_type: 'enforcement' }, // 12h
       { timestamp: now, domain: 'securities', jurisdiction: 'US-SEC', fact_type: 'enforcement' },
     ]
 

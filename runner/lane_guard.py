@@ -85,7 +85,6 @@ def guard_or_exit(name, interval_s=None):
         # A broken guard must not silently disable a periodic safety job forever.
         return None
 
-
 def timeout_for(task_class, default=None):
     """Wall-clock budget in seconds for a task class.
 

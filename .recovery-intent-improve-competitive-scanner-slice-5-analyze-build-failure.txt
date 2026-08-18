@@ -1,4 +1,0 @@
-recovery-intent: improve-competitive-scanner-slice-5-analyze-build-failure
-template: bc3731b6a81a
-intent: 07130635 07190257 20251001 about active adapt advice after agentic analysis analyze artifacts author batch beethoven before behavior below branch broad bugfix build build_fix category cause change changes changing checks claim class claud claude cloud clues coder codestral commit competitive completion concrete config configuration context continue contract coordination could cross custody debate_compress deepseek delete dependencies dependency deployfix diffs directive drafting equivalent excerpt existing exists fable failure files final finish first fixed flash force fresh gemini generated google green haiku identify implementation
-base: main

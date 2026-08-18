@@ -217,8 +217,6 @@ class FallbackIdentityDriftTests(unittest.TestCase):
             guard._identity_module(),
             "guard did not resolve git_identity even though it is on the path",
         )
-
-
 class VerifiedFiringTests(unittest.TestCase):
     def test_the_already_fixed_items_are_listed(self):
         for key in ("sentinel-hotfix-rescue", "sentinel-no-untracked-stash",

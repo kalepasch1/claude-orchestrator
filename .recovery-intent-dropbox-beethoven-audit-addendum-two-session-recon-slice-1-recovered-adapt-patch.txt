@@ -1,4 +1,0 @@
-recovery-intent: dropbox-beethoven-audit-addendum-two-session-recon-slice-1-recovered-adapt-patch
-template: 8c19e38a497e
-intent: abstract abstractions acceptance analyze changes class comments create definitions document explaining extracted function functions identified identify modifications outlining patch_template purpose rationale reusable snippets their these
-base: master

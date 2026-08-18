@@ -1,4 +1,0 @@
-recovery-intent: dropbox-wave-c-compounding-codegen-platform-spine--slice-1-create-db-migration-s
-template: 82458177d9bf
-intent: acceptance asserts build command comment contain contracts conventions create custom definitions discovery domains empty entries equivalent error expected export exported extend filename files function implied index items layer match migrate migration migrations number package passes passport_snapshot pipeline_stages pipelines placeholder project registry runner running scope shared should sibling specific status stubs tables typecheck typeorm version without
-base: master

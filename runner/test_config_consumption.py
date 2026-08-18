@@ -35,7 +35,7 @@ import config_manager
 class TestBasicConsumption:
     """Test basic config consumption from env vars and defaults."""
 
-    def test_consume_from_env_with_orch_prefix():
+    def test_consume_from_env_with_orch_prefix(self):
         """Env var with ORCH_ prefix is consumed by ConfigManager.get()."""
         os.environ["ORCH_TIMEOUT_S"] = "30"
         cm = config_manager.ConfigManager(defaults={"timeout_s": 60})
@@ -47,7 +47,7 @@ class TestBasicConsumption:
 
         del os.environ["ORCH_TIMEOUT_S"]
 
-    def test_consume_without_env_fallback_to_default():
+    def test_consume_without_env_fallback_to_default(self):
         """Missing env var falls back to default value."""
         os.environ.pop("ORCH_MISSING_KEY", None)
         cm = config_manager.ConfigManager(defaults={"missing_key": "default_value"})
@@ -55,7 +55,7 @@ class TestBasicConsumption:
         value = cm.get("missing_key")
         assert value == "default_value", f"Expected default 'default_value', got {value}"
 
-    def test_consume_without_env_or_default_returns_none():
+    def test_consume_without_env_or_default_returns_none(self):
         """Missing both env and default returns explicit None."""
         os.environ.pop("ORCH_NO_KEY", None)
         cm = config_manager.ConfigManager(defaults={})
@@ -63,7 +63,7 @@ class TestBasicConsumption:
         value = cm.get("no_key")
         assert value is None, f"Expected None, got {value}"
 
-    def test_consume_with_explicit_fallback_default():
+    def test_consume_with_explicit_fallback_default(self):
         """Fallback default parameter overrides None when key missing."""
         os.environ.pop("ORCH_FALLBACK_KEY", None)
         cm = config_manager.ConfigManager(defaults={})
@@ -71,7 +71,7 @@ class TestBasicConsumption:
         value = cm.get("fallback_key", default="fallback_value")
         assert value == "fallback_value", f"Expected fallback 'fallback_value', got {value}"
 
-    def test_empty_env_value_treated_as_present():
+    def test_empty_env_value_treated_as_present(self):
         """Empty env string is still consumed (not treated as missing)."""
         os.environ["ORCH_EMPTY"] = ""
         cm = config_manager.ConfigManager(defaults={"empty": "default"})
@@ -83,7 +83,7 @@ class TestBasicConsumption:
 
         del os.environ["ORCH_EMPTY"]
 
-    def test_consume_preserves_default_type():
+    def test_consume_preserves_default_type(self):
         """Default value type determines env coercion target type."""
         os.environ["ORCH_BOOL_SETTING"] = "true"
         cm = config_manager.ConfigManager(defaults={"bool_setting": False})
@@ -98,7 +98,7 @@ class TestBasicConsumption:
 class TestTypCoercion:
     """Test type coercion for env var consumption."""
 
-    def test_coerce_string_to_bool_true():
+    def test_coerce_string_to_bool_true(self):
         """String 'true'/'1'/'yes' coerced to bool True."""
         for val_str in ["true", "True", "TRUE", "1", "yes", "YES"]:
             os.environ["ORCH_BOOL"] = val_str
@@ -107,7 +107,7 @@ class TestTypCoercion:
             assert value is True, f"Expected True for '{val_str}', got {value}"
             del os.environ["ORCH_BOOL"]
 
-    def test_coerce_string_to_bool_false():
+    def test_coerce_string_to_bool_false(self):
         """String 'false'/'0' coerced to bool False (anything not 'true'/'1'/'yes')."""
         for val_str in ["false", "False", "0", "no", "anything_else"]:
             os.environ["ORCH_BOOL"] = val_str
@@ -116,7 +116,7 @@ class TestTypCoercion:
             assert value is False, f"Expected False for '{val_str}', got {value}"
             del os.environ["ORCH_BOOL"]
 
-    def test_coerce_string_to_int():
+    def test_coerce_string_to_int(self):
         """String coerced to int when default is int."""
         os.environ["ORCH_COUNT"] = "42"
         cm = config_manager.ConfigManager(defaults={"count": 0})
@@ -127,7 +127,7 @@ class TestTypCoercion:
 
         del os.environ["ORCH_COUNT"]
 
-    def test_coerce_string_to_int_bad_value_returns_string():
+    def test_coerce_string_to_int_bad_value_returns_string(self):
         """String that can't parse as int is returned as string (fail-soft)."""
         os.environ["ORCH_BAD_INT"] = "not_a_number"
         cm = config_manager.ConfigManager(defaults={"bad_int": 0})
@@ -138,7 +138,7 @@ class TestTypCoercion:
 
         del os.environ["ORCH_BAD_INT"]
 
-    def test_coerce_string_to_float():
+    def test_coerce_string_to_float(self):
         """String coerced to float when default is float."""
         os.environ["ORCH_RATE"] = "3.14"
         cm = config_manager.ConfigManager(defaults={"rate": 0.0})
@@ -149,7 +149,7 @@ class TestTypCoercion:
 
         del os.environ["ORCH_RATE"]
 
-    def test_coerce_string_to_float_bad_value_returns_string():
+    def test_coerce_string_to_float_bad_value_returns_string(self):
         """String that can't parse as float is returned as string (fail-soft)."""
         os.environ["ORCH_BAD_FLOAT"] = "not_a_float"
         cm = config_manager.ConfigManager(defaults={"bad_float": 0.0})
@@ -160,7 +160,7 @@ class TestTypCoercion:
 
         del os.environ["ORCH_BAD_FLOAT"]
 
-    def test_coerce_preserves_string_type():
+    def test_coerce_preserves_string_type(self):
         """String default keeps value as string even with numeric content."""
         os.environ["ORCH_STR"] = "123"
         cm = config_manager.ConfigManager(defaults={"str": "default"})
@@ -175,7 +175,7 @@ class TestTypCoercion:
 class TestOverridePriority:
     """Test config priority: overrides > env > defaults."""
 
-    def test_override_beats_env():
+    def test_override_beats_env(self):
         """Programmatic override takes priority over env var."""
         os.environ["ORCH_KEY"] = "env_value"
         cm = config_manager.ConfigManager(defaults={"key": "default"})
@@ -186,7 +186,7 @@ class TestOverridePriority:
 
         del os.environ["ORCH_KEY"]
 
-    def test_override_beats_default():
+    def test_override_beats_default(self):
         """Programmatic override takes priority over default."""
         os.environ.pop("ORCH_KEY", None)
         cm = config_manager.ConfigManager(defaults={"key": "default_value"})
@@ -195,7 +195,7 @@ class TestOverridePriority:
         value = cm.get("key")
         assert value == "override_value", f"Expected override 'override_value', got {value}"
 
-    def test_env_beats_default():
+    def test_env_beats_default(self):
         """Env var takes priority over default."""
         os.environ["ORCH_PRIORITY"] = "env_value"
         cm = config_manager.ConfigManager(defaults={"priority": "default_value"})
@@ -205,7 +205,7 @@ class TestOverridePriority:
 
         del os.environ["ORCH_PRIORITY"]
 
-    def test_priority_chain_all_three():
+    def test_priority_chain_all_three(self):
         """Test full priority chain: override > env > default."""
         os.environ["ORCH_CHAIN"] = "env_value"
         cm = config_manager.ConfigManager(defaults={"chain": "default_value"})
@@ -223,7 +223,7 @@ class TestOverridePriority:
 class TestFileLoading:
     """Test configuration file loading."""
 
-    def test_load_valid_json_file():
+    def test_load_valid_json_file(self):
         """Load config from valid JSON file."""
         config_data = {"db_host": "localhost", "db_port": 5432, "timeout": 30}
 
@@ -242,7 +242,7 @@ class TestFileLoading:
         finally:
             os.unlink(temp_path)
 
-    def test_load_merges_with_existing_defaults():
+    def test_load_merges_with_existing_defaults(self):
         """File load merges into existing defaults (additive)."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({"new_key": "new_value"}, f)
@@ -257,14 +257,14 @@ class TestFileLoading:
         finally:
             os.unlink(temp_path)
 
-    def test_load_nonexistent_file_returns_false():
+    def test_load_nonexistent_file_returns_false(self):
         """Loading non-existent file returns False (fail-soft)."""
         cm = config_manager.ConfigManager(defaults={})
         success = cm.load_file("/nonexistent/path/config.json")
 
         assert success is False, "load_file() should return False on missing file"
 
-    def test_load_invalid_json_returns_false():
+    def test_load_invalid_json_returns_false(self):
         """Loading invalid JSON returns False (fail-soft)."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write("{invalid json}")
@@ -278,7 +278,7 @@ class TestFileLoading:
         finally:
             os.unlink(temp_path)
 
-    def test_load_file_overwrites_defaults():
+    def test_load_file_overwrites_defaults(self):
         """File values overwrite defaults (file > default)."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({"key": "file_value"}, f)
@@ -292,7 +292,7 @@ class TestFileLoading:
         finally:
             os.unlink(temp_path)
 
-    def test_load_file_does_not_beat_env():
+    def test_load_file_does_not_beat_env(self):
         """Env vars still beat file values after load (env > file > default)."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({"key": "file_value"}, f)
@@ -314,14 +314,14 @@ class TestFileLoading:
 class TestValidation:
     """Test config validation."""
 
-    def test_validate_all_present():
+    def test_validate_all_present(self):
         """validate() returns empty list when all required keys present."""
         cm = config_manager.ConfigManager(defaults={"host": "localhost", "port": 5432})
 
         missing = cm.validate(["host", "port"])
         assert missing == [], f"Expected no missing keys, got {missing}"
 
-    def test_validate_some_missing():
+    def test_validate_some_missing(self):
         """validate() lists missing keys."""
         cm = config_manager.ConfigManager(defaults={"host": "localhost"})
         os.environ.pop("ORCH_PORT", None)
@@ -330,14 +330,14 @@ class TestValidation:
         assert "port" in missing, f"Expected 'port' in missing list, got {missing}"
         assert "host" not in missing, f"'host' should not be missing"
 
-    def test_validate_empty_list():
+    def test_validate_empty_list(self):
         """validate() with empty list returns empty."""
         cm = config_manager.ConfigManager(defaults={})
 
         missing = cm.validate([])
         assert missing == [], f"Expected empty list, got {missing}"
 
-    def test_validate_none_value_is_missing():
+    def test_validate_none_value_is_missing(self):
         """Config value of None is considered missing."""
         cm = config_manager.ConfigManager(defaults={"key": None})
 
@@ -348,7 +348,7 @@ class TestValidation:
 class TestDictionaryExport:
     """Test config.to_dict() export."""
 
-    def test_to_dict_includes_defaults():
+    def test_to_dict_includes_defaults(self):
         """to_dict() includes all defaults."""
         defaults = {"a": 1, "b": 2, "c": 3}
         cm = config_manager.ConfigManager(defaults=defaults)
@@ -358,7 +358,7 @@ class TestDictionaryExport:
         assert result["b"] == 2
         assert result["c"] == 3
 
-    def test_to_dict_includes_overrides():
+    def test_to_dict_includes_overrides(self):
         """to_dict() includes programmatic overrides."""
         cm = config_manager.ConfigManager(defaults={"a": 1})
         cm.set("a", 10)
@@ -368,7 +368,7 @@ class TestDictionaryExport:
         assert result["a"] == 10, "Override should be in dict"
         assert result["b"] == 20, "New override should be in dict"
 
-    def test_to_dict_override_beats_default():
+    def test_to_dict_override_beats_default(self):
         """Override value appears in dict, not default."""
         cm = config_manager.ConfigManager(defaults={"key": "default"})
         cm.set("key", "override")
@@ -376,7 +376,7 @@ class TestDictionaryExport:
         result = cm.to_dict()
         assert result["key"] == "override"
 
-    def test_to_dict_snapshot():
+    def test_to_dict_snapshot(self):
         """to_dict() is snapshot at call time (not live view)."""
         cm = config_manager.ConfigManager(defaults={"key": "value1"})
 
@@ -391,7 +391,7 @@ class TestDictionaryExport:
 class TestReset:
     """Test config reset functionality."""
 
-    def test_reset_clears_overrides():
+    def test_reset_clears_overrides(self):
         """reset() clears all programmatic overrides."""
         cm = config_manager.ConfigManager(defaults={"a": 1, "b": 2})
         cm.set("a", 10)
@@ -402,7 +402,7 @@ class TestReset:
         assert cm.get("a") == 1, "Should fall back to default after reset"
         assert cm.get("b") == 2, "Should fall back to default after reset"
 
-    def test_reset_preserves_defaults():
+    def test_reset_preserves_defaults(self):
         """reset() does not clear defaults."""
         cm = config_manager.ConfigManager(defaults={"key": "default_value"})
         cm.set("key", "override")
@@ -411,7 +411,7 @@ class TestReset:
         value = cm.get("key")
         assert value == "default_value", "Default should be intact after reset"
 
-    def test_reset_preserves_env():
+    def test_reset_preserves_env(self):
         """reset() does not clear env vars."""
         os.environ["ORCH_KEY"] = "env_value"
         cm = config_manager.ConfigManager(defaults={"key": "default"})
@@ -423,7 +423,7 @@ class TestReset:
 
         del os.environ["ORCH_KEY"]
 
-    def test_reset_after_multiple_sets():
+    def test_reset_after_multiple_sets(self):
         """reset() clears all overrides even after multiple set() calls."""
         cm = config_manager.ConfigManager(defaults={"a": 1, "b": 2, "c": 3})
         cm.set("a", 10)
@@ -442,7 +442,7 @@ class TestReset:
 class TestEdgeCases:
     """Test edge cases and error conditions."""
 
-    def test_consume_none_key():
+    def test_consume_none_key(self):
         """get(None) does not crash (fail-soft)."""
         cm = config_manager.ConfigManager(defaults={"key": "value"})
         try:
@@ -453,13 +453,13 @@ class TestEdgeCases:
             # This is acceptable for fail-soft
             pass
 
-    def test_consume_empty_string_key():
+    def test_consume_empty_string_key(self):
         """get('') handles gracefully."""
         cm = config_manager.ConfigManager(defaults={"": "empty_key_value"})
         value = cm.get("")
         assert value == "empty_key_value"
 
-    def test_consume_case_insensitive_env():
+    def test_consume_case_insensitive_env(self):
         """Env lookup converts key to uppercase (ORCH_KEY from 'key')."""
         os.environ["ORCH_MYKEY"] = "value"
         cm = config_manager.ConfigManager(defaults={})
@@ -469,7 +469,7 @@ class TestEdgeCases:
 
         del os.environ["ORCH_MYKEY"]
 
-    def test_set_overwrites_previous_override():
+    def test_set_overwrites_previous_override(self):
         """Multiple set() calls overwrite previous values."""
         cm = config_manager.ConfigManager(defaults={"key": "default"})
         cm.set("key", "value1")
@@ -478,7 +478,7 @@ class TestEdgeCases:
         cm.set("key", "value2")
         assert cm.get("key") == "value2", "Second set() should overwrite first"
 
-    def test_large_config_values():
+    def test_large_config_values(self):
         """ConfigManager handles large string values."""
         large_value = "x" * 10000
         cm = config_manager.ConfigManager(defaults={"large": large_value})
@@ -487,7 +487,7 @@ class TestEdgeCases:
         assert len(value) == 10000
         assert value == large_value
 
-    def test_special_chars_in_values():
+    def test_special_chars_in_values(self):
         """ConfigManager handles special characters in values."""
         special_values = {
             "quotes": 'value with "quotes"',
@@ -506,7 +506,7 @@ class TestEdgeCases:
 class TestConcurrency:
     """Test thread-safe config consumption."""
 
-    def test_concurrent_reads():
+    def test_concurrent_reads(self):
         """Multiple threads can read config concurrently."""
         cm = config_manager.ConfigManager(defaults={"counter": 42})
         results = []
@@ -524,7 +524,7 @@ class TestConcurrency:
         assert all(r == 42 for r in results), "All reads should see same value"
         assert len(results) == 10
 
-    def test_concurrent_set_and_get():
+    def test_concurrent_set_and_get(self):
         """Concurrent set() and get() don't crash (may race)."""
         cm = config_manager.ConfigManager(defaults={"key": 0})
         results = []
@@ -552,7 +552,7 @@ class TestConcurrency:
 class TestIntegration:
     """Integration tests combining multiple features."""
 
-    def test_full_consumption_flow():
+    def test_full_consumption_flow(self):
         """Full config consumption flow: file + env + defaults + overrides."""
         # Create config file
         config_data = {"db_host": "file_host", "db_port": 5432, "timeout": 30}
@@ -594,13 +594,18 @@ class TestIntegration:
             exported = cm.to_dict()
             assert exported["db_host"] == "override_host"
             assert exported["db_port"] == 5432
-            assert exported["timeout"] == "60"
+            # to_dict() reports the EFFECTIVE config, so it agrees with get() on both the
+            # env override and its coercion. This line previously asserted the string "60"
+            # while the assert above demands the int 60 from the same key — the test
+            # contradicted itself, and could not fail either way because every method in
+            # this file was missing `self` and never ran.
+            assert exported["timeout"] == 60
 
             del os.environ["ORCH_TIMEOUT"]
         finally:
             os.unlink(temp_path)
 
-    def test_type_coercion_with_file_and_env():
+    def test_type_coercion_with_file_and_env(self):
         """Type coercion works correctly with file + env sources."""
         config_data = {"enabled": False, "pool_size": 10}
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -634,7 +639,7 @@ class TestIntegration:
 class TestSafeDefaults:
     """Test safe default behavior for missing configs."""
 
-    def test_missing_config_returns_none():
+    def test_missing_config_returns_none(self):
         """Missing config returns None (not raising exception)."""
         cm = config_manager.ConfigManager(defaults={})
         os.environ.pop("ORCH_MISSING", None)
@@ -642,7 +647,7 @@ class TestSafeDefaults:
         value = cm.get("missing")
         assert value is None, "Missing config should return None"
 
-    def test_fallback_provided_for_missing():
+    def test_fallback_provided_for_missing(self):
         """Fallback default can be provided for missing configs."""
         cm = config_manager.ConfigManager(defaults={})
         os.environ.pop("ORCH_MISSING", None)

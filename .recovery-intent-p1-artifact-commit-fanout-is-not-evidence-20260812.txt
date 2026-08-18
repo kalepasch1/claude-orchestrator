@@ -1,0 +1,4 @@
+recovery-intent: p1-artifact-commit-fanout-is-not-evidence-20260812
+template: 519e0d2c13f9
+intent: 07062319 07071626 1f57508c 20260812 47f26779 4d1367d4 54b69ee0 59de85f2 67b9e055 6dd4ff13 725b0b40 8b92d078e856 8f0a5607 acceptance account adapt against agent agentic agents allowed allows alter among analysis anything artifact artifact_commit artifacts attribute attribution audit audit_merged_evidence audits backfill because beethoven before behavior belongs below blocks branch broad bugfix build cannot carries category cause change changed changes changing checks cited claim claimed claiming classify claude coder commit commits completion concrete config confirmed conflict constraints context continue could currently da7fb11f decision declared defect deliverable dependencies
+base: master

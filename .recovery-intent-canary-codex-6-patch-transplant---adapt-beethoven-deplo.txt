@@ -1,4 +1,0 @@
-recovery-intent: canary-codex-6-patch-transplant---adapt-beethoven-deplo
-template: b7b7695e7a1e
-intent: 07062319 07071626 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch broad bugfix build canary category cause changes changing checks codex commit complete completion concrete config context continue dependencies deplo diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists expired failure files final finish first focus fresh functionality green heartbeat identify implementation improve inspect install instead intent large library lines maintainability matched merged minimally missing module original orphaned parent pareto patch performance preserve pricinggridreconstructi
-base: main

@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-remediate-improve-automated-conflict-resolution-commit-pa
-template: d1869790b274
-intent: acceptance adapt agent allow automated bb22a2 before branch build canonical clear commit completed confirm confirmation conflict created descriptive diffs drafting ensure excerpt exists first implementation improve initiated instead integrate integration intent library matched merge merged message missing patch pending pipeline prior process project proven provide racefeed rebuilding recover relevant remediate remote resolution reuse running scratch similarity solved source status successfully summary tests train transplant trigger triggered visible
-base: master

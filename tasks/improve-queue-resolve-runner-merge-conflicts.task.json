@@ -1,0 +1,10 @@
+{
+  "project": "beethoven",
+  "slug": "improve-queue-prevent-live-runner-merge-conflicts",
+  "kind": "bugfix",
+  "source": "round-8-compliance-followup",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "prompt": "Move automated conflict resolution out of the live writer checkout into an isolated worktree. Layer compatible behavior from both sides, require an exact conflict-marker scan plus Python compile/import smoke and affected tests, and promote the result atomically only after validation. On failure, preserve both refs and quarantine the merge without changing runner.py. Add regression coverage proving a failed resolution cannot plant markers in the live runner.",
+  "proof": "runner/tests/test_runner_conflict_free.py and new isolated-promotion regression tests pass; a synthetic bad resolution leaves the live checkout and running commit unchanged.",
+  "note": "The immediate runner markers are resolved; this task removes the mechanism that allowed invalid merged code to crash-loop the live runner."
+}

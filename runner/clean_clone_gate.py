@@ -56,18 +56,40 @@ _NETWORK = re.compile(
 # That is repairable in a pristine export: retry once non-frozen, then let the real build prove
 # whether the resolved graph is deployable. This stays narrow so unrelated install failures do not
 # get concealed by a broad fallback.
+#
+# CONSOLIDATED 2026-08-13: this capability grew independently on master and on
+# agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-1. Two detectors for one
+# capability is the duplication the survey-first mandate forbids, so there is now exactly one.
+# Master's `unfrozen_install_command` is the survivor because its unfreeze mapping is anchored
+# per package manager, where the branch did a blind substring replace that rewrote ANY command
+# containing --immutable, including commands that were not installs. The branch's genuinely-wider
+# alternations are folded in rather than discarded: "would have been created", the un-suffixed
+# "lockfile needs to be updated" (yarn omits the flag name when invoked via CI config), and the
+# out-of-date / does-not-match phrasings pnpm and yarn emit.
+#
+# The folded-in alternations use `[^\n]*` rather than `.*`. The pattern compiles with re.S, so
+# `.*` would let the word "lockfile" on one line pair with "not up to date" thousands of lines
+# later and call an unrelated failure drift.
 _LOCKFILE_DRIFT = re.compile(
     r"package-lock\.json.*(?:in sync|up to date)|"
     r"Missing:\s+\S+\s+from lock file|"
     r"ERR_PNPM_OUTDATED_LOCKFILE|pnpm-lock\.yaml.*not up to date|"
-    r"lockfile would have been modified|"
-    r"lockfile needs to be updated.*--frozen-lockfile",
+    r"lockfile would have been (?:modified|created)|"
+    r"lockfile needs to be updated|"
+    r"lockfile[^\n]*(?:out of date|out-of-date|not up to date|does not (?:satisfy|match))|"
+    r"can only install packages when your package\.json and package-lock\.json.*in sync|"
+    r"npm ci` can only install|YN0028|cannot install with .frozen-lockfile.",
     re.I | re.S,
 )
 
 
 def unfrozen_install_command(cmd):
-    """Map a known frozen package-manager install to one non-frozen retry."""
+    """Map a known frozen package-manager install to one non-frozen retry.
+
+    Fail-soft: never raises, returns "" for anything it does not recognise. Matching is
+    anchored to the install command itself, so a flag like --immutable appearing in an
+    unrelated command is not silently rewritten.
+    """
     try:
         normalized = " ".join(str(cmd or "").split())
         if not normalized:
@@ -170,21 +192,71 @@ def _deploy_root(repo):
     return "."
 
 
-def install_command(root_dir, repo, ref, rel_root):
-    """The project's REAL install command, exactly as the deploy platform would run it."""
+def build_root(repo, rel_root="."):
+    """The package root the BUILD command actually targets, relative to the tree.
+
+    `_deploy_root()` answers "where is vercel.json", but `build_command()` delegates
+    to `build_gate.detect_build_cmd()`, which scans every package root and picks the
+    first with a real build script. In a monorepo those are different directories,
+    and nothing reconciled them — see `install_command()` for what that cost.
+    """
+    try:
+        import build_gate
+        import dependency_prewarm
+        cmd = build_gate.detect_build_cmd(repo) or ""
+        match = re.search(r"--prefix\s+(\S+)", cmd)
+        if match:
+            candidate = match.group(1).strip().strip("'\"")
+            if candidate and os.path.isdir(os.path.join(repo, candidate)):
+                return candidate.rstrip("/")
+        # No --prefix: the command runs at the deploy root unless that root has no
+        # package.json at all, in which case the sole package root is the target.
+        if os.path.isfile(os.path.join(repo, rel_root, "package.json")):
+            return rel_root
+        roots = dependency_prewarm.package_roots(repo) or []
+        if len(roots) == 1:
+            return os.path.relpath(roots[0], repo)
+    except Exception:  # fail-soft: an unresolvable build root must not break the gate
+        pass
+    return rel_root
+
+
+def install_command(root_dir, repo, ref, rel_root, install_root=None):
+    """The project's REAL install command, exactly as the deploy platform would run it.
+
+    `install_root` is where the dependencies must LAND. It defaults to `rel_root`
+    (the deploy root) but is the build's package root when the two differ.
+
+    That divergence is the bug this parameter exists for. beethoven commits a
+    lockfile at the repo root next to a package.json with **no dependencies at
+    all** — the deployable app is `web/`. The gate resolved the install against
+    the deploy root, so it ran a bare `npm ci` that reported "up to date in 2s"
+    while installing nothing, then ran `npm --prefix web run build` against a
+    `web/` that had no node_modules. The failure surfaced as
+    `sh: nuxt: command not found`, which reads like a missing dependency and sent
+    repair passes looking for one, when nothing had been installed for that
+    package in the first place. Warm repos hide it completely: `web/node_modules`
+    is already on disk locally, so this only ever failed from a pristine export —
+    the works-on-my-machine drift class the gate exists to catch.
+    """
+    install_root = install_root or rel_root
     cfg = _load_json(os.path.join(root_dir, "vercel.json"))
     configured = str(cfg.get("installCommand") or "").strip()
     if configured:
         return configured
-    prefix = "" if rel_root == "." else rel_root.rstrip("/") + "/"
-    for lock, cmd in (("package-lock.json", "npm ci --no-audit --no-fund"),
+    prefix = "" if install_root == "." else install_root.rstrip("/") + "/"
+    npm_prefix = "" if install_root == "." else " --prefix %s" % install_root.rstrip("/")
+    for lock, cmd in (("package-lock.json", "npm ci%s --no-audit --no-fund" % npm_prefix),
                       ("pnpm-lock.yaml", "pnpm install --frozen-lockfile"),
                       ("yarn.lock", "yarn install --immutable")):
         rc, out, _ = _git(repo, "ls-tree", "-r", "--name-only", ref, "--", prefix + lock)
         if rc == 0 and out.strip():
+            if lock != "package-lock.json" and install_root != ".":
+                # pnpm/yarn have no --prefix; run them in the package directory.
+                return "cd %s && %s" % (install_root.rstrip("/"), cmd)
             return cmd
-    if os.path.isfile(os.path.join(root_dir, "package.json")):
-        return "npm install --no-audit --no-fund"
+    if os.path.isfile(os.path.join(repo, install_root, "package.json")):
+        return "npm install%s --no-audit --no-fund" % npm_prefix
     return ""
 
 
@@ -236,14 +308,23 @@ def verify(repo, ref=None, project=None, force=False, cache_only=False):
 
     rel_root = _deploy_root(repo)
     root_dir = repo if rel_root == "." else os.path.join(repo, rel_root)
-    icmd = install_command(root_dir, repo, ref, rel_root)
+    # Install where the BUILD will look, not merely where vercel.json lives. When the
+    # two diverge the gate used to install one package and build another, and reported
+    # the resulting `command not found` as a dependency problem.
+    inst_root = build_root(repo, rel_root)
+    result["install_root"] = inst_root
+    icmd = install_command(root_dir, repo, ref, rel_root, install_root=inst_root)
     bcmd = build_command(root_dir, repo)
     result["install_cmd"], result["build_cmd"] = icmd, bcmd
     if not bcmd and not icmd:
         result["skipped"] = "no install/build command (nothing to verify)"
         return result
 
-    signature = "clean-clone[%s] install=%s && build=%s" % (rel_root, icmd or "-", bcmd or "-")
+    # The install root is part of the signature: the same tree installed into a
+    # different package is a different proof, and reusing the old green one would
+    # re-hide exactly this failure.
+    signature = "clean-clone[%s->%s] install=%s && build=%s" % (
+        rel_root, inst_root, icmd or "-", bcmd or "-")
     if not force:
         try:
             cached = proof_graph.reusable_verification(repo, tree, signature, KIND)
@@ -273,6 +354,14 @@ def verify(repo, ref=None, project=None, force=False, cache_only=False):
         if icmd:
             rc, out = _step(icmd, work, INSTALL_TIMEOUT, env)
             parts.append("$ %s\n%s" % (icmd, out))
+            if rc != 0 and not _NETWORK.search(out) and _LOCKFILE_DRIFT.search(out):
+                fallback = unfrozen_install_command(icmd)
+                if fallback:
+                    result["install_fallback"] = fallback
+                    rc, out = _step(fallback, work, INSTALL_TIMEOUT, env)
+                    parts.append("$ %s   # lockfile drift: retried unfrozen\n%s" % (fallback, out))
+                    if rc == 0:
+                        result["install_cmd"] = fallback
             if rc != 0:
                 if _NETWORK.search(out):
                     result["log"] = "\n\n".join(parts)

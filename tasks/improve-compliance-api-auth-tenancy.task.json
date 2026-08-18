@@ -1,0 +1,10 @@
+{
+  "project": "beethoven",
+  "slug": "improve-compliance-api-auth-tenancy",
+  "kind": "build",
+  "source": "round-8-compliance-followup",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "prompt": "Harden compliance_api_gateway.py for production use: enforce authenticated caller identity, derive tenant identity from the principal rather than request body, authorize every app resource, apply request size/rate limits, remove permissive CORS, and add structured audit logs. Keep it loopback-safe until an authentication adapter is configured. Add rejection and cross-tenant access tests.",
+  "proof": "runner/tests/test_compliance_api_auth.py",
+  "note": "Follow-up identified during Round 8 audit: API tenancy is caller-supplied and needs an authenticated boundary."
+}

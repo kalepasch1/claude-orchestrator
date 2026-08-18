@@ -111,6 +111,46 @@ def _lookup_project(project_id: str) -> dict | None:
         return None
 
 
+def _capture_merge_memory(repo: str, branch: str, sha: str) -> bool:
+    """Record an integrated merge in merged_diff_memory. Best-effort.
+
+    WIRED 2026-08-11. `merged_diff_memory.capture_merge()` had no production
+    caller anywhere in the repo — only tests — so the memory file stayed empty
+    forever and `get_recent_merges()` / `stats()` were dead API returning
+    nothing. This is the same defect class the module's own `recent()` docstring
+    describes: a function that exists and is never reached, failing silently.
+
+    Every merge this module integrates is a proven diff, which is exactly what
+    the reuse-first path wants to read back. Capture is deliberately last and
+    fail-soft: a memory write must never fail a merge that already landed.
+    """
+    if not sha or not repo:
+        return False
+    try:
+        import merged_diff_memory
+        return bool(merged_diff_memory.capture_merge(sha, branch, repo))
+    except Exception as exc:
+        _log.debug("continuous_merger: merge-memory capture skipped (%s)", exc)
+        return False
+
+
+def _resolved_file_gate_blocked(repo, resolved_files):
+    """Refuse a merge that left markers anywhere or a resolved file broken.
+
+    FAIL-CLOSED on an import error, consistent with the rest of this module's gate
+    stack: a promotion gate that passes because it could not be loaded is decorative.
+    """
+    try:
+        import resolved_file_gate
+    except Exception as exc:
+        return True, ("resolved_file_gate unavailable (%s) — unverified resolutions are "
+                      "disabled (fail-closed); branch left for the merge train" % exc)
+    try:
+        return resolved_file_gate.promotion_blocked(repo, resolved_paths=resolved_files)
+    except Exception as exc:
+        return True, "resolved_file_gate errored (%s); failing closed" % exc
+
+
 def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     """Attempt to merge a single branch into base.
 
@@ -159,6 +199,9 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     if ancestor.returncode == 0:
         # Already merged — capture the integrated tip as evidence, then delete the branch ref
         tip = _git(["git", "rev-parse", branch], repo).stdout.strip()
+        # Capture before deleting the ref: capture_merge shells out to git for
+        # author/date/message/files, and the branch name is part of the record.
+        _capture_merge_memory(repo, branch, tip)
         _git(["git", "branch", "-D", branch], repo)
         result["merged"] = True
         result["strategy"] = "already_ancestor"
@@ -186,11 +229,27 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
 
     acr_result = auto_conflict_resolver.resolve_branch(repo, branch, base, dry_run=False)
     if acr_result.get("merged"):
+        # THE RESOLVED-FILE GATE (2026-08-12). The resolver's own gate stack answers
+        # "did this merge lose an improvement?"; it does not answer "is the file the
+        # resolver wrote still valid?". A resolution that strips the markers and leaves
+        # a syntactically broken file passes every existing check, and a marker written
+        # into a file NOBODY touched in this change set was invisible to the
+        # path-list-only scanner. Both are refusals here, and the merge is rolled back
+        # rather than force-pushed or half-discarded.
+        gate_blocked, gate_reason = _resolved_file_gate_blocked(
+            repo, acr_result.get("resolved_files") or [])
+        if gate_blocked:
+            _git(["git", "reset", "--hard", "HEAD~1"], repo)
+            result["error"] = "resolved-file gate: %s" % gate_reason
+            result["strategy"] = "gate-blocked"
+            return result
+
         result["merged"] = True
         # Evidence: the merge commit sha — HEAD of the repo right after resolve_branch
         # committed the merge on base. Persisted as tasks.artifact_commit by the caller.
         head = _git(["git", "rev-parse", "HEAD"], repo).stdout.strip()
         result["sha"] = head or None
+        _capture_merge_memory(repo, branch, head)
         strategy = acr_result.get("strategy", "clean")
         resolved = acr_result.get("resolved_files") or []
         result["strategy"] = (f"auto_resolved ({len(resolved)} files)"

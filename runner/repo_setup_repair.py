@@ -52,8 +52,7 @@ def check_git_config(repo):
 def check_git_identity(repo):
     """Verify git config carries the OWNER identity, not merely *some* identity.
 
-    Presence is not health. A checkout configured with a platform/bot account
-    (e.g. mandyjustinepasch@gmail.com, kale@heretomorrow.us) passes
+    Presence is not health. A checkout configured with a blocked platform/bot account passes
     check_git_config and then produces commits Vercel puts in BLOCKED state,
     which never deploy -- the failure the 2026-08-02 two-session audit addendum
     recorded. Compared case-insensitively; email is the field Vercel keys on.
@@ -142,6 +141,110 @@ def repair_orphaned_worktrees(repo):
     """Prune orphaned worktree entries."""
     _, err, rc = _run(["git", "worktree", "prune"], cwd=repo)
     return rc == 0
+
+
+def _remote_default_branch(repo):
+    """Return origin's default branch without assuming main/master."""
+    out, _, rc = _run(
+        ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        cwd=repo,
+    )
+    if rc == 0 and out.startswith("origin/"):
+        return out.split("/", 1)[1]
+    for candidate in ("main", "master", "develop"):
+        _, _, rc = _run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{candidate}"],
+            cwd=repo,
+        )
+        if rc == 0:
+            return candidate
+    return ""
+
+
+def repair_repo(repo, remote_url=None):
+    """Clone or safely fast-forward a repository checkout.
+
+    The active feature branch is never switched.  A dirty checkout is fetched
+    for visibility but not moved, which preserves operator and agent work.
+    Returns one stable status shape on every path and never raises.
+    """
+    result = {
+        "cloned": False,
+        "fetched": False,
+        "fast_forwarded": False,
+        "actions": [],
+        "error": "",
+        "ready": False,
+        "default_branch": "",
+        "clean": False,
+        "current": False,
+    }
+    try:
+        git_dir = os.path.join(repo or "", ".git")
+        if not repo or not os.path.isdir(git_dir):
+            if not remote_url:
+                result["error"] = "repo missing and no remote_url supplied"
+                return result
+            parent = os.path.dirname(os.path.abspath(repo))
+            os.makedirs(parent, exist_ok=True)
+            _, err, rc = _run(["git", "clone", remote_url, repo], cwd=parent, timeout=300)
+            if rc != 0:
+                result["error"] = f"clone failed: {err or 'unknown git error'}"
+                return result
+            result["cloned"] = True
+            result["actions"].append("cloned repository")
+
+        status, err, rc = _run(["git", "status", "--porcelain"], cwd=repo)
+        if rc != 0:
+            result["error"] = f"git status failed: {err or 'not a repository'}"
+            return result
+        result["clean"] = not bool(status)
+
+        current, _, current_rc = _run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], cwd=repo
+        )
+
+        _, err, rc = _run(["git", "fetch", "origin", "--prune"], cwd=repo, timeout=300)
+        if rc != 0:
+            result["error"] = f"fetch failed: {err or 'origin unavailable'}"
+            result["actions"].append("fetch failed")
+            return result
+        result["fetched"] = True
+        result["actions"].append("fetched origin")
+
+        default_branch = _remote_default_branch(repo)
+        result["default_branch"] = default_branch
+        result["current"] = bool(default_branch and current_rc == 0 and current == default_branch)
+        if not default_branch:
+            result["error"] = "origin default branch not found"
+            return result
+        if not result["clean"]:
+            result["actions"].append("dirty checkout; skipped fast-forward")
+            return result
+
+        if result["current"]:
+            _, err, rc = _run(
+                ["git", "merge", "--ff-only", f"origin/{default_branch}"],
+                cwd=repo,
+                timeout=300,
+            )
+        else:
+            # Update the local default ref in place while leaving the currently
+            # checked-out feature branch untouched.
+            _, err, rc = _run(
+                ["git", "branch", "-f", default_branch, f"origin/{default_branch}"],
+                cwd=repo,
+            )
+        if rc != 0:
+            result["error"] = f"fast-forward failed: {err or 'non-fast-forward state'}"
+            return result
+        result["fast_forwarded"] = True
+        result["actions"].append(f"fast-forwarded {default_branch}")
+        result["ready"] = True
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
 
 
 def diagnose(repo):

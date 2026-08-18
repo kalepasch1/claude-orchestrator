@@ -1,4 +1,0 @@
-recovery-intent: improve-missing-branch-auto-creator-slice-3-write-tests
-template: 312d943e8539
-intent: completion correctness decomposition event function handling integration module tests updated verify write
-base: master

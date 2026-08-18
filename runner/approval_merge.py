@@ -20,6 +20,7 @@ import os, sys, re, subprocess, fnmatch, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import agentic_repair
+import worktree_isolation
 
 MARK = "merge-handler"          # decided_by sentinel => already processed
 MAX_FETCH_RETRIES = 3
@@ -206,6 +207,20 @@ def _free_branch(repo, branch):
     if wt:
         primary = _primary_worktree(repo)
         if primary and os.path.realpath(wt) == os.path.realpath(primary):
+            return False
+        # 2026-08-12: exempting only the PRIMARY checkout was not enough. Any
+        # LINKED worktree was fair game here, including one an operator has the
+        # integration branch checked out in — and `--force` does not stop at
+        # uncommitted work. Observed the same night: an agent left
+        # apparently-wt/promote-20260811 (holding orchestrator/dev) with a
+        # conflicted index and raw conflict markers in a tracked file.
+        # Only agent/<slug> checkouts are disposable; that rule now lives in
+        # worktree_isolation so this path and validate_task_worktree cannot
+        # drift apart.
+        reason = worktree_isolation.reserved_worktree_reason(repo, wt)
+        if reason:
+            print(f"[approval_merge] refusing to free branch {branch}: "
+                  f"worktree {wt} is protected because {reason}")
             return False
         subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)

@@ -1,4 +1,0 @@
-recovery-intent: dropbox-prompt-merged-diff-memory-system-task-spec-slice-1
-template: c0001923de24
-intent: 07041728 07062319 07071626 07130635 07190257 20251001 6096aa2b acceptance active adapt adaptive_probe advice after agent agentic analysis artifacts author barks batch bc97368854a8 beethoven before behavior below blindly bottleneck branch broad broad_change bugfix build canonical cause claim class coder commit complete context contract cross deepseek dependencies diffs drafting dropbox equivalent existing exists failure files first flash group implementation independent inspect install instead integrate integrated integrating intent leader learned learning library llama3 local matched memory merge mergeable merged minimally missing modules native never
-base: master

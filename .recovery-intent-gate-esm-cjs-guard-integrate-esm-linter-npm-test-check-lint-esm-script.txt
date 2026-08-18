@@ -1,4 +1,0 @@
-recovery-intent: gate-esm-cjs-guard-integrate-esm-linter-npm-test-check-lint-esm-script
-template: f109f565b733
-intent: against clean confirm directly ensure exists fails functional passes script scripts
-base: main

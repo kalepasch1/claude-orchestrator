@@ -187,6 +187,14 @@ class TestGuard(_TmpLockDir):
             source = f.read()
         self.assertIn('single_instance.guard("legal_docket", interval_s=1800)', source)
 
+    def test_keepalive_rechecks_maintenance_lock_inside_restart_loop(self):
+        path = os.path.join(RUNNER_DIR, "keepalive.sh")
+        with open(path) as f:
+            source = f.read()
+        loop = source[source.index("while true; do"):]
+        maintenance_check = loop.index('[[ -e "$MAINTENANCE_LOCK" ]]')
+        runner_start = loop.index("python3 runner.py")
+        self.assertLess(maintenance_check, runner_start)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,0 @@
-recovery-intent: dropbox-prompt-merged-diff-memory-system-task-spec-contracts
-template: ab76871ae427
-intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 17ed8d711728 20251001 39465ac 6f940a79484e 7f21d02 acceptance actions active adapt adaptive_probe advice after against agentic aider allowlist applied author background batch beethoven before below bottleneck broad_change build causing change claim class claude cloud coder context contract contracts coordination credential cross custody debate_compress deepseek delays delete deliver depend deployfix describing diffs drafting dropbox establish excerpt exists explore fable feature feedback first flash fleet force gemini gemma3 generated google haiku implement implementation improvement improvements inconsistencies independent
-base: master

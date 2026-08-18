@@ -32,18 +32,62 @@ def classify_build_error(note):
     return "unknown"
 
 
+# Directories whose contents are generated or vendored. A path under one of these is
+# never a hand-editable fix target, so including it only widens the retry scope: the
+# fixer burns a turn reading a 40k-line bundle to conclude it should edit the source.
+# Matched as a leading or embedded path segment, so both "dist/x.js" and
+# "packages/a/node_modules/b.js" are excluded.
+_EXCLUDED_DIRS = ("node_modules", "dist", "build", "coverage", "vendor",
+                  ".nuxt", ".output", ".next", ".git", "__pycache__")
+
+# Upper bound on how many files one retry may target. Past a handful the note is
+# reporting a cascade (one bad import failing 200 downstream files), and pointing the
+# fixer at all of them is strictly worse than pointing it at the first few — those are
+# where the root cause is. ORCH_-prefixed so it is tunable fleet-wide via fleet_config.
+_MAX_FAILING_FILES_DEFAULT = 8
+
+
+def _max_failing_files():
+    """Read the retry-scope cap at call time so hot_reload changes take effect."""
+    try:
+        return max(1, int(os.environ.get("ORCH_SELFHEAL_MAX_FAILING_FILES",
+                                         str(_MAX_FAILING_FILES_DEFAULT))))
+    except (TypeError, ValueError):
+        return _MAX_FAILING_FILES_DEFAULT
+
+
+def _is_generated_path(path):
+    """True when *path* lives under a generated/vendored directory."""
+    return any(seg in _EXCLUDED_DIRS for seg in path.split("/")[:-1])
+
+
 def extract_failing_files(note):
-    """Extract file paths from a build error note."""
+    """Extract file paths from a build error note.
+
+    Scoped deliberately narrowly — this list becomes the retry target set:
+      * generated/vendored directories are dropped (never a fix target);
+      * known source roots rank ahead of bare path matches, so the highest-confidence
+        files come first rather than whichever sorts alphabetically first;
+      * the result is capped at ORCH_SELFHEAL_MAX_FAILING_FILES (default 8).
+
+    Fail-soft: returns [] for None/empty/unmatched input, never raises.
+    """
     text = str(note or "")
-    # Match common file path patterns in error output
+    # Ordered most- to least-confident. The first pattern anchors on real source roots;
+    # the second accepts any path that carries a line:col, which is noisier.
     patterns = [
         re.compile(r"((?:server|app|components|utils|pages)/[\w/.-]+\.(?:ts|tsx|js|jsx|vue))"),
         re.compile(r"([\w/.-]+\.(?:ts|tsx|js|jsx|vue)):\d+:\d+"),
     ]
-    files = set()
+    ordered = []
+    seen = set()
     for p in patterns:
-        files.update(p.findall(text))
-    return sorted(files)
+        for match in p.findall(text):
+            if match in seen or _is_generated_path(match):
+                continue
+            seen.add(match)
+            ordered.append(match)
+    return ordered[:_max_failing_files()]
 
 
 def get_build_health_metrics():

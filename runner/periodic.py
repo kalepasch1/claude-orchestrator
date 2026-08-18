@@ -9,6 +9,7 @@ Jobs:
   chaos   - chaos resilience drills (schedule: weekly, staging only)
   txn     - cross-repo transaction coordinator (schedule: every 5 min)
   scout   - opportunity scout: RICE-scored proposals (schedule: weekly)
+  mergedmemory - roll merged master diffs into the memory system (schedule: daily)
   deploy  - canary-gated nightly deploy window (schedule: nightly)
   roi     - update project concurrency_weight from ROI (schedule: daily)
   stuck_reaper - detect+recover RUNNING tasks stuck >2h (schedule: every 30 min)
@@ -474,6 +475,31 @@ def run_scout():
     opportunity_scout.run()
 
 
+def run_mergedmemory():
+    """Roll recent master merges into the memory system (schedule: daily).
+
+    WIRED 2026-08-11. `merged_diff_memory.capture_to_memory()` carries a careful
+    boolean contract — True only when a memory file was actually WRITTEN, False
+    for every other outcome including "no merged commits found" — and until now
+    nothing in production called it. The daily rollup
+    (`merged_learning_YYYYMMDD.md`) was therefore never produced, and the bool
+    nobody read could not tell anyone so.
+
+    The return value is honoured here rather than discarded: a False is logged
+    with the reason, because "capture ran" and "memory is current" are not the
+    same claim, and treating them as one is what hid the gap.
+    """
+    import merged_diff_memory
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    written = merged_diff_memory.capture_to_memory(repo=repo)
+    if written:
+        print("periodic: merged-diff memory updated", flush=True)
+    else:
+        # Not an error: a day with no merged commits legitimately writes nothing.
+        print("periodic: merged-diff memory unchanged (nothing written)", flush=True)
+    return written
+
+
 def run_deploy():
     import deploy_window
     deploy_window.run()
@@ -608,6 +634,17 @@ def run_rescuedurability():
     """
     import rescue_branch_durability
     rescue_branch_durability.run()
+
+
+def run_pipelineselftest():
+    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
+
+    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
+    because nothing checked that the monitors themselves were telling the truth.
+    """
+    import pipeline_selftest
+    result = pipeline_selftest.run()
+    print(pipeline_selftest.render(result), flush=True)
 
 
 def run_remotegc():
@@ -1112,6 +1149,7 @@ JOBS = {
     "chaos": run_chaos,
     "txn": run_txn,
     "scout": run_scout,
+    "mergedmemory": run_mergedmemory,
     "deploy": run_deploy,
     "roi": run_roi,
     "editorial": run_editorial,
@@ -1193,6 +1231,7 @@ JOBS = {
     "worktreeguard": run_worktreeguard,
     "deploysilence": run_deploysilence,
     "rescuedurability": run_rescuedurability,
+    "pipelineselftest": run_pipelineselftest,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
@@ -1266,4 +1305,3 @@ def run_pipelineselftest():
     import pipeline_selftest
     result = pipeline_selftest.run()
     print(pipeline_selftest.render(result), flush=True)
-

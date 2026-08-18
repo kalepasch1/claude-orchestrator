@@ -650,17 +650,30 @@ def select_all(table, params=None, page_size=PAGE_SIZE, max_rows=None, order=Non
     q.pop("limit", None)
     q.pop("offset", None)
 
-    cap = SELECT_ALL_MAX_ROWS if max_rows is None else max_rows
-    page_size = max(1, min(int(page_size), PAGE_SIZE))
+    try:
+        cap = SELECT_ALL_MAX_ROWS if max_rows is None else int(max_rows)
+    except (TypeError, ValueError):
+        cap = SELECT_ALL_MAX_ROWS
+    if cap <= 0:
+        return []
+    try:
+        page_size = max(1, min(int(page_size), PAGE_SIZE))
+    except (TypeError, ValueError):
+        page_size = PAGE_SIZE
     rows, offset = [], 0
     while True:
+        # Never ask for rows we are contractually going to throw away. The page size used
+        # to be fixed, so a select_all(max_rows=10) against a large table still pulled a
+        # full 1000-row page over the wire and then sliced 990 of them off in the return.
+        # Clamping to the remaining budget makes the last request exact.
+        want = min(page_size, cap - len(rows))
         # Goes through select() rather than _req() on purpose: one HTTP path, and any test
         # double or instrumentation installed on select() automatically covers paging too.
-        page = select(table, dict(q, limit=str(page_size), offset=str(offset))) or []
+        page = select(table, dict(q, limit=str(want), offset=str(offset))) or []
         rows.extend(page)
-        if len(page) < page_size:
+        if len(page) < want:
             break
-        offset += page_size
+        offset += want
         if len(rows) >= cap:
             print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
                   f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
@@ -1407,6 +1420,99 @@ def set_pin(slug, rank=1):
         return update("tasks", {"slug": slug}, {"pinned": True, "pin_rank": rank})
 
 
+TRIGGER_STATE = (os.environ.get("ORCH_ENQUEUE_TRIGGER_STATE") or "TESTING").strip().upper()
+
+
+def _looks_like_bad_enum(exc):
+    """True when a write failed because the value is not in the target enum.
+
+    Diagnostic only. Deliberately not used to gate the write: the enum cannot be
+    introspected through PostgREST, and a sampled state list is incomplete by
+    construction, so pre-checking against it would refuse legal states that
+    simply had no row yet. Attempt the write, then explain the refusal.
+    """
+    text = str(exc).lower()
+    return ("invalid input value for enum" in text
+            or ("22p02" in text and "enum" in text))
+
+
+def task_state_values():
+    """States observed on tasks, for diagnostics only — NOT the enum definition.
+
+    PostgREST exposes no enum-introspection endpoint, so this samples the states
+    actually present and caches the result for the process. It is a lower bound
+    on the enum: a legal state with no rows will be absent. Never treat a missing
+    value as proof that the state is illegal.
+    """
+    cached = getattr(task_state_values, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        rows = _req("GET", "/rest/v1/tasks",
+                    params={"select": "state", "limit": "1000"}) or []
+        values = tuple(sorted({str(r.get("state")) for r in rows if r.get("state")}))
+    except Exception:
+        values = ()
+    task_state_values._cache = values
+    return values
+
+
+def test_trigger(task_id):
+    """Atomically move a newly queued task to the trigger state. Fail-soft.
+
+    Returns the patched row, or None. On None the task stays QUEUED and the
+    ordinary claim path still processes it — that part always worked.
+
+    REGRESSION (measured 2026-08-12): the target was the hardcoded literal
+    "TESTING", which is not a member of task_state on this database (QUEUED,
+    WAITING, RUNNING, RETRY, DONE, BLOCKED, CONFLICT, TESTFAIL, MERGED, SHELVED,
+    MERGING, DECOMPOSED, QUARANTINED, SUPERSEDED, CLOSED, DEPLOYED_AND_VERIFIED,
+    PHANTOM_UNVERIFIED). Every PATCH was rejected and swallowed by a bare
+    `except: return None`, so the QUEUED->trigger transition had never fired
+    anywhere and nothing said so. The silence was the defect: an enqueue that
+    never triggers is indistinguishable from one that does.
+
+    Now the state comes from ORCH_ENQUEUE_TRIGGER_STATE (fleet-pushable, still
+    defaulting to TESTING so behaviour is unchanged the moment the enum migration
+    lands), and every refusal is recorded on `test_trigger.last_error` for the
+    caller to print. The write is still attempted first and the error read
+    afterwards — pre-checking against a sampled state list would refuse legal
+    states that merely have no rows yet. Still never raises.
+    """
+    test_trigger.last_error = ""
+    if not task_id:
+        test_trigger.last_error = "no task id"
+        return None
+    try:
+        rows = _req(
+            "PATCH",
+            "/rest/v1/tasks",
+            body={"state": TRIGGER_STATE, "updated_at": "now()"},
+            headers={"Prefer": "return=representation"},
+            params={"id": f"eq.{task_id}", "state": "eq.QUEUED"},
+        )
+        if rows:
+            return rows[0]
+        test_trigger.last_error = "task was not QUEUED at trigger time (already claimed?)"
+        return None
+    except Exception as exc:
+        detail = "{0}: {1}".format(type(exc).__name__, exc)
+        if _looks_like_bad_enum(exc):
+            known = task_state_values()
+            detail = (
+                "trigger state {0!r} is not a member of task_state on this database"
+                "{1}; task left QUEUED and claimable. Set ORCH_ENQUEUE_TRIGGER_STATE "
+                "to a legal state, or land the enum migration. (raw: {2})".format(
+                    TRIGGER_STATE,
+                    " (states seen: {0})".format(", ".join(known)) if known else "",
+                    detail))
+        test_trigger.last_error = detail
+        return None
+
+
+test_trigger.last_error = ""
+
+
 def claim_task(runner_id):
     """Atomically claim one QUEUED task whose dependencies are satisfied.
 
@@ -1454,12 +1560,20 @@ def claim_task(runner_id):
     except Exception:
         _increment_db_failure_count()
         pass
-    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by,pinned,pin_rank"
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by,pinned,pin_rank,state"
     try:
-        queued = select("tasks", {"select": claim_fields,
-                                  "state": "eq.QUEUED",
-                                  "order": "created_at.asc",
-                                  "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        try:
+            queued = select("tasks", {"select": claim_fields,
+                                      "state": "in.(QUEUED,TESTING)",
+                                      "order": "created_at.asc",
+                                      "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        except Exception:
+            # Rolling-upgrade fallback: keep claiming ordinary work until the
+            # TESTING enum migration reaches the database.
+            queued = select("tasks", {"select": claim_fields,
+                                      "state": "eq.QUEUED",
+                                      "order": "created_at.asc",
+                                      "limit": str(CLAIM_SCAN_LIMIT)}) or []
         # Sync to local mirror on successful fetch
         try:
             # FULL SCAN class — and YES, truncation here can corrupt claims. The audit
@@ -1517,6 +1631,7 @@ def claim_task(runner_id):
         for task in extra:
             if task.get("id") not in seen_ids:
                 queued.append(task); seen_ids.add(task.get("id"))
+
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
     # Counsel-gated design specs are queue-visible but cannot enter an execution
     # lane until both approvals are explicitly stored on the task. Fail closed.
@@ -1935,12 +2050,14 @@ def claim_task(runner_id):
             except Exception:
                 pass
         if _deps_all_done:
-            # optimistic claim: flip to RUNNING only if still QUEUED
+            # Optimistic claim from the exact observed state preserves the
+            # cross-runner single-claim guarantee for QUEUED and TESTING alike.
             try:
+                current_state = str(t.get("state") or "QUEUED")
                 res = _req("PATCH", "/rest/v1/tasks",
                            body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
                            headers={"Prefer": "return=representation"},
-                           params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+                           params={"id": f"eq.{t['id']}", "state": f"eq.{current_state}"})
             except Exception:
                 _increment_db_failure_count()
                 res = None

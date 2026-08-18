@@ -61,12 +61,48 @@ def host_is_paused():
     return False, ""
 
 
+def host_is_drained(admission=None):
+    """(drained, reason) for generation fencing. Fail-open, same as the pause path.
+
+    A superseded or contract-mismatched incarnation must not START a new pass.
+    It is still free to finish the pass it holds — `may_start()` is only ever
+    consulted at the top, so block-start/allow-safe-finish is preserved here by
+    construction, exactly as it is for pauses.
+    """
+    if admission is None and os.environ.get("ORCH_RUNNER_FENCING", "").lower() not in (
+            "1", "true", "yes", "on"):
+        # Rollout order: ship the module everywhere, then flip ORCH_RUNNER_FENCING,
+        # then publish admissions. Until the flag is on this costs zero queries —
+        # every train calls may_start() on its hot path.
+        return False, ""
+    try:
+        import runner_generation
+        adm = admission
+        if adm is None:
+            import db
+            rows = db.select("runner_admissions",
+                             {"select": "runner_id,generation,contract_hash",
+                              "runner_id": f"eq.{runner_generation.runner_id()}"}) or []
+            adm = rows[0] if rows else None
+        allowed, reason = runner_generation.enforce("claim", runner_generation.fence_token(), adm)
+        return (not allowed), reason
+    except Exception as exc:  # fail-open: a fencing lookup outage must not halt the fleet
+        print(f"[paused-host-guard] admission lookup failed ({exc}); proceeding", flush=True)
+        return False, ""
+
+
 def may_start(actor, project=None):
     """May `actor` begin a new pass on this host? Returns (ok, reason).
 
     `actor` is a short name used in the log line and the recorded alert:
     "release_train", "merge_train", "gate:build", and so on.
     """
+    drained, drain_reason = host_is_drained()
+    if drained:
+        detail = (f"{actor} refused on {HOST}: {drain_reason}"
+                  + (f"; project={project}" if project else ""))
+        print(f"[paused-host-guard] {detail}", flush=True)
+        return False, detail
     paused, reason = host_is_paused()
     if not paused:
         return True, ""

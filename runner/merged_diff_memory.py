@@ -21,6 +21,8 @@ import hashlib
 import logging
 import threading
 
+logger = logging.getLogger(__name__)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import learn_from_merges
@@ -94,16 +96,40 @@ def _extract_patterns_from_commit(repo, commit_hash):
 
         full_text = f"{msg_out}\n{diff_out}"
 
-        # Apply quality gate; if rejected, do not save
-        accepted, reason = learn_from_merges.quality_gate(full_text, source=commit_hash)
-        if not accepted:
-            return None  # silently skip; quality gate already logged
-
-        # Extract patterns using learn_from_merges helpers
-        from merged_diff_library import _frameworks
-        rules = learn_from_merges._extract_rules(msg_out)  # defined below as helper
+        # FIXED 2026-08-11 — two stacked defects, the second masked by the first.
+        #
+        # (1) `quality_gate` grades a *distilled* convention list: it rejects
+        #     anything without 2+ do/avoid bullet lines, anything over 4000 chars,
+        #     anything that looks like a raw dump. It was being fed a raw commit
+        #     message plus `git show --stat`, which is by definition a raw dump.
+        #     Every commit was therefore rejected — measured: 447/447 over a
+        #     14-day window, "fewer than 2 bullet lines" — so patterns_count was
+        #     permanently 0, capture_to_memory permanently False, and the daily
+        #     rollup permanently empty. The gate belongs on the extracted rules,
+        #     which is what it was written to grade.
+        #
+        # (2) `learn_from_merges._extract_rules` and `._changed_files` do not
+        #     exist on that module; those calls would have raised AttributeError
+        #     into the `except` below. The helpers actually available are this
+        #     module's own `_extract_rules` (defined just below, as the original
+        #     comment already said) and `merged_diff_library._changed_files`.
+        #     Unreachable while (1) held, so it never surfaced.
+        from merged_diff_library import _changed_files, _frameworks
+        rules = _extract_rules(full_text)
         frameworks = _frameworks(full_text)
-        files = learn_from_merges._changed_files(repo, f"{commit_hash}^", commit_hash)
+        files = _changed_files(repo, f"{commit_hash}^", commit_hash)
+
+        if not rules and not frameworks and not files:
+            return None  # nothing learnable in this commit
+
+        # Gate the distillation, not the raw commit. Only rules are graded;
+        # frameworks and file lists are facts, not prose to be quality-checked.
+        if rules:
+            accepted, reason = learn_from_merges.quality_gate(
+                "\n".join(f"- {r}" for r in rules), source=commit_hash)
+            if not accepted:
+                _log_error(f"quality gate rejected extracted rules: {reason}", commit_hash)
+                rules = []
 
         return {
             "commit": commit_hash,
@@ -232,24 +258,29 @@ def _prune_old_entries(index_file, days=90):
     """Remove entries older than N days from MEMORY.md."""
     try:
         cutoff = datetime.utcnow().date() - timedelta(days=days)
-        with open(index_file, "r") as f:
-            lines = f.readlines()
-
-        kept = []
-        for line in lines:
-            # Try to extract date from line
-            match = re.search(r"(\d{4})-(\d{2})-(\d{2})", line)
-            if match:
-                try:
-                    entry_date = datetime.strptime(f"{match.group(1)}{match.group(2)}{match.group(3)}", "%Y%m%d").date()
-                    if entry_date >= cutoff:
-                        kept.append(line)
-                except Exception:
-                    kept.append(line)  # keep if unparseable
-            else:
-                kept.append(line)
-
+        # Read AND write under the same lock. The read used to sit outside it, so two
+        # concurrent prunes could both load the same `lines`, each drop a different set,
+        # and the second writer would resurrect the entries the first had just removed
+        # (or drop entries the first had kept) — a lost-update on the index file.
         with _lock:
+            with open(index_file, "r") as f:
+                lines = f.readlines()
+
+            kept = []
+            for line in lines:
+                # Try to extract date from line
+                match = re.search(r"(\d{4})-(\d{2})-(\d{2})", line)
+                if match:
+                    try:
+                        entry_date = datetime.strptime(
+                            f"{match.group(1)}{match.group(2)}{match.group(3)}", "%Y%m%d").date()
+                        if entry_date >= cutoff:
+                            kept.append(line)
+                    except Exception:
+                        kept.append(line)  # keep if unparseable
+                else:
+                    kept.append(line)
+
             with open(index_file, "w") as f:
                 f.writelines(kept)
     except Exception as e:
@@ -274,6 +305,16 @@ def capture_to_memory(repo=".", dry_run=False):
     persistently failing capture is visible in the logs instead of looking like a
     no-op forever.
     """
+    if dry_run:
+        # FIXED 2026-08-11. The docstring above has always promised False for a
+        # dry run, but the check below only asks whether `memory_file` is truthy
+        # — and run() fills it with the string "[dry-run] would save N patterns",
+        # which is truthy. So a dry run returned True: "a file was written" for a
+        # mode whose entire purpose is writing nothing. Unreachable until the
+        # pattern-extraction fix above, because patterns_count was always 0.
+        run(repo=repo, dry_run=True)
+        return False
+
     try:
         result = run(repo=repo, dry_run=dry_run)
     except Exception as exc:            # run() is fail-soft, but never trust that here
@@ -465,13 +506,26 @@ def capture_merge(commit_hash: str, branch: str, cwd: str) -> bool:
 
 
 def get_recent_merges(limit: int = 20) -> list[dict]:
-    """Get recent merge metadata. Returns empty list on error."""
+    """Get the most recent `limit` merge records. Returns [] on error.
+
+    `merges[-limit:]` alone is wrong at the boundary: -0 == 0, so a limit of 0 sliced
+    from the start and returned the WHOLE list — the opposite of "give me none" — and a
+    negative limit silently became "all but the first N". `recent()` already clamps its
+    limit; this one did not, so the same argument meant different things depending on
+    which entry point a caller used. limit <= 0 now means no records.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    if limit <= 0:
+        return []
     merges = _read_memory()
     return merges[-limit:]
 
 
-def stats() -> dict:
-    """Return merge tracking stats."""
+def _tracking_stats() -> dict:
+    """Return merge tracking stats (metadata file)."""
     merges = _read_memory()
     return {
         "total_tracked": len(merges),
@@ -479,11 +533,6 @@ def stats() -> dict:
         "memory_file": str(MERGED_DIFF_FILE),
         "file_exists": MERGED_DIFF_FILE.exists(),
     }
-
-
-def invalidate() -> bool:
-    """Clear all tracked merges. True if the clear was persisted."""
-    return _write_memory([])
 
 
 def recent(days: int = 14, limit: int = 50, repo: str = ".") -> list[dict]:
@@ -544,3 +593,161 @@ def write_memory_file(merges: list[dict]) -> bool:
     """
     return _write_memory(merges)
 
+
+def _invalidate_tracking() -> bool:
+    """Clear all tracked merges (metadata file). True if the clear was persisted."""
+    return _write_memory([])
+
+
+# ---------------------------------------------------------------------------
+# Merged-diff cache (spec: test_merged_diff_memory_spec.py)
+#
+# Minimal thread-safe in-memory cache for computed diffs of merged branches.
+# Chosen per the merged-diff-memory investigation strategy: the earlier
+# file-based learning mechanism was replaced with this simple cache.
+# Fail-soft everywhere; invalid input is ignored, errors return "".
+# ---------------------------------------------------------------------------
+
+import threading
+import time
+
+try:  # pragma: no cover - import shape differs between entry points
+    import resource_governor  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from runner import resource_governor  # type: ignore
+    except Exception:
+        resource_governor = None  # type: ignore
+
+CACHE_TTL = float(os.environ.get("ORCH_DIFF_CACHE_TTL", "3600") or 3600)
+CACHE_SIZE_BYTES = int(os.environ.get("ORCH_DIFF_CACHE_SIZE", str(50 * 1024 * 1024)) or 50 * 1024 * 1024)
+
+
+def _valid_str(value) -> bool:
+    return isinstance(value, str) and value != ""
+
+
+class _DiffPool:
+    """Thread-safe (base, branch, commit) -> diff cache with TTL + size cap."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._entries: dict[tuple[str, str, str], tuple[str, float, int]] = {}
+        self._bytes = 0
+        self._hits = 0
+        self._misses = 0
+
+    def put_diff(self, branch_a: str, branch_b: str, commit: str, content: str) -> None:
+        size = len(content.encode("utf-8", errors="replace"))
+        max_entry = max(1, CACHE_SIZE_BYTES // 10)
+        if size > max_entry:
+            content = content.encode("utf-8", errors="replace")[:max_entry].decode(
+                "utf-8", errors="ignore")
+            size = len(content.encode("utf-8", errors="replace"))
+        key = (branch_a, branch_b, commit)
+        with self._lock:
+            reclaimed = self._entries.get(key, (None, 0.0, 0))[2]
+            if self._bytes - reclaimed + size > CACHE_SIZE_BYTES:
+                return  # cache full — silently refuse
+            if key in self._entries:
+                self._bytes -= reclaimed
+            self._entries[key] = (content, time.time(), size)
+            self._bytes += size
+
+    def get_diff(self, branch_a: str, branch_b: str, commit: str) -> str:
+        key = (branch_a, branch_b, commit)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                self._misses += 1
+                return ""
+            content, stored_at, size = entry
+            if time.time() - stored_at > CACHE_TTL:
+                del self._entries[key]
+                self._bytes -= size
+                self._misses += 1
+                return ""
+            self._hits += 1
+            return content
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "entries": len(self._entries),
+                "bytes_used": self._bytes,
+                "hits": self._hits,
+                "misses": self._misses,
+            }
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+            self._hits = 0
+            self._misses = 0
+
+
+_pool = _DiffPool()
+
+
+def put_diff(branch_a, branch_b, commit_hash, diff_content) -> None:
+    """Cache a computed diff. Silently ignores invalid input and errors."""
+    try:
+        if not (_valid_str(branch_a) and _valid_str(branch_b)
+                and _valid_str(commit_hash) and _valid_str(diff_content)):
+            return
+        if resource_governor is not None:
+            size = len(diff_content.encode("utf-8", errors="replace"))
+            ok = resource_governor.can_claim(size)
+            if isinstance(ok, tuple):
+                ok = ok[0]
+            if not ok:
+                return
+        _pool.put_diff(branch_a, branch_b, commit_hash, diff_content)
+    except Exception:
+        pass
+
+
+def get_diff(branch_a, branch_b, commit_hash) -> str:
+    """Fetch a cached diff; '' on miss, expiry, invalid input, or error."""
+    try:
+        if not (_valid_str(branch_a) and _valid_str(branch_b) and _valid_str(commit_hash)):
+            return ""
+        return _pool.get_diff(branch_a, branch_b, commit_hash)
+    except Exception:
+        return ""
+
+
+def stats() -> dict:
+    """Cache + merge-tracking introspection. Fail-soft.
+
+    Union of the cache counters (entries, bytes_used, hits, misses) and the
+    legacy metadata-tracking stats (total_tracked, max_capacity, file_exists).
+    """
+    out = {"entries": 0, "bytes_used": 0, "hits": 0, "misses": 0}
+    try:
+        out.update(_pool.stats())
+    except Exception:
+        pass
+    try:
+        out.update(_tracking_stats())
+    except Exception:
+        pass
+    return out
+
+
+def invalidate() -> bool:
+    """Clear the diff cache AND tracked-merge metadata. Fail-soft, idempotent.
+
+    Returns whether the metadata clear was persisted, preserving the bool
+    contract callers on orchestrator/dev already depend on. Cache clearing is
+    in-memory and cannot fail meaningfully, so it does not affect the result.
+    """
+    try:
+        _pool.invalidate()
+    except Exception:
+        pass
+    try:
+        return _invalidate_tracking()
+    except Exception:
+        return False
