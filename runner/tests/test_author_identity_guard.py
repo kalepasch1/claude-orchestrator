@@ -109,6 +109,77 @@ class TestClassification(GuardTestCase):
         self.assertEqual(len(drifted), 1)
 
 
+class TestOwnerNoreplyAlias(GuardTestCase):
+    """The owner's GitHub noreply alias is the owner (2026-08-18 wedge).
+
+    Every merge commit made with GitHub's "Merge pull request" button is authored
+    `<id>+<login>@users.noreply.github.com`. String equality against the canonical
+    address classified all of them as foreign, so the push that would have re-absorbed
+    claude-orchestrator's `master` into `orchestrator/dev` was refused outright and the
+    release train could not be unwedged locally at all.
+
+    Non-vacuity: `test_a_foreign_noreply_alias_is_still_blocked` proves the matcher can
+    still say no, so a green suite here is not just "everything passes now".
+    """
+
+    ALIAS = "102100311+kalepasch1@users.noreply.github.com"
+
+    def test_the_alias_seen_on_this_repos_merge_commits_is_the_owner(self):
+        self.assertTrue(guard.is_owner_email(self.ALIAS))
+
+    def test_the_legacy_alias_shape_without_an_id_is_also_the_owner(self):
+        self.assertTrue(guard.is_owner_email("kalepasch1@users.noreply.github.com"))
+
+    def test_the_alias_is_matched_case_insensitively(self):
+        self.assertTrue(guard.is_owner_email(self.ALIAS.upper()))
+        self.assertTrue(guard.is_owner_email("  " + self.ALIAS + "  "))
+
+    def test_a_foreign_noreply_alias_is_still_blocked(self):
+        """The dangerous near-miss: another account's alias must NOT match."""
+        self.assertFalse(guard.is_owner_email("999+someoneelse@users.noreply.github.com"))
+        self.assertFalse(guard.is_owner_email("noreply@github.com"))
+
+    def test_the_login_must_be_the_whole_local_part_not_a_substring(self):
+        """An unanchored `login in address` test would wave all of these through."""
+        for impostor in (
+            "attacker+kalepasch1@users.noreply.github.com",
+            "kalepasch1@users.noreply.github.com.evil.example",
+            "kalepasch1@evil.example.com",
+            "xkalepasch1@users.noreply.github.com",
+        ):
+            with self.subTest(impostor=impostor):
+                self.assertFalse(guard.is_owner_email(impostor), impostor)
+
+    def test_empty_and_junk_addresses_are_not_the_owner(self):
+        for junk in ("", None, "   ", "not-an-email", 42):
+            with self.subTest(junk=junk):
+                self.assertFalse(guard.is_owner_email(junk))
+
+    def test_classify_treats_an_alias_authored_commit_as_clean(self):
+        blocked, drifted = guard.classify([("sha", guard.canonical_name(), self.ALIAS)])
+        self.assertEqual(blocked, [])
+        self.assertEqual(drifted, [])
+
+    def test_a_push_of_github_merge_commits_is_allowed(self):
+        """The exact push that was refused on 2026-08-18."""
+        _commit(self.repo, "work", guard.canonical_name(), guard.canonical_email())
+        merge = _commit(self.repo, "Merge pull request #38", guard.canonical_name(), self.ALIAS)
+        out = io.StringIO()
+        self.assertEqual(guard.check(self.repo, self.line(merge), out), 0)
+        self.assertNotIn("BLOCKED-EMAIL", out.getvalue())
+
+    def test_a_genuinely_foreign_author_in_the_same_push_is_still_refused(self):
+        """The exemption must not become a hole: one bad commit still stops the push."""
+        _commit(self.repo, "merge", guard.canonical_name(), self.ALIAS)
+        bad = _commit(self.repo, "bad", "someone", "mandyjustinepasch@gmail.com")
+        out = io.StringIO()
+        self.assertEqual(guard.check(self.repo, self.line(bad), out), 1)
+        self.assertIn("BLOCKED-EMAIL", out.getvalue())
+
+    def test_the_login_is_configurable_without_editing_the_module(self):
+        self.assertEqual(guard.canonical_login(), "kalepasch1")
+
+
 class TestPushGate(GuardTestCase):
     def test_allows_a_push_of_canonically_authored_commits(self):
         sha = _commit(self.repo, "good", guard.canonical_name(), guard.canonical_email())
