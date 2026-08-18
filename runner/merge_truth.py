@@ -70,6 +70,13 @@ INFRA_ERROR = "infra_error"
 # The state that makes a blocked merge visible instead of silently absent.
 PHANTOM_STATE = "PHANTOM_UNVERIFIED"
 
+# States that assert delivered work. The database's enforce_evidence_on_closure() trigger
+# gates exactly these, and this module must agree with it -- see _commit_already_cited().
+CLOSED_STATES = ("DONE", "MERGED", "DEPLOYED_AND_VERIFIED")
+
+# The documented escape hatch, honoured identically by the database trigger.
+JUSTIFIED_MARKER = "NO-ARTIFACT-JUSTIFIED:"
+
 ALARM_GATE = "merge_truth"
 ALARM_KIND = "phantom_merge_blocked"
 
@@ -234,6 +241,41 @@ def verify_merge_reachable(repo, sha, target_branch, fetch=True, also_branches=(
     return PHANTOM, f"commit {sha[:12]} is not an ancestor of any of {', '.join(checked)}"
 
 
+def _commit_already_cited(sha, task_id):
+    """Slug of another CLOSED task already citing this artifact_commit, else None.
+
+    WHY (2026-08-18). The database enforces this and this module did not, so the client
+    proposed writes the database had to reject. Draining the phantom backlog produced 25
+    such rejections in 161 writes -- every one of them this case.
+
+    One commit certifying several tasks is the documented slice-1-certifies-slice-2..N
+    phantom: one of the three root causes the 2026-08-04 audit blamed for 10,584 false
+    MERGED rows. verify_merge_reachable() only asks whether a sha is REACHABLE. A sha can
+    be perfectly reachable and still be the wrong evidence for this particular task,
+    because it is already the evidence for a different one.
+
+    Fail-soft and fail-OPEN: any db error returns None. Being unable to ask whether a
+    duplicate exists is not evidence that one does, and this check must never be the
+    reason a legitimate merge is withheld.
+    """
+    sha = (sha or "").strip()
+    if not sha:
+        return None
+    try:
+        rows = db.select("tasks", {
+            "select": "id,slug",
+            "artifact_commit": f"eq.{sha}",
+            "state": f"in.({','.join(CLOSED_STATES)})",
+            "limit": "5",
+        }) or []
+    except Exception:
+        return None
+    for r in rows:
+        if str(r.get("id")) != str(task_id):
+            return r.get("slug") or "(unnamed task)"
+    return None
+
+
 def invalidate_project_cache():
     """Drop the project-row TTL cache (tests, and processes that outlive a projects edit)."""
     with _project_rows_lock:
@@ -378,6 +420,19 @@ def gate_merged_patch(task, patch, repo=None, prod_branch=None, fetch=True):
     )
 
     if verdict == OK:
+        # Reachable is necessary but not sufficient: the sha must also not already be the
+        # evidence for a different closed task. The database refuses that write; agreeing
+        # here means we stop proposing writes it will reject, and the reason is logged
+        # against the task rather than surfacing as a generic closure rejection.
+        note_text = str(patch.get("note") or task.get("note") or "")
+        if JUSTIFIED_MARKER not in note_text:
+            cited_by = _commit_already_cited(sha, task.get("id"))
+            if cited_by:
+                print(f"[merge-truth] {task.get('slug')}: {sha[:12]} is already the "
+                      f"artifact_commit of {cited_by}; refusing to certify two tasks with "
+                      f"one commit (add '{JUSTIFIED_MARKER} <reason>' to the note to "
+                      f"override). Row left unchanged.")
+                return None
         return patch
 
     if verdict == INFRA_ERROR:
