@@ -1,16 +1,35 @@
-name: Auto-sync orchestrator/dev → production branch
+name: Release train — orchestrator/dev ⇄ production branch
+
+# Both directions, on purpose.
+#
+#   push orchestrator/dev -> promote  (ff-only into master)
+#   push master           -> reabsorb (fold master back into orchestrator/dev)
+#
+# The promote is ff-only, so the train breaks the moment master gains a commit dev does
+# not have. Before 2026-08-18 that break was silent (::warning:: + exit 0), and master
+# reached 14 commits ahead of dev with dev 0 ahead while every run reported success.
+# Making it loud is necessary but not sufficient: GitHub's "Merge pull request" button
+# targets the repository DEFAULT branch, so any PR opened without an explicit --base
+# lands on master and wedges the train again. Two did, within minutes, while the first
+# wedge was being cleared. `reabsorb` is what makes the invariant repair itself.
+#
+# See scripts/release_train_sync.sh for why this terminates rather than ping-ponging.
 
 on:
   push:
     branches:
       - orchestrator/dev
+      - master
 
 permissions:
   contents: write
 
 concurrency:
   group: auto-sync-production
-  cancel-in-progress: true
+  # NOT cancel-in-progress. A train is a queue: cancelling an in-flight promote drops it,
+  # and the next push has no idea it needs to carry the previous one. Observed on
+  # 2026-08-18 — PR #37's sync run was cancelled by #39's and never promoted.
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -27,17 +46,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fast-forward master from orchestrator/dev
+      - name: Promote orchestrator/dev → master
+        if: github.ref == 'refs/heads/orchestrator/dev'
+        run: bash scripts/release_train_sync.sh promote
+
+      # reabsorb THEN promote, in one job on purpose. A push made with GITHUB_TOKEN does
+      # not trigger workflows (GitHub's recursion guard), so the re-absorbing push to
+      # orchestrator/dev fires nothing. In the diverged case that would leave dev ahead of
+      # master with no promote scheduled — the train repaired but stalled. Promote is a
+      # no-op when the two are already equal, so running it unconditionally is free.
+      - name: Re-absorb master → orchestrator/dev, then promote
+        if: github.ref == 'refs/heads/master'
         run: |
-          git checkout master
-          if git merge --ff-only origin/orchestrator/dev; then
-            echo "Fast-forward succeeded"
-            git push origin master
-          else
-            echo "::error::Cannot fast-forward master from orchestrator/dev — manual merge required."
-            echo "::error::master is AHEAD of orchestrator/dev. That happens when something is pushed"
-            echo "::error::directly to master. Until master is merged back into orchestrator/dev, every"
-            echo "::error::promote silently does nothing. Commits on master but not on dev:"
-            git --no-pager log --oneline origin/orchestrator/dev..master | head -20
-            exit 1
-          fi
+          bash scripts/release_train_sync.sh reabsorb
+          bash scripts/release_train_sync.sh promote
