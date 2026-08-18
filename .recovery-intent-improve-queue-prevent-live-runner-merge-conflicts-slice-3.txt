@@ -1,0 +1,4 @@
+recovery-intent: improve-queue-prevent-live-runner-merge-conflicts-slice-3
+template: e08a457a33f1
+intent: 07062319 07071626 20251001 8b92d078e856 acceptance adapt affected after agentic allowed already alter artifacts atomically attempt automated because beethoven before behavior below blocked blocker blocks branch breaks broad build build_fix burning cannot category cause causing changing checkout checks claude commit commonly compatible compile completion compute concrete config conflict conflicts context continue contract converging coverage crash cycle deepseek dependencies diffs directive dismissed drafting duplicate duplicates eliminating equivalent exact examine existing exists failed failure failures feedback first flash focus fresh functional functionality green
+base: master
