@@ -219,6 +219,26 @@ class TestHostStamp(PausedHostTestCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn("host", calls[1])
 
+    def test_release_insert_never_strips_host_after_guard_rejection(self):
+        import release_train
+
+        calls = []
+
+        def rejected(table, row):
+            calls.append(row)
+            raise RuntimeError(
+                "paused-host guard: host Mac-A is paused and may not record releases"
+            )
+
+        with patch.object(release_train.db, "insert", side_effect=rejected):
+            with self.assertRaisesRegex(RuntimeError, "paused-host guard"):
+                release_train._insert_release({"project": "beethoven"})
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["host"], paused_host_guard.HOST)
+        self.assertEqual(len(self.alerts), 1)
+        self.assertEqual(self.alerts[0]["actor"], "release_insert")
+
 
 class TestMigrationShape(unittest.TestCase):
     """4/5/6 are enforced in SQL; assert the guard's shape rather than a live DB."""
@@ -251,6 +271,22 @@ class TestMigrationShape(unittest.TestCase):
 
     def test_an_unattributable_row_is_not_refused(self):
         self.assertIn("if NEW.host is null", self.sql)
+
+
+class TestMigrationV2TransactionTruth(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "supabase", "migrations", "20260811160000_paused_host_release_guard_v2.sql")
+        with open(path) as fh:
+            cls.sql = fh.read().lower()
+
+    def test_replaces_the_guard_without_transaction_local_alert_claims(self):
+        self.assertIn("create or replace function public.enforce_paused_host_release_guard", self.sql)
+        self.assertNotIn("perform pg_notify", self.sql)
+        self.assertNotIn("insert into public.runner_alerts", self.sql)
+        self.assertIn("caller records the refusal", self.sql)
 
 
 if __name__ == "__main__":

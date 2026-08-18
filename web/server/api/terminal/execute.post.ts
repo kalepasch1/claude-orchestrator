@@ -5,13 +5,21 @@ import Anthropic from '@anthropic-ai/sdk'
 // Returns streamed or buffered response from Claude with dev-focused tool use.
 
 function buildSystemPrompt(serverless: boolean): string {
-  const envNote = serverless
-    ? `\nENVIRONMENT: Production (Vercel serverless)
-- File system is READ-ONLY — write_file and edit_file are disabled.
-- Shell commands are limited to safe read-only operations (git log/status/diff, ls, cat, echo, node -e).
-- For full dev capabilities (npm install, file edits, builds), the user should use dev mode locally.
-- You can still: read files, search code, query Supabase, and check deployment status.`
-    : `\nENVIRONMENT: Development (local)
+  if (serverless) {
+    return `You are the evidence terminal inside the Madeus orchestrator control plane.
+
+ENVIRONMENT: Production (Vercel serverless)
+- This is a control plane, not a coding workspace.
+- Your only tool is deploy_check, which reads the canonical release ledger.
+- Shell, filesystem, repository mutation, raw SQL, merge, and deployment tools are unavailable.
+- Never claim code was edited, tested, merged, or deployed unless deploy_check returns the matching receipt.
+- State missing evidence as unknown. Do not infer production from a branch, commit message, task state, or Vercel runtime metadata.
+- Direct development belongs in an authenticated runner-owned worktree session.
+
+Be concise and show the exact release evidence returned by the tool.`
+  }
+
+  const envNote = `\nENVIRONMENT: Development (local)
 - Full filesystem read/write access available.
 - All shell commands available (with safety blocks for destructive operations).
 - Node.js 24.x, Python 3.x available.`
@@ -147,13 +155,14 @@ const TOOLS: Anthropic.Tool[] = [
 
 // --- Tool execution layer ---
 
-import { exec } from 'node:child_process'
-import { readFile, writeFile, mkdir, readdir, stat, access } from 'node:fs/promises'
-import { join, dirname, resolve } from 'node:path'
+import { exec, execFile } from 'node:child_process'
+import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises'
+import { join, dirname, resolve, relative, isAbsolute, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { createClient } from '@supabase/supabase-js'
 
 const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 /** Detect whether we're running inside Vercel's serverless runtime. */
 function isServerless(): boolean {
@@ -168,6 +177,14 @@ function projectRoot(): string {
   if (webDir.endsWith('/web') || webDir.endsWith('\\web')) return resolve(webDir, '..')
   const parent = resolve(webDir, '..')
   return parent
+}
+
+function resolveInsideRoot(root: string, requested = ''): string | null {
+  const candidate = resolve(root, requested)
+  const rel = relative(root, candidate)
+  if (rel === '') return candidate
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null
+  return candidate
 }
 
 // Safety: prevent obviously dangerous commands
@@ -203,7 +220,8 @@ async function execTool(name: string, input: any): Promise<string> {
         }
       }
 
-      const cwd = input.cwd ? resolve(root, input.cwd) : root
+      const cwd = input.cwd ? resolveInsideRoot(root, String(input.cwd)) : root
+      if (!cwd) return 'Error: working directory is outside the project'
       const timeout = Math.min(Number(input.timeout) || 30_000, isServerless() ? 10_000 : 120_000)
 
       try {
@@ -227,8 +245,8 @@ async function execTool(name: string, input: any): Promise<string> {
     }
 
     case 'read_file': {
-      const filePath = resolve(root, String(input.path || ''))
-      if (!filePath.startsWith(root)) return 'Error: path outside project'
+      const filePath = resolveInsideRoot(root, String(input.path || ''))
+      if (!filePath) return 'Error: path outside project'
       try {
         const content = await readFile(filePath, 'utf8')
         const lines = content.split('\n')
@@ -247,8 +265,8 @@ async function execTool(name: string, input: any): Promise<string> {
       if (isServerless()) {
         return '⚠ File writing is disabled in production (read-only filesystem).\nUse the terminal in development mode (npm run dev) for file modifications.'
       }
-      const filePath = resolve(root, String(input.path || ''))
-      if (!filePath.startsWith(root)) return 'Error: path outside project'
+      const filePath = resolveInsideRoot(root, String(input.path || ''))
+      if (!filePath) return 'Error: path outside project'
       try {
         await mkdir(dirname(filePath), { recursive: true })
         await writeFile(filePath, input.content, 'utf8')
@@ -263,8 +281,8 @@ async function execTool(name: string, input: any): Promise<string> {
       if (isServerless()) {
         return '⚠ File editing is disabled in production (read-only filesystem).\nUse the terminal in development mode (npm run dev) for file modifications.'
       }
-      const filePath = resolve(root, String(input.path || ''))
-      if (!filePath.startsWith(root)) return 'Error: path outside project'
+      const filePath = resolveInsideRoot(root, String(input.path || ''))
+      if (!filePath) return 'Error: path outside project'
       try {
         const content = await readFile(filePath, 'utf8')
         if (!content.includes(input.oldText)) return `Error: old text not found in ${input.path}`
@@ -279,17 +297,18 @@ async function execTool(name: string, input: any): Promise<string> {
     case 'search_code': {
       const pattern = String(input.pattern || '')
       if (!pattern) return 'Error: empty search pattern'
-      const searchPath = input.path ? resolve(root, input.path) : root
-      if (!searchPath.startsWith(root)) return 'Error: path outside project'
+      const searchPath = input.path ? resolveInsideRoot(root, String(input.path)) : root
+      if (!searchPath) return 'Error: path outside project'
       const maxResults = Math.min(Number(input.maxResults) || 30, 100)
-      const fileFilter = input.filePattern ? `--include='${input.filePattern}'` : ''
 
       try {
-        const { stdout } = await execAsync(
-          `grep -rn ${fileFilter} --max-count=${maxResults} -E ${JSON.stringify(pattern)} . 2>/dev/null | head -${maxResults}`,
-          { cwd: searchPath, timeout: 15_000, maxBuffer: 1024 * 1024 }
-        )
-        return stdout.trim() || 'No matches found'
+        const args = ['-rn', '-E']
+        if (input.filePattern) args.push(`--include=${String(input.filePattern)}`)
+        args.push(pattern, '.')
+        const { stdout } = await execFileAsync('grep', args, {
+          cwd: searchPath, timeout: 15_000, maxBuffer: 1024 * 1024,
+        })
+        return stdout.split('\n').slice(0, maxResults).join('\n').trim() || 'No matches found'
       } catch (e: any) {
         if (e.code === 1) return 'No matches found'
         return `Search error: ${e.message}`
@@ -297,8 +316,8 @@ async function execTool(name: string, input: any): Promise<string> {
     }
 
     case 'list_directory': {
-      const dirPath = resolve(root, String(input.path || ''))
-      if (!dirPath.startsWith(root)) return 'Error: path outside project'
+      const dirPath = resolveInsideRoot(root, String(input.path || ''))
+      if (!dirPath) return 'Error: path outside project'
       try {
         const entries = await readdir(dirPath, { withFileTypes: true })
         const results: string[] = []
@@ -330,28 +349,29 @@ async function execTool(name: string, input: any): Promise<string> {
 
     case 'deploy_check': {
       if (isServerless()) {
-        const env = process.env.VERCEL_ENV || 'unknown'
-        const region = process.env.VERCEL_REGION || 'unknown'
-        const gitSha = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) || 'unknown'
-        const gitMsg = process.env.VERCEL_GIT_COMMIT_MESSAGE || 'unknown'
-        const branch = process.env.VERCEL_GIT_COMMIT_REF || 'unknown'
-        return [
-          `Vercel Deployment Status`,
-          `  Environment: ${env}`,
-          `  Region:      ${region}`,
-          `  Branch:      ${branch}`,
-          `  Commit:      ${gitSha} — ${gitMsg}`,
-          `  Runtime:     Node ${process.version}`,
-          ``,
-          `This is a live production deployment. Vercel deploys on push to master.`,
-        ].join('\n')
+        const url = process.env.SUPABASE_URL || process.env.NUXT_SUPABASE_URL || ''
+        const key = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NUXT_SUPABASE_SERVICE_KEY || ''
+        if (!url || !key) return 'Deployment proof unavailable: release ledger is not configured.'
+        const sb = createClient(url, key)
+        const { data, error } = await sb.from('releases')
+          .select('project,version,to_sha,deploy_status,vercel_url,deployed_at,created_at,note')
+          .order('created_at', { ascending: false })
+          .limit(10)
+        if (error) return `Deployment proof unavailable: ${error.message}`
+        if (!data?.length) return 'No release records exist. No production deployment is proven.'
+        return data.map((release: any) => [
+          `${release.project || 'unknown'} · ${release.deploy_status || 'unknown'}`,
+          `  SHA: ${release.to_sha || 'unrecorded'}`,
+          `  URL: ${release.vercel_url || 'unrecorded'}`,
+          `  At:  ${release.deployed_at || release.created_at || 'unrecorded'}`,
+        ].join('\n')).join('\n\n')
       }
       try {
         const { stdout } = await execAsync('git log --oneline -5 && echo "---" && git status --short', {
           cwd: root,
           timeout: 10_000,
         })
-        return `Latest commits & status:\n${stdout.trim()}\n\nNote: Vercel deploys on push to master. Use git push to trigger deployment.`
+        return `Local repository state (not production proof):\n${stdout.trim()}\n\nUse the canonical release train and release ledger to verify production.`
       } catch (e: any) {
         return `Deploy check error: ${e.message}`
       }
@@ -398,6 +418,10 @@ export default defineEventHandler(async (event) => {
 
   const client = new Anthropic({ apiKey })
   const serverless = isServerless()
+  // Vercel is the control plane, not a trusted coding workspace.
+  const activeTools = serverless
+    ? TOOLS.filter(tool => tool.name === 'deploy_check')
+    : TOOLS
 
   // Build conversation from history
   const messages: Anthropic.MessageParam[] = []
@@ -423,7 +447,7 @@ export default defineEventHandler(async (event) => {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 8192,
         system: buildSystemPrompt(serverless),
-        tools: TOOLS,
+        tools: activeTools,
         messages: currentMessages,
       })
 
