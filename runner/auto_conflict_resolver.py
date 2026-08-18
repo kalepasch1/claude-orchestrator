@@ -598,6 +598,21 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
             result["error"] = f"failed to resolve {filepath} with strategy {strategy}"
             return result
 
+    # GUARD (2026-08-18) — leftover conflict marker guard. A resolve strategy can
+    # report success yet leave <<<<<<< markers in the staged tree (union concat,
+    # partial ast_merge). Committing them lands conflict markers in tracked code and
+    # breaks every downstream compile/collection/canary gate — the mechanism behind
+    # the fleet-wide self-deploy stall. git diff --check names leftover markers; on any,
+    # abort and preserve the branch for manual/agentic repair (fail-closed, like _reject_merge).
+    _mk = _git(["git", "diff", "--cached", "--check"], repo)
+    if "conflict marker" in ((_mk.stdout or "") + (_mk.stderr or "")).lower():
+        _git(["git", "merge", "--abort"], repo)
+        _git(["git", "reset", "--hard", pre_sha], repo)
+        result["strategy"] = "manual"
+        result["manual_files"] = [f for f, _ in auto_files]
+        result["error"] = "resolution left conflict markers; merge aborted, branch preserved"
+        return result
+
     # Step 5: commit the resolved merge
     commit = _git(["git", "commit", "--no-edit"], repo)
     if commit.returncode == 0:

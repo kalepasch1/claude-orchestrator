@@ -107,7 +107,32 @@ REDACTION_RULES = (
 
 # Addresses that are structurally public and whose redaction would destroy the evidence's
 # meaning (the filer's own contact address on a filing confirmation, for instance).
+#
+# `noreply@github.com` is GitHub's own system sender, not a commit identity — see the
+# exemption in tests/test_git_identity_and_verified_firing.py.
 REDACTION_ALLOWLIST = {"kalepasch@gmail.com", "noreply@github.com"}
+
+
+def _allowlisted(value: str) -> bool:
+    """True if `value` must survive redaction verbatim.
+
+    Not a plain set membership, because the owner has more than one address and one of them
+    is not a fixed string: GitHub authors everything done through its web UI as
+    `<id>+<login>@users.noreply.github.com`. Matching only the literal set redacted the
+    owner out of every piece of evidence that quoted a merge commit — the same
+    one-address-per-person assumption that wedged the release train on 2026-08-18.
+
+    Fail-soft: if `git_identity` cannot be imported, the literal set still applies.
+    """
+    candidate = (value or "").strip()
+    if candidate in REDACTION_ALLOWLIST:
+        return True
+    try:
+        import git_identity  # type: ignore
+
+        return bool(git_identity.is_owner_email(candidate))
+    except Exception:
+        return False
 
 
 def redact(text: str) -> tuple[str, list[dict]]:
@@ -125,7 +150,7 @@ def redact(text: str) -> tuple[str, list[dict]]:
         try:
             def _sub(match: re.Match) -> str:
                 whole = match.group(0)
-                if whole.strip() in REDACTION_ALLOWLIST:
+                if _allowlisted(whole):
                     return whole
                 if name == "secret_assignment" and match.groups():
                     return whole.replace(match.group(1), f"[REDACTED:{name}]")

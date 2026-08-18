@@ -141,6 +141,26 @@ def test_redact_leaves_clean_text_alone():
     assert found == []
 
 
+def test_redact_allowlists_the_owners_github_alias_too():
+    """The owner has more than one address, and one of them is not a fixed string.
+
+    GitHub authors every merge commit as `<id>+<login>@users.noreply.github.com`. The
+    allowlist was a literal set, so evidence quoting a merge commit had the owner redacted
+    out of it — the same one-address-per-person assumption that wedged the release train
+    on 2026-08-18.
+    """
+    alias = "102100311+kalepasch1@users.noreply.github.com"
+    out, _ = vault.redact(f"merged by {alias} on 2026-08-18")
+    assert alias in out
+
+
+def test_redact_still_strips_a_foreign_noreply_alias():
+    """Non-vacuity: the allowlist widened for the owner, not for everyone."""
+    out, found = vault.redact("merged by 999+someoneelse@users.noreply.github.com")
+    assert "someoneelse" not in out
+    assert any(r["rule"] == "email" for r in found)
+
+
 def test_redact_allowlists_the_owner_address():
     out, _ = vault.redact("contact kalepasch@gmail.com for filings")
     assert "kalepasch@gmail.com" in out

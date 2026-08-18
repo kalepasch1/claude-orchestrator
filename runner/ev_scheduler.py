@@ -434,6 +434,16 @@ def scan_coverage(scanned):
     return {"scanned": scanned, "queue_depth": depth, "complete": complete}
 
 
+def _self_improve_tier(task):
+    """OWNER DIRECTIVE (2026-08-18): the fleet's orchestration-layer self-improvements fill
+    IDLE capacity — they must never rank ahead of user-directed product work. Returns 1 for
+    self-improvement (claimed last), 0 for user-directed work. Default on; opt out with
+    ORCH_USER_TASKS_FIRST=0 to restore pure-EV ordering."""
+    if str(os.environ.get("ORCH_USER_TASKS_FIRST", "1")).lower() not in ("1", "true", "yes", "on"):
+        return 0
+    return 1 if (task.get("project") or "") in ("beethoven", "orchestrator", "ORCHESTRATOR") else 0
+
+
 def _scored_queue(limit=None, ctx=None):
     """[(score, task), ...] sorted desc by score (created_at, id break ties)."""
     ctx = ctx if ctx is not None else load_ctx()
@@ -448,7 +458,7 @@ def _scored_queue(limit=None, ctx=None):
         if not t.get("project"):
             t["project"] = names.get(t.get("project_id"), "")
     scored = [(thermal_score(t, ctx), t) for t in tasks]
-    scored.sort(key=lambda p: (-p[0], p[1].get("created_at") or "", str(p[1].get("id"))))
+    scored.sort(key=lambda p: (_self_improve_tier(p[1]), -p[0], p[1].get("created_at") or "", str(p[1].get("id"))))
     return scored
 
 

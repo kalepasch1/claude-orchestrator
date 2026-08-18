@@ -30,6 +30,22 @@ jobs:
       GEMINI_MODEL: gemini-2.0-flash
 
     steps:
+      # FIRST, deliberately. This guard used to sit after checkout + setup-python +
+      # `pip install -r requirements.txt`, so every run with the secret missing provisioned
+      # a full Python environment before reporting a configuration gap. Between
+      # 2026-08-17 09:43 and 2026-08-18 11:39 that was 100 consecutive runs, zero
+      # successes, ~288/day. Checking first costs seconds and puts the real reason at the
+      # top of the log. It still fails: a canary that cannot run is not a passing canary.
+      - name: Fail fast when the secret is not configured
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not set on this repository."
+            echo "::error::This canary has no signal to give until it is set. Either add the"
+            echo "::error::secret, or remove the gemini lane so it stops reporting a known gap"
+            echo "::error::every 5 minutes."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -38,15 +54,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install --quiet -r requirements.txt
-
-      - name: Fail fast when the secret is not configured
-        # Without this the probe fails with a generic transport error and the run looks
-        # like a Gemini outage rather than a missing repo secret.
-        run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error::GEMINI_API_KEY secret is not set on this repository"
-            exit 1
-          fi
 
       - name: Probe Gemini
         id: probe

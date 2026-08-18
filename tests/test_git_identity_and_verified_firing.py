@@ -167,11 +167,22 @@ class NoHardcodedIdentityTests(unittest.TestCase):
     # FallbackIdentityDriftTests below instead of being banned outright.
     FALLBACK_MODULES = {"author_identity_guard.py"}
 
+    # A blocked address can appear for a reason that has nothing to do with authorship.
+    # `compliance_evidence_vault` lists `noreply@github.com` in REDACTION_ALLOWLIST — the
+    # set of structurally-public addresses the redactor must NOT strip out of captured
+    # evidence. Redacting it would destroy the meaning of the record, and it is never used
+    # as a commit identity there. Exempted by name and with a reason, and pinned below by
+    # `test_the_authorship_exemptions_are_still_accurate`, rather than lexically dodged
+    # (building the string at runtime to slip past this grep would defeat both tests).
+    AUTHORSHIP_EXEMPT = {
+        "compliance_evidence_vault.py": "REDACTION_ALLOWLIST — redaction policy, not identity",
+    }
+
     def test_no_runner_module_hardcodes_a_blocked_email(self):
         offenders = []
         for path in self._runner_sources():
             name = os.path.basename(path)
-            if name in self.FALLBACK_MODULES:
+            if name in self.FALLBACK_MODULES or name in self.AUTHORSHIP_EXEMPT:
                 continue
             try:
                 text = open(path, errors="replace").read()
@@ -181,6 +192,32 @@ class NoHardcodedIdentityTests(unittest.TestCase):
                 if blocked in text:
                     offenders.append(f"{name}: {blocked}")
         self.assertEqual(offenders, [], f"blocked author email present: {offenders}")
+
+    def test_the_authorship_exemptions_are_still_accurate(self):
+        """An exemption is a promise; this is what keeps it from going stale.
+
+        Every exempt module must (a) still exist, (b) still contain a blocked address —
+        otherwise the exemption is dead weight hiding nothing — and (c) never place one
+        anywhere it could become a commit identity.
+        """
+        identity_sinks = ("user.email", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL",
+                          "author_email", "committer_email")
+        by_name = {os.path.basename(p): p for p in self._runner_sources()}
+        for name, reason in self.AUTHORSHIP_EXEMPT.items():
+            with self.subTest(module=name):
+                self.assertIn(name, by_name, f"exemption names a module that is gone: {name}")
+                self.assertTrue(reason.strip(), "an exemption must carry a reason")
+                text = open(by_name[name], errors="replace").read()
+                self.assertTrue(
+                    any(b in text for b in gi.BLOCKED_EMAILS),
+                    f"{name} no longer contains a blocked address — drop the exemption")
+                for line in text.splitlines():
+                    if not any(b in line for b in gi.BLOCKED_EMAILS):
+                        continue
+                    for sink in identity_sinks:
+                        self.assertNotIn(
+                            sink, line,
+                            f"{name} uses a blocked address as an identity: {line.strip()}")
 
 
 class FallbackIdentityDriftTests(unittest.TestCase):
@@ -209,6 +246,38 @@ class FallbackIdentityDriftTests(unittest.TestCase):
         guard = self._guard()
         self.assertEqual(guard._FALLBACK_NAME, gi.CANONICAL_NAME)
         self.assertEqual(guard._FALLBACK_EMAIL, gi.CANONICAL_EMAIL)
+        self.assertEqual(guard._FALLBACK_LOGIN, gi.CANONICAL_LOGIN)
+
+    def test_both_copies_agree_on_who_the_owner_is(self):
+        """The fallback reimplements `is_owner_email`; pin the two against each other.
+
+        Divergence here is exactly the §G defect in a new place: the guard would keep
+        refusing the owner's own GitHub merge commits on any checkout where git_identity
+        happened not to import.
+        """
+        guard = self._guard()
+        cases = (
+            gi.CANONICAL_EMAIL,
+            gi.CANONICAL_EMAIL.upper(),
+            f"102100311+{gi.CANONICAL_LOGIN}@users.noreply.github.com",
+            f"{gi.CANONICAL_LOGIN}@users.noreply.github.com",
+            f"attacker+{gi.CANONICAL_LOGIN}@users.noreply.github.com",
+            "999+someoneelse@users.noreply.github.com",
+            "noreply@github.com",
+            "someone@example.com",
+            "",
+        )
+        for address in cases:
+            with self.subTest(address=address):
+                # `_identity_module` is what the delegation goes through; None forces the
+                # standalone fallback path so the two implementations are really compared.
+                original = guard._identity_module
+                guard._identity_module = lambda: None
+                try:
+                    fallback = guard.is_owner_email(address)
+                finally:
+                    guard._identity_module = original
+                self.assertEqual(fallback, gi.is_owner_email(address), address)
 
     def test_guard_prefers_the_owner_module_when_present(self):
         """Fallbacks must be unreachable when git_identity.py is importable."""
