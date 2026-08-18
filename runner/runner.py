@@ -3840,7 +3840,9 @@ def main():
                     _restart_log_t = time.time()
                 if len(active) <= max_active:
                     print(f"[self-deploy] restart threshold reached ({len(active)} <= {max_active}) — exiting for keepalive")
-                    os.remove(_rr)
+                    # restart flag intentionally NOT removed here; keepalive.sh consumes it at the
+                    # supervisor handoff (mv -f .restart_requested -> restart-handoff.last), so the
+                    # durable restart evidence must survive this exit. (test_self_deploy_boot_marker)
                     sys.exit(0)
                 # Freeze new claims while waiting to restart so the active count can converge.
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
