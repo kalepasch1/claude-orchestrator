@@ -2844,6 +2844,18 @@ def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, o
             db.insert("outcomes", outcome)
         except Exception as e2:
             print(f"[record] outcomes insert skipped: {e2 or e}")
+    # TEST-COMPLETION EVENT: this is the one place a task's test result settles, so it is
+    # where the low-risk fast-merge gate is triggered. It replaces the batch-hourly sweep —
+    # a task that went green just after a sweep used to wait a whole period to merge.
+    # Fail-soft: an auto-merge optimisation must never break outcome recording.
+    try:
+        import fast_auto_merge
+        fast_auto_merge.dispatch_test_completion(
+            {"id": t["id"], "slug": slug, "kind": kind, "project_id": t.get("project_id"),
+             "state": t.get("state"), "updated_at": t.get("updated_at")},
+            bool(tests_ok), integrated=bool(integrated), attempt=attempt)
+    except Exception as e:
+        print(f"[record] fast-merge dispatch skipped: {e}")
     try:
         mesh_optimizer.settle(
             t, project=project, slug=slug, kind=kind, model=model,
