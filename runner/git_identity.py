@@ -34,8 +34,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 CANONICAL_NAME = "kalepasch1"
 CANONICAL_EMAIL = "kalepasch@gmail.com"
 
+#: The GitHub *login*, which is a different thing from the display name even though they
+#: happen to coincide today. It is what GitHub builds the owner's noreply alias out of, so
+#: `is_owner_email()` needs it separately from CANONICAL_NAME.
+CANONICAL_LOGIN = "kalepasch1"
+
 _NAME_VARS = ("ORCH_GIT_USER_NAME", "FLEET_GIT_AUTHOR_NAME")
 _EMAIL_VARS = ("ORCH_GIT_USER_EMAIL", "FLEET_GIT_AUTHOR_EMAIL")
+_LOGIN_VARS = ("ORCH_GIT_USER_LOGIN", "FLEET_GIT_AUTHOR_LOGIN")
 
 # Author names seen in this repo's history that are NOT the canonical one. Listed so the audit
 # can name them specifically rather than reporting an anonymous count.
@@ -71,6 +77,54 @@ def email():
         return _first_env(_EMAIL_VARS, CANONICAL_EMAIL)
     except Exception:
         return CANONICAL_EMAIL
+
+
+def login():
+    """The owner's GitHub login, used to recognise their noreply alias. Never raises."""
+    try:
+        return _first_env(_LOGIN_VARS, CANONICAL_LOGIN)
+    except Exception:
+        return CANONICAL_LOGIN
+
+
+def _noreply_pattern(user_login=None):
+    """Anchored matcher for the owner's GitHub noreply alias.
+
+    GitHub mints two shapes for one account — `<login>@users.noreply.github.com` (pre-2017)
+    and `<id>+<login>@users.noreply.github.com` (current). Anchored on purpose: an unanchored
+    `login in email` test would accept `kalepasch1@evil.example.com` and, worse,
+    `attacker+kalepasch1@users.noreply.github.com` is NOT this account and must not match.
+    """
+    lg = re.escape(user_login or login())
+    return re.compile(r"^(?:\d+\+)?" + lg + r"@users\.noreply\.github\.com$", re.IGNORECASE)
+
+
+def is_owner_email(address):
+    """True if `address` is the repo owner committing — canonical address or GitHub alias.
+
+    WHY THIS EXISTS (2026-08-18). The identity rule was written as a single string equality,
+    so every merge commit produced by GitHub's own "Merge pull request" button — which GitHub
+    authors as `102100311+kalepasch1@users.noreply.github.com` — read as a foreign author.
+    That is the owner. Treating it as foreign wedged claude-orchestrator's release train: the
+    14 commits sitting on master could not be pushed back onto orchestrator/dev at all,
+    because the push-time guard refused every GitHub-authored merge commit among them.
+
+    The premise was also empirically false. A 400-deployment audit of the Vercel account on
+    2026-08-17 found this alias deploying to production successfully, while 18 of 18
+    genuinely-foreign authors were BLOCKED. The alias is not a deploy hazard; the guard's
+    message claiming it was is the part that was wrong.
+
+    Never raises: an unparseable input is simply not the owner.
+    """
+    try:
+        addr = (address or "").strip().lower()
+        if not addr:
+            return False
+        if addr == (email() or "").strip().lower():
+            return True
+        return bool(_noreply_pattern().match(addr))
+    except Exception:
+        return False
 
 
 def config_args():
@@ -155,7 +209,10 @@ def audit_authors(log_lines):
             if author_email in BLOCKED_EMAILS:
                 key = f"{author_name} <{author_email}>"
                 report["blocked"][key] = report["blocked"].get(key, 0) + 1
-            elif author_name == CANONICAL_NAME and author_email == CANONICAL_EMAIL:
+            elif author_name == CANONICAL_NAME and is_owner_email(author_email):
+                # is_owner_email, not `== CANONICAL_EMAIL`: GitHub's merge button authors as
+                # the owner's noreply alias, and counting the owner's own merge commits as
+                # "drift" buries the real drift under noise.
                 report["canonical"] += 1
             else:
                 key = f"{author_name} <{author_email}>"

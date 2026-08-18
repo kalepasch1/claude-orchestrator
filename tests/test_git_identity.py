@@ -189,5 +189,104 @@ class AuthorDriftAuditTest(unittest.TestCase):
                 self.assertIn("total", report)
 
 
+class OwnerEmailTests(unittest.TestCase):
+    """§G's allow-list has two members, not one — and exactly two.
+
+    The owner commits from two addresses: `kalepasch@gmail.com` from a terminal, and
+    `<id>+kalepasch1@users.noreply.github.com` whenever GitHub commits on their behalf
+    (the "Merge pull request" button, web edits, squash merges). Recognising only the
+    first is what wedged claude-orchestrator's release train on 2026-08-18: the 14
+    commits on `master` were all reachable only through GitHub-authored merge commits,
+    so the push that would have re-absorbed them into `orchestrator/dev` was refused.
+
+    The second address is not a deploy hazard. A 400-deployment audit of the Vercel
+    account on 2026-08-17 found it deploying to production successfully, against 18 of 18
+    BLOCKED for genuinely-foreign authors.
+    """
+
+    ALIAS = "102100311+kalepasch1@users.noreply.github.com"
+
+    def test_the_canonical_address_is_the_owner(self):
+        self.assertTrue(git_identity.is_owner_email(git_identity.CANONICAL_EMAIL))
+
+    def test_the_github_alias_is_the_owner(self):
+        self.assertTrue(git_identity.is_owner_email(self.ALIAS))
+
+    def test_the_pre_2017_alias_shape_is_the_owner(self):
+        self.assertTrue(
+            git_identity.is_owner_email(
+                f"{git_identity.CANONICAL_LOGIN}@users.noreply.github.com"))
+
+    def test_matching_ignores_case_and_surrounding_space(self):
+        self.assertTrue(git_identity.is_owner_email(f"  {self.ALIAS.upper()}  "))
+
+    def test_another_accounts_alias_is_not_the_owner(self):
+        """Non-vacuity: the predicate must still be able to say no."""
+        self.assertFalse(
+            git_identity.is_owner_email("999+someoneelse@users.noreply.github.com"))
+
+    def test_the_login_must_be_the_entire_local_part(self):
+        """A substring test would accept every one of these."""
+        for impostor in (
+            f"attacker+{git_identity.CANONICAL_LOGIN}@users.noreply.github.com",
+            f"x{git_identity.CANONICAL_LOGIN}@users.noreply.github.com",
+            f"{git_identity.CANONICAL_LOGIN}@users.noreply.github.com.evil.example",
+            f"{git_identity.CANONICAL_LOGIN}@evil.example.com",
+        ):
+            with self.subTest(impostor=impostor):
+                self.assertFalse(git_identity.is_owner_email(impostor), impostor)
+
+    def test_the_blocked_addresses_are_still_not_the_owner(self):
+        for blocked in git_identity.BLOCKED_EMAILS:
+            with self.subTest(blocked=blocked):
+                self.assertFalse(git_identity.is_owner_email(blocked))
+
+    def test_never_raises_on_junk(self):
+        for junk in (None, "", "   ", 42, object(), ["a@b.c"]):
+            with self.subTest(junk=junk):
+                self.assertFalse(git_identity.is_owner_email(junk))
+
+    def test_the_login_is_env_overridable_like_the_rest_of_the_identity(self):
+        prior = os.environ.get("ORCH_GIT_USER_LOGIN")
+        os.environ["ORCH_GIT_USER_LOGIN"] = "someoneelse"
+        try:
+            self.assertEqual(git_identity.login(), "someoneelse")
+            self.assertTrue(
+                git_identity.is_owner_email("7+someoneelse@users.noreply.github.com"))
+            self.assertFalse(git_identity.is_owner_email(self.ALIAS))
+        finally:
+            if prior is None:
+                os.environ.pop("ORCH_GIT_USER_LOGIN", None)
+            else:
+                os.environ["ORCH_GIT_USER_LOGIN"] = prior
+
+    def test_an_override_login_with_regex_metacharacters_is_escaped(self):
+        """A `.` in a login must not become a wildcard."""
+        prior = os.environ.get("ORCH_GIT_USER_LOGIN")
+        os.environ["ORCH_GIT_USER_LOGIN"] = "a.c"
+        try:
+            self.assertTrue(git_identity.is_owner_email("a.c@users.noreply.github.com"))
+            self.assertFalse(git_identity.is_owner_email("abc@users.noreply.github.com"))
+        finally:
+            if prior is None:
+                os.environ.pop("ORCH_GIT_USER_LOGIN", None)
+            else:
+                os.environ["ORCH_GIT_USER_LOGIN"] = prior
+
+    def test_the_audit_counts_owner_merge_commits_as_canonical_not_drift(self):
+        report = git_identity.audit_authors(
+            f"{git_identity.CANONICAL_NAME} <{git_identity.CANONICAL_EMAIL}>\n"
+            f"{git_identity.CANONICAL_NAME} <{self.ALIAS}>\n")
+        self.assertEqual(report["total"], 2)
+        self.assertEqual(report["canonical"], 2)
+        self.assertTrue(report["clean"])
+
+    def test_the_audit_still_reports_a_foreign_alias_as_drift(self):
+        report = git_identity.audit_authors(
+            "someoneelse <999+someoneelse@users.noreply.github.com>\n")
+        self.assertEqual(report["canonical"], 0)
+        self.assertFalse(report["clean"])
+
+
 if __name__ == "__main__":
     unittest.main()

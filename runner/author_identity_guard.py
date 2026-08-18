@@ -18,6 +18,18 @@ Why a push-time gate and not only a lint. The two failure modes are not equal:
     A guard that blocks a push over a display name would be worse than the drift
     it prevents, so name drift only WARNS.
 
+  * THE OWNER'S GITHUB NOREPLY ALIAS IS THE OWNER. `102100311+kalepasch1@
+    users.noreply.github.com` is what GitHub stamps on every commit the owner makes
+    through the web UI, including the merge commit from the "Merge pull request"
+    button. Until 2026-08-18 this guard compared against the canonical address by
+    string equality and therefore refused all of them — which meant the 14 commits
+    that had accumulated on claude-orchestrator's `master` could not be pushed back
+    onto `orchestrator/dev` at all, and the release train stayed wedged. It was also
+    empirically wrong: a 400-deployment Vercel audit on 2026-08-17 found this alias
+    deploying to production while 18 of 18 genuinely-foreign authors were BLOCKED.
+    The allow-list is now `is_owner_email()`, which accepts the canonical address and
+    the owner's alias and nothing else.
+
 Fail-soft per CLAUDE.md: any git or parsing failure allows the push and says why.
 A guard that wedges pushes on its own bug is the one outcome worse than drift.
 
@@ -30,6 +42,7 @@ either can run first. Standalone audit of history:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
@@ -44,6 +57,7 @@ ZERO_SHA = "0" * 40
 # checkout that does not have it yet (and can never be disabled by its absence).
 _FALLBACK_NAME = "kalepasch1"
 _FALLBACK_EMAIL = "kalepasch@gmail.com"
+_FALLBACK_LOGIN = "kalepasch1"
 
 # Authoring as any of these puts the Vercel production deploy in BLOCKED state.
 _FALLBACK_BLOCKED_EMAILS = (
@@ -93,6 +107,46 @@ def canonical_email() -> str:
     except Exception:
         pass
     return os.environ.get("ORCH_GIT_USER_EMAIL") or _FALLBACK_EMAIL
+
+
+def canonical_login() -> str:
+    mod = _identity_module()
+    try:
+        if mod is not None and hasattr(mod, "login"):
+            value = mod.login()
+            if value:
+                return str(value)
+    except Exception:
+        pass
+    return os.environ.get("ORCH_GIT_USER_LOGIN") or _FALLBACK_LOGIN
+
+
+def is_owner_email(address) -> bool:
+    """True if `address` is the owner — canonical address, or their GitHub noreply alias.
+
+    Delegates to `git_identity.is_owner_email` when the owning module has it, and otherwise
+    reimplements it here. The duplication is deliberate: this guard runs from a pre-push hook
+    on checkouts that may predate the owning module, and a guard that silently reverts to
+    string equality on an old checkout would re-wedge the release train exactly where it was
+    wedged on 2026-08-18 (see git_identity.is_owner_email for the full account).
+    """
+    mod = _identity_module()
+    try:
+        if mod is not None and hasattr(mod, "is_owner_email"):
+            return bool(mod.is_owner_email(address))
+    except Exception:
+        pass
+    try:
+        addr = (address or "").strip().lower()
+        if not addr:
+            return False
+        if addr == canonical_email().strip().lower():
+            return True
+        pattern = (r"^(?:\d+\+)?" + re.escape(canonical_login())
+                   + r"@users\.noreply\.github\.com$")
+        return bool(re.match(pattern, addr, re.IGNORECASE))
+    except Exception:
+        return False
 
 
 def blocked_emails() -> tuple:
@@ -159,15 +213,20 @@ def commit_authors(repo, local_sha, remote_sha, limit=None):
 def classify(authors):
     """Split authors into blocked-email and name-drift findings.
 
-    Returns ``(blocked, drifted)``. An unknown non-canonical email is treated as
-    blocked too: the allow-list is the canonical address, not the deny-list. The
+    Returns ``(blocked, drifted)``. An unknown non-owner email is treated as
+    blocked too: the allow-list is the owner's identity, not the deny-list. The
     deny-list only exists to name the specific addresses already seen.
+
+    The allow-list is `is_owner_email`, not string equality against the canonical
+    address, because GitHub's own merge button authors as the owner's noreply alias
+    and that alias demonstrably deploys (see `git_identity.is_owner_email`). Under
+    string equality this guard refused every merge commit the owner had ever made
+    through the GitHub UI, which is what wedged the release train on 2026-08-18.
     """
-    want_email = canonical_email().lower()
     want_name = canonical_name()
     blocked, drifted = [], []
     for sha, name, email in authors:
-        if (email or "").lower() != want_email:
+        if not is_owner_email(email):
             blocked.append((sha, name, email))
         elif name != want_name:
             drifted.append((sha, name, email))
