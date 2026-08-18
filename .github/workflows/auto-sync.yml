@@ -34,6 +34,10 @@ jobs:
             echo "Fast-forward succeeded"
             git push origin master
           else
-            echo "::warning::Cannot fast-forward master from orchestrator/dev — manual merge required"
-            exit 0
+            echo "::error::Cannot fast-forward master from orchestrator/dev — manual merge required."
+            echo "::error::master is AHEAD of orchestrator/dev. That happens when something is pushed"
+            echo "::error::directly to master. Until master is merged back into orchestrator/dev, every"
+            echo "::error::promote silently does nothing. Commits on master but not on dev:"
+            git --no-pager log --oneline origin/orchestrator/dev..master | head -20
+            exit 1
           fi
