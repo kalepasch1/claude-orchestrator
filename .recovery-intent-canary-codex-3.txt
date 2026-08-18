@@ -1,0 +1,4 @@
+recovery-intent: canary-codex-3
+template: b03b39698f74
+intent: 07062319 07071626 11434 8b92d078e856 __init__ _cooldown _cooldown_max _run_task_safe acceptance account_pool adapt after against agent agentic aider aiderignore alter analysis another apiconnectionerror artifacts asking atomic backlog bankrupted because beethoven before behavior below blocked blocks branch branch_lease branches bridge broad bugfix build cache canary category cause chains change changes changing chatgpt check checks claude cleared coder codex commit complete completion completions concrete config consider context continue cooldown_until defined dependencies deploy developer diffs directive documents drafting duplicate duplicates eliminating equivalent error examine execution
+base: main
