@@ -4,8 +4,14 @@ import unittest
 
 class TestWebConsole(unittest.TestCase):
     def test_syntax_check(self):
+        import os
         import py_compile
-        py_compile.compile("runner/web_console.py", doraise=True)
+        # Resolve relative to this test file so the check passes regardless of
+        # pytest's working directory (CI runs the suite from runner/).
+        py_compile.compile(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web_console.py"),
+            doraise=True,
+        )
 
     def test_handler_class_exists(self):
         from runner.web_console import ConsoleHandler, start_console

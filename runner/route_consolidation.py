@@ -45,7 +45,9 @@ def unified_route(task, available_coders, stage=None):
         import agentic_coders
         if hasattr(agentic_coders, "pick"):
             picked = agentic_coders.pick(task, available_coders)
-            if picked and isinstance(picked, str):
+            # pick() routes over its own coder table, not `available_coders`
+            # (its second arg is slot_index) — enforce availability here.
+            if picked and isinstance(picked, str) and picked in available_coders:
                 log.debug("route_consolidation: agentic_coders.pick chose %s for %s", picked, slug)
                 return picked, "agentic_coders.pick"
     except Exception as e:
@@ -56,7 +58,7 @@ def unified_route(task, available_coders, stage=None):
         import bandit
         if hasattr(bandit, "select"):
             selected = bandit.select(kind, available_coders)
-            if selected:
+            if selected and selected in available_coders:
                 log.debug("route_consolidation: bandit selected %s for %s", selected, slug)
                 return selected, "bandit"
     except Exception as e:

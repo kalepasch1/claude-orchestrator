@@ -33,8 +33,14 @@ class TestQueueMonitor(unittest.TestCase):
         self.assertEqual(len(state_alerts), 0)
 
     def test_syntax_check(self):
+        import os
         import py_compile
-        py_compile.compile("runner/queue_monitor.py", doraise=True)
+        # Resolve relative to this test file so the check passes regardless of
+        # pytest's working directory (CI runs the suite from runner/).
+        py_compile.compile(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "queue_monitor.py"),
+            doraise=True,
+        )
 
 
 if __name__ == "__main__":

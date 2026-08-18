@@ -31,8 +31,14 @@ class TestSessionLauncher(unittest.TestCase):
         self.assertIn("uptime_s", d)
 
     def test_syntax(self):
+        import os
         import py_compile
-        py_compile.compile("runner/session_launcher.py", doraise=True)
+        # Resolve relative to this test file so the check passes regardless of
+        # pytest's working directory (CI runs the suite from runner/).
+        py_compile.compile(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "session_launcher.py"),
+            doraise=True,
+        )
 
 
 if __name__ == "__main__":
