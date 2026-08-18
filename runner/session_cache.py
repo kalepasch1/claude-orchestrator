@@ -23,10 +23,22 @@ Usage:
 import os, sys, json, hashlib, time, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import config_consumer
 
-MAX_CACHE_SIZE = int(os.environ.get("ORCH_SESSION_CACHE_MAX", "200"))
-CACHE_TTL_H = float(os.environ.get("ORCH_SESSION_CACHE_TTL_H", "24"))
-MAX_CONTEXT_CHARS = int(os.environ.get("ORCH_SESSION_CACHE_CONTEXT", "3000"))
+
+def _max_cache_size():
+    """Max session cache entries. Read live from fleet_config."""
+    return config_consumer.get_int("SESSION_CACHE_MAX", default=200)
+
+
+def _cache_ttl_h():
+    """Session cache TTL in hours. Read live from fleet_config."""
+    return config_consumer.get_float("SESSION_CACHE_TTL_H", default=24.0)
+
+
+def _max_context_chars():
+    """Max warm-start context chars. Read live from fleet_config."""
+    return config_consumer.get_int("SESSION_CACHE_CONTEXT", default=3000)
 
 
 def _cache():
@@ -43,11 +55,13 @@ def _cache():
 
 def _save_cache(cache):
     """Save cache, pruning expired entries."""
-    cutoff = time.time() - CACHE_TTL_H * 3600
+    ttl = _cache_ttl_h()
+    cutoff = time.time() - ttl * 3600
     cache = {k: v for k, v in cache.items() if v.get("timestamp", 0) > cutoff}
-    if len(cache) > MAX_CACHE_SIZE:
+    max_size = _max_cache_size()
+    if len(cache) > max_size:
         by_time = sorted(cache.items(), key=lambda x: x[1].get("timestamp", 0))
-        cache = dict(by_time[-MAX_CACHE_SIZE:])
+        cache = dict(by_time[-max_size:])
     try:
         db.upsert("controls", {"key": "session_cache", "value": json.dumps(cache, default=str)})
     except Exception:
@@ -155,10 +169,11 @@ def warm_start(task, attempt, original_prompt):
     warm_context += "Try a fundamentally different strategy.\n"
 
     # Budget the warm context within limits
+    max_chars = _max_context_chars()
     total = warm_context + "\n" + original_prompt
-    if len(total) > len(original_prompt) + MAX_CONTEXT_CHARS:
+    if len(total) > len(original_prompt) + max_chars:
         # Truncate warm context to fit
-        allowed = MAX_CONTEXT_CHARS
+        allowed = max_chars
         warm_context = warm_context[:allowed] + "\n...(truncated)\n"
 
     return warm_context + "\n" + original_prompt
@@ -198,7 +213,8 @@ def extract_session_context(agent_output, error=""):
 def stats():
     """Return cache statistics for fleet dashboards and diagnostics."""
     cache = _cache()
-    cutoff = time.time() - CACHE_TTL_H * 3600
+    ttl = _cache_ttl_h()
+    cutoff = time.time() - ttl * 3600
     live = {k: v for k, v in cache.items() if v.get("timestamp", 0) > cutoff}
     total_cost = sum(v.get("cost_usd", 0) or 0 for v in live.values())
     unique_tasks = len({v.get("task_id") for v in live.values() if v.get("task_id")})
@@ -208,8 +224,8 @@ def stats():
         "expired_entries": len(cache) - len(live),
         "unique_tasks": unique_tasks,
         "total_cached_cost_usd": round(total_cost, 4),
-        "ttl_hours": CACHE_TTL_H,
-        "max_size": MAX_CACHE_SIZE,
+        "ttl_hours": ttl,
+        "max_size": _max_cache_size(),
     }
 
 
@@ -217,7 +233,8 @@ def run():
     """Periodic: prune expired sessions and log stats."""
     cache = _cache()
     before = len(cache)
-    cutoff = time.time() - CACHE_TTL_H * 3600
+    ttl = _cache_ttl_h()
+    cutoff = time.time() - ttl * 3600
     cache = {k: v for k, v in cache.items() if v.get("timestamp", 0) > cutoff}
     after = len(cache)
     if before != after:

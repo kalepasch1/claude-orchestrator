@@ -245,26 +245,32 @@ function classifyWorktreeChange(entry) {
     }
   }
 
-  // The evidence may live in a SEPARATE CLONE (a misclone, or a worktree whose object
-  // store predates the base). There `git diff <baseSha>` cannot resolve baseSha at all,
-  // and because that failure is swallowed it used to yield an empty diff — reporting
-  // every file as ALREADY_PRESENT and silently discarding genuinely absent work.
-  // Fall back to comparing content hashes across the two object stores instead.
-  if (!gitOk(['cat-file', '-e', `${baseSha}^{commit}`], entry.worktree)) {
+  // `git diff` is blind to two situations, and because the failure is swallowed both
+  // used to report ALREADY_PRESENT — silently discarding genuinely absent work:
+  //   1. UNTRACKED files (status ??) never appear in a diff at all.
+  //   2. Evidence in a SEPARATE CLONE (a misclone, or a worktree whose object store
+  //      predates the base), where baseSha cannot be resolved locally.
+  // Both are adjudicated by comparing content hashes across the two object stores.
+  const isUntracked = (entry.status || '').includes('?')
+  const baseUnresolvable = !gitOk(['cat-file', '-e', `${baseSha}^{commit}`], entry.worktree)
+  if (isUntracked || baseUnresolvable) {
     const localBlob = (git(['hash-object', '--', entry.file], { cwd: entry.worktree, allowFail: true }) || '').trim()
     const baseBlob = (git(['rev-parse', `${baseSha}:${entry.file}`], { allowFail: true }) || '').trim()
+    const how = baseUnresolvable ? ' (compared across object stores)' : ''
     if (localBlob && baseBlob && localBlob === baseBlob) {
+      return { classification: 'ALREADY_PRESENT', reason: `content hash matches ${base}${how}`, files: [entry.file] }
+    }
+    if (baseBlob) {
       return {
-        classification: 'ALREADY_PRESENT',
-        reason: `content hash matches ${base} (compared across object stores)`,
+        classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+        reason: `differs from ${base}${how}; needs content adjudication before any recovery`,
         files: [entry.file],
       }
     }
+    // Path does not exist on the base at all: new content, so it applies cleanly.
     return {
-      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
-      reason: baseBlob
-        ? `differs from ${base} (compared across object stores); needs content adjudication`
-        : `absent from ${base} and lives in a separate object store; needs content adjudication`,
+      classification: 'RECOVERABLE_VALUE',
+      reason: `absent from ${base}${how}; new path, applies cleanly`,
       files: [entry.file],
     }
   }

@@ -24,7 +24,8 @@ API:
   pool.mark_exhausted(acct)             # call on "usage limit" -> rotates
   pool.mark_ok(acct)
 """
-import os, json, time
+import os, json, time, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def _home():
     """CLAUDE_ORCH_HOME resolved at call time (like _cooldown) so tests and
@@ -57,13 +58,24 @@ _COOLDOWN_MAX_DEFAULT = 6 * 3600
 
 
 def _cooldown():
-    """Read cooldown from env at call time so hot_reload changes take effect."""
-    return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
-               os.environ.get("ACCOUNT_COOLDOWN", str(_COOLDOWN_DEFAULT))))
+    """Read cooldown from fleet_config at call time so hot_reload changes take effect."""
+    try:
+        import config_consumer
+        val = config_consumer.get_int("ACCOUNT_COOLDOWN", default=_COOLDOWN_DEFAULT)
+        return val if val > 0 else _COOLDOWN_DEFAULT
+    except Exception:
+        return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
+                   os.environ.get("ACCOUNT_COOLDOWN", str(_COOLDOWN_DEFAULT))))
 
 
 def _cooldown_max():
-    return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(_COOLDOWN_MAX_DEFAULT)))
+    """Read cooldown_max from fleet_config at call time."""
+    try:
+        import config_consumer
+        val = config_consumer.get_int("ACCOUNT_COOLDOWN_MAX", default=_COOLDOWN_MAX_DEFAULT)
+        return val if val > 0 else _COOLDOWN_MAX_DEFAULT
+    except Exception:
+        return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(_COOLDOWN_MAX_DEFAULT)))
 
 
 # Keep module-level names for any external readers (read-only; write path uses functions)
@@ -327,7 +339,7 @@ class AccountPool:
         try:
             import db, datetime
             until = (datetime.datetime.utcnow() +
-                     datetime.timedelta(seconds=COOLDOWN)).isoformat()
+                     datetime.timedelta(seconds=_cooldown())).isoformat()
             db.update("accounts", {"name": a["name"]}, {"cooldown_until": until})
         except Exception:
             pass

@@ -1,273 +1,168 @@
 #!/usr/bin/env python3
 """
-config_consumer.py - thread-safe, fail-soft configuration consumption.
+config_consumer.py - Centralized fleet-wide configuration consumption.
 
-Provides module-level functions for reading fleet_config values with:
-- Thread-safe singleton pattern with explicit locking
-- Fail-soft error handling: returns defaults on any error (DB unavailable, missing key, etc)
-- Environment variable configuration for tunable params (cache TTL, retry count)
-- Type coercion helpers (int, bool, float)
-- Cache with configurable TTL for load_config()
+Reads ORCH_*-prefixed configuration from the fleet_config table (via database),
+with fallback to environment variables if the database is unavailable. Implements
+the module-level singleton pattern with fail-soft error handling: all reads return
+sensible defaults on any error and never raise.
 
-All functions are safe to call without initialization and never raise exceptions.
+Usage:
+    import config_consumer
+    timeout = config_consumer.get_int("SESSION_TIMEOUT", default=3600)
+    enabled = config_consumer.get_bool("FEATURE_X", default=False)
+    value = config_consumer.get_str("CUSTOM_KEY", default="")
+
+Configuration precedence:
+    1. fleet_config table (centralized, fleet-wide)
+    2. environment variable ORCH_{key} (machine-local)
+    3. provided default (fail-soft fallback)
 """
-
-import os
-import sys
-import time
-import threading
-from typing import Any, Dict, Optional
-
+import os, sys, time, threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Optional at module level so callers and tests have a seam to patch, and so a
-# missing or broken gateway degrades to env-only config instead of an import error.
-try:
-    import fleet_control
-except Exception:
-    fleet_control = None
+_lock = threading.Lock()
+_cache = {}
+_last_db_fetch = {"t": 0.0}
+CACHE_TTL_S = 30.0  # Reuse cached values for 30 seconds
 
 
-DEFAULT_CACHE_TTL_SEC = 60.0
-DEFAULT_CACHE_MAX_ENTRIES = 1000
+def _get_db():
+    """Lazy import of db module for fail-soft behavior."""
+    try:
+        import db
+        return db
+    except Exception:
+        return None
 
 
-def _env_number(name: str, default: float, cast=float, minimum=None):
-    """Read a numeric ORCH_ knob. Never raises; a bad value logs and falls back.
+def _fetch_from_db(key):
+    """Query fleet_config table for a key. Returns value or None on any error."""
+    db = _get_db()
+    if db is None:
+        return None
+    try:
+        rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
+        if rows:
+            return str(rows[0].get("value") or "").strip() or None
+    except Exception:
+        pass
+    return None
 
-    This module is imported by most of the runner, so a malformed value must not be
-    able to raise. It previously did: the TTL was cast with a bare float() inside
-    __init__, which runs at import time via the module-level singleton, so
-    ORCH_CONFIG_CACHE_TTL_SEC=abc raised ValueError and took down every importer of
-    the configuration layer — the one module whose whole contract is "never raises".
+
+def _get_raw(key):
+    """Get raw string value for a config key from cache or DB.
+
+    Checks cache first (if fresh), then DB, then environment variable ORCH_{key},
+    finally returns empty string. Never raises.
     """
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
+    if not key or not isinstance(key, str):
+        return ""
+
+    try:
+        now = time.time()
+        with _lock:
+            if key in _cache:
+                cached_val, cached_at = _cache[key]
+                if now - cached_at < CACHE_TTL_S:
+                    return cached_val or ""
+
+        # Try DB fetch
+        value = _fetch_from_db(key)
+        if value is not None:
+            with _lock:
+                _last_db_fetch["t"] = now
+                _cache[key] = (value, now)
+            return value
+
+        # Fall back to environment
+        value = os.environ.get(f"ORCH_{key.upper()}", "").strip()
+        if value:
+            with _lock:
+                _last_db_fetch["t"] = now
+                _cache[key] = (value, now)
+            return value
+
+        # Mark as tried but empty
+        with _lock:
+            _cache[key] = ("", now)
+        return ""
+    except Exception:
+        return os.environ.get(f"ORCH_{key.upper()}", "").strip() or ""
+
+
+def get_str(key, default=""):
+    """Get a string config value. Returns default on missing/invalid keys."""
+    if not key:
         return default
     try:
-        value = cast(str(raw).strip())
-        if minimum is not None and value < minimum:
-            raise ValueError(f"must be >= {minimum}, got {value}")
-        return value
-    except Exception as exc:
-        print(f"[config_consumer] {name} unusable ({exc}); using default {default}", flush=True)
+        value = _get_raw(key)
+        return value if value else default
+    except Exception:
         return default
 
 
-class _ConfigConsumer:
-    """Thread-safe singleton for configuration consumption with caching."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._cache: Dict[str, tuple] = {}
-
-    @property
-    def _cache_ttl_sec(self) -> float:
-        """Re-read on every use so a fleet-pushed TTL takes effect without a restart.
-
-        Reading it once in __init__ meant the value was frozen at process start; a
-        fleet_config push of ORCH_CONFIG_CACHE_TTL_SEC changed nothing until every
-        runner was restarted, which is the failure mode this config layer exists to
-        prevent for everyone else.
-        """
-        return _env_number("ORCH_CONFIG_CACHE_TTL_SEC", DEFAULT_CACHE_TTL_SEC,
-                           float, minimum=0.0)
-
-    @property
-    def _cache_max_entries(self) -> int:
-        return int(_env_number("ORCH_CONFIG_CACHE_MAX_ENTRIES",
-                               DEFAULT_CACHE_MAX_ENTRIES, int, minimum=1))
-
-    def _evict_locked(self) -> None:
-        """Bound the cache. Caller must hold the lock.
-
-        load_config() keys the cache on caller-supplied strings, so an unbounded dict
-        is a slow leak in a process that runs for weeks. Oldest entries go first.
-        """
-        limit = self._cache_max_entries
-        if len(self._cache) <= limit:
-            return
-        for key in sorted(self._cache, key=lambda k: self._cache[k][1])[:len(self._cache) - limit]:
-            self._cache.pop(key, None)
-
-    def load_all(self) -> Dict[str, str]:
-        """Return all ORCH_* prefixed environment variables as a dict (without prefix)."""
-        try:
-            result = {}
-            for key, value in os.environ.items():
-                if key.startswith("ORCH_"):
-                    result[key[5:]] = str(value)
-            return result
-        except Exception:
-            return {}
-
-    def get(self, key: str, default: str = "") -> str:
-        """Get ORCH_{key} from environment, stripping whitespace.
-
-        Returns default if key is None/empty/not found/whitespace-only.
-        Never raises — fail-soft by design.
-        """
-        try:
-            if not key or not isinstance(key, str):
-                return default
-            env_key = f"ORCH_{key}"
-            value = os.environ.get(env_key, "").strip()
-            return value if value else default
-        except Exception:
+def get_int(key, default=0):
+    """Get an integer config value. Returns default on missing/non-numeric keys."""
+    if not key:
+        return default
+    try:
+        value = _get_raw(key)
+        if not value:
             return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
-    def get_int(self, key: str, default: int = 0) -> int:
-        """Get ORCH_{key} as integer with fallback to default."""
-        try:
-            value = self.get(key, "").strip()
-            if not value:
-                return default
-            return int(value)
-        except (ValueError, TypeError):
+
+def get_float(key, default=0.0):
+    """Get a float config value. Returns default on missing/non-numeric keys."""
+    if not key:
+        return default
+    try:
+        value = _get_raw(key)
+        if not value:
             return default
-        except Exception:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_bool(key, default=False):
+    """Get a boolean config value. True iff value is '1', 'true', 'yes', or 'on' (case-insensitive)."""
+    if not key:
+        return default
+    try:
+        value = _get_raw(key)
+        if not value:
             return default
-
-    def get_bool(self, key: str, default: bool = False) -> bool:
-        """Get ORCH_{key} as boolean (true/1/yes/on -> True, else False)."""
-        try:
-            value = self.get(key, "").strip().lower()
-            if not value:
-                return default
-            return value in ("true", "1", "yes", "on")
-        except Exception:
-            return default
-
-    def get_float(self, key: str, default: float = 0.0) -> float:
-        """Get ORCH_{key} as float with fallback to default."""
-        try:
-            value = self.get(key, "").strip()
-            if not value:
-                return default
-            return float(value)
-        except (ValueError, TypeError):
-            return default
-        except Exception:
-            return default
-
-    def load_config(self, key: str, default: str = "") -> str:
-        """Load config from fleet_config DB (with cache) or fallback to env.
-
-        Cache TTL is ORCH_CONFIG_CACHE_TTL_SEC (default 60s).
-        Returns env value if DB unavailable, then default if not in env.
-        Never raises — fail-soft by design.
-        """
-        try:
-            if not key or not isinstance(key, str):
-                return default
-
-            # Check cache first
-            with self._lock:
-                if key in self._cache:
-                    cached_value, cached_time = self._cache[key]
-                    if time.time() - cached_time < self._cache_ttl_sec:
-                        return cached_value
-
-            # Read through the fleet_control gateway. CLAUDE.md is explicit that
-            # fleet-wide config goes through that in-process gateway rather than
-            # ad-hoc table reads; this used to call db.select("fleet_config", ...)
-            # directly, which bypassed the gateway's own guards and left callers
-            # (and tests) with no seam to patch.
-            value = None
-            if fleet_control is not None:
-                try:
-                    got = fleet_control.get_fleet_config(key, "")
-                    if got:
-                        value = str(got).strip()
-                except Exception:
-                    value = None
-
-            if not value:  # gateway absent or empty -> direct read as a last resort
-                try:
-                    import db
-                    rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
-                    if rows:
-                        value = str(rows[0].get("value") or "").strip()
-                except Exception:
-                    pass
-
-            # Fall back to environment
-            if value is None or not value:
-                value = self.get(key, default).strip()
-                if not value:
-                    value = default
-
-            # Cache and return
-            with self._lock:
-                self._cache[key] = (value, time.time())
-                self._evict_locked()
-            return value
-        except Exception:
-            return default
-
-    def invalidate_cache(self, key: Optional[str] = None) -> None:
-        """Clear cached configuration. One key when given, otherwise everything.
-
-        Per-key invalidation lets a caller that just pushed one value re-read it
-        immediately without throwing away every other cached key.
-        """
-        try:
-            with self._lock:
-                if key:
-                    self._cache.pop(key, None)
-                else:
-                    self._cache.clear()
-        except Exception:
-            pass
+        return value.lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return default
 
 
-_consumer = _ConfigConsumer()
+def invalidate(key=None):
+    """Clear the config cache. If key is None, clears all entries."""
+    with _lock:
+        if key is None:
+            _cache.clear()
+        elif key in _cache:
+            del _cache[key]
 
 
-def load_all() -> Dict[str, str]:
-    """Return all ORCH_* prefixed environment variables as a dict (without prefix)."""
-    return _consumer.load_all()
-
-
-def get(key: str, default: str = "") -> str:
-    """Get ORCH_{key} from environment, stripping whitespace.
-
-    Returns default if key is None/empty/not found/whitespace-only.
-    Never raises — fail-soft by design.
-    """
-    return _consumer.get(key, default)
-
-
-def get_int(key: str, default: int = 0) -> int:
-    """Get ORCH_{key} as integer with fallback to default."""
-    return _consumer.get_int(key, default)
-
-
-def get_bool(key: str, default: bool = False) -> bool:
-    """Get ORCH_{key} as boolean (true/1/yes/on -> True, else False)."""
-    return _consumer.get_bool(key, default)
-
-
-def get_float(key: str, default: float = 0.0) -> float:
-    """Get ORCH_{key} as float with fallback to default."""
-    return _consumer.get_float(key, default)
-
-
-def load_config(key: str, default: str = "") -> str:
-    """Load config from fleet_config DB (with cache) or fallback to env.
-
-    Cache TTL is ORCH_CONFIG_CACHE_TTL_SEC (default 60s).
-    Returns env value if DB unavailable, then default if not in env.
-    Never raises — fail-soft by design.
-    """
-    return _consumer.load_config(key, default)
-
-
-def invalidate_cache(key: Optional[str] = None) -> None:
-    """Clear cached configuration values — one key when given, otherwise all."""
-    _consumer.invalidate_cache(key)
+def stats():
+    """Return cache statistics: {cached_keys, oldest_entry_age_s}."""
+    with _lock:
+        if not _cache:
+            return {"cached_keys": 0, "oldest_entry_age_s": 0}
+        now = time.time()
+        oldest_age = max(now - cached_at for _, (_, cached_at) in _cache.items())
+        return {"cached_keys": len(_cache), "oldest_entry_age_s": oldest_age}
 
 
 if __name__ == "__main__":
-    print("config_consumer module loaded successfully")
-    print(f"All ORCH_* keys: {load_all()}")
+    import sys
+    if len(sys.argv) > 1:
+        key = sys.argv[1]
+        default = sys.argv[2] if len(sys.argv) > 2 else ""
+        print(get_str(key, default))

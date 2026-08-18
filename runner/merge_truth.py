@@ -349,8 +349,17 @@ def guarded_task_update(task, patch, repo=None, prod_branch=None, fetch=True):
             print(f"[merge-truth] {slug}: DB rejected closure for missing evidence "
                   f"(state={final.get('state')}, "
                   f"artifact_commit={(final.get('artifact_commit') or 'none')[:12]}); "
-                  f"row left unchanged, needs an artifact_commit or a "
-                  f"NO-ARTIFACT-JUSTIFIED note")
+                  f"parking as {PHANTOM_STATE} so the sweep stops re-attempting it")
+            try:
+                _park = {"state": PHANTOM_STATE,
+                         "note": (f"merge-truth: evidence-rejected closure "
+                                  f"(attempted {final.get('state')}, "
+                                  f"sha={(final.get('artifact_commit') or 'none')[:12]}) "
+                                  f"-> {PHANTOM_STATE}; needs own commit or NO-ARTIFACT-JUSTIFIED. "
+                                  + str(task.get('note') or ''))[:2000]}
+                db.update("tasks", {"id": task["id"]}, _park)
+            except Exception as exc2:
+                print(f"[merge-truth] {slug}: could not park evidence-rejected row: {exc2}")
         else:
             print(f"[merge-truth] {slug}: task update failed (non-fatal): {detail}")
         return None

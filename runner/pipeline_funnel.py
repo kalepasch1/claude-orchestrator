@@ -1,3 +1,4 @@
+import datetime as _dtm
 #!/usr/bin/env python3
 """
 pipeline_funnel.py — one metric that answers "is work actually flowing?"
@@ -129,7 +130,11 @@ def _oldest(table, params, ts_col):
     sane = float(os.environ.get("ORCH_FUNNEL_MAX_SANE_AGE_H", "17520") or 17520)   # 2 years
     for attempt in range(3):                 # the shared relay rate-limits under fleet load
         try:
-            rows = db.select(table, {**params, "select": ts_col, "order": f"{ts_col}.asc",
+            _floor = (_dtm.datetime.now(_dtm.timezone.utc)
+                      - _dtm.timedelta(hours=sane)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            rows = db.select(table, {**params, "select": ts_col,
+                                     ts_col: f"gte.{_floor}",
+                                     "order": f"{ts_col}.asc",
                                      "limit": "25"}) or []
             if not rows:
                 return None
