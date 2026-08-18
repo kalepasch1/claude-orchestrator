@@ -28,13 +28,37 @@ except Exception:
     fleet_control = None
 
 
+_DEFAULT_CACHE_TTL_SEC = 60.0
+
+
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._cache: Dict[str, tuple] = {}
-        self._cache_ttl_sec = float(os.environ.get("ORCH_CONFIG_CACHE_TTL_SEC", "60"))
+
+    @property
+    def _cache_ttl_sec(self) -> float:
+        """TTL for load_config(), read at USE time, not at import time.
+
+        Two defects this closes:
+          1. Reading ORCH_CONFIG_CACHE_TTL_SEC once in __init__ froze the value
+             at import, so a fleet-wide push of that key (fleet_control) was
+             never consumed until every process restarted — the config existed
+             but nothing consumed it.
+          2. A bare float() on a malformed fleet value raised at import time,
+             wedging every module that imports config_consumer. Config parsing
+             must be fail-soft like the rest of this module.
+        Negative values are clamped to 0 (cache disabled) rather than rejected.
+        """
+        try:
+            raw = os.environ.get("ORCH_CONFIG_CACHE_TTL_SEC", "").strip()
+            if not raw:
+                return _DEFAULT_CACHE_TTL_SEC
+            return max(0.0, float(raw))
+        except Exception:
+            return _DEFAULT_CACHE_TTL_SEC
 
     def load_all(self) -> Dict[str, str]:
         """Return all ORCH_* prefixed environment variables as a dict (without prefix)."""
