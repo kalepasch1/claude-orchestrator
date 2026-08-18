@@ -38,7 +38,7 @@ def test_no_phantoms_is_idempotent():
     assert result == {
         "scanned": 0, "recovered": 0, "consolidated": 0,
         "restored": 0, "recarded": 0, "infrastructure_holds": 0,
-        "slugs": [], "restored_slugs": [], "recarded_slugs": [],
+        "slugs": [], "restored_slugs": [], "recarded_slugs": [], "contested": 0, "contested_slugs": [],
     }
     database.update.assert_not_called()
 
