@@ -188,5 +188,47 @@ class TestUnmeasurableIsAlwaysUnhealthy(unittest.TestCase):
         self.assertIn("BLIND", pf._UNMEASURABLE_WHY["ingest"])
 
 
+class TestTheSentinelCountProbeCannotFailOpen(unittest.TestCase):
+    """`_count` reports probe failure as -1. Folding that into 0 made a failed count read as
+    "no sentinels", so a stage holding nothing but pinned rows rendered as an empty healthy
+    dash — the same fail-open shape this module exists to prevent, one layer down."""
+
+    def _server_that_answers_the_window_but_not_the_count(self, rows):
+        def select(table, params):
+            if str(params.get("select")) == "id":       # this is the _count fallback probe
+                raise RuntimeError("count probe unavailable")
+            return _server(rows).select(table, params)
+        return types.SimpleNamespace(select=select)
+
+    def test_all_sentinel_plus_failed_count_is_unmeasurable_not_empty(self):
+        rows = [{"created_at": SENTINEL}] * 30
+        with _Db(self._server_that_answers_the_window_but_not_the_count(rows)):
+            age = pf._oldest("tasks", {"state": "eq.QUEUED"}, "created_at", stage="ingest")
+        self.assertEqual(age, pf.UNMEASURABLE)
+        self.assertIn("cannot distinguish", pf._UNMEASURABLE_WHY["ingest"])
+
+    def test_a_genuinely_empty_stage_with_a_failed_count_is_also_not_called_empty(self):
+        # Refusing to guess is the point. Both cases look identical from here, and the safe
+        # reading of "I cannot tell" is not "healthy".
+        with _Db(self._server_that_answers_the_window_but_not_the_count([])):
+            age = pf._oldest("tasks", {"state": "eq.DONE"}, "updated_at", stage="card")
+        self.assertEqual(age, pf.UNMEASURABLE)
+
+    def test_it_renders_unhealthy_in_the_snapshot(self):
+        rows = [{"created_at": SENTINEL}] * 30
+
+        def select(table, params):
+            if str(params.get("select")) == "id":
+                raise RuntimeError("count probe unavailable")
+            if params.get("state") == "eq.QUEUED":
+                return _server(rows).select(table, params)
+            return []
+        with _Db(types.SimpleNamespace(select=select)):
+            snap = pf.snapshot()
+        ingest = next(s for s in snap["stages"] if s["stage"] == "ingest")
+        self.assertFalse(ingest["healthy"])
+        self.assertFalse(snap["healthy"])
+
+
 if __name__ == "__main__":
     unittest.main()

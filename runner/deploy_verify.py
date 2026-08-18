@@ -75,8 +75,16 @@ def _vercel_project(project, project_row=None, health=None):
     return h.get("vercel_project") or project_row.get("vercel_project") or project
 
 
-def _latest_deploy(vercel_project, sha=None):
-    """Return matching production deployment, preferring the release commit SHA."""
+def _latest_deploy(vercel_project, sha=None, states=None):
+    """Return matching production deployment, preferring the release commit SHA.
+
+    `states`, when given, restricts the candidates to deployments in one of those states
+    (e.g. ("READY",)) BEFORE the newest-first fallback. Without it, `deps[0]` is simply the
+    most recent production deployment whatever state it is in — so a build that is currently
+    QUEUED, BUILDING or ERROR shadows the READY one actually serving traffic. Callers asking
+    "what is live right now" need the filter; callers asking "what happened most recently"
+    do not, so it stays opt-in and the default behaviour is unchanged.
+    """
     try:
         team = os.environ.get("VERCEL_TEAM_ID", "")
         qs = {"app": vercel_project, "target": "production", "limit": "12"}
@@ -84,6 +92,10 @@ def _latest_deploy(vercel_project, sha=None):
             qs["teamId"] = team
         data = _vget("/v6/deployments?" + urllib.parse.urlencode(qs)) or {}
         deps = data.get("deployments") or []
+        if states:
+            wanted = set(states)
+            deps = [d for d in deps
+                    if (d.get("state") or d.get("readyState")) in wanted]
         if not deps:
             return None
         if sha:

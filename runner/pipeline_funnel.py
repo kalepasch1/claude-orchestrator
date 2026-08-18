@@ -165,10 +165,20 @@ def _oldest(table, params, ts_col, stage=None):
         query[ts_col] = f"gte.{floor}"
 
     def _sentinel_count():
+        """How many rows in this stage sit below the sane floor.
+
+        Returns -1 when the probe itself FAILED. `_count` signals failure with -1, and the
+        first version of this helper folded that into 0 — which made a failed count read as
+        "no sentinels", so a stage that is entirely pinned rendered as a healthy empty dash.
+        That is the same fail-open shape this module exists to prevent, reintroduced one
+        layer down. Unknown is not zero; the caller decides.
+        """
         if not use_floor:
             return 0
         n = _count(table, {**params, ts_col: f"lt.{floor}"})
-        return n if n and n > 0 else 0
+        if n is None or n < 0:
+            return -1
+        return n
 
     for attempt in range(3):                 # the shared relay rate-limits under fleet load
         try:
@@ -179,6 +189,15 @@ def _oldest(table, params, ts_col, stage=None):
                 # healthy dash is the same lie in the opposite direction.
                 if use_floor:
                     n_sent = _sentinel_count()
+                    if n_sent < 0:
+                        # Cannot tell "genuinely empty" from "entirely pinned". Refusing to
+                        # guess is the whole point: guessing empty renders a healthy dash
+                        # over a stage that may be holding every task it has.
+                        _UNMEASURABLE_WHY[stage] = (
+                            "no rows above the sane-age floor, and the sentinel count probe "
+                            "failed — cannot distinguish an empty stage from a fully pinned "
+                            "one, so this is NOT reported as empty")
+                        return UNMEASURABLE
                     if n_sent:
                         _SENTINELS[stage] = n_sent
                         _UNMEASURABLE_WHY[stage] = (
@@ -188,7 +207,7 @@ def _oldest(table, params, ts_col, stage=None):
                         return UNMEASURABLE
                 return None
             n_sent = _sentinel_count()
-            if n_sent:
+            if n_sent > 0:
                 _SENTINELS[stage] = n_sent
             for row in rows:
                 age = _age_h(row.get(ts_col))

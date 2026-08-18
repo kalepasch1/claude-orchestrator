@@ -253,5 +253,157 @@ class TestPromotionRunsEndToEnd(unittest.TestCase):
         self.assertEqual(out["funnel"][dt.BUCKET_NOT_ANCESTOR], 1)
 
 
+class _FakeDeployVerify:
+    """Stands in for the real Vercel client. `deployments` is newest-first, as the API returns."""
+
+    def __init__(self, deployments):
+        self.deployments = deployments
+        self.calls = []
+
+    def _vercel_project(self, project, project_row=None, health=None):
+        return project
+
+    def _latest_deploy(self, vercel_project, sha=None, states=None):
+        self.calls.append({"sha": sha, "states": states})
+        deps = list(self.deployments)
+        if states:
+            deps = [d for d in deps if (d.get("state") or d.get("readyState")) in set(states)]
+        if not deps:
+            return None
+        if sha:
+            short = str(sha)[:12]
+            for dep in deps:
+                dsha = (dep.get("meta") or {}).get("githubCommitSha") or ""
+                if dsha and (str(dsha) == str(sha) or str(dsha).startswith(short)):
+                    return dep
+        return deps[0]
+
+
+def _dep(state, sha):
+    return {"state": state, "meta": {"githubCommitSha": sha}}
+
+
+class _StubbedDeployVerify:
+    def __init__(self, fake):
+        self.fake = fake
+
+    def __enter__(self):
+        self._prev = sys.modules.get("deploy_verify")
+        sys.modules["deploy_verify"] = self.fake
+        return self.fake
+
+    def __exit__(self, *exc):
+        if self._prev is None:
+            sys.modules.pop("deploy_verify", None)
+        else:
+            sys.modules["deploy_verify"] = self._prev
+        return False
+
+
+class TestLiveShaIgnoresNonReadyDeployments(unittest.TestCase):
+    """REGRESSION. `_latest_deploy(vproj)` returns the newest production deployment in ANY
+    state. At ~390 releases/day there is nearly always a QUEUED or BUILDING one in front of
+    the build actually serving traffic, and an ERROR build sits there indefinitely. Reading
+    state off that row and bailing made `live_production_sha` return "" for a healthy project,
+    which fails the delivery gate and promotes nothing — the exact stall being fixed."""
+
+    def test_a_building_deployment_in_front_does_not_blind_the_gate(self):
+        fake = _FakeDeployVerify([_dep("BUILDING", "b" * 40), _dep("READY", "a" * 40)])
+        with _StubbedDeployVerify(fake):
+            sha, why = dt.live_production_sha("beethoven")
+        self.assertEqual(sha, "a" * 40)
+        self.assertEqual(fake.calls[0]["states"], ("READY",))
+
+    def test_an_error_build_in_front_does_not_blind_the_gate(self):
+        fake = _FakeDeployVerify([_dep("ERROR", "c" * 40), _dep("READY", "a" * 40)])
+        with _StubbedDeployVerify(fake):
+            sha, _ = dt.live_production_sha("beethoven")
+        self.assertEqual(sha, "a" * 40)
+
+    def test_the_newest_ready_one_wins_not_an_older_ready_one(self):
+        fake = _FakeDeployVerify([_dep("QUEUED", "d" * 40), _dep("READY", "a" * 40),
+                                  _dep("READY", "e" * 40)])
+        with _StubbedDeployVerify(fake):
+            sha, _ = dt.live_production_sha("beethoven")
+        self.assertEqual(sha, "a" * 40)
+
+    def test_no_ready_deployment_at_all_is_still_reported_as_such(self):
+        fake = _FakeDeployVerify([_dep("BUILDING", "b" * 40)])
+        with _StubbedDeployVerify(fake):
+            sha, why = dt.live_production_sha("beethoven")
+        self.assertEqual(sha, "")
+        self.assertIn("READY", why)
+
+    def test_delivery_is_still_refused_when_vercel_shows_nothing(self):
+        fake = _FakeDeployVerify([])
+        with _StubbedDeployVerify(fake):
+            ok, _ = dt.sha_reached_production("beethoven", "a" * 40)
+        self.assertFalse(ok)
+
+
+class TestRevertedCommitsAreNotDelivered(unittest.TestCase):
+    """ANCESTRY IS NOT PRESENCE. `git revert` writes a new commit and leaves the original an
+    ancestor of HEAD, so an ancestry check alone calls a reverted change "delivered". This
+    fleet reverts for real — rollback_chain.py and improvement_verify.py both use git revert."""
+
+    def test_a_reverted_commit_is_refused(self):
+        with _Repo() as r:
+            target = r.shas[1]
+            _git(r.dir, "revert", "--no-edit", target)
+            live = _git(r.dir, "rev-parse", "HEAD").stdout.strip()
+            self.assertEqual(subprocess.run(
+                ["git", "merge-base", "--is-ancestor", target, live],
+                cwd=r.dir, capture_output=True).returncode, 0,
+                "precondition: the reverted commit is still an ancestor")
+            ok, why = dt.sha_reached_production("p", target, repo=r.dir, live_sha=live)
+        self.assertFalse(ok)
+        self.assertIn("REVERTED", why)
+
+    def test_an_unrelated_revert_does_not_block_a_good_commit(self):
+        with _Repo() as r:
+            _git(r.dir, "revert", "--no-edit", r.shas[1])
+            live = _git(r.dir, "rev-parse", "HEAD").stdout.strip()
+            ok, why = dt.sha_reached_production("p", r.shas[0], repo=r.dir, live_sha=live)
+        self.assertTrue(ok, why)
+
+    def test_the_claim_no_longer_overstates_what_was_checked(self):
+        with _Repo() as r:
+            _, why = dt.sha_reached_production("p", r.shas[0], repo=r.dir, live_sha=r.shas[2])
+        self.assertIn("no revert of it appears", why)
+        self.assertNotIn("has not been rolled back", why)
+
+
+class TestNoReceiptIsNotAnUndeclaredJourney(unittest.TestCase):
+    """The allowance covers "a receipt that says nobody declared a journey". It must NOT cover
+    "no receipt at all" — a caller that produced None or {} failed to produce evidence, which
+    is not the same as evidence of absence. `deploy_verify` passes None on provider-skipped
+    builds, and `verify_release(..., journey={})` reaches the same branch."""
+
+    def setUp(self):
+        os.environ["ORCH_JOURNEY_ALLOW_MISSING"] = "1"
+
+    def tearDown(self):
+        os.environ.pop("ORCH_JOURNEY_ALLOW_MISSING", None)
+
+    def test_none_still_blocks(self):
+        ok, why = pj.gate(None)
+        self.assertFalse(ok)
+        self.assertIn("not sufficient", why)
+
+    def test_empty_dict_still_blocks(self):
+        ok, _ = pj.gate({})
+        self.assertFalse(ok)
+
+    def test_a_real_undeclared_receipt_still_passes(self):
+        # The boundary has to admit the case it was built for, or the fix is just a revert.
+        ok, _ = pj.gate(pj.receipt_missing(sha="a" * 40, base_url="https://x.test"))
+        self.assertTrue(ok)
+
+    def test_not_required_still_short_circuits(self):
+        ok, why = pj.gate(None, required=False)
+        self.assertTrue(ok)
+        self.assertIn("no journey required", why)
+
+
 if __name__ == "__main__":
     unittest.main()

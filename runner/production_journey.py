@@ -499,8 +499,12 @@ def gate(receipt, *, required=True):
     if not _on("ORCH_JOURNEY_ENABLED"):
         return True, "journeys disabled (ORCH_JOURNEY_ENABLED=0)"
     if not receipt:
-        if required and _on("ORCH_JOURNEY_ALLOW_MISSING", "0"):
-            return True, UNDECLARED_ALLOWED_REASON
+        # NO RECEIPT AT ALL is not the same as a receipt that says "never declared", and
+        # ORCH_JOURNEY_ALLOW_MISSING deliberately does NOT cover it. A caller that passes
+        # None or {} has failed to produce a receipt — the prover crashed, a provider was
+        # skipped, a code path forgot to run — and none of those is evidence of anything.
+        # The allowance lives in the MISSING branch below, behind _is_undeclared(), because
+        # only a real receipt can say WHY it is empty.
         return (False, HTTP_200_ONLY_REASON) if required else (True, "no journey required")
     verdict = receipt.get("verdict")
     if verdict == PASS:

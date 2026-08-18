@@ -193,13 +193,24 @@ def live_production_sha(project, vercel_project=None):
     try:
         import deploy_verify
         vproj = vercel_project or deploy_verify._vercel_project(project)
-        dep = deploy_verify._latest_deploy(vproj)
+        # ASK FOR THE NEWEST *READY* ONE, not merely the newest.
+        #
+        # `_latest_deploy(vproj)` returns deps[0] — the most recent production deployment in
+        # ANY state. At ~390 releases/day there is almost always a QUEUED or BUILDING
+        # deployment in front of the one actually serving traffic, and an ERROR build sits
+        # there indefinitely. Reading state off deps[0] and bailing when it is not READY made
+        # this function return "" for a perfectly healthy project, which fails the delivery
+        # gate and promotes nothing — reintroducing the exact stall this module was changed
+        # to fix. Filter to READY first, then take the newest.
+        dep = deploy_verify._latest_deploy(vproj, states=("READY",))
     except Exception as e:
         return "", f"vercel lookup failed: {e}"
     if not dep or dep.get("_auth_error"):
-        return "", (dep or {}).get("_auth_error") or "no production deployment found"
+        return "", (dep or {}).get("_auth_error") or "no READY production deployment found"
     state = dep.get("state") or dep.get("readyState")
     if state not in ("READY",):
+        # Belt and braces: an older deploy_verify without the `states` filter would land here
+        # rather than silently treating a BUILDING deployment as the live one.
         return "", f"production deployment state={state}"
     live = str((dep.get("meta") or {}).get("githubCommitSha") or "")
     if not live:
@@ -248,6 +259,37 @@ def _repo_path(project):
     return path or ""
 
 
+def _reverted_between(repo, sha, live_sha):
+    """The commit that reverted `sha` on the way to `live_sha`, or "" if none did.
+
+    ANCESTRY IS NOT PRESENCE. `git revert` writes a NEW commit that undoes the change and
+    leaves the original an ancestor of HEAD, so an ancestor check alone will happily call a
+    reverted change "delivered". This fleet reverts for real — rollback_chain.py and
+    improvement_verify.py both use `git revert` — so this is a live path, not a hypothetical.
+
+    Detection is by the message `git revert` writes by default ("This reverts commit <sha>"),
+    searched only within `sha..live_sha`. That is deliberately narrow: it cannot see a revert
+    whose message was rewritten by hand, and it says so rather than pretending to certainty.
+    A false negative leaves the previous behaviour; a false positive only withholds a
+    promotion, which is the safe direction.
+    """
+    if not repo or not sha or not live_sha:
+        return ""
+    try:
+        full = subprocess.run(["git", "rev-parse", str(sha)], cwd=repo,
+                              capture_output=True, text=True, timeout=30)
+        target = (full.stdout or "").strip() or str(sha)
+        r = subprocess.run(["git", "log", "--format=%H", f"--grep=This reverts commit {target}",
+                            f"{sha}..{live_sha}"],
+                           cwd=repo, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return ""
+        first = (r.stdout or "").strip().splitlines()
+        return first[0] if first else ""
+    except Exception:
+        return ""
+
+
 def sha_reached_production(project, sha, repo=None, vercel_project=None, live_sha=None):
     """(ok, reason) — did this commit ACTUALLY reach production and stay there?
 
@@ -294,10 +336,14 @@ def sha_reached_production(project, sha, repo=None, vercel_project=None, live_sh
     except Exception as e:
         return False, f"ancestry check failed: {e}"
     if r.returncode == 0:
-        return True, (f"sha {s[:12]} is an ancestor of the live build {l[:12]} — it shipped "
-                      f"and has not been rolled back")
+        reverted_by = _reverted_between(repo, s, l)
+        if reverted_by:
+            return False, (f"sha {s[:12]} shipped but was REVERTED by {reverted_by[:12]} before "
+                           f"the live build {l[:12]} — the change is not in production")
+        return True, (f"sha {s[:12]} is an ancestor of the live build {l[:12]} — it shipped, "
+                      f"and no revert of it appears between there and live")
     return False, (f"sha {s[:12]} is not an ancestor of the live build {l[:12]} — it never "
-                   f"reached production, or was rolled back out")
+                   f"reached production, or the branch was reset past it")
 
 
 def verify_release(release, project_row=None, health=None, journey=None):
