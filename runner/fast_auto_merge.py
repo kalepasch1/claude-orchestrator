@@ -11,10 +11,22 @@ IMPROVEMENT (cost-efficiency, target 20x): Trigger auto-approve + auto-merge wit
 
 Dead air burns budget and delays value. This module eliminates the gap between
 "tests passed" and "branch merged" for qualifying tasks.
+
+TRIGGER (2026-08-13: switched from batch-hourly to event-driven)
+----------------------------------------------------------------
+The gate runs on the LIVE test-completion event, dispatched from runner.record() via
+dispatch_test_completion(). It is no longer invoked from any hourly/periodic schedule:
+a batch sweep means a task that goes green just after a sweep waits a whole period,
+which is precisely the dead air this module exists to remove.
+
+  ORCH_FAST_MERGE_EVENT_DISPATCH  default ON  — the live trigger
+  ORCH_FAST_MERGE_BATCH_SWEEP     default OFF — retired batch path, manual fallback only
 """
 import os, sys, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+_TRUTHY = ("1", "true", "yes", "on")
 
 FAST_MERGE_WINDOW_MIN = int(os.environ.get("ORCH_FAST_MERGE_WINDOW_MIN", "5"))
 FAST_MERGE_KINDS = {"build", "bugfix", "mechanical", "chore", "cleanup", "test", "docs"}
@@ -69,14 +81,17 @@ def _create_fast_approval(task):
 
 
 # --- Event-driven path -------------------------------------------------------------
-# run() below is the batch sweep: it wakes on a timer and looks backwards over DONE
-# tasks, so a task that finishes just after a sweep waits a whole period for merge —
+# run() below WAS the batch sweep: it woke on a timer and looked backwards over DONE
+# tasks, so a task that finished just after a sweep waited a whole period for merge —
 # exactly the dead air this module exists to remove. on_test_completion() is the same
 # gate driven by the test-completion event instead of by the clock.
 #
-# NOTE: production dispatch is deliberately NOT wired yet. run() remains the only
-# scheduled entry point; this handler is called by tests and by the (later) dispatcher
-# slice. Nothing about the batch path changes.
+# SCHEDULING SWITCH (this slice): the event path is now the production trigger.
+# dispatch_test_completion() is called from runner.record() — the one place a task's
+# test result is settled — so the gate fires the moment tests go green. The batch sweep
+# is retired to an opt-in fallback (ORCH_FAST_MERGE_BATCH_SWEEP=1) and is not registered
+# on any interval/cron schedule. Two triggers for one gate is how the same task got two
+# approval cards, so exactly one of them is live at a time.
 
 # Event field names seen across the project's test reporters, normalised in one place.
 _PASS_WORDS = {"pass", "passed", "passing", "success", "successful", "succeeded", "green", "ok"}
@@ -187,7 +202,71 @@ def on_test_completion(event):
     return verdict(True, "low-risk task passed tests; fast approval created", slug)
 
 
+# --- Production dispatch ------------------------------------------------------------
+
+EVENT_KIND = "test:completed"
+
+
+def _event_dispatch_enabled():
+    return os.environ.get("ORCH_FAST_MERGE_EVENT_DISPATCH", "1").strip().lower() in _TRUTHY
+
+
+def dispatch_test_completion(task, tests_passed, **extra):
+    """THE PRODUCTION TRIGGER. Call the moment a task's test result settles.
+
+    Fail-soft by construction: this runs inside runner.record(), on the hot path of
+    every task, and an auto-merge optimisation must never be able to lose an outcome
+    row. Returns the verdict dict, or None when dispatch is disabled or errored.
+    """
+    if not _event_dispatch_enabled():
+        return None
+    event = {"kind": EVENT_KIND, "task": task, "status": "passed" if tests_passed else "failed",
+             "passed": bool(tests_passed), "slug": (task or {}).get("slug"), **extra}
+    try:
+        import events
+        events.emit(EVENT_KIND, slug=event["slug"], passed=bool(tests_passed))
+    except Exception:
+        pass
+    try:
+        return on_test_completion(event)
+    except Exception as e:
+        print(f"[fast_auto_merge] dispatch failed for {(task or {}).get('slug')}: {e}")
+        return None
+
+
+def subscribe(dispatcher=None):
+    """Register the handler on an event dispatcher at startup.
+
+    Accepts anything exposing `subscribe(kind, handler)` or `on(kind, handler)` so the
+    wiring does not depend on one particular bus implementation. Returns True when a
+    registration actually happened.
+    """
+    if dispatcher is None:
+        return False
+    for attr in ("subscribe", "on", "register", "add_handler"):
+        fn = getattr(dispatcher, attr, None)
+        if callable(fn):
+            fn(EVENT_KIND, on_test_completion)
+            return True
+    return False
+
+
+# --- Retired batch sweep -------------------------------------------------------------
+
+def batch_sweep_enabled():
+    """The old hourly/batch trigger. OFF unless an operator explicitly re-enables it.
+
+    Kept as a manual fallback (e.g. after an outage where events were dropped), not as a
+    schedule. Nothing in _SCHEDULE, cron, or periodic.JOBS invokes this module.
+    """
+    return os.environ.get("ORCH_FAST_MERGE_BATCH_SWEEP", "0").strip().lower() in _TRUTHY
+
+
 def run():
+    if not batch_sweep_enabled():
+        print("fast_auto_merge: batch sweep retired — the gate is driven by "
+              "test-completion events (set ORCH_FAST_MERGE_BATCH_SWEEP=1 to force a sweep)")
+        return 0
     try:
         import kill_switch
         if kill_switch.is_paused():
