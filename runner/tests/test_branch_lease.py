@@ -49,6 +49,12 @@ class BranchLeaseTest(unittest.TestCase):
         with mock.patch.object(branch_lease.db, "rpc",
                                side_effect=RuntimeError("RPC unavailable")):
             self.assertTrue(branch_lease.heartbeat(self.task["id"]))
+        # Reporting alive is only half the fail-soft contract. If the outage also
+        # dropped the local registration, the next active() lookup returns None and
+        # a second worker can acquire the same branch — the exact double-claim this
+        # lease exists to prevent. So assert the lease is still *registered*, not
+        # just that heartbeat() returned True.
+        self.assertIsNotNone(branch_lease.active(self.task["id"]))
 
     @mock.patch.object(branch_lease, "_sha", return_value="abc")
     def test_heartbeat_genuine_lease_loss_reports_dead(self, _sha):
