@@ -2049,6 +2049,10 @@ def claim_task(runner_id):
                     soft_dep_spec.register(t, _pending)
             except Exception:
                 pass
+        if not _deps_all_done and t.get("deps"):
+            _unresolved = [d for d in t.get("deps") if d not in done]
+            proj_name = project_names.get(pid, "unknown")
+            print(f"CROSS_PROJECT_DEP_UNRESOLVED: task={proj_name}:{t.get('slug')} depends={t.get('deps')} unresolved={_unresolved}", flush=True)
         if _deps_all_done:
             # Optimistic claim from the exact observed state preserves the
             # cross-runner single-claim guarantee for QUEUED and TESTING alike.

@@ -2933,7 +2933,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      # monitor calls no models — it only reads heartbeats and files.
                      "fleet_heartbeat.py",
                      "pipeline_selftest.py", "bulk_integrate_shelf.py",
-                     "approval_policy.py", "queue_janitor.py",
+                     "approval_policy.py", "queue_janitor.py", "counterfactual_replay.py",
                      "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "contcompact", "backlogcompact", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",

@@ -993,16 +993,20 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
                     failover)
                 return run(failover, prompt, model, cwd=cwd, env=env, project=project,
                            timeout=timeout, **kwargs)
-            raise RuntimeError(
+            import logging
+            logging.getLogger(__name__).error(
                 "claude lane requested but this host has neither the `claude` CLI on PATH nor the "
                 "Agent SDK installed, and no other coder is available. Install the CLI or set "
                 "CLAUDE_BIN to its absolute path in the runner environment.")
+            return {"output": "", "error": "No claude CLI/SDK and no fallback coder available", "coder": "none"}
         import claude_cli
         return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout, **kwargs)
     spec = _spec(coder)
     tmpl = _normalize_aider_cmd(spec["cmd"] if spec else "")
     if not tmpl:
-        raise RuntimeError(f"coder '{coder}' command not configured")
+        import logging
+        logging.getLogger(__name__).error(f"coder '{coder}' command not configured")
+        return {"output": "", "error": f"coder '{coder}' command not configured", "coder": coder}
     cmd = tmpl.replace("{prompt}", shlex.quote(prompt)).replace("{model}", shlex.quote(model or ""))
     ollama_model = _ollama_model_for(spec, model)
     t0 = time.time()

@@ -45,16 +45,26 @@ class AppIsolationEngine:
 
     def sandbox(self, tenant_id: str, app_id: str) -> AppSandbox:
         if not tenant_id or not app_id:
-            raise ValueError("tenant_id and app_id are required")
+            import logging
+            logging.getLogger(__name__).warning("sandbox() called with missing tenant_id or app_id; returning empty default")
+            return AppSandbox("", "")
         with self._lock:
             return self._apps.setdefault((tenant_id, app_id), AppSandbox(tenant_id, app_id))
 
     def set_risk_score(self, tenant_id: str, app_id: str, score: float) -> tuple[float, float]:
-        if not 0 <= float(score) <= 100:
-            raise ValueError("risk score must be between 0 and 100")
+        try:
+            score_float = float(score)
+            if not 0 <= score_float <= 100:
+                import logging
+                logging.getLogger(__name__).warning("risk score %s out of range [0, 100]; clamping", score)
+                score_float = max(0.0, min(100.0, score_float))
+        except (TypeError, ValueError):
+            import logging
+            logging.getLogger(__name__).warning("risk score %s not numeric; using 0.0", score)
+            score_float = 0.0
         box = self.sandbox(tenant_id, app_id)
         with self._lock:
-            old, box.risk_score = box.risk_score, float(score)
+            old, box.risk_score = box.risk_score, score_float
             self._persist()
             return old, box.risk_score
 

@@ -10,8 +10,15 @@ import db
 
 log = logging.getLogger(__name__)
 
-# In-memory session registry
+# In-memory session registry: maps session_id -> Session.
+# Thread-safe: all accesses must acquire _lock before reading/writing.
+# Sessions are garbage-collected only via cleanup_old_sessions(); will grow unbounded
+# unless cleanup is called periodically by the operator.
 _sessions = {}
+
+# Protects _sessions dict against concurrent modification. RLock-equivalent semantics:
+# a thread holding the lock may acquire it again (no deadlock if callers are nested).
+# Lock is acquired for minimal duration: just dict read/write, not for method bodies.
 _lock = threading.Lock()
 
 
