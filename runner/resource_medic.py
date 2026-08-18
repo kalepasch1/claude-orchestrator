@@ -71,7 +71,8 @@ def journal(bot, action, detail="", durable=False):
 
 def load_state():
     try:
-        return json.load(open(STATE))
+        with open(STATE) as f:
+            return json.load(f)
     except Exception:
         return {}
 
@@ -79,7 +80,8 @@ def load_state():
 def save_state(st):
     try:
         os.makedirs(RUNTIME, exist_ok=True)
-        json.dump(st, open(STATE, "w"), indent=1)
+        with open(STATE, "w") as f:
+            json.dump(st, f, indent=1)
     except OSError:
         pass
 
@@ -236,28 +238,30 @@ def _recent_events(minutes):
     events = []
     # medic journal
     try:
-        for line in open(JOURNAL):
-            try:
-                r = json.loads(line)
-                t = datetime.datetime.fromisoformat(r["at"].replace("Z", "+00:00"))
-                if t.replace(tzinfo=None) >= cutoff.replace(tzinfo=None):
-                    events.append((r.get("bot", ""), r.get("action", ""), r.get("detail", "")))
-            except Exception:
-                continue
+        with open(JOURNAL) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                    t = datetime.datetime.fromisoformat(r["at"].replace("Z", "+00:00"))
+                    if t.replace(tzinfo=None) >= cutoff.replace(tzinfo=None):
+                        events.append((r.get("bot", ""), r.get("action", ""), r.get("detail", "")))
+                except Exception:
+                    continue
     except OSError:
         pass
     # sentinel log (ram-clamp / dedupe / runner-cycled / extra-keepalive-killed)
     try:
-        for line in open(SENTINEL_LOG):
-            for tag in ("ram-clamp", "dedupe", "runner-cycled", "runner-wedged",
-                        "extra-keepalive-killed", "zombie-agent-reaped"):
-                if tag in line:
-                    ts = line.split(" ", 1)[0].replace("Z", "")
-                    try:
-                        if datetime.datetime.fromisoformat(ts) >= cutoff:
-                            events.append(("sentinel", tag, line.strip()[-120:]))
-                    except Exception:
-                        pass
+        with open(SENTINEL_LOG) as f:
+            for line in f:
+                for tag in ("ram-clamp", "dedupe", "runner-cycled", "runner-wedged",
+                            "extra-keepalive-killed", "zombie-agent-reaped"):
+                    if tag in line:
+                        ts = line.split(" ", 1)[0].replace("Z", "")
+                        try:
+                            if datetime.datetime.fromisoformat(ts) >= cutoff:
+                                events.append(("sentinel", tag, line.strip()[-120:]))
+                        except Exception:
+                            pass
     except OSError:
         pass
     return events
