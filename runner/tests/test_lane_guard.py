@@ -153,6 +153,7 @@ class TestRunSupervised(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["timeout"], 17)
         self.assertEqual(run.call_args.args[0][:2], ["bash", "-lc"])
 
+
 class TestOrphanReaping(unittest.TestCase):
     """The actual incident: the lane died, the coder it spawned did not."""
 

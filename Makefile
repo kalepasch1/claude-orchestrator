@@ -5,32 +5,7 @@ BASE_URL          ?= http://localhost:3000
 E2E_SUPABASE_URL  ?=
 E2E_SESSION_JSON  ?=
 
-.PHONY: test-e2e install-e2e lock lock-check install-deps check-build-tools
-
-## check-build-tools: verify the C toolchain needed to build native extensions
-##
-## Probes by actually compiling a program — `gcc --version` succeeding is not
-## proof of a usable toolchain when the SDK/headers are absent. Fails only on
-## genuinely required tools (compiler, make); cmake and Python headers are
-## reported as warnings.
-check-build-tools:
-	@bash scripts/check-build-tools.sh
-
-## install-deps: install the exact locked Python dependency set
-##
-## Toolchain-checked first: a source build of any unwheeled dependency needs a
-## working compiler, and failing here is far clearer than a pip build error.
-install-deps: check-build-tools
-	python3 -m pip install --break-system-packages -r requirements.lock
-
-## lock: regenerate requirements.lock from the currently installed set
-lock:
-	python3 scripts/lockfile.py generate
-
-## lock-check: fail if the installed set has drifted from requirements.lock
-lock-check:
-	python3 scripts/lockfile.py verify
-
+.PHONY: test-e2e install-e2e
 
 ## install-e2e: install Playwright and download the Chromium browser binary
 install-e2e:

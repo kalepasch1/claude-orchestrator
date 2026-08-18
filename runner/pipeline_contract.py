@@ -57,16 +57,6 @@ _ALLOWLIST_ENV_KEYS = {
     "legal": "ORCH_LEGAL_TASK_ALLOWLIST",
 }
 
-# Module-level constant backing each task class, consulted by `task_allowlist`
-# when the corresponding ORCH_* env var is unset. Resolved through globals() at
-# call time (not bound here) so that reassigning the constant — which is the
-# documented programmatic control surface, and what unittest.mock.patch.object
-# does — actually changes the gate.
-_ALLOWLIST_CONSTANTS = {
-    "security": "SECURITY_TASK_ALLOWLIST",
-    "legal": "LEGAL_TASK_ALLOWLIST",
-}
-
 
 def _parse_allowlist(raw: Optional[str]) -> Optional[set]:
     """Parse a comma-separated allowlist env value.
@@ -82,34 +72,14 @@ def _parse_allowlist(raw: Optional[str]) -> Optional[set]:
 def task_allowlist(task_class: str) -> Optional[set]:
     """Resolve the allowlist for a task class at call time.
 
-    Precedence:
-      1. The ORCH_* environment variable, read live, so a fleet-wide config push
-         takes effect without restarting the runner.
-      2. Otherwise the module-level ``{SECURITY,LEGAL}_TASK_ALLOWLIST`` constant.
-
-    Step 2 is not optional. Those constants are exported and documented as the
-    programmatic control surface ("kept for backward compatibility with existing
-    importers"), but an earlier refactor to live-env reads stopped consulting them,
-    so assigning one had no effect and `_credential_allows` silently fell through to
-    its allow-everything default. A credential gate that cannot be closed
-    programmatically is worse than no gate, because callers believe it is shut.
-    Reading the constant as the fallback keeps the live push authoritative while
-    making the exported constants load-bearing again.
-
-    Fail-soft: any error means "no allowlist".
+    Read live from the environment so a fleet-wide ORCH_* config push takes effect
+    without restarting the runner. Fail-soft: any error means "no allowlist".
     """
     try:
-        cls = (task_class or "").lower()
-        key = _ALLOWLIST_ENV_KEYS.get(cls)
+        key = _ALLOWLIST_ENV_KEYS.get((task_class or "").lower())
         if not key:
             return None
-        raw = os.environ.get(key)
-        if raw is not None:
-            return _parse_allowlist(raw)
-        # Env unset -> fall back to the module-level constant. Unset AND unassigned
-        # is None, i.e. "no allowlist configured", preserving the default-open
-        # behaviour for classes nobody has gated.
-        return globals().get(_ALLOWLIST_CONSTANTS.get(cls, ""), None)
+        return _parse_allowlist(os.environ.get(key))
     except Exception:
         return None
 
@@ -385,50 +355,13 @@ def render_plan(plan: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_deferred_plan(prompt: str, project: str = "", kind: str = "build",
-                        source: str = "unknown", slug: str = "",
-                        material: bool = False) -> Dict[str, Any]:
-    """Build a deterministic envelope without telemetry or provider calls.
-
-    Intake uses this path because live routing is revalidated when a task is
-    claimed. Performing the same remote lookups serially for every manifest can
-    consume the watcher's entire lease before the queue insert happens.
-    """
-    cls = classify(prompt, kind=kind, material=material)
-    deferred = {
-        "provider": "runtime-policy",
-        "model": "selected-at-claim",
-        "reason": "deferred to execution-time capability and capacity checks",
-    }
-    return {
-        "source": source or "unknown",
-        "project": project or "selected app",
-        "kind": kind or "build",
-        "slug": slug or "(auto)",
-        "task_class": cls["task_class"],
-        "need": cls["need"],
-        "risk": cls["risk"],
-        "preflight": dict(deferred),
-        "strategy": dict(deferred),
-        "coder": "selected-at-claim",
-        "author_model": "selected-at-claim",
-        "qa": dict(deferred),
-        "qa_panel": ["independent cross-model panel selected at execution time"],
-        "legal_gate": "owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret",
-        "release": f"auto-merge to {os.environ.get('ORCH_STAGING_BRANCH', 'orchestrator/dev')} after tests, verify, judge; production release via batch train",
-        "collaboration": [],
-    }
-
-
 def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-                slug: str = "", material: bool = False,
-                resolve_live_routes: bool = True) -> str:
+                slug: str = "", material: bool = False) -> str:
     """Prepend the shared contract unless the prompt is already wrapped or is a control command."""
     text = prompt or ""
     if not text.strip() or already_wrapped(text) or is_control_prompt(text):
         return text
-    builder = build_plan if resolve_live_routes else build_deferred_plan
-    plan = builder(text, project=project, kind=kind, source=source, slug=slug, material=material)
+    plan = build_plan(text, project=project, kind=kind, source=source, slug=slug, material=material)
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
 
 

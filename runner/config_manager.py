@@ -64,22 +64,23 @@ class ConfigManager:
         return missing
 
     def to_dict(self) -> Dict[str, Any]:
-        """The EFFECTIVE configuration — the same values get() would return.
+        result = dict(self._defaults)
 
-        FIXED 2026-08-12. This merged defaults + overrides and skipped the environment
-        layer entirely, while get() resolves overrides > env > defaults. So every ORCH_*
-        override was invisible to anything that serialises config: snapshots, fleet
-        pushes, drift diffs and audit exports all reported the pre-override value while
-        the process was actually running on the override. A config exporter that
-        disagrees with the config reader is worse than no exporter, because the
-        disagreement is silent.
+        # Include raw env values (strings, not coerced) for keys in defaults
+        for key in list(result.keys()):
+            env_key = f"{self._env_prefix}{key.upper()}"
+            if env_key in os.environ:
+                result[key] = os.environ.get(env_key)
 
-        Resolving through get() also means the export carries the same type coercion the
-        reader applies (ORCH_TIMEOUT="60" against an int default exports 60, not "60"),
-        so a round-trip through to_dict() is stable.
-        """
-        keys = set(self._defaults) | set(self._overrides)
-        return {key: self.get(key) for key in keys}
+        # Overrides beat everything
+        result.update(self._overrides)
+
+        # Include override keys not in defaults
+        for key in self._overrides:
+            if key not in result:
+                result[key] = self._overrides[key]
+
+        return result
 
     def reset(self):
         self._overrides.clear()

@@ -1917,17 +1917,8 @@ def _paused():
         return False
 
 
-def _train_run_unleased():
-    """Run the integration train across all projects (serialized per project).
-
-    The lease-taking public entry point is `train_run()` at the bottom of this module;
-    this is the body it delegates to. Both used to be spelled `def train_run`, with an
-    `_train_run_unleased = train_run` alias wedged between them. That worked at runtime
-    (the alias captured the first binding before the second shadowed it) but it made the
-    real implementation invisible to `inspect.getsource(merge_train.train_run)` — which
-    is how test_critical_fixes.py verifies the `repo_lock.hold(repo_path, timeout=...)`
-    call, so that guard silently went red. Naming the two functions differently keeps the
-    behaviour identical and makes the implementation reachable by name again.
+def train_run():
+    """Entry point: run the integration train across all projects (serialized per project).
 
     Returns a summary dict with keys:
         projects  (int)  — number of projects processed
@@ -2152,6 +2143,9 @@ def _train_run_unleased():
           f"across {summary['projects']} project(s)"
           f"{f', {auto_resolved} auto-resolved' if auto_resolved else ''}")
     return summary
+
+
+_train_run_unleased = train_run
 
 
 def train_run():

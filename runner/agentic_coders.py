@@ -23,7 +23,6 @@ Backward compatible: with no extra coders, behavior is the prior claude -> codex
 """
 import os, sys, json, re, shlex, subprocess, time, hashlib
 import contextlib
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lane_guard
 
@@ -387,60 +386,6 @@ def _spec(name):
     return None
 
 
-def coder_provider(coder):
-    """The vendor a coder actually calls, read from its `--model <provider>/…` argument.
-
-    Returns "" when it cannot be determined — an unknown provider is never treated as
-    unhealthy, because guessing wrong removes a working coder from the pool.
-    """
-    try:
-        if str(coder.get("name") or "") == "claude":
-            return "claude"
-        cmd = str(coder.get("cmd") or "")
-        marker = "--model "
-        idx = cmd.find(marker)
-        if idx < 0:
-            return ""
-        spec = cmd[idx + len(marker):].split()[0]
-        return spec.split("/", 1)[0].strip().lower() if "/" in spec else ""
-    except Exception:
-        return ""
-
-
-def _provider_healthy(coder):
-    """False only when this coder's provider is demoted (credits/auth dead).
-
-    WHY THIS GATE EXISTS. A canary died repeatedly on:
-
-        litellm.APIError: XaiException - Error code: 403 - 'Your team … has either used
-        all available credits or reached its monthly spending limit.'
-        Retrying in 4.0s … 8.0s … 16.0s … 32.0s
-
-    Those retries are aider's own loop (aider.models.RETRY_TIMEOUT = 60), which retries
-    ANY exception until the window closes. LITELLM_NUM_RETRIES=1 does not bound it, and
-    there is no env knob for it — so ~60 seconds are burned per attempt on a 403 that
-    cannot resolve until someone buys credits.
-
-    The retry loop is not the thing to fight; SELECTING a dead provider is. Nothing in
-    the coder pool consulted provider health, so a vendor that is out of credits stayed
-    selectable forever and every routed task paid the same minute of backoff. This asks
-    the demote registry that already exists and simply was not wired into selection.
-
-    Fail-OPEN: any error, or an unreadable provider, keeps the coder eligible. A health
-    check that removes working coders is a worse outage than the one it prevents.
-    """
-    if not _truthy("ORCH_CODER_PROVIDER_HEALTH_GATE", True):
-        return True
-    provider = coder_provider(coder)
-    if not provider or provider == "claude":
-        return True
-    try:
-        import provider_failover_sla
-        return not provider_failover_sla.is_demoted(provider)
-    except Exception:
-        return True
-
-
 def _within_cap(coder):
     """A paid coder (daily_usd>0) is usable only while today's spend on it is under its cap. Free/local
     and subscription coders (daily_usd<=0) are always within cap."""
@@ -504,7 +449,7 @@ def _heavy_ollama_saturated(coder):
 # kept for backward-compat with any external caller
 def _third_within_cap():
     c = _spec(os.environ.get("ORCH_THIRD_CODER", ""))
-    return bool(c) and _within_cap(c) and _provider_healthy(c)
+    return bool(c) and _within_cap(c)
 
 
 def _task_difficulty(task):
@@ -646,12 +591,12 @@ def _pick_raw(task, slot_index=0):
     sensitivity = _task_sensitivity(task)
     _avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
     usable = [c for c in pool
-              if c["cap"] >= need and _within_cap(c) and _provider_healthy(c) and _allowed_by_terms(c, sensitivity)
+              if c["cap"] >= need and _within_cap(c) and _allowed_by_terms(c, sensitivity)
               and not _heavy_ollama_saturated(c) and c["name"] not in _avoid]
     if not usable and sensitivity in ("crown_jewel", "crown-jewel", "crownjewel"):
         # Fail closed toward local-only: prefer any local coder even if it is below ideal cap,
         # instead of leaking crown-jewel context to an external provider.
-        local = [c for c in pool if _allowed_by_terms(c, sensitivity) and _within_cap(c) and _provider_healthy(c)]
+        local = [c for c in pool if _allowed_by_terms(c, sensitivity) and _within_cap(c)]
         if local:
             usable = sorted(local, key=lambda c: (-c["cap"], c["cost"]))
     def adjusted_cost(c):
@@ -678,7 +623,7 @@ def _pick_raw(task, slot_index=0):
         # to a Claude subscription account.
         if forced == "aider":
             candidates = by_cost or sorted(
-                [c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c) and _provider_healthy(c)],
+                [c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c)],
                 key=lambda c: (adjusted_cost(c), -c["cap"]),
             )
             if candidates:
@@ -704,7 +649,7 @@ def _pick_raw(task, slot_index=0):
             return by_cost[0]["name"]
         if diff == "critical":
             return "claude"
-        strongest = sorted([c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c) and _provider_healthy(c)],
+        strongest = sorted([c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c)],
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
 
@@ -836,7 +781,7 @@ def pick(task, slot_index=0):
     need = int(clean_task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
     sensitivity = _task_sensitivity(clean_task)
     usable = [c for c in pool
-              if c["cap"] >= need and _within_cap(c) and _provider_healthy(c) and _allowed_by_terms(c, sensitivity)
+              if c["cap"] >= need and _within_cap(c) and _allowed_by_terms(c, sensitivity)
               and not _heavy_ollama_saturated(c) and c["name"] not in avoid]
     if usable:
         ranked = sorted(usable, key=lambda c: (float(c["cost"]), -c["cap"]))
@@ -1015,37 +960,24 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
                 slot = local_model_slots.slot(ollama_model, operation=f"agentic:{coder}")
             except Exception:
                 slot = contextlib.nullcontext({"locked": False, "unloaded": []})
-        argv = shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd]
-        # subprocess.run(timeout=) kills the DIRECT CHILD only. When the lane is
-        # `bash -lc "<coder> ..."`, that reaps the shell and reparents the coder
-        # itself to init, still holding its RAM -- which is how 64 of 66 lanes
-        # became >1h zombies on 2026-08-02. lane_guard runs the lane in its own
-        # process group and signals the GROUP, and additionally kills a lane that
-        # has produced no output for ORCH_LANE_IDLE_TIMEOUT.
         with slot:
             proc = lane_guard.run_supervised(
-                argv,
+                shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
                 cwd=cwd, env=_aider_env(env), timeout=timeout,
                 idle_timeout=int(os.environ.get("ORCH_LANE_IDLE_TIMEOUT", "600") or 600),
                 task_class=kwargs.get("task_class") or kwargs.get("kind"),
             )
         # REAL cost from aider's own output (per-message $), so paid-coder daily caps are exact; fall
         # back to the coder's nominal est_usd only when the CLI reported no cost (e.g. a free local model).
-        stdout = proc.get("stdout", "") or ""
-        stderr = proc.get("stderr", "") or ""
-        rc = proc.get("returncode", 1)
-        real = _parse_cost(stdout + "\n" + stderr)
+        real = _parse_cost((proc.get("stdout") or "") + "\n" + (proc.get("stderr") or ""))
         cost = real if real is not None else float((spec or {}).get("est_usd", 0.0) or 0.0)
         latency_ms = int((time.time() - t0) * 1000)
-        reaped = proc.get("timed_out") or proc.get("idle_killed")
         _agentic_event("agentic_coder_finish", coder, model, project=project, value=latency_ms,
-                       action=f"returncode={rc} cost_usd={cost}"
-                              + (" lane_reaped=1" if reaped else ""))
-        return {"text": stdout, "cost_usd": cost, "input_tokens": 0, "output_tokens": 0,
-                "returncode": rc, "stderr": stderr,
-                "coder": coder, "latency_ms": latency_ms,
-                "lane_timed_out": bool(proc.get("timed_out")),
-                "lane_idle_killed": bool(proc.get("idle_killed"))}
+                       action=f"returncode={proc['returncode']} cost_usd={cost}")
+        return {"text": proc.get("stdout") or "", "cost_usd": cost,
+                "input_tokens": 0, "output_tokens": 0,
+                "returncode": proc["returncode"], "stderr": proc.get("stderr") or "",
+                "coder": coder, "latency_ms": latency_ms}
     except subprocess.TimeoutExpired:
         _agentic_event("agentic_coder_finish", coder, model, project=project,
                        value=int((time.time() - t0) * 1000), action="returncode=124 timeout")

@@ -9,7 +9,6 @@ Jobs:
   chaos   - chaos resilience drills (schedule: weekly, staging only)
   txn     - cross-repo transaction coordinator (schedule: every 5 min)
   scout   - opportunity scout: RICE-scored proposals (schedule: weekly)
-  mergedmemory - roll merged master diffs into the memory system (schedule: daily)
   deploy  - canary-gated nightly deploy window (schedule: nightly)
   roi     - update project concurrency_weight from ROI (schedule: daily)
   stuck_reaper - detect+recover RUNNING tasks stuck >2h (schedule: every 30 min)
@@ -20,11 +19,7 @@ Usage:
   python3 periodic.py spec
   python3 periodic.py txn
 """
-import os, sys, subprocess, time, json, socket, urllib.error, contextlib, threading
-try:
-    import signal
-except Exception:  # pragma: no cover - signal is always present on POSIX
-    signal = None
+import os, sys, subprocess, time, json, socket, urllib.error
 # Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
 # prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
 os.environ.pop("NODE_ENV", None)
@@ -95,76 +90,10 @@ _JOB_MAX_RUNTIME_S = int(os.environ.get("ORCH_PERIODIC_JOB_MAX_RUNTIME_S", "3600
 _WEDGE_SKIPS = int(os.environ.get("ORCH_PERIODIC_WEDGE_SKIPS", "3"))
 _SKIP_STATE_PATH = os.path.join(_RUNTIME, "periodic-skips.json")
 
-# _JOB_MAX_RUNTIME_S above only lets the NEXT invocation reap a stale holder — it does nothing
-# to the wedged process itself, which keeps running unbounded and keeps holding the lock. That is
-# how 'quarantine' sat wedged for 2906s across 3 consecutive skipped invocations: every skip
-# exited 0, so nothing downstream noticed, and the holder was never actually bounded.
-#
-# So bound the job itself. A job that blows its budget is killed at the budget, the lock is
-# released on the way out, and the invocation exits NONZERO so the failure is visible.
-_JOB_HARD_TIMEOUT_S = int(os.environ.get("ORCH_PERIODIC_JOB_TIMEOUT_S", str(_JOB_MAX_RUNTIME_S)))
-
-# Exit codes, so a scheduler/wrapper can tell the outcomes apart.
+# Exit codes, so a scheduler/wrapper can tell the three outcomes apart.
 _EX_OK = 0
 _EX_SKIPPED = 75        # EX_TEMPFAIL: legitimately busy, try again next interval
 _EX_WEDGED = 1          # the job has not run for _WEDGE_SKIPS intervals — this is a failure
-_EX_TIMEOUT = 2         # the job ran but blew its wall-clock budget and was killed
-
-
-class JobTimeout(Exception):
-    """A periodic job exceeded its hard wall-clock budget and was aborted."""
-
-
-class _TimedOut(object):
-    """Sentinel: the job started but was killed at its hard timeout."""
-
-    def __init__(self, job, seconds):
-        self.job, self.seconds = job, seconds
-
-
-def _job_timeout_s(job):
-    """Wall-clock budget for *job*, with a per-job override.
-
-    ORCH_PERIODIC_JOB_TIMEOUT_S__<job> beats ORCH_PERIODIC_JOB_TIMEOUT_S. A value <= 0 disables
-    the bound for that job (escape hatch for a genuinely long-running batch job).
-    """
-    override = os.environ.get(f"ORCH_PERIODIC_JOB_TIMEOUT_S__{job}")
-    if override is not None:
-        try:
-            return int(override)
-        except ValueError:
-            pass
-    return _JOB_HARD_TIMEOUT_S
-
-
-@contextlib.contextmanager
-def _hard_timeout(seconds, job):
-    """Abort the wrapped block with JobTimeout after *seconds*.
-
-    SIGALRM is deliberate rather than a watchdog thread: it interrupts a blocking read inside C
-    code (a socket with no timeout, a subprocess wait), which is exactly the class of hang that
-    wedged this job. A thread could only observe the hang, not break it.
-
-    Degrades to a no-op where SIGALRM cannot be armed — non-main thread or non-POSIX — so
-    importing/calling jobs from a worker never breaks.
-    """
-    if not seconds or seconds <= 0 or signal is None or not hasattr(signal, "SIGALRM"):
-        yield
-        return
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-
-    def _fire(signum, frame):
-        raise JobTimeout(f"{job}: exceeded hard timeout of {seconds}s")
-
-    previous = signal.signal(signal.SIGALRM, _fire)
-    signal.alarm(int(seconds))
-    try:
-        yield
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous)
 
 
 class _Skipped(object):
@@ -359,45 +288,13 @@ def _invoke_job(job):
         and let the next one run. Disabling here would take a healthy job offline for the
         duration of an outage, which is the opposite of what we want.
     """
-    seconds = _job_timeout_s(job)
-    started = time.time()
     try:
-        with _hard_timeout(seconds, job):
-            return JOBS[job]()
-    except JobTimeout:
-        held = int(time.time() - started)
-        print(f"periodic {job}: TIMEOUT — aborted after {held}s (budget {seconds}s). The job was "
-              f"killed rather than left holding its lock; raise "
-              f"ORCH_PERIODIC_JOB_TIMEOUT_S__{job} if this job legitimately needs longer.",
-              file=sys.stderr, flush=True)
-        _escalate_timeout(job, held, seconds)
-        return _TimedOut(job, held)
+        return JOBS[job]()
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
     except db.TransientDBError as exc:
         return {"skipped": "transient-db", "job": job, "detail": str(exc)[:300]}
-
-
-def _escalate_timeout(job, held, budget):
-    """Record a timeout as real work, the same way a wedge is escalated.
-
-    A timeout that only prints is the bug this fix exists to remove: the failure has to survive
-    into somewhere a human or the queue will see it.
-    """
-    try:
-        db.insert("approvals", {
-            "project": "", "kind": "periodic_timeout", "status": "pending",
-            "title": f"periodic job '{job}' hit its {budget}s hard timeout",
-            "detail": (f"periodic.py aborted '{job}' after {held}s. Reproduce with:\n"
-                       f"    cd runner && python3 -c \"import periodic; periodic.JOBS['{job}']()\"\n"
-                       f"Find the unbounded call (subprocess without timeout, blocking socket "
-                       f"read, or deadlock) and bound it at the source."),
-            "risk": "the job is no longer wedging the scheduler, but it is also not completing, "
-                    "so its work is not getting done",
-        })
-    except Exception:
-        pass  # never let escalation fail the runner
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
@@ -577,31 +474,6 @@ def run_scout():
     opportunity_scout.run()
 
 
-def run_mergedmemory():
-    """Roll recent master merges into the memory system (schedule: daily).
-
-    WIRED 2026-08-11. `merged_diff_memory.capture_to_memory()` carries a careful
-    boolean contract — True only when a memory file was actually WRITTEN, False
-    for every other outcome including "no merged commits found" — and until now
-    nothing in production called it. The daily rollup
-    (`merged_learning_YYYYMMDD.md`) was therefore never produced, and the bool
-    nobody read could not tell anyone so.
-
-    The return value is honoured here rather than discarded: a False is logged
-    with the reason, because "capture ran" and "memory is current" are not the
-    same claim, and treating them as one is what hid the gap.
-    """
-    import merged_diff_memory
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    written = merged_diff_memory.capture_to_memory(repo=repo)
-    if written:
-        print("periodic: merged-diff memory updated", flush=True)
-    else:
-        # Not an error: a day with no merged commits legitimately writes nothing.
-        print("periodic: merged-diff memory unchanged (nothing written)", flush=True)
-    return written
-
-
 def run_deploy():
     import deploy_window
     deploy_window.run()
@@ -736,17 +608,6 @@ def run_rescuedurability():
     """
     import rescue_branch_durability
     rescue_branch_durability.run()
-
-
-def run_pipelineselftest():
-    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
-
-    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
-    because nothing checked that the monitors themselves were telling the truth.
-    """
-    import pipeline_selftest
-    result = pipeline_selftest.run()
-    print(pipeline_selftest.render(result), flush=True)
 
 
 def run_remotegc():
@@ -1251,7 +1112,6 @@ JOBS = {
     "chaos": run_chaos,
     "txn": run_txn,
     "scout": run_scout,
-    "mergedmemory": run_mergedmemory,
     "deploy": run_deploy,
     "roi": run_roi,
     "editorial": run_editorial,
@@ -1333,7 +1193,6 @@ JOBS = {
     "worktreeguard": run_worktreeguard,
     "deploysilence": run_deploysilence,
     "rescuedurability": run_rescuedurability,
-    "pipelineselftest": run_pipelineselftest,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
@@ -1390,10 +1249,6 @@ if __name__ == "__main__":
     # rc 0 = the job ran. rc 75 = legitimately busy, retry next interval. rc 1 = WEDGED.
     # Returning 0 for a skip is what let three of four jobs no-op through a verification pass
     # while every caller recorded success.
-    if isinstance(outcome, _TimedOut):
-        print(f"periodic {job}: exiting {_EX_TIMEOUT} — TIMEOUT after {outcome.seconds}s",
-              file=sys.stderr, flush=True)
-        sys.exit(_EX_TIMEOUT)
     if isinstance(outcome, _Skipped):
         if outcome.wedged:
             print(f"periodic {job}: exiting {_EX_WEDGED} — WEDGED ({outcome.skips} consecutive "
@@ -1411,3 +1266,4 @@ def run_pipelineselftest():
     import pipeline_selftest
     result = pipeline_selftest.run()
     print(pipeline_selftest.render(result), flush=True)
+

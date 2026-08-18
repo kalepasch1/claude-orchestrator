@@ -61,26 +61,6 @@ def build(task):
         lines.append("Prior merged patterns to adapt:")
         for h in hits:
             lines.append(f"- {h.get('project')}/{h.get('slug')} sim={h.get('similarity')}: {h.get('summary')}")
-        # Summaries alone make the coder reread the whole prior diff. Extract the
-        # reusable structure (helpers, owner dirs, test layout, naming) instead.
-        try:
-            import patch_adaptation
-            adapted = patch_adaptation.directive(task, hits, target_hint=task.get("slug") or tid)
-            if adapted:
-                lines.append(adapted)
-        except Exception as exc:  # fail-soft: a bad hit must not break template build
-            log.debug("patch_templates: adaptation skipped (%s)", exc)
-        # Complements the structural directive above: that one says HOW the prior
-        # patch was shaped, this one says WHICH files and line ranges it touched.
-        # Both are fail-soft — no adapter, no scaffold, same template as before.
-        try:
-            import merged_diff_adapter
-            scaffold = merged_diff_adapter.adapt(hits, target_files=task.get("target_files"))
-        except Exception as exc:
-            log.debug("patch_templates: diff scaffold skipped (%s)", exc)
-            scaffold = ""
-        if scaffold:
-            lines.append(scaffold)
     else:
         lines.append("Prior merged patterns to adapt: none found; keep the patch template reusable.")
     return tid, "\n".join(lines)
@@ -125,54 +105,6 @@ def lookup(template_id):
                         "title": (row or {}).get("title"), "source": "db"}
     except Exception:
         pass
-    return {}
-
-
-def find_template(slug):
-    """Resolve a reusable patch for a task SLUG. Fail-soft: {} on any miss/error.
-
-    `lookup()` resolves by template id; this resolves by slug, which is what the
-    callers that hold a dependency name actually have. `dependency_stub`
-    already called this function behind `hasattr(patch_templates, ...)` — the
-    attribute never existed, so its patch-template recovery path had been dead
-    code since it was written. It applies `template["diff"]`, so an APPLICABLE
-    hit must carry one:
-
-      * `merged_diffs` (newest matching row wins) yields a real diff and IS
-        applicable — the key is present.
-      * the local JSONL patch-template store yields only a scaffold body, so no
-        `diff` key is set and the caller's `template.get("diff")` guard makes it
-        a clean no-op rather than a bogus `git apply`.
-    """
-    name = str(slug or "").strip()
-    if not name:
-        return {}
-    try:
-        rows = db.select("merged_diffs", {"select": "slug,project,kind,diff,files,created_at",
-                                          "slug": f"eq.{name}",
-                                          "order": "created_at.desc", "limit": "1"}) or []
-        for row in rows:
-            diff = str((row or {}).get("diff") or "")
-            if diff.strip():
-                return {"slug": name, "diff": diff, "project": (row or {}).get("project"),
-                        "files": (row or {}).get("files") or [], "source": "merged_diffs"}
-    except Exception as exc:  # fail-soft: a DB outage must not break dependency recovery
-        log.debug("patch_templates: merged_diffs lookup failed for %s (%s)", name, exc)
-    found = {}
-    try:
-        with open(_fallback_path()) as f:
-            for line in f:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict) and row.get("task") == name:
-                    found = row
-    except OSError:
-        pass
-    if found:
-        return {"slug": name, "template_id": found.get("template_id"),
-                "body": found.get("body") or "", "source": "jsonl"}
     return {}
 
 

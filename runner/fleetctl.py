@@ -92,6 +92,7 @@ def cmd_bootstrap_defaults(_args):
         "ORCH_RECOVERY_JUMP_QUEUE": "true",
         "ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
         "ORCH_EVIDENCE_JUMP_QUEUE": "true",
+        "ORCH_TASK_TIMEOUT": "7200",
     }
     rows = [_set_config(k, v) for k, v in defaults.items()]
     print(json.dumps({"configured": rows}, indent=2, default=str))

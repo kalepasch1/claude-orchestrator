@@ -28,12 +28,12 @@ import config_consumer
 class TestLoadAll:
     """Test load_all() — consume all ORCH_* prefixed env vars."""
 
-    def test_load_all_returns_dict(self):
+    def test_load_all_returns_dict():
         """load_all() returns a dictionary."""
         result = config_consumer.load_all()
         assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}"
 
-    def test_load_all_filters_orch_prefix(self):
+    def test_load_all_filters_orch_prefix():
         """load_all() only includes ORCH_* prefixed keys."""
         os.environ["ORCH_KEY1"] = "value1"
         os.environ["ORCH_KEY2"] = "value2"
@@ -51,7 +51,7 @@ class TestLoadAll:
         del os.environ["ORCH_KEY2"]
         del os.environ["OTHER_KEY"]
 
-    def test_load_all_empty_when_no_orch_keys(self):
+    def test_load_all_empty_when_no_orch_keys():
         """load_all() returns empty dict when no ORCH_* keys present."""
         # Clean all ORCH_ keys
         for key in list(os.environ.keys()):
@@ -61,7 +61,7 @@ class TestLoadAll:
         result = config_consumer.load_all()
         assert result == {}, f"Expected empty dict, got {result}"
 
-    def test_load_all_includes_empty_values(self):
+    def test_load_all_includes_empty_values():
         """load_all() includes ORCH_* keys even with empty values."""
         os.environ["ORCH_EMPTY"] = ""
 
@@ -75,7 +75,7 @@ class TestLoadAll:
 class TestGet:
     """Test get() — consume ORCH_{key} from environment."""
 
-    def test_get_from_env_with_orch_prefix(self):
+    def test_get_from_env_with_orch_prefix():
         """get() retrieves ORCH_{key} from environment."""
         os.environ["ORCH_MYKEY"] = "myvalue"
 
@@ -84,21 +84,21 @@ class TestGet:
 
         del os.environ["ORCH_MYKEY"]
 
-    def test_get_returns_empty_string_when_missing(self):
+    def test_get_returns_empty_string_when_missing():
         """get() returns empty string when ORCH_{key} not found."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get("MISSING")
         assert value == "", f"Expected empty string, got {value!r}"
 
-    def test_get_returns_default_when_missing(self):
+    def test_get_returns_default_when_missing():
         """get() returns default parameter when ORCH_{key} not found."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get("MISSING", default="default_value")
         assert value == "default_value", f"Expected 'default_value', got {value}"
 
-    def test_get_strips_whitespace(self):
+    def test_get_strips_whitespace():
         """get() strips leading/trailing whitespace from value."""
         os.environ["ORCH_WHITESPACE"] = "  trimmed  "
 
@@ -107,7 +107,7 @@ class TestGet:
 
         del os.environ["ORCH_WHITESPACE"]
 
-    def test_get_empty_value_returns_default(self):
+    def test_get_empty_value_returns_default():
         """get() returns default when value is empty/whitespace only."""
         os.environ["ORCH_EMPTY"] = "   "
 
@@ -116,7 +116,7 @@ class TestGet:
 
         del os.environ["ORCH_EMPTY"]
 
-    def test_get_lowercase_key_lookup(self):
+    def test_get_lowercase_key_lookup():
         """get() is case-insensitive for key lookup (lowercase 'key' -> ORCH_KEY)."""
         os.environ["ORCH_TESTKEY"] = "testvalue"
 
@@ -130,7 +130,7 @@ class TestGet:
 class TestGetInt:
     """Test get_int() — consume ORCH_{key} as integer."""
 
-    def test_get_int_from_env(self):
+    def test_get_int_from_env():
         """get_int() parses integer from env var."""
         os.environ["ORCH_COUNT"] = "42"
 
@@ -140,21 +140,21 @@ class TestGetInt:
 
         del os.environ["ORCH_COUNT"]
 
-    def test_get_int_returns_default_when_missing(self):
+    def test_get_int_returns_default_when_missing():
         """get_int() returns default when ORCH_{key} not found."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get_int("MISSING", default=99)
         assert value == 99, f"Expected 99, got {value}"
 
-    def test_get_int_default_is_zero(self):
+    def test_get_int_default_is_zero():
         """get_int() defaults to 0 when key missing and no default provided."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get_int("MISSING")
         assert value == 0, f"Expected 0, got {value}"
 
-    def test_get_int_unparseable_returns_default(self):
+    def test_get_int_unparseable_returns_default():
         """get_int() returns default when value can't parse as int."""
         os.environ["ORCH_BADINT"] = "not_a_number"
 
@@ -163,7 +163,7 @@ class TestGetInt:
 
         del os.environ["ORCH_BADINT"]
 
-    def test_get_int_negative_numbers(self):
+    def test_get_int_negative_numbers():
         """get_int() handles negative integers."""
         os.environ["ORCH_NEGINT"] = "-123"
 
@@ -172,7 +172,7 @@ class TestGetInt:
 
         del os.environ["ORCH_NEGINT"]
 
-    def test_get_int_empty_returns_default(self):
+    def test_get_int_empty_returns_default():
         """get_int() returns default when value is empty."""
         os.environ["ORCH_EMPTYINT"] = "   "
 
@@ -185,7 +185,7 @@ class TestGetInt:
 class TestGetBool:
     """Test get_bool() — consume ORCH_{key} as boolean."""
 
-    def test_get_bool_true_variants(self):
+    def test_get_bool_true_variants():
         """get_bool() recognizes 'true', '1', 'yes', 'on' as True."""
         true_values = ["true", "True", "TRUE", "1", "yes", "YES", "on", "ON"]
 
@@ -195,7 +195,7 @@ class TestGetBool:
             assert value is True, f"Expected True for '{val}', got {value}"
             del os.environ["ORCH_BOOL"]
 
-    def test_get_bool_false_variants(self):
+    def test_get_bool_false_variants():
         """get_bool() recognizes anything else as False."""
         false_values = ["false", "False", "FALSE", "0", "no", "NO", "off", "anything"]
 
@@ -205,21 +205,21 @@ class TestGetBool:
             assert value is False, f"Expected False for '{val}', got {value}"
             del os.environ["ORCH_BOOL"]
 
-    def test_get_bool_returns_default_when_missing(self):
+    def test_get_bool_returns_default_when_missing():
         """get_bool() returns default when ORCH_{key} not found."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get_bool("MISSING", default=True)
         assert value is True, f"Expected True, got {value}"
 
-    def test_get_bool_default_is_false(self):
+    def test_get_bool_default_is_false():
         """get_bool() defaults to False when key missing and no default provided."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get_bool("MISSING")
         assert value is False, f"Expected False, got {value}"
 
-    def test_get_bool_empty_returns_default(self):
+    def test_get_bool_empty_returns_default():
         """get_bool() returns default when value is empty/whitespace only."""
         os.environ["ORCH_EMPTY"] = "   "
 
@@ -228,7 +228,7 @@ class TestGetBool:
 
         del os.environ["ORCH_EMPTY"]
 
-    def test_get_bool_case_insensitive(self):
+    def test_get_bool_case_insensitive():
         """get_bool() is case-insensitive for true/false/yes/on."""
         test_cases = [
             ("TrUe", True),
@@ -249,7 +249,7 @@ class TestGetBool:
 class TestGetFloat:
     """Test get_float() — consume ORCH_{key} as float."""
 
-    def test_get_float_from_env(self):
+    def test_get_float_from_env():
         """get_float() parses float from env var."""
         os.environ["ORCH_RATE"] = "3.14"
 
@@ -259,21 +259,21 @@ class TestGetFloat:
 
         del os.environ["ORCH_RATE"]
 
-    def test_get_float_returns_default_when_missing(self):
+    def test_get_float_returns_default_when_missing():
         """get_float() returns default when ORCH_{key} not found."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get_float("MISSING", default=9.99)
         assert abs(value - 9.99) < 0.001, f"Expected 9.99, got {value}"
 
-    def test_get_float_default_is_zero(self):
+    def test_get_float_default_is_zero():
         """get_float() defaults to 0.0 when key missing and no default provided."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.get_float("MISSING")
         assert value == 0.0, f"Expected 0.0, got {value}"
 
-    def test_get_float_unparseable_returns_default(self):
+    def test_get_float_unparseable_returns_default():
         """get_float() returns default when value can't parse as float."""
         os.environ["ORCH_BADFLOAT"] = "not_a_float"
 
@@ -282,7 +282,7 @@ class TestGetFloat:
 
         del os.environ["ORCH_BADFLOAT"]
 
-    def test_get_float_negative_numbers(self):
+    def test_get_float_negative_numbers():
         """get_float() handles negative floats."""
         os.environ["ORCH_NEGFLOAT"] = "-12.34"
 
@@ -291,7 +291,7 @@ class TestGetFloat:
 
         del os.environ["ORCH_NEGFLOAT"]
 
-    def test_get_float_integer_values(self):
+    def test_get_float_integer_values():
         """get_float() parses integer strings as floats."""
         os.environ["ORCH_INTFLOAT"] = "42"
 
@@ -301,7 +301,7 @@ class TestGetFloat:
 
         del os.environ["ORCH_INTFLOAT"]
 
-    def test_get_float_empty_returns_default(self):
+    def test_get_float_empty_returns_default():
         """get_float() returns default when value is empty."""
         os.environ["ORCH_EMPTYFLOAT"] = "   "
 
@@ -314,7 +314,7 @@ class TestGetFloat:
 class TestLoadConfig:
     """Test load_config() — load from fleet_config DB with cache and fallback."""
 
-    def test_load_config_fallback_to_env(self):
+    def test_load_config_fallback_to_env():
         """load_config() falls back to env var when DB unavailable."""
         os.environ["ORCH_DBKEY"] = "env_value"
 
@@ -324,14 +324,14 @@ class TestLoadConfig:
 
         del os.environ["ORCH_DBKEY"]
 
-    def test_load_config_returns_default_when_missing(self):
+    def test_load_config_returns_default_when_missing():
         """load_config() returns default when ORCH_{key} not in env or DB."""
         os.environ.pop("ORCH_MISSING", None)
 
         value = config_consumer.load_config("MISSING", default="default_value")
         assert value == "default_value", f"Expected 'default_value', got {value}"
 
-    def test_load_config_default_is_empty_string(self):
+    def test_load_config_default_is_empty_string():
         """load_config() defaults to empty string when key missing and no default."""
         os.environ.pop("ORCH_MISSING", None)
         config_consumer.invalidate_cache()
@@ -339,7 +339,7 @@ class TestLoadConfig:
         value = config_consumer.load_config("MISSING")
         assert value == "", f"Expected empty string, got {value!r}"
 
-    def test_load_config_cache_ttl(self):
+    def test_load_config_cache_ttl():
         """load_config() caches values for 60 seconds."""
         os.environ["ORCH_CACHED"] = "value1"
         config_consumer.invalidate_cache()
@@ -357,7 +357,7 @@ class TestLoadConfig:
 
         del os.environ["ORCH_CACHED"]
 
-    def test_load_config_cache_invalidation(self):
+    def test_load_config_cache_invalidation():
         """load_config() respects cache invalidation."""
         os.environ["ORCH_INVALIDATE"] = "initial"
         config_consumer.invalidate_cache()
@@ -377,7 +377,7 @@ class TestLoadConfig:
 
         del os.environ["ORCH_INVALIDATE"]
 
-    def test_load_config_strips_whitespace(self):
+    def test_load_config_strips_whitespace():
         """load_config() strips whitespace from values."""
         os.environ["ORCH_SPACES"] = "  trimmed  "
         config_consumer.invalidate_cache()
@@ -387,7 +387,7 @@ class TestLoadConfig:
 
         del os.environ["ORCH_SPACES"]
 
-    def test_load_config_empty_env_fallback(self):
+    def test_load_config_empty_env_fallback():
         """load_config() treats empty env values as fallback to default."""
         os.environ["ORCH_EMPTYKEY"] = "   "
         config_consumer.invalidate_cache()
@@ -401,7 +401,7 @@ class TestLoadConfig:
 class TestInvalidateCache:
     """Test invalidate_cache() — clear configuration cache."""
 
-    def test_invalidate_cache_clears_state(self):
+    def test_invalidate_cache_clears_state():
         """invalidate_cache() clears cached config."""
         os.environ["ORCH_TESTKEY"] = "value"
         config_consumer.invalidate_cache()
@@ -421,7 +421,7 @@ class TestInvalidateCache:
 
         del os.environ["ORCH_TESTKEY"]
 
-    def test_invalidate_cache_multiple_keys(self):
+    def test_invalidate_cache_multiple_keys():
         """invalidate_cache() clears all cached keys."""
         os.environ["ORCH_KEY1"] = "value1"
         os.environ["ORCH_KEY2"] = "value2"
@@ -449,7 +449,7 @@ class TestInvalidateCache:
 class TestEdgeCases:
     """Test edge cases and error conditions."""
 
-    def test_none_key_handling(self):
+    def test_none_key_handling():
         """Functions handle None key gracefully (fail-soft)."""
         try:
             value = config_consumer.get(None)
@@ -459,7 +459,7 @@ class TestEdgeCases:
             # Acceptable fail-soft behavior
             pass
 
-    def test_empty_string_key(self):
+    def test_empty_string_key():
         """Functions handle empty string key gracefully."""
         os.environ["ORCH_"] = "empty_key_value"
 
@@ -469,7 +469,7 @@ class TestEdgeCases:
         finally:
             del os.environ["ORCH_"]
 
-    def test_large_config_values(self):
+    def test_large_config_values():
         """Functions handle large string values."""
         large_value = "x" * 100000
         os.environ["ORCH_LARGE"] = large_value
@@ -479,7 +479,7 @@ class TestEdgeCases:
 
         del os.environ["ORCH_LARGE"]
 
-    def test_special_chars_in_values(self):
+    def test_special_chars_in_values():
         """Functions handle special characters in values."""
         special_cases = {
             "QUOTES": 'value with "quotes"',
@@ -497,7 +497,7 @@ class TestEdgeCases:
         for key in special_cases:
             del os.environ[f"ORCH_{key}"]
 
-    def test_numeric_string_keys(self):
+    def test_numeric_string_keys():
         """Functions handle numeric strings as keys."""
         os.environ["ORCH_123"] = "numeric_key_value"
 
@@ -510,7 +510,7 @@ class TestEdgeCases:
 class TestConcurrency:
     """Test thread-safe config consumption."""
 
-    def test_concurrent_get_reads(self):
+    def test_concurrent_get_reads():
         """Multiple threads can call get() concurrently."""
         os.environ["ORCH_SHARED"] = "shared_value"
         results = []
@@ -535,7 +535,7 @@ class TestConcurrency:
 
         del os.environ["ORCH_SHARED"]
 
-    def test_concurrent_load_config_cache(self):
+    def test_concurrent_load_config_cache():
         """Multiple threads can call load_config() with cache."""
         os.environ["ORCH_CACHED"] = "cached_value"
         config_consumer.invalidate_cache()
@@ -561,7 +561,7 @@ class TestConcurrency:
 
         del os.environ["ORCH_CACHED"]
 
-    def test_concurrent_type_coercion(self):
+    def test_concurrent_type_coercion():
         """Multiple threads performing type coercion don't crash."""
         os.environ["ORCH_INT"] = "42"
         os.environ["ORCH_BOOL"] = "true"
@@ -615,7 +615,7 @@ class TestConcurrency:
 class TestIntegration:
     """Integration tests combining multiple functions."""
 
-    def test_full_config_consumption_flow(self):
+    def test_full_config_consumption_flow():
         """Full config consumption flow: defaults, env, types."""
         os.environ["ORCH_HOST"] = "localhost"
         os.environ["ORCH_PORT"] = "5432"
@@ -638,7 +638,7 @@ class TestIntegration:
         del os.environ["ORCH_DEBUG"]
         del os.environ["ORCH_TIMEOUT"]
 
-    def test_load_all_with_type_functions(self):
+    def test_load_all_with_type_functions():
         """load_all() combined with individual type getters."""
         os.environ["ORCH_A"] = "string_value"
         os.environ["ORCH_B"] = "123"
@@ -657,7 +657,7 @@ class TestIntegration:
         del os.environ["ORCH_B"]
         del os.environ["ORCH_C"]
 
-    def test_fallback_chain(self):
+    def test_fallback_chain():
         """Test fallback chain: env > default > empty."""
         os.environ.pop("ORCH_CHAIN", None)
 
@@ -676,7 +676,7 @@ class TestIntegration:
 class TestFleetControl:
     """Test fleet_control.py config consumption validation."""
 
-    def test_fleet_config_reads_valid_key(self):
+    def test_fleet_config_reads_valid_key():
         """fleet_control.get_fleet_config() reads valid ORCH_* prefixed keys."""
         try:
             import fleet_control
@@ -690,7 +690,7 @@ class TestFleetControl:
             # fleet_control not available in this test environment; skip gracefully
             pass
 
-    def test_fleet_config_missing_key_returns_default(self):
+    def test_fleet_config_missing_key_returns_default():
         """fleet_control.get_fleet_config() returns default for missing keys."""
         try:
             import fleet_control
@@ -704,7 +704,7 @@ class TestFleetControl:
         except ImportError:
             pass
 
-    def test_fleet_config_invalid_value_does_not_crash(self):
+    def test_fleet_config_invalid_value_does_not_crash():
         """fleet_control.get_fleet_config() never raises on invalid input."""
         try:
             import fleet_control

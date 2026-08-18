@@ -15,7 +15,6 @@ Canonical format (the drop-in prompt emits exactly this):
       title: one line
       material: yes|no
       model: haiku|sonnet|opus
-      submitted-by: operator or system provenance label
       depends: [other-slug, ...]
       proof: `npx vue-tsc --noEmit` exits 0
       prompt: |
@@ -90,10 +89,7 @@ def parse(text):
             continue
         if in_prompt:
             plines.append(raw); continue
-        kv = re.match(
-            r"^(title|material|model|submitted-by|submitted_by_label|depends|proof|prompt):\s*(.*)$",
-            s,
-        )
+        kv = re.match(r"^(title|material|model|depends|proof|prompt):\s*(.*)$", s)
         if kv:
             k, v = kv.group(1), kv.group(2).strip()
             if k == "prompt":
@@ -106,8 +102,6 @@ def parse(text):
                 cur["material"] = v.lower().startswith("y")
             elif k == "model":
                 cur["model"] = (v or None)
-            elif k in ("submitted-by", "submitted_by_label"):
-                cur["submitted_by_label"] = (v or None)
             else:
                 cur[k] = v
     flush()
@@ -154,43 +148,14 @@ def emit_operator_cards(proj_name, operator, src):
     return created
 
 
-_LIVE_TASK_STATES = "in.(QUEUED,RUNNING,RETRY,DONE,MERGED)"
-
-
-def _existing_live_slugs(slugs):
-    """Return live/settled matches for only the intake slugs in this run.
-
-    The old watcher downloaded the fleet-wide live-task window once per intake
-    file.  Besides being truncated at PostgREST's 1,000-row cap, a multi-app
-    ChatGPT audit could therefore spend minutes repeating the same broad query
-    and get reaped before reaching the later manifests.  Intake slugs are
-    deterministic identifiers, so server-side, chunked lookups are both faster
-    and complete for the pending batch.
-    """
-    wanted = sorted({str(s).strip() for s in (slugs or []) if str(s).strip()})
-    existing = set()
-    for offset in range(0, len(wanted), 100):
-        chunk = wanted[offset:offset + 100]
-        rows = db.select("tasks", {
-            "select": "slug",
-            "slug": f"in.({','.join(chunk)})",
-            "state": _LIVE_TASK_STATES,
-            "limit": str(len(chunk)),
-        }) or []
-        existing.update(str(row.get("slug") or "") for row in rows)
-    existing.discard("")
-    return existing
-
-
-def ingest_file(path, projects_by_name, existing=None):
-    with open(path, encoding="utf-8", errors="replace") as src:
-        text = src.read()
+def ingest_file(path, projects_by_name):
+    text = open(path, encoding="utf-8", errors="replace").read()
     tasks, operator = parse(text)
     # Only block re-ingestion for tasks in live/completed states. Tasks in failure states
     # (QUARANTINED, DECOMPOSED, SHELVED, BLOCKED, CONFLICT, TESTFAIL, WAITING) allow
     # re-ingestion so branch-creation attempts are not permanently blocked by prior failures.
-    if existing is None:
-        existing = _existing_live_slugs(t.get("slug") for t in tasks)
+    existing = {t["slug"] for t in (db.select("tasks", {"select": "slug",
+                "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED)"}) or [])}
     created, skipped = 0, 0
     for t in tasks:
         proj = projects_by_name.get(t["project"])
@@ -227,10 +192,7 @@ def ingest_file(path, projects_by_name, existing=None):
                 skipped += 1; continue
         if t["slug"] in existing:
             skipped += 1; continue
-        if t.get("submitted_by_label"):
-            ok, reason = True, "operator-origin"
-        else:
-            ok, reason = intake_gate.should_queue(t, proj)
+        ok, reason = intake_gate.should_queue(t, proj)
         if not ok:
             print(f"intake: {t['slug']} rejected — {reason}")
             skipped += 1; continue
@@ -238,18 +200,10 @@ def ingest_file(path, projects_by_name, existing=None):
         row = {"project_id": proj["id"], "slug": t["slug"],
                "prompt": pipeline_contract.wrap_prompt(raw_prompt, project=t["project"],
                                                         kind="build", source="intake-file",
-                                                        slug=t["slug"], material=bool(t["material"]),
-                                                        resolve_live_routes=False),
+                                                        slug=t["slug"], material=bool(t["material"])),
                "base_branch": proj.get("default_base", "main"), "kind": "build",
                "state": "QUEUED", "deps": t["depends"], "material": bool(t["material"]),
                "note": pipeline_contract.note(source="intake-file")}
-        # These reconciliation tasks are created only from an explicit operator request to
-        # recover ChatGPT local work.  Preserve that provenance so queue-depth and red-release
-        # back-pressure cannot silently refuse the owner's recovery directive.
-        if t.get("submitted_by_label"):
-            row["submitted_by_label"] = t["submitted_by_label"]
-        elif str(t["slug"]).startswith("chatgpt-local-reconcile-"):
-            row["submitted_by_label"] = "ChatGPT local-build audit (operator-directed)"
         if t.get("model"):
             row["model"] = t["model"]
         if _branch_bootstrap:
@@ -257,12 +211,7 @@ def ingest_file(path, projects_by_name, existing=None):
                 _branch_bootstrap.inject_bootstrap_if_needed(row, proj)
             except Exception:
                 pass
-        inserted = db.insert("tasks", row)
-        if inserted is None:
-            # db.insert deliberately returns None when an admission gate refuses a task.  Moving
-            # the source manifest after that result strands the request in processed/ while the
-            # watcher falsely reports it as queued.  Leave the manifest in place for a safe retry.
-            raise RuntimeError(f"task insert refused or produced no receipt: {t['slug']}")
+        db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
     # surface each operator-only item as its OWN approval card (per-item, not a lump)
     emit_operator_cards(tasks[0]["project"] if tasks else "intake", operator, os.path.basename(path))
@@ -343,24 +292,8 @@ def decompose_freeform(text, repo_root, default_project):
     callers decide how to handle that (planner.plan() itself already falls back to a single
     master-task rather than raising in the common case; this only raises on a harder failure,
     e.g. planner.py itself being unimportable)."""
-    import inspect
     import planner
-    # `project` is a newer routing hint.  Keep compatibility with installed or
-    # test planners that still expose plan(master, repo=None); rejecting those
-    # signatures used to claim the dropbox file and queue nothing.
-    try:
-        parameters = inspect.signature(planner.plan).parameters.values()
-        accepts_project = any(
-            parameter.name == "project" or
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters
-        )
-    except (TypeError, ValueError):
-        accepts_project = False
-    if accepts_project:
-        tasks = planner.plan(text, repo=repo_root, project=default_project)
-    else:
-        tasks = planner.plan(text, repo=repo_root)
+    tasks = planner.plan(text, repo=repo_root, project=default_project)
     slug_base = _dropbox_slugify((text.strip().splitlines() or [""])[0])
     # Wave-0 attribution (review-gate spec item 4): an optional SUBMITTED-BY: line
     # in the PROMPT-*.md carries through decomposition onto every queued task.
@@ -546,21 +479,10 @@ def run():
     if not files:
         print(f"intake: nothing to ingest ({dropbox_total} from dropbox)")
         return dropbox_total
-    # Resolve idempotency for this batch once.  `existing` is mutated by ingest_file as new
-    # tasks are created, so duplicate slugs in later manifests are still skipped deterministically.
-    pending_slugs = set()
-    for f in files:
-        try:
-            with open(f, encoding="utf-8", errors="replace") as src:
-                pending_tasks, _ = parse(src.read())
-            pending_slugs.update(t.get("slug") for t in pending_tasks if t.get("slug"))
-        except OSError:
-            pass
-    existing = _existing_live_slugs(pending_slugs)
     total = 0
     for f in sorted(files):
         try:
-            c, s = ingest_file(f, projects_by_name, existing=existing)
+            c, s = ingest_file(f, projects_by_name)
             stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
             shutil.move(f, os.path.join(PROCESSED, f"{stamp}-{os.path.basename(f)}"))
             print(f"intake: {os.path.basename(f)} -> {c} queued, {s} skipped")

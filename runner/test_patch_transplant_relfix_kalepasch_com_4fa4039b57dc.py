@@ -32,7 +32,7 @@ os.environ["ORCH_PATCH_TRANSPLANT_ENABLED"] = "false"
 class TestPatchSourceIdentification:
     """Verify patch source is correctly identified and similarity is calculated."""
 
-    def test_source_patch_identified_from_spec(self):
+    def test_source_patch_identified_from_spec():
         """Source patch is pareto-2080/rework-buildfail-qafix with path components."""
         source_spec = {
             "source": "pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02",
@@ -49,7 +49,7 @@ class TestPatchSourceIdentification:
         assert len(source_spec["commit"]) == 7
 
 
-    def test_similarity_score_baseline(self):
+    def test_similarity_score_baseline():
         """Similarity score for adapted patch is 0.352 (above threshold)."""
         threshold = 0.30  # Minimum to consider for adaptation
         similarity = 0.352
@@ -59,7 +59,7 @@ class TestPatchSourceIdentification:
         assert similarity > 0.3, "Should be a usable baseline for adaptation"
 
 
-    def test_similarity_calc_components(self):
+    def test_similarity_calc_components():
         """Similarity calculation considers file paths, context, and diff structure."""
         metrics = {
             "path_similarity": 0.45,      # Same/similar file paths
@@ -73,7 +73,7 @@ class TestPatchSourceIdentification:
         assert metrics["combined"] == 0.352
 
 
-    def test_prior_art_database_lookup(self):
+    def test_prior_art_database_lookup():
         """Look up prior patch in merged-diff library by source project."""
         prior_art = {
             "source_project": "pareto-2080",
@@ -93,7 +93,7 @@ class TestPatchSourceIdentification:
 class TestIntentMetadataPreservation:
     """Verify task intent metadata is extracted and preserved through adaptation."""
 
-    def test_intent_metadata_parsed_from_spec(self):
+    def test_intent_metadata_parsed_from_spec():
         """Intent metadata contains: task_id, timestamp, commit hashes, model versions."""
         intent_spec = {
             "task_id": "relfix-kalepasch-com-4fa4039b57dc",
@@ -117,7 +117,7 @@ class TestIntentMetadataPreservation:
         assert intent_spec["status"] == "active"
 
 
-    def test_intent_timestamp_conversions(self):
+    def test_intent_timestamp_conversions():
         """Intent timestamp 07062319 converts to ISO format for logging."""
         timestamp_str = "07062319"
         # Parse as MMDDHHSS (month, day, hour, second)
@@ -136,7 +136,7 @@ class TestIntentMetadataPreservation:
         assert "Z" in parsed_time["iso"]
 
 
-    def test_intent_commit_chain_preserved(self):
+    def test_intent_commit_chain_preserved():
         """All commit hashes in intent chain preserved through adaptation."""
         commits = [
             "08c555ef32c3f7b6e04b6ac596540427ae250a95",  # Full hash
@@ -151,7 +151,7 @@ class TestIntentMetadataPreservation:
         assert len([c for c in commits if len(c) >= 7]) >= 3
 
 
-    def test_intent_keywords_preserved(self):
+    def test_intent_keywords_preserved():
         """All keywords from intent spec appear in task metadata."""
         keywords = [
             "active", "adapt", "advice", "after", "agentic", "aider",
@@ -173,7 +173,7 @@ class TestIntentMetadataPreservation:
 class TestOrchestrationPipelineContract:
     """Validate orchestration pipeline contract for this hard task."""
 
-    def test_contract_identifies_task_as_hard(self):
+    def test_contract_identifies_task_as_hard():
         """Task class is 'hard' with need=8, risk=broad_change."""
         contract = {
             "source": "release-self-heal",
@@ -188,7 +188,7 @@ class TestOrchestrationPipelineContract:
         assert contract["risk"] in ("standard", "elevated", "broad_change")
 
 
-    def test_contract_defines_preflight_triage(self):
+    def test_contract_defines_preflight_triage():
         """Preflight triage stage uses local:llama3.2:3b."""
         stage = {
             "stage": "preflight_triage",
@@ -204,7 +204,7 @@ class TestOrchestrationPipelineContract:
         assert stage["cost"] == 0.0
 
 
-    def test_contract_defines_strategy_planner(self):
+    def test_contract_defines_strategy_planner():
         """Strategy planner uses deepseek:deepseek-v4-flash."""
         stage = {
             "stage": "strategy_planner",
@@ -220,7 +220,7 @@ class TestOrchestrationPipelineContract:
         assert stage["quality"] > 7.0
 
 
-    def test_contract_defines_agentic_coder(self):
+    def test_contract_defines_agentic_coder():
         """Agentic coder uses claude (specified model: claude-haiku-4-5-20251001)."""
         stage = {
             "stage": "agentic_coder",
@@ -235,7 +235,7 @@ class TestOrchestrationPipelineContract:
         assert "20251001" in stage["model_version"]
 
 
-    def test_contract_defines_qa_routes(self):
+    def test_contract_defines_qa_routes():
         """QA has independent route (llama3.1) and panel (llama3.2 + deepseek)."""
         qa_config = {
             "independent_qa_model": "local:llama3.1",
@@ -250,7 +250,7 @@ class TestOrchestrationPipelineContract:
         assert qa_config["independent_qa_quality"] >= 7.5
 
 
-    def test_contract_defines_legal_gate(self):
+    def test_contract_defines_legal_gate():
         """Legal gate triggers for licensing, custody, transmission, advice changes."""
         gate = {
             "stage": "legal_gate",
@@ -264,7 +264,7 @@ class TestOrchestrationPipelineContract:
         assert len(triggers) >= 4
 
 
-    def test_contract_defines_merge_release(self):
+    def test_contract_defines_merge_release():
         """Merge to orchestrator/dev auto after tests/verify/judge; batch train for production."""
         workflow = {
             "merge_target": "orchestrator/dev",
@@ -278,7 +278,7 @@ class TestOrchestrationPipelineContract:
         assert workflow["release_mechanism"] == "batch-train"
 
 
-    def test_contract_coordination_rules(self):
+    def test_contract_coordination_rules():
         """Coordination: reconcile active work, reuse solutions, don't delete queued improvements."""
         rules = {
             "active_loop_reconciliation": True,
@@ -290,7 +290,7 @@ class TestOrchestrationPipelineContract:
         assert all(v is True for v in rules.values())
 
 
-    def test_contract_outcome_signals(self):
+    def test_contract_outcome_signals():
         """Recent outcomes: 0/12 merged, 0/12 tests, $0.00, model claude-haiku-4-5-20251001."""
         outcomes = {
             "merged": 0,
@@ -306,7 +306,7 @@ class TestOrchestrationPipelineContract:
         assert outcomes["cost_usd"] == 0.00
 
 
-    def test_contract_learned_routes(self):
+    def test_contract_learned_routes():
         """Learned routes optimize common stages: completion→llama3.2, confidence_gate→llama3.2."""
         routes = {
             "completion": {
@@ -330,7 +330,7 @@ class TestOrchestrationPipelineContract:
 class TestPatchAdaptation:
     """Verify patch adaptation preserves semantics and handles conflicts."""
 
-    def test_patch_parses_without_error(self):
+    def test_patch_parses_without_error():
         """Parse source patch from pareto-2080 without syntax errors."""
         patch_content = (
             "diff --git a/src/config.py b/src/config.py\n"
@@ -357,7 +357,7 @@ class TestPatchAdaptation:
         assert parsed["file_count"] > 0
 
 
-    def test_patch_adapts_to_kalepasch_com_codebase(self):
+    def test_patch_adapts_to_kalepasch_com_codebase():
         """Adapt patch context from pareto-2080 to kalepasch-com project."""
         source_context = {
             "file": "src/config.py",
@@ -377,7 +377,7 @@ class TestPatchAdaptation:
         assert adapted_context["adaptation_confidence"] > 0.80
 
 
-    def test_patch_applies_with_zero_conflicts(self):
+    def test_patch_applies_with_zero_conflicts():
         """Apply adapted patch to kalepasch-com codebase without conflicts."""
         result = {
             "status": "success",
@@ -393,7 +393,7 @@ class TestPatchAdaptation:
         assert result["lines_added"] > 0
 
 
-    def test_patch_handles_context_drift(self):
+    def test_patch_handles_context_drift():
         """Patch adapts to minor context drift (whitespace, surrounding code)."""
         source_hunk = (
             "@@ -20,5 +20,7 @@ def load_config():\n"
@@ -424,7 +424,7 @@ class TestPatchAdaptation:
         assert result["fuzzy_confidence"] > 0.80
 
 
-    def test_patch_rejects_inapplicable_changes(self):
+    def test_patch_rejects_inapplicable_changes():
         """Reject patch if target function signature changed significantly."""
         source_function = "def load_config():"
         target_function = "async def load_config(db_session):"  # Signature changed
@@ -443,7 +443,7 @@ class TestPatchAdaptation:
 class TestBehaviorPreservationAcceptance:
     """Acceptance criteria: preserve existing behavior (no breaking changes)."""
 
-    def test_exported_api_unchanged(self):
+    def test_exported_api_unchanged():
         """Public API exports remain identical after patch."""
         api_before = {
             "functions": ["load_config", "validate_config", "get_setting"],
@@ -460,7 +460,7 @@ class TestBehaviorPreservationAcceptance:
         assert api_before == api_after
 
 
-    def test_function_signatures_unchanged(self):
+    def test_function_signatures_unchanged():
         """Function signatures preserved; only implementation details change."""
         before = {
             "load_config": {"params": [], "return": "dict"},
@@ -475,7 +475,7 @@ class TestBehaviorPreservationAcceptance:
         assert before == after
 
 
-    def test_config_keys_not_removed(self):
+    def test_config_keys_not_removed():
         """No configuration keys removed; only additions allowed."""
         config_keys_before = {"ORCH_BUILD_TIMEOUT", "ORCH_DEPLOY_REGION", "ORCH_MODEL_TIER"}
         config_keys_after = {"ORCH_BUILD_TIMEOUT", "ORCH_DEPLOY_REGION", "ORCH_MODEL_TIER"}
@@ -484,7 +484,7 @@ class TestBehaviorPreservationAcceptance:
         assert len(removed) == 0
 
 
-    def test_database_schema_backward_compatible(self):
+    def test_database_schema_backward_compatible():
         """DB schema changes are backward compatible (no column drops, additive only)."""
         schema_changes = {
             "removed_columns": [],
@@ -497,7 +497,7 @@ class TestBehaviorPreservationAcceptance:
         assert len(schema_changes["removed_tables"]) == 0
 
 
-    def test_error_handling_modes_preserved(self):
+    def test_error_handling_modes_preserved():
         """Error handling behavior unchanged; fail-soft patterns maintained."""
         behavior_before = {
             "on_missing_config": "return empty string",
@@ -517,7 +517,7 @@ class TestBehaviorPreservationAcceptance:
 class TestQAPanelRouting:
     """QA workflow routes through multiple models and collects consensus."""
 
-    def test_qa_independent_route_uses_llama31(self):
+    def test_qa_independent_route_uses_llama31():
         """Independent QA route evaluates using local:llama3.1."""
         route = {
             "name": "independent_qa",
@@ -531,7 +531,7 @@ class TestQAPanelRouting:
         assert route["quality_score"] >= 7.5
 
 
-    def test_qa_panel_runs_parallel_models(self):
+    def test_qa_panel_runs_parallel_models():
         """QA panel runs llama3.2 and deepseek in parallel."""
         panel = {
             "name": "qa_panel",
@@ -544,7 +544,7 @@ class TestQAPanelRouting:
         assert panel["parallelism"] == "concurrent"
 
 
-    def test_qa_verdicts_consolidated(self):
+    def test_qa_verdicts_consolidated():
         """QA verdicts from all models consolidated with vote counts."""
         verdicts = [
             {"model": "local:llama3.2:3b", "passed": True, "confidence": 0.92},
@@ -562,7 +562,7 @@ class TestQAPanelRouting:
         assert result["votes_pass"] == len(verdicts)
 
 
-    def test_qa_disagreement_flagged_for_review(self):
+    def test_qa_disagreement_flagged_for_review():
         """QA votes split → escalate for manual review."""
         verdicts = [
             {"model": "local:llama3.2:3b", "passed": True, "confidence": 0.92},
@@ -584,7 +584,7 @@ class TestQAPanelRouting:
 class TestMergeTrainCoordination:
     """Coordinate with active loop-generated work; reuse prior solutions."""
 
-    def test_merge_train_avoids_deleting_queued_improvements(self):
+    def test_merge_train_avoids_deleting_queued_improvements():
         """Do not delete unrelated queued improvements; leave in queue."""
         active_work = {
             "task_1": {"id": "agent/task-1", "branch": "agent/task-1", "status": "queued"},
@@ -601,7 +601,7 @@ class TestMergeTrainCoordination:
         assert active_work["task_2"]["status"] == "in-progress"
 
 
-    def test_recovered_work_stays_in_queue_until_shipped(self):
+    def test_recovered_work_stays_in_queue_until_shipped():
         """Recovered patches remain in queue; not deleted after merge."""
         recovered_patches = [
             {"id": "patch-001", "source": "pareto-2080", "status": "recovered", "merged": False},
@@ -620,7 +620,7 @@ class TestMergeTrainCoordination:
         assert result["recovered_still_queued"] is True
 
 
-    def test_merge_auto_to_orchestrator_dev(self):
+    def test_merge_auto_to_orchestrator_dev():
         """Auto-merge to orchestrator/dev after all gates pass."""
         result = {
             "target_branch": "orchestrator/dev",
@@ -636,7 +636,7 @@ class TestMergeTrainCoordination:
         assert result["author"] == "kalepasch1"
 
 
-    def test_batch_train_release_to_production(self):
+    def test_batch_train_release_to_production():
         """Merged patch queued for batch-train production release."""
         result = {
             "released": True,
@@ -654,7 +654,7 @@ class TestMergeTrainCoordination:
 class TestBuildAndTestValidation:
     """Build and test suite must pass; no regressions."""
 
-    def test_build_succeeds_after_patch(self):
+    def test_build_succeeds_after_patch():
         """Build passes with rc=0 after patch application."""
         result = {
             "rc": 0,
@@ -667,7 +667,7 @@ class TestBuildAndTestValidation:
         assert result["duration_sec"] > 0
 
 
-    def test_tests_pass_full_suite(self):
+    def test_tests_pass_full_suite():
         """Test suite runs to completion; all tests pass."""
         result = {
             "rc": 0,
@@ -682,7 +682,7 @@ class TestBuildAndTestValidation:
         assert result["tests_failed"] == 0
 
 
-    def test_no_regressions_in_unrelated_areas(self):
+    def test_no_regressions_in_unrelated_areas():
         """Tests in unmodified code paths all still pass."""
         test_results = {
             "auth_tests": {"passed": 15, "failed": 0},
@@ -697,7 +697,7 @@ class TestBuildAndTestValidation:
 class TestEndToEnd:
     """Full workflow: load, adapt, apply, build, test, QA, merge, release."""
 
-    def test_relfix_workflow_complete(self):
+    def test_relfix_workflow_complete():
         """Complete relfix workflow from patch load to production release."""
         workflow = {
             "task_id": "relfix-kalepasch-com-4fa4039b57dc",
@@ -728,7 +728,7 @@ class TestEndToEnd:
         assert workflow["stages"]["qa_panel"]["consensus"] == "pass"
 
 
-    def test_task_metadata_preserved_end_to_end(self):
+    def test_task_metadata_preserved_end_to_end():
         """Intent metadata preserved through entire workflow."""
         intent_in = {
             "task_id": "relfix-kalepasch-com-4fa4039b57dc",

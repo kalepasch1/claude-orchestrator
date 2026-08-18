@@ -38,25 +38,7 @@ class ControllerTestBase(unittest.TestCase):
         for p in self._patches:
             self.addCleanup(p.stop)
 
-    @staticmethod
-    def _depth_counter(depth, pinned=0):
-        """A db.count stand-in that answers the two queries run() makes DIFFERENTLY.
-
-        run() calls db.count twice per sample: once for total queued depth, and once
-        with {"pinned": "is.true"} for express-lane depth, which it subtracts to get
-        effective_depth. A blanket return_value answers both with the same number, so
-        effective_depth is max(0, d - d) == 0 forever, the integral never accumulates
-        and every clamp/pressure assertion below reads 0. That is a mock artefact, not
-        controller behaviour — the express-lane exclusion landed after these tests were
-        written and the stub was never taught about the second query.
-        """
-        def _count(_table, filt=None):
-            if (filt or {}).get("pinned"):
-                return pinned
-            return depth
-        return _count
-
-    def run_with_depths(self, depths, pinned=0, **overrides):
+    def run_with_depths(self, depths, **overrides):
         """Run the controller once per depth sample; return list of decisions."""
         results = []
         ctx = [patch.object(qv, k, v) for k, v in overrides.items()]
@@ -64,8 +46,7 @@ class ControllerTestBase(unittest.TestCase):
             c.start()
         try:
             for d in depths:
-                with patch.object(qv.db, "count",
-                                  side_effect=self._depth_counter(d, pinned)):
+                with patch.object(qv.db, "count", return_value=d):
                     results.append(qv.run())
         finally:
             for c in ctx:
