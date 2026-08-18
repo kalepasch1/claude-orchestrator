@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-deployfix-beethoven-07160110
+template: fb3dd7fe384d
+intent: 07160110 07190257 20251001 35db611dce687d7e117da7ce0781a15bd5592206 _note _req_one active actual additive advice after agentic analysis applications artifacts asking author batch beethoven before behavior below branch broad bugfix build build_fix canceled cannot category cause change changes changing cheap checks claim class claude clean coder commit commits completion concrete conf_score confidence config confirmed contents context continue contract coordination could cross custody debate_compress deepseek delete dependencies deploy deployfix developer devmerge diffs directive documents during equivalent existing fable failed failure features feedback files final findings finish
+base: master
