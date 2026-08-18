@@ -253,5 +253,62 @@ class TestMigrationShape(unittest.TestCase):
         self.assertIn("if NEW.host is null", self.sql)
 
 
+class PausedHostReleaseGuardV2MigrationTests(unittest.TestCase):
+    """v2 is the migration that actually runs last, so it is what the fence IS.
+
+    v1 promised the refusal was "RECORDED, not swallowed" and then recorded it with an
+    INSERT and a pg_notify inside the trigger body — both of which roll back with the
+    RAISE that follows them. The guard refused correctly and said nothing, which is the
+    exact failure v1 was written to eliminate. v2 drops the doomed write; the durable
+    record is the caller's job, in its own transaction.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "supabase", "migrations", "20260811160000_paused_host_release_guard_v2.sql")
+        with open(path) as fh:
+            cls.sql = fh.read()
+
+    def test_the_doomed_in_trigger_write_is_gone(self):
+        """An INSERT in the same transaction as the RAISE cannot survive it.
+
+        Comments are stripped first — the migration explains the removed write in prose,
+        and matching that prose would make this test pass for the wrong reason (or, as
+        first written, fail for one).
+        """
+        body = self.sql.split("$$")[1] if "$$" in self.sql else self.sql
+        code = "\n".join(
+            line for line in body.splitlines() if not line.strip().startswith("--"))
+        self.assertNotIn("insert into public.runner_alerts", code)
+        self.assertNotIn("pg_notify", code)
+
+    def test_it_still_raises_so_the_release_is_actually_refused(self):
+        self.assertIn("raise exception", self.sql)
+        self.assertIn("check_violation", self.sql)
+
+    def test_it_is_still_insert_only_so_completion_is_never_blocked(self):
+        self.assertIn("before insert on public.releases", self.sql)
+        self.assertNotIn("before insert or update", self.sql.lower())
+
+    def test_it_still_reuses_the_claim_guards_pause_lookup(self):
+        self.assertIn("stale_host_is_paused", self.sql)
+
+    def test_an_unattributable_row_is_still_not_refused(self):
+        self.assertIn("if NEW.host is null", self.sql)
+
+    def test_it_is_idempotent_over_v1(self):
+        self.assertIn("create or replace function", self.sql)
+        self.assertIn("drop trigger if exists", self.sql)
+        self.assertIn("add column if not exists host", self.sql)
+
+    def test_the_caller_side_recorder_the_comment_points_at_exists(self):
+        """v2 hands recording to the runner. If that ever goes away, v2 goes silent too."""
+        self.assertEqual(paused_host_guard.ALERT_KIND, "release_from_paused_host")
+        self.assertTrue(hasattr(paused_host_guard, "record_rejection"))
+        self.assertIn("record_rejection", self.sql)
+
+
 if __name__ == "__main__":
     unittest.main()
