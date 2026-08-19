@@ -56,6 +56,7 @@ jobs:
             # One line on purpose: GitHub annotations are single-line, and a shell line
             # continuation would fold the YAML indentation into the message text.
             echo "::warning title=Gemini canary skipped::GEMINI_API_KEY is not set on this repository, so the gemini lane has no signal to give and is skipped rather than failed. Add the secret to resume it, or delete this workflow if the gemini path is retired. While this warning appears, the canary is NOT covering Gemini."
+          fi
 
   gemini-canary:
     name: gemini — marker canary
