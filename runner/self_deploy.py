@@ -44,6 +44,17 @@ BLOCK_TITLE = "Self-deploy blocked: bounded release canary failed"
 # 300s was measured against an idle machine. The same 11-file critical set takes ~14s in a
 # quiet worktree and 233s on this node while the fleet is working, so 300 left almost no
 # margin and a loaded run timed out on green code. Still bounded, just honestly bounded.
+#
+# CEILING, not a free parameter: runner.py's _reap_stale_periodic SIGKILLs a periodic job
+# once it outlives its lease. selfdeploy runs on a 180s interval, so the old scaled fallback
+# (interval*5) gave it only 900s while the whole pass costs fetch (<=120) + scratch merge
+# (<=300) + worktree add (<=300) + compile (<=CANARY_TIMEOUT) + collection (<=180) +
+# behaviour (<=CANARY_TIMEOUT) ≈ 2100s at 600. A loaded run was therefore SIGKILLed
+# mid-pytest — no verdict, no restart requested, the pinned worktree leaked because
+# `finally: unpin()` never ran, and merged code stopped deploying. That is the exact failure
+# this whole change set exists to prevent. runner.py now carries an explicit
+# _JOB_MAX_RUNTIME["self_deploy.py"] lease (ORCH_SELF_DEPLOY_MAX_RUNTIME_S, default 2400s).
+# Keep the two in step: raising CANARY_TIMEOUT above ~900 needs the lease raised too.
 CANARY_TIMEOUT = int(os.environ.get("ORCH_CANARY_TIMEOUT", "600"))
 # How long a queued restart suppresses re-gating. The runner exits between tasks, so this
 # has to cover a long task; past it, we re-gate rather than trust a flag nobody consumed.
@@ -74,6 +85,13 @@ CANARY_ENV_SENTINELS = {
     "SUPABASE_URL": "http://localhost",
     "SUPABASE_SERVICE_KEY": "canary-hermetic-no-live-control-plane",
     "SUPABASE_ANON_KEY": "canary-hermetic-no-live-control-plane",
+    # Blanking SUPABASE_URL alone did NOT make the gate hermetic. db._endpoints() is
+    # [SUPABASE_URL] + ORCH_SUPABASE_FALLBACK_URLS, and that list holds three live relays —
+    # so every db call in the canary still left the machine, reached production, and came
+    # back as RequestRejectedError (a permanent-4xx class) instead of the connection error
+    # the suite's own localhost fallback is written around. Same "behaves differently under
+    # the canary" divergence, just inverted.
+    "ORCH_SUPABASE_FALLBACK_URLS": "",
 }
 
 # These protect the exact path that turns merged code into running code, plus the release
