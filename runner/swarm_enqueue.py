@@ -17,9 +17,19 @@ exactly like operator-filed ones.
 PRIORITY, deliberately: the bots pass `priority: 1` meaning "tier-1, below user work".
 That is NOT what the column means — claim_task sorts priority ASCENDING, so priority=1
 would be claimed FIRST, ahead of every user-directed task, which is the exact opposite of
-the owner directive. Ordering below user work is enforced by ev_scheduler's
-_self_improve_tier, which tiers by PROJECT, not by this column. So swarm records are
-filed at SWARM_PRIORITY (the table default) and the tier does the rest.
+the owner directive. So swarm records are filed at SWARM_PRIORITY (the table default).
+
+An earlier version of this docstring said the tiering was "enforced by ev_scheduler's
+_self_improve_tier". It was not. That tier only feeds claim_task's `_ev_rank`, the
+TWENTY-FIRST sort key, while `_portfolio_project_rank` is the ELEVENTH — and the
+orchestrator's own project ranks 4 there, ahead of madeus, vigil, smarter, illuminati and
+pareto. The sort was decided ten keys before the tier was ever consulted, so swarm
+remediation outranked user-directed work in five real products. Two things now actually
+enforce it, both in db.py: `_portfolio_project_rank` demotes self-maintenance in the
+fleet's own project to SELF_WORK_PROJECT_RANK, and the `remediation-`/`swarm-` prefixes
+were added to SELF_MAINTENANCE_PREFIXES so ORCH_SELF_WORK_MAX_SHARE caps the class at all
+(it matched only `remediate-` before, which no bot emits). Slugs filed here must keep one
+of those prefixes or they silently leave the tier again.
 """
 import datetime
 import os

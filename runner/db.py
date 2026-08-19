@@ -59,6 +59,23 @@ class TransientDBError(Exception):
     pass
 
 
+class ControlPlaneDown(TransientDBError):
+    """The circuit breaker refused a request WITHOUT ATTEMPTING IT.
+
+    A TransientDBError subclass, so everything that classifies TransientDBError as
+    environmental (periodic, crash_loop_detector) keeps working unchanged. It needs its own
+    type because db.insert() and db.update() deliberately SWALLOW TransientDBError — they
+    read it as "HTTP 409, another writer already satisfied this intent" and return None.
+
+    That reading is correct for a 409. It is catastrophic for a breaker rejection: the write
+    was never attempted, nothing satisfied it, and the caller would carry on as though a task
+    state transition, lease heartbeat or outcome had been persisted — against a control plane
+    that may already have recovered inside the cooldown. Both write paths re-raise this type
+    explicitly. Never make the breaker raise a bare TransientDBError.
+    """
+    pass
+
+
 class RequestRejectedError(Exception):
     """Raised when PostgREST answers a write with a permanent 4xx and an explanatory body.
 
@@ -310,8 +327,16 @@ GATEWAY_STATUSES = {502, 504, 520, 521, 522, 523, 524, 525}
 DB_BREAKER_ENABLED = (os.environ.get("ORCH_DB_BREAKER", "1").strip().lower()
                       not in ("0", "false", "no", "off"))
 DB_BREAKER_THRESHOLD = int(os.environ.get("ORCH_DB_BREAKER_THRESHOLD", "8") or 8)
-DB_BREAKER_COOLDOWN_S = float(os.environ.get("ORCH_DB_BREAKER_COOLDOWN_S", "60") or 60)
-_BREAKER = {"consecutive": 0, "open_until": 0.0, "trips": 0}
+# Must exceed the cost of ONE failing request, or the breaker spends most of its life open
+# and admitting traffic anyway. With ORCH_SUPABASE_TIMEOUT=20, PROBE_TIMEOUT=6, 4 endpoints
+# and 3 retries, a connection-timeout failure costs ~99s; a 60s cooldown meant ~62% of wall
+# time still paid the full budget.
+DB_BREAKER_COOLDOWN_S = float(os.environ.get("ORCH_DB_BREAKER_COOLDOWN_S", "180") or 180)
+# `probing` admits exactly ONE caller when the cooldown expires. db.py is called from many
+# threads; without it every waiting thread was released at once, so the "half-open probe"
+# was actually a thundering herd against an origin that had just been struggling.
+_BREAKER = {"consecutive": 0, "open_until": 0.0, "trips": 0, "probing": False}
+_BREAKER_LOCK = threading.Lock()
 
 
 def breaker_state():
@@ -320,29 +345,51 @@ def breaker_state():
 
 
 def _breaker_blocks():
-    """True while the breaker is open. Expiry alone re-admits one real call (half-open)."""
-    return DB_BREAKER_ENABLED and time.monotonic() < _BREAKER["open_until"]
+    """True while the breaker is open AND this caller is not the elected half-open prober.
+
+    Exactly one caller is admitted per cooldown expiry; everyone else keeps fast-failing
+    until that prober reports back. Without the election, every thread waiting on a
+    many-threaded runner was released at the same instant.
+    """
+    if not DB_BREAKER_ENABLED:
+        return False
+    with _BREAKER_LOCK:
+        if time.monotonic() < _BREAKER["open_until"]:
+            return True                      # still inside the cooldown
+        if _BREAKER["open_until"] and not _BREAKER["probing"]:
+            _BREAKER["probing"] = True       # elected: this caller probes for real
+            return False
+        return bool(_BREAKER["open_until"])   # someone else is already probing
 
 
 def _breaker_record_answer():
     """The origin answered — with data OR with a PostgREST status. Either way it is up."""
-    if _BREAKER["consecutive"] or _BREAKER["open_until"]:
-        _BREAKER["consecutive"] = 0
-        _BREAKER["open_until"] = 0.0
+    with _BREAKER_LOCK:
+        if _BREAKER["consecutive"] or _BREAKER["open_until"] or _BREAKER["probing"]:
+            _BREAKER["consecutive"] = 0
+            _BREAKER["open_until"] = 0.0
+            _BREAKER["probing"] = False
 
 
 def _breaker_record_unreachable():
-    _BREAKER["consecutive"] += 1
-    if DB_BREAKER_ENABLED and _BREAKER["consecutive"] >= DB_BREAKER_THRESHOLD:
-        was_open = _BREAKER["open_until"] > 0
+    with _BREAKER_LOCK:
+        _BREAKER["consecutive"] += 1
+        if not (DB_BREAKER_ENABLED and _BREAKER["consecutive"] >= DB_BREAKER_THRESHOLD):
+            return
+        # A re-open after a failed half-open probe is a NEW trip. Comparing against
+        # open_until alone never counted them, so an eight-hour outage reported trips == 1
+        # and emitted a single stderr line for the life of the process.
+        newly_open = time.monotonic() >= _BREAKER["open_until"]
         _BREAKER["open_until"] = time.monotonic() + DB_BREAKER_COOLDOWN_S
-        if not was_open:
+        _BREAKER["probing"] = False
+        if newly_open:
             _BREAKER["trips"] += 1
             sys.stderr.write(
                 f"[db] control plane unreachable {_BREAKER['consecutive']}x in a row — "
-                f"circuit breaker OPEN for {DB_BREAKER_COOLDOWN_S:.0f}s. Calls fail fast as "
-                f"TransientDBError instead of each paying the full timeout; the first call "
-                f"after the cooldown probes for real.\n")
+                f"circuit breaker OPEN for {DB_BREAKER_COOLDOWN_S:.0f}s "
+                f"(trip #{_BREAKER['trips']}). Calls fail fast as ControlPlaneDown instead "
+                f"of each paying the full timeout; one caller probes for real when the "
+                f"cooldown expires.\n")
 # Core orchestrator RPC operations that benefit from retries to tolerate transient failures
 CORE_RETRY_RPCS = {
     "acquire_branch_execution_lease", "heartbeat_branch_execution_lease", "release_branch_execution_lease",
@@ -417,10 +464,24 @@ def _express_capacity():
 
 SELF_MAINTENANCE_PREFIXES = (
     "canary-", "smoke-", "cont-", "recover-missing-branch-", "recovery-", "remediate-",
+    # "remediate-" did NOT cover "remediation-", and every swarm bot files the latter:
+    # conflict_marker_sentinel writes remediation-conflict-markers-*, canary_triage writes
+    # remediation-canary-*. So the whole swarm class escaped the share cap below and
+    # competed with product work for every lane. One missing suffix, entire class exempt.
+    "remediation-", "swarm-",
     "rework-", "relfix-", "qafix-", "copyfix-", "toolchain-repair-", "factory-",
     "backlog-batch-", "batch-mech-", "salvage-", "stash-", "gate-", "preflight-", "gc-",
     "dedup-",
 )
+
+# Where self-maintenance sorts on the PROJECT key. Strictly below every named product,
+# including the rank-13 default (prediction-markets-institute has no entry and lands there,
+# and it is a real product the owner names as a priority — self-work must not tie with it).
+SELF_WORK_PROJECT_RANK = 99
+
+# The projects that ARE the fleet. Self-maintenance filed here is the machine working on
+# itself; the same slugs filed against a product repo are product work and keep that rank.
+OWN_PROJECT_NAMES = frozenset({"beethoven", "orchestrator"})
 
 
 def _is_self_maintenance(task):
@@ -428,9 +489,33 @@ def _is_self_maintenance(task):
     return str((task or {}).get("slug") or "").startswith(SELF_MAINTENANCE_PREFIXES)
 
 
+def _is_own_project(name):
+    return str(name or "").strip().lower() in OWN_PROJECT_NAMES
+
+
 def _project_rank_name(name):
     """Return numeric priority for *name* (lower = higher priority, 13 = default/unknown)."""
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 13)
+
+
+def self_work_demoted():
+    """Is the self-maintenance project demotion active? ORCH_SELF_WORK_INHERITS_PROJECT_RANK=1 opts out."""
+    return str(os.environ.get("ORCH_SELF_WORK_INHERITS_PROJECT_RANK", "0")
+               ).strip().lower() not in ("1", "true", "yes", "on")
+
+
+def portfolio_rank(project_name, task, demoted=None):
+    """The PROJECT sort key for one task. Module-level so it is reachable from a test.
+
+    Lives out here rather than inside claim_task's closure because claim_task needs a live
+    control plane to reach, and a ranking rule that decides what the fleet works on next
+    should be assertable without one. The closure calls straight through.
+    """
+    if demoted is None:
+        demoted = self_work_demoted()
+    if demoted and _is_own_project(project_name) and _is_self_maintenance(task):
+        return SELF_WORK_PROJECT_RANK
+    return _project_rank_name(project_name)
 
 
 def localize_repo_path(repo_path):
@@ -601,7 +686,7 @@ def _req(method, path, body=None, headers=None, params=None):
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
     if _breaker_blocks():
-        raise TransientDBError(
+        raise ControlPlaneDown(
             f"control plane circuit breaker open ({_BREAKER['consecutive']} consecutive "
             f"unreachable) — skipping {method} {path} instead of paying the timeout")
     last_exc = None
@@ -1375,6 +1460,11 @@ def insert(table, row, upsert=False):
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
         result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+    except ControlPlaneDown:
+        # NOT a 409. The breaker refused before touching the network, so nothing satisfied
+        # this write. Swallowing it here would silently drop task states, outcomes and lease
+        # heartbeats while the caller believed they had landed.
+        raise
     except TransientDBError:
         # 409 = duplicate key: the row already exists, so the write intent is satisfied. A retried
         # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
@@ -1488,6 +1578,11 @@ def update(table, match, patch):
                       headers={"Prefer": "return=representation"}, params=params)
         _record_stage_transition(table, match, patch)
         return result
+    except ControlPlaneDown:
+        # NOT a concurrent-writer 409. The breaker refused before touching the network, so
+        # no other writer satisfied this intent — returning None here would silently drop a
+        # task state transition against a plane that may already be healthy again.
+        raise
     except TransientDBError:
         # 409 = a concurrent write (the two Macs racing the same row). The write intent is already
         # satisfied by the other writer, so treat it as a no-op instead of letting it bubble up as a
@@ -2106,6 +2201,10 @@ def claim_task(runner_id):
     def _task_priority(t):
         return _num(t.get("priority"), 1000)
 
+    # Read once per claim, not per comparison: sort() calls the key function for every row
+    # in the scan (up to CLAIM_SCAN_LIMIT), and os.environ.get is not free at that count.
+    _self_work_demoted = self_work_demoted()
+
     def _blocker_portfolio_rank(t):
         # Higher score means this task clears more downstream/release work.
         if _is_recovery_task(t) and not recovery_backlog:
@@ -2118,7 +2217,21 @@ def claim_task(runner_id):
         # Owner directive: prioritize portfolio work in this exact product order. Keep this
         # independent from mutable DB priority so newly-added rows with stale/null values cannot
         # silently outrank the core apps.
-        return _project_rank_name(project_names.get(t.get("project_id")))
+        #
+        # The orchestrator's own project sits at rank 4 — ahead of madeus(5), vigil(6),
+        # smarter(7), illuminati(8), pareto(9) and everything below. That rank was written
+        # for orchestrator PRODUCT work, but self-maintenance rows filed into the same
+        # project inherit it, so a swarm bot's remediation task outranks user-directed work
+        # in five real products right here, at the eleventh key. The mechanism that is
+        # supposed to hold self-improvement below user work — ev_scheduler._self_improve_tier
+        # — only feeds _ev_rank, the TWENTY-FIRST key, so the sort is already decided by the
+        # time it is consulted. That is not a tuning gap; the guarantee simply was not
+        # reachable. Demote self-work in the fleet's own project below every named product,
+        # which is what "fills idle capacity" means. The same slug against a PRODUCT repo is
+        # product work and keeps its rank. ORCH_SELF_WORK_INHERITS_PROJECT_RANK=1 restores
+        # the old behaviour.
+        return portfolio_rank(project_names.get(t.get("project_id")), t,
+                              demoted=_self_work_demoted)
 
     def _ev_rank(t):
         if _is_release_fix_task(t):

@@ -36,6 +36,27 @@ ENABLED = os.environ.get("CONFIG_APPROVAL_ENABLED", "true").lower() in ("true", 
 # principle: a control-plane hiccup must never manufacture a fleet-wide halt.
 CONSECUTIVE_ERROR_LIMIT = int(os.environ.get("ORCH_CONFIG_APPROVAL_ERROR_LIMIT", "5"))
 
+# Not every failure is an outage, and the breaker above only makes sense for the ones that
+# are. A PostgREST rejection (oversized value, constraint, bad type) is per-key and
+# permanent: feeding it to the breaker aborts the pass and prints "the control plane is
+# down, not these keys" about keys that are, in fact, the problem — hiding a data bug behind
+# outage noise while every remaining healthy key goes unassessed on every cycle forever.
+#
+# Classified by exception type, and deliberately as an ALLOWLIST of known-permanent types:
+# anything unrecognised keeps the old environmental behaviour, which is the one already
+# proven to keep the main loop alive during a real outage.
+#
+# Resolved defensively so an older db.py without these names cannot break the import — an
+# empty tuple in an `except` clause simply never matches, which is exactly the right
+# degradation.
+def _exc(*names):
+    found = tuple(getattr(db, n) for n in names if isinstance(getattr(db, n, None), type))
+    return found or ()
+
+
+_PERMANENT_ERRORS = _exc("RequestRejectedError")
+_STRUCTURAL_ERRORS = _exc("MissingRelationError")
+
 # Numeric bounds for high-blast-radius config keys. Values outside range → approval card.
 _NUMERIC_BOUNDS = {
     "MAX_PARALLEL": (1, 20),
@@ -86,20 +107,54 @@ def _fingerprint(key: str, value: str) -> str:
     return hashlib.sha1(f"{key}\x00{value}".encode()).hexdigest()[:16]
 
 
-def _seen_fingerprints() -> set:
-    """Fingerprints of config entries already assessed (any decision status)."""
-    try:
-        rows = db.select("approvals", {
-            "select": "detail", "kind": "eq.config", "limit": "2000",
-        }) or []
-        fps = set()
+SEEN_LOOKUP_CHUNK = int(os.environ.get("ORCH_CONFIG_APPROVAL_SEEN_CHUNK", "80"))
+
+
+def _seen_fingerprints(fingerprints) -> set:
+    """Which of `fingerprints` have already been assessed (any decision status).
+
+    Asks about EXACTLY the entries in this pass. The previous version asked the opposite
+    question — "give me 2000 config approvals, any 2000" — and built the seen-set from
+    whatever came back, unordered. That is a truncated scan of the kind db.py's own
+    TRUNCATED-SCAN DETECTOR was written for, and it had gone catastrophic: 77,206 config
+    approval rows for 205 distinct fingerprints, 7,386 of them written in the last 24 hours.
+
+    The loop is self-amplifying, which is why it ran away rather than plateauing. Every row
+    the sweep re-files makes the table bigger; a bigger table makes the fixed 2000-row window
+    a smaller fraction of it; a smaller fraction means more keys look unseen next pass. It
+    ends with essentially every key re-filed every cycle, forever.
+
+    It was also a direct multiplier on the 2026-08-19 outage: ~200 pointless writes per
+    cycle, each paying a full request timeout while the plane was 522ing. The "60 skipped
+    lines per cycle and nothing else" symptom was this.
+
+    Bounded by the size of THIS pass (<= `limit` fleet_config rows), not by the table.
+    The durable guarantee is the partial unique index on approvals(detail) WHERE
+    kind='config' — this query is the cheap path that avoids provoking it.
+    """
+    wanted = sorted({fp for fp in fingerprints if fp})
+    if not wanted:
+        return set()
+    seen = set()
+    for start in range(0, len(wanted), SEEN_LOOKUP_CHUNK):
+        chunk = wanted[start:start + SEEN_LOOKUP_CHUNK]
+        try:
+            rows = db.select("approvals", {
+                "select": "detail", "kind": "eq.config",
+                "detail": "in.({})".format(",".join(f"fp:{fp}" for fp in chunk)),
+            }) or []
+        except Exception:
+            # Fail toward NOT re-filing. An unreadable dedup index is a reason to skip this
+            # chunk for one cycle, never a reason to re-file every key in it — that is the
+            # runaway the fix above exists to end, and it would fire hardest during exactly
+            # the control-plane trouble that caused the read to fail.
+            seen.update(chunk)
+            continue
         for r in rows:
             d = str(r.get("detail") or "")
             if d.startswith("fp:"):
-                fps.add(d[3:])
-        return fps
-    except Exception:
-        return set()
+                seen.add(d[3:])
+    return seen
 
 
 def blocked_keys() -> set:
@@ -131,7 +186,6 @@ def sweep(limit: int = 200) -> tuple:
     if not ENABLED:
         return 0, 0
 
-    seen = _seen_fingerprints()
     try:
         rows = db.select("fleet_config", {
             "select": "key,value,note,updated_by",
@@ -140,8 +194,16 @@ def sweep(limit: int = 200) -> tuple:
     except Exception:
         return 0, 0
 
+    # Fingerprint first, THEN ask which of these are already assessed. The order matters:
+    # the lookup is now scoped to this pass's entries, so it cannot be outgrown by the
+    # approvals table the way an unordered "any 2000 rows" window was.
+    fingerprints = {_fingerprint(str(r.get("key") or ""), str(r.get("value") or ""))
+                    for r in rows if r.get("key")}
+    seen = _seen_fingerprints(fingerprints)
+
     approved = gated = consecutive_errors = 0
     abandoned_at = None
+    permanent_failures = []
     for index, row in enumerate(rows):
         key = str(row.get("key") or "")
         value = str(row.get("value") or "")
@@ -179,19 +241,54 @@ def sweep(limit: int = 200) -> tuple:
                 })
                 approved += 1
             consecutive_errors = 0
+        except _STRUCTURAL_ERRORS as e:
+            # The approvals relation is not deployed. Every remaining key will fail for the
+            # same reason, and no number of cycles changes that — this is the one case where
+            # abandoning immediately is right, and where "the control plane is down" would be
+            # an actively misleading thing to print.
+            abandoned_at = index
+            print(f"config_approval: the approvals table is unavailable ({e}). "
+                  f"Abandoning this pass at entry {index + 1} of {len(rows)}; this is a "
+                  f"schema problem, not an outage, and retrying will not fix it.")
+            break
+        except _PERMANENT_ERRORS as e:
+            # PostgREST rejected THIS row: an oversized value, a constraint, a bad type. It
+            # is per-key and permanent, so it must not feed the outage breaker. It used to:
+            # a handful of malformed fleet_config values in a row aborted the pass and
+            # printed "the control plane is down, not these keys" — precisely inverted, and
+            # it hid a real data bug behind outage noise while the remaining healthy keys
+            # went unassessed on every single cycle, forever.
+            permanent_failures.append((key, str(e)))
+            print(f"config_approval: rejected {key}: {e}")
         except Exception as e:
+            # Unknown failures stay on the environmental path. Fail toward the behaviour
+            # that is already proven to keep the main loop alive during an outage.
             consecutive_errors += 1
             print(f"config_approval: skipped {key}: {e}")
             if consecutive_errors >= CONSECUTIVE_ERROR_LIMIT:
                 abandoned_at = index
+                # The entries in the error window were NOT assessed either. Counting only
+                # the ones after `index` under-reported the gap by exactly the breaker
+                # width, so the log claimed 55 of 60 when the true answer was 60 of 60 —
+                # and 55 reads as "five got through".
+                never_attempted = len(rows) - index - 1
+                unassessed = consecutive_errors + never_attempted
                 print(f"config_approval: {consecutive_errors} consecutive write failures — "
                       f"the control plane is down, not these keys. Abandoning this pass with "
-                      f"{len(rows) - index - 1} entr{'y' if len(rows) - index - 1 == 1 else 'ies'} "
-                      f"unassessed; the next cycle retries. Last error: {e}")
+                      f"{unassessed} entr{'y' if unassessed == 1 else 'ies'} "
+                      f"unassessed ({consecutive_errors} failed, {never_attempted} never "
+                      f"attempted); the next cycle retries. Last error: {e}")
                 break
 
     if approved or gated:
         print(f"config_approval: auto-approved {approved}, gated {gated} of {len(rows)} fleet_config entries")
+    if permanent_failures:
+        # Surfaced separately on purpose. These never resolve on their own, so if they only
+        # ever appeared as "skipped" lines among outage noise nobody would ever fix them.
+        print(f"config_approval: {len(permanent_failures)} entr"
+              f"{'y' if len(permanent_failures) == 1 else 'ies'} were REJECTED and will fail "
+              f"identically every cycle until the value or schema is fixed: "
+              f"{', '.join(k for k, _ in permanent_failures[:10])}")
     if abandoned_at is not None and not (approved or gated):
         print(f"config_approval: no entries assessed of {len(rows)} — control plane unreachable")
     return approved, gated
