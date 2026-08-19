@@ -59,9 +59,12 @@ COOLDOWN_MAX = _cooldown_max()
 EXHAUSTED_FLAG = os.path.join(HOME, "claude_exhausted.json")
 
 
+import threading
+
 # Module-level cache for claude_exhausted(); avoids re-checking flag file/DB on every call.
 # Keys: t = timestamp of last check, v = cached boolean result.
 _EXH_CACHE = {"t": 0.0, "v": False}
+_EXH_LOCK = threading.Lock()
 
 
 def _api_billing_allowed():
@@ -91,13 +94,15 @@ def claude_exhausted():
     except Exception:
         pass
     now = time.time()
-    if now - _EXH_CACHE["t"] < 15:
-        return _EXH_CACHE["v"]
+    with _EXH_LOCK:
+        if now - _EXH_CACHE["t"] < 15:
+            return _EXH_CACHE["v"]
     try:
         v = AccountPool().all_exhausted()
     except Exception:
         v = False
-    _EXH_CACHE["t"], _EXH_CACHE["v"] = now, v
+    with _EXH_LOCK:
+        _EXH_CACHE["t"], _EXH_CACHE["v"] = now, v
     return v
 
 
@@ -217,31 +222,6 @@ class AccountPool:
         st = self.state.setdefault(a["name"], {})
         st["use_count"] = int(st.get("use_count", 0)) + 1
         self._save()
-
-    def stats(self):
-        """Return a summary dict for observability: total accounts, healthy count,
-        exhausted count, per-account cooldown state, and use counts."""
-        self._maybe_reload()
-        now = time.time()
-        entries = []
-        for a in self.accts:
-            st = self.state.get(a["name"], {})
-            cd_until = st.get("cooldown_until", 0)
-            entries.append({
-                "name": a["name"],
-                "type": a.get("type", "login"),
-                "healthy": now >= cd_until,
-                "cooldown_remaining_s": max(0, int(cd_until - now)),
-                "use_count": int(st.get("use_count", 0)),
-                "exh_hits": int(st.get("exh_hits", 0)),
-            })
-        healthy_count = sum(1 for e in entries if e["healthy"])
-        return {
-            "total": len(entries),
-            "healthy": healthy_count,
-            "exhausted": len(entries) - healthy_count,
-            "accounts": entries,
-        }
 
     def all_exhausted(self):
         """True iff no Claude account is currently healthy (every one is cooling down)."""
@@ -368,11 +348,14 @@ class AccountPool:
 
 # --- Module-level convenience functions (singleton pattern per CLAUDE.md) ---
 _pool = None
+_POOL_LOCK = threading.Lock()
 
 def _get_pool():
     global _pool
     if _pool is None:
-        _pool = AccountPool()
+        with _POOL_LOCK:
+            if _pool is None:
+                _pool = AccountPool()
     return _pool
 
 def stats():
@@ -382,31 +365,6 @@ def stats():
 def invalidate(name=None):
     """Module-level invalidate() delegating to singleton (per CLAUDE.md conventions)."""
     return _get_pool().invalidate(name)
-
-
-    def stats(self):
-        """Return a dict summarizing pool health for diagnostics and monitoring."""
-        self._maybe_reload()
-        now = time.time()
-        entries = []
-        for a in self.accts:
-            s = self.state.get(a["name"], {})
-            cd = float(s.get("cooldown_until", 0))
-            entries.append({
-                "name": a["name"],
-                "type": a.get("type", "login"),
-                "cooling": now < cd,
-                "cooldown_remaining_s": max(0, int(cd - now)) if now < cd else 0,
-                "use_count": s.get("use_count", 0),
-                "exh_hits": s.get("exh_hits", 0),
-            })
-        return {
-            "total": len(entries),
-            "healthy": sum(1 for e in entries if not e["cooling"]),
-            "cooling": sum(1 for e in entries if e["cooling"]),
-            "all_exhausted": self.all_exhausted(),
-            "accounts": entries,
-        }
 
 
 if __name__ == "__main__":
