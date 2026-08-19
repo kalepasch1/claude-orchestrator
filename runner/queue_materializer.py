@@ -108,6 +108,23 @@ def _parse_deps(value):
     return []
 
 
+def _pg_text_array(values):
+    """Render a Postgres text[] literal for a PostgREST `cs.` filter.
+
+    `deps` is `text[]`, not jsonb. `json.dumps(["a"])` produces `["a"]`, which
+    Postgres rejects with `malformed array literal` -- 93,048 times in a single
+    24-hour window, because both call sites swallowed the error and the caller
+    that needs it is recursive. The correct literal is `{"a"}`.
+
+    Values are double-quoted and internally escaped so a slug containing a comma,
+    brace, quote or backslash cannot break out of the literal.
+    """
+    parts = []
+    for value in values:
+        escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        parts.append('"' + escaped + '"')
+    return "{" + ",".join(parts) + "}"
+
 def _children_by_parent(parents):
     """Build parent->children using paginated reads instead of deps containment queries.
 
@@ -334,7 +351,7 @@ def _decomposition_depth(slug, seen=None):
     try:
         children = db.select("tasks", {
             "select": "slug,state",
-            "deps": f"cs.{json.dumps([slug])}",
+            "deps": f"cs.{_pg_text_array([slug])}",
             "state": "eq.DECOMPOSED",
             "limit": "10"
         }) or []
@@ -343,7 +360,12 @@ def _decomposition_depth(slug, seen=None):
             return 1
 
         return 1 + max(_decomposition_depth(c["slug"], seen) for c in children)
-    except Exception:
+    except Exception as exc:
+        # This used to be a bare `except: return 1`. It ran tens of thousands of
+        # times a day against a malformed filter and said nothing, because a depth
+        # of 1 is a plausible answer. Depth is still 1 on failure -- callers need a
+        # number -- but the reason is now visible.
+        print(f"[materializer] decomposition-depth probe failed for {slug}: {exc}", flush=True)
         return 1
 
 
@@ -352,7 +374,7 @@ def merge_overlapping_subtasks(parent_slug):
     try:
         children = db.select("tasks", {
             "select": "id,slug,prompt,state",
-            "deps": f"cs.{json.dumps([parent_slug])}",
+            "deps": f"cs.{_pg_text_array([parent_slug])}",
             "state": "eq.QUEUED",
             "limit": "50"
         }) or []
