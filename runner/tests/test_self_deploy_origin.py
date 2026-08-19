@@ -146,3 +146,76 @@ def test_maybe_deploy_reconciles_origin_before_judging_staleness(repos, monkeypa
     # No boot marker in a scratch clone -> staleness is unknown, not falsely "healthy".
     assert result["reason"] == "up-to-date"
     assert result["unknown"] is True
+
+
+# --- the merge must never happen in the live tree --------------------------------------
+# The live tree always carries in-flight agent edits, and this repo's pre-merge-commit
+# anti-regression guard scans the WORKING TREE. On 2026-08-18 an agent midway through
+# rewriting runner/tests/test_fleet_config_consumption.py made that guard report the
+# file's symbols as "GONE after the merge" and refuse EVERY merge commit — a file the
+# merge did not touch. Three already-merged PRs could not reach the running fleet, and
+# the rejected merge left a half-applied index that `git merge --abort` could not undo
+# (the hook rejection removes MERGE_HEAD).
+
+
+def _hook(repo, name, body):
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    path = hooks / name
+    path.write_text(body)
+    path.chmod(0o755)
+
+
+def test_merge_runs_on_a_scratch_checkout_not_the_live_tree(repos, tmp_path):
+    seed, node = repos
+    _commit(seed, "merged_pr.txt", "shipped\n", "merged PR")
+    _git(seed, "push", "origin", "master")
+    _commit(node, "local_work.txt", "direct-to-master\n", "fleet commit")
+    # An agent is mid-rewrite of an unrelated file when the reconcile fires.
+    (node / "agent_in_flight.txt").write_text("half-written\n")
+    _git(node, "add", "-A"); _git(node, "commit", "-m", "agent file")
+    (node / "agent_in_flight.txt").write_text("")          # uncommitted, mid-edit
+    # A guard that refuses whenever the WORKING TREE holds an empty tracked file. In the
+    # live tree this vetoes the merge; on a clean checkout it has nothing to complain about.
+    _hook(node, "pre-merge-commit",
+          "#!/bin/sh\n"
+          "if [ ! -s agent_in_flight.txt ]; then echo 'guard: in-flight file' >&2; exit 1; fi\n")
+
+    result = self_deploy.reconcile_origin(str(node))
+
+    assert result["action"] == "merged", result
+    assert (node / "merged_pr.txt").exists()
+    assert (node / "local_work.txt").exists()
+    assert (node / "agent_in_flight.txt").read_text() == "", "the agent's edit must survive"
+    assert _git(node, "rev-parse", "HEAD").stdout.strip() == result["merged"]
+
+
+def test_a_genuinely_refused_merge_leaves_the_live_tree_untouched(repos, monkeypatch):
+    seed, node = repos
+    _commit(seed, "merged_pr.txt", "shipped\n", "merged PR")
+    _git(seed, "push", "origin", "master")
+    _commit(node, "local_work.txt", "direct-to-master\n", "fleet commit")
+    before = _head(node)
+    _hook(node, "pre-merge-commit", "#!/bin/sh\necho 'guard: regression detected' >&2\nexit 1\n")
+    cards = []
+    monkeypatch.setattr(self_deploy.db, "insert", lambda *a, **k: cards.append((a, k)))
+
+    result = self_deploy.reconcile_origin(str(node))
+
+    assert result["action"] == "merge_failed"
+    assert "regression detected" in result["detail"]
+    assert _head(node) == before, "a refused merge must not move the live head"
+    assert _git(node, "status", "--porcelain").stdout.strip() == "", \
+        "and must not leave a half-applied index behind"
+    assert cards, "the refusal reason must be surfaced, not swallowed as a bare failure"
+
+
+def test_no_scratch_worktree_is_left_registered(repos):
+    seed, node = repos
+    _commit(seed, "merged_pr.txt", "shipped\n", "merged PR")
+    _git(seed, "push", "origin", "master")
+    _commit(node, "local_work.txt", "work\n", "fleet commit")
+
+    self_deploy.reconcile_origin(str(node))
+
+    assert "reconcile-wt" not in _git(node, "worktree", "list").stdout

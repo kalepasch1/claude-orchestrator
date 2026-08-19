@@ -86,6 +86,8 @@ TRACK_ORIGIN = (os.environ.get("ORCH_SELF_DEPLOY_TRACK_ORIGIN", "1").strip().low
                 not in ("0", "false", "no", "off"))
 ORIGIN_FETCH_TIMEOUT = int(os.environ.get("ORCH_ORIGIN_FETCH_TIMEOUT", "120"))
 ORIGIN_GIT_TIMEOUT = int(os.environ.get("ORCH_ORIGIN_GIT_TIMEOUT", "60"))
+RECONCILE_TIMEOUT = int(os.environ.get("ORCH_RECONCILE_TIMEOUT", "300"))
+RECONCILE_WORKTREE_DIR = os.environ.get("ORCH_RECONCILE_WORKTREE_DIR", "")
 DIVERGENCE_TITLE = "Self-deploy blocked: local master conflicts with origin"
 
 
@@ -123,18 +125,65 @@ def _remote_head(repo):
     return ""
 
 
-def _file_divergence_card(behind, remote_sha):
+def _file_divergence_card(behind, remote_sha, detail=""):
     try:
         db.insert("approvals", {
             "project": "ORCHESTRATOR", "kind": "self", "title": DIVERGENCE_TITLE,
             "why": f"{behind} commit(s) merged on {ORIGIN_REMOTE}/{ORIGIN_BRANCH} "
-                   f"({remote_sha[:8]}) cannot be merged into this node's master without "
-                   f"conflicts, so already-merged work is not running here.",
+                   f"({remote_sha[:8]}) cannot be merged into this node's master, so "
+                   f"already-merged work is not running here."
+                   + (f"\n\n{detail.strip()[:1500]}" if detail else ""),
             "value": "Resolve the divergence once and every merged PR goes live.",
             "risk": "None — nothing was force-resolved; the running code keeps serving.",
             "command": f"git merge {ORIGIN_REMOTE}/{ORIGIN_BRANCH}"})
     except Exception:
         pass  # unique partial index on (kind,title) rejects duplicates — fine
+
+
+def _reconcile_worktree_path(repo):
+    return RECONCILE_WORKTREE_DIR or os.path.join(repo, ".runtime", "reconcile-wt")
+
+
+def merge_in_scratch(repo, head, remote):
+    """Merge `remote` into `head` on a CLEAN checkout. Returns (merged_sha, detail).
+
+    Never merges in the live tree. The live tree always carries in-flight agent edits,
+    and this repo's pre-merge-commit anti-regression guard scans the WORKING TREE — so an
+    agent midway through rewriting ANY file makes the guard report that file's symbols as
+    "GONE after the merge" and refuse the merge commit, even though the merge does not
+    touch it. Observed 2026-08-18: an agent rewriting test_fleet_config_consumption.py
+    blocked every merge into master on this node, and three already-merged PRs could not
+    reach the running fleet.
+
+    Merging on a scratch checkout lets the guard judge the MERGE rather than somebody's
+    work in progress, and it means a rejected merge leaves nothing to unwind: the whole
+    checkout is thrown away. The caller then fast-forwards the live branch, which touches
+    only the files the merge actually changed and refuses (rather than clobbers) if that
+    would overwrite an agent's uncommitted work.
+    """
+    path = _reconcile_worktree_path(repo)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError as exc:
+        return "", f"cannot create the scratch worktree directory: {exc}"
+    remove_worktree(repo, path)  # a leftover from a killed run must not be reused
+    added = _git(repo, ["worktree", "add", "--detach", "--force", path, head],
+                 RECONCILE_TIMEOUT)
+    if added is None or added.returncode != 0:
+        detail = (added.stderr or "").strip() if added else "git failed"
+        return "", f"scratch worktree add failed: {detail[:400]}"
+    try:
+        merged = _git(path, ["merge", "--no-edit", remote], RECONCILE_TIMEOUT)
+        if merged is None or merged.returncode != 0:
+            out = (((merged.stdout or "") + (merged.stderr or "")).strip()
+                   if merged else "git failed")
+            return "", out[-1500:]
+        sha = _git(path, ["rev-parse", "HEAD"])
+        if sha is None or sha.returncode != 0 or not sha.stdout.strip():
+            return "", "the scratch merge produced no commit"
+        return sha.stdout.strip(), ""
+    finally:
+        remove_worktree(repo, path)
 
 
 def reconcile_origin(repo):
@@ -146,6 +195,10 @@ def reconcile_origin(repo):
       * otherwise merge ONLY after `git merge-tree` proves in memory that the merge is
         conflict-free, so the working tree is never left holding conflict markers (that
         exact failure mode stalled the whole fleet — see auto_conflict_resolver);
+      * that merge happens on a SCRATCH CHECKOUT, never in the live tree, and the live
+        branch is then fast-forwarded onto the result. The live tree always carries
+        in-flight agent edits and the pre-merge-commit guard scans the working tree, so
+        merging in place made an agent's half-written file veto every merge;
       * a conflicting divergence is REPORTED, never force-resolved, never reset --hard.
 
     Never raises. Returns a dict describing what happened.
@@ -183,16 +236,27 @@ def reconcile_origin(repo):
         _file_divergence_card(behind, remote)
         return {"tracked": True, "ok": False, "action": "conflicted",
                 "remote": remote, "behind": behind}
-    if not _git_ok(repo, ["merge", "--no-edit", remote]):
-        _git(repo, ["merge", "--abort"])
-        print(f"self_deploy: merge of {ORIGIN_REMOTE}/{ORIGIN_BRANCH} {remote[:8]} could "
-              f"not be applied to the working tree — aborted, nothing changed")
+    # Merge on a clean checkout, then fast-forward the live branch onto the result.
+    merged, detail = merge_in_scratch(repo, head, remote)
+    if not merged:
+        print(f"self_deploy: merge of {ORIGIN_REMOTE}/{ORIGIN_BRANCH} {remote[:8]} was "
+              f"refused on a clean checkout — nothing was changed here.\n{detail}")
+        _file_divergence_card(behind, remote, detail)
         return {"tracked": True, "ok": False, "action": "merge_failed",
-                "remote": remote, "behind": behind}
+                "remote": remote, "behind": behind, "detail": detail[:500]}
+    ff = _git(repo, ["merge", "--ff-only", merged])
+    if ff is None or ff.returncode != 0:
+        why = (ff.stderr or "").strip()[:400] if ff else "git failed"
+        print(f"self_deploy: merged {remote[:8]} cleanly as {merged[:8]} but could not "
+              f"fast-forward the live tree onto it (in-flight work would be "
+              f"overwritten) — leaving it alone.\n{why}")
+        _file_divergence_card(behind, remote, why)
+        return {"tracked": True, "ok": False, "action": "fast_forward_failed",
+                "remote": remote, "behind": behind, "merged": merged, "detail": why}
     print(f"self_deploy: absorbed {behind} commit(s) from {ORIGIN_REMOTE}/"
           f"{ORIGIN_BRANCH} {remote[:8]}")
     return {"tracked": True, "ok": True, "action": "merged", "remote": remote,
-            "behind": behind}
+            "behind": behind, "merged": merged}
 
 
 def current_commit(repo):
@@ -356,8 +420,8 @@ def pin_checkout(repo, commit):
     return path
 
 
-def unpin(repo, path):
-    """Remove the pinned checkout. Best effort; never raises."""
+def remove_worktree(repo, path):
+    """Remove a scratch worktree and forget it. Best effort; never raises."""
     if not path:
         return
     _git(repo, ["worktree", "remove", "--force", path], CANARY_WORKTREE_TIMEOUT)
@@ -368,6 +432,11 @@ def unpin(repo, path):
         except Exception:
             pass
     _git(repo, ["worktree", "prune"])
+
+
+def unpin(repo, path):
+    """Remove the pinned canary checkout."""
+    remove_worktree(repo, path)
 
 
 def canary_gate(repo, base_commit=None, head_commit="HEAD"):
