@@ -4,6 +4,10 @@ self_deploy.py - merged code takes effect WITHOUT a human restart. hot_reload.py
 live-swaps leaf modules, but the entrypoint (runner.py) and low-level modules are excluded;
 this closes that gap with a cooperative, test-gated restart:
 
+  reconcile_origin(repo)-> absorb origin/master into the local deployable head, so a PR
+                           merged on origin actually reaches the running fleet. Fast-forward
+                           when purely behind; merge only when `git merge-tree` proves the
+                           merge is conflict-free; report (never force-resolve) otherwise.
   check_new_code(repo)  -> {"running_commit","head_commit","stale"}: the commit the runner
                            BOOTED on (env ORCH_BOOT_COMMIT, else <repo>/.runner_boot_commit)
                            vs current git HEAD.
@@ -52,6 +56,121 @@ CRITICAL_CANARY_TESTS = (
     "runner/tests/test_release_manifest_binding.py",
     "runner/tests/test_release_push_fast_forward.py",
 )
+
+
+# --- origin tracking -------------------------------------------------------
+# self_deploy compares the RUNNING commit to the LOCAL HEAD. Nothing in that loop ever
+# consulted the remote, so a PR merged on origin was invisible to the running fleet: the
+# node's master kept advancing on its own direct-to-master commits, self_deploy reported
+# "up-to-date" against that local head, and every merged PR sat on origin without ever
+# executing. reconcile_origin() closes that gap before staleness is evaluated.
+ORIGIN_REMOTE = os.environ.get("ORCH_ORIGIN_REMOTE", "origin")
+ORIGIN_BRANCH = os.environ.get("ORCH_ORIGIN_BRANCH", "master")
+TRACK_ORIGIN = (os.environ.get("ORCH_SELF_DEPLOY_TRACK_ORIGIN", "1").strip().lower()
+                not in ("0", "false", "no", "off"))
+ORIGIN_FETCH_TIMEOUT = int(os.environ.get("ORCH_ORIGIN_FETCH_TIMEOUT", "120"))
+ORIGIN_GIT_TIMEOUT = int(os.environ.get("ORCH_ORIGIN_GIT_TIMEOUT", "60"))
+DIVERGENCE_TITLE = "Self-deploy blocked: local master conflicts with origin"
+
+
+def _git(repo, args, timeout=None):
+    """Run a git command in repo. CompletedProcess, or None when it could not run."""
+    try:
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                              text=True, timeout=timeout or ORIGIN_GIT_TIMEOUT)
+    except Exception:
+        return None
+
+
+def _git_ok(repo, args, timeout=None):
+    r = _git(repo, args, timeout)
+    return bool(r) and r.returncode == 0
+
+
+def _is_ancestor(repo, a, b):
+    """True when commit a is already contained in commit b."""
+    return _git_ok(repo, ["merge-base", "--is-ancestor", a, b])
+
+
+def _remote_head(repo):
+    """SHA of the freshly fetched remote branch. Empty string when unresolvable."""
+    for ref in (f"{ORIGIN_REMOTE}/{ORIGIN_BRANCH}", "FETCH_HEAD"):
+        r = _git(repo, ["rev-parse", ref])
+        if r and r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return ""
+
+
+def _file_divergence_card(behind, remote_sha):
+    try:
+        db.insert("approvals", {
+            "project": "ORCHESTRATOR", "kind": "self", "title": DIVERGENCE_TITLE,
+            "why": f"{behind} commit(s) merged on {ORIGIN_REMOTE}/{ORIGIN_BRANCH} "
+                   f"({remote_sha[:8]}) cannot be merged into this node's master without "
+                   f"conflicts, so already-merged work is not running here.",
+            "value": "Resolve the divergence once and every merged PR goes live.",
+            "risk": "None — nothing was force-resolved; the running code keeps serving.",
+            "command": f"git merge {ORIGIN_REMOTE}/{ORIGIN_BRANCH}"})
+    except Exception:
+        pass  # unique partial index on (kind,title) rejects duplicates — fine
+
+
+def reconcile_origin(repo):
+    """Make the deployable HEAD contain everything already merged on origin.
+
+    Non-destructive by construction — this runs against the live tree the fleet is
+    executing, so it may never discard local work:
+      * fast-forward when this node is purely behind;
+      * otherwise merge ONLY after `git merge-tree` proves in memory that the merge is
+        conflict-free, so the working tree is never left holding conflict markers (that
+        exact failure mode stalled the whole fleet — see auto_conflict_resolver);
+      * a conflicting divergence is REPORTED, never force-resolved, never reset --hard.
+
+    Never raises. Returns a dict describing what happened.
+    """
+    if not TRACK_ORIGIN:
+        return {"tracked": False, "ok": True, "action": "disabled"}
+    if not _git_ok(repo, ["fetch", ORIGIN_REMOTE, ORIGIN_BRANCH], ORIGIN_FETCH_TIMEOUT):
+        return {"tracked": True, "ok": False, "action": "fetch_failed"}
+    remote, head = _remote_head(repo), current_commit(repo)
+    if not remote or not head:
+        return {"tracked": True, "ok": False, "action": "no_refs"}
+    if _is_ancestor(repo, remote, head):
+        return {"tracked": True, "ok": True, "action": "already_current",
+                "remote": remote, "behind": 0}
+    r = _git(repo, ["rev-list", "--count", f"{head}..{remote}"])
+    out = (r.stdout.strip() if r and r.returncode == 0 else "")
+    behind = int(out) if out.isdigit() else 0
+    if _is_ancestor(repo, head, remote):
+        if _git_ok(repo, ["merge", "--ff-only", remote]):
+            print(f"self_deploy: fast-forwarded to {ORIGIN_REMOTE}/{ORIGIN_BRANCH} "
+                  f"{remote[:8]} (+{behind})")
+            return {"tracked": True, "ok": True, "action": "fast_forward",
+                    "remote": remote, "behind": behind}
+        return {"tracked": True, "ok": False, "action": "fast_forward_failed",
+                "remote": remote, "behind": behind}
+    mt = _git(repo, ["merge-tree", "--write-tree", head, remote])
+    if mt is None or mt.returncode not in (0, 1):
+        # Unsupported/erroring merge-tree must not be misread as "conflicted": say so and
+        # leave the tree alone rather than merging blind.
+        return {"tracked": True, "ok": False, "action": "merge_check_unavailable",
+                "remote": remote, "behind": behind}
+    if mt.returncode == 1:
+        print(f"self_deploy: local {ORIGIN_BRANCH} conflicts with {ORIGIN_REMOTE}/"
+              f"{ORIGIN_BRANCH} {remote[:8]} (+{behind}) — reporting, not force-resolving")
+        _file_divergence_card(behind, remote)
+        return {"tracked": True, "ok": False, "action": "conflicted",
+                "remote": remote, "behind": behind}
+    if not _git_ok(repo, ["merge", "--no-edit", remote]):
+        _git(repo, ["merge", "--abort"])
+        print(f"self_deploy: merge of {ORIGIN_REMOTE}/{ORIGIN_BRANCH} {remote[:8]} could "
+              f"not be applied to the working tree — aborted, nothing changed")
+        return {"tracked": True, "ok": False, "action": "merge_failed",
+                "remote": remote, "behind": behind}
+    print(f"self_deploy: absorbed {behind} commit(s) from {ORIGIN_REMOTE}/"
+          f"{ORIGIN_BRANCH} {remote[:8]}")
+    return {"tracked": True, "ok": True, "action": "merged", "remote": remote,
+            "behind": behind}
 
 
 def current_commit(repo):
@@ -239,25 +358,29 @@ def _file_blocked_card():
 
 def maybe_deploy(repo=None):
     """Full self-deploy flow. Logs, never raises."""
+    origin = {}
     try:
         repo = repo or os.path.dirname(_DIR)
+        # Merged-on-origin has to become running-here. Absorb origin FIRST, so staleness
+        # is judged against a head that actually contains the merged PRs.
+        origin = reconcile_origin(repo)
         st = check_new_code(repo)
         if not st["stale"]:
             print(f"self_deploy: up-to-date "
                   f"(running={st['running_commit'][:8] or '?'})")
-            return {"deployed": False, "reason": "up-to-date", **st}
+            return {"deployed": False, "reason": "up-to-date", "origin": origin, **st}
         print(f"self_deploy: new code {st['head_commit'][:8]} "
               f"(running {st['running_commit'][:8]}) — running canary gate")
         if not canary_gate(repo, st["running_commit"], st["head_commit"]):
             print("self_deploy: BLOCKED — tests failing; filing approvals card")
             _file_blocked_card()
-            return {"deployed": False, "reason": "canary_failed", **st}
+            return {"deployed": False, "reason": "canary_failed", "origin": origin, **st}
         request_restart(f"new code {st['head_commit'][:8]} passed canary gate")
         print(f"self_deploy: restart requested into {st['head_commit'][:8]}")
-        return {"deployed": True, "reason": "restart_requested", **st}
+        return {"deployed": True, "reason": "restart_requested", "origin": origin, **st}
     except Exception as e:
         print(f"self_deploy: skipped ({e})")
-        return {"deployed": False, "reason": f"error: {e}"}
+        return {"deployed": False, "reason": f"error: {e}", "origin": origin}
 
 
 if __name__ == "__main__":
