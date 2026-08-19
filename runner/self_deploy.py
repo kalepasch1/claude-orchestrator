@@ -12,10 +12,12 @@ this closes that gap with a cooperative, test-gated restart:
                            BOOTED on (env ORCH_BOOT_COMMIT, else <repo>/.runner_boot_commit)
                            vs current git HEAD.
   canary_gate(repo)     -> compile the runner, collect the complete test suite, then run a
-                           bounded critical + change-matched test set. True only when every
-                           stage exits 0. This keeps the restart gate passable as the full
-                           suite grows while still failing closed on syntax, collection and
-                           relevant behavioral regressions.
+                           bounded critical + change-matched test set, all inside an
+                           EPHEMERAL CHECKOUT PINNED TO THE CANDIDATE COMMIT — never the
+                           live tree, which the fleet keeps committing to while the gate
+                           runs. True only when every stage exits 0. This keeps the restart
+                           gate passable as the full suite grows while still failing closed
+                           on syntax, collection and relevant behavioral regressions.
   request_restart(why)  -> touch runner/.restart_requested (reason + timestamp) AND insert a
                            notifications digest row. The MAIN LOOP (wired separately) checks
                            this file BETWEEN tasks and sys.exit(0)s cleanly; keepalive.sh
@@ -40,6 +42,20 @@ BLOCK_TITLE = "Self-deploy blocked: bounded release canary failed"
 CANARY_TIMEOUT = int(os.environ.get("ORCH_CANARY_TIMEOUT", "300"))
 CANARY_COLLECTION_TIMEOUT = int(os.environ.get("ORCH_CANARY_COLLECTION_TIMEOUT", "180"))
 CANARY_MAX_CHANGED_TESTS = int(os.environ.get("ORCH_CANARY_MAX_CHANGED_TESTS", "60"))
+# The gate used to run in the LIVE tree — the one the fleet is committing to while the
+# gate runs. A four-minute canary was therefore verifying a moving target: files changed
+# mid-run, uncommitted cruft (conflict markers, half-applied merges) was read as if it
+# were the candidate, and load from the same tree's workers pushed per-test timeouts over.
+# Pinning to a clean detached checkout of the exact candidate SHA makes the gate verify
+# the thing it is about to deploy, and nothing else.
+CANARY_PINNED = (os.environ.get("ORCH_CANARY_PINNED", "1").strip().lower()
+                 not in ("0", "false", "no", "off"))
+CANARY_WORKTREE_DIR = os.environ.get("ORCH_CANARY_WORKTREE_DIR", "")
+CANARY_WORKTREE_TIMEOUT = int(os.environ.get("ORCH_CANARY_WORKTREE_TIMEOUT", "300"))
+# Enough of both ends that canary_triage can classify the failure. The old tail-only
+# 2000 chars routinely captured nothing but a daemon thread's stack from a timeout dump.
+GATE_LOG_HEAD = int(os.environ.get("ORCH_CANARY_LOG_HEAD", "3000"))
+GATE_LOG_TAIL = int(os.environ.get("ORCH_CANARY_LOG_TAIL", "6000"))
 
 # These protect the exact path that turns merged code into running code, plus the release
 # truth/terminal-state fixes that prevent "merged" from being mistaken for "visible".
@@ -90,6 +106,12 @@ def _git_ok(repo, args, timeout=None):
 def _is_ancestor(repo, a, b):
     """True when commit a is already contained in commit b."""
     return _git_ok(repo, ["merge-base", "--is-ancestor", a, b])
+
+
+def _resolve(repo, rev):
+    """Full SHA for rev, or '' — a pin must never guess which commit it is verifying."""
+    r = _git(repo, ["rev-parse", rev or "HEAD"])
+    return r.stdout.strip() if r and r.returncode == 0 else ""
 
 
 def _remote_head(repo):
@@ -274,9 +296,23 @@ def _selected_tests(repo, changed_files):
     return critical + relevant
 
 
-def _run_gate_stage(label, cmd, repo, timeout):
+def _excerpt(text):
+    """Head AND tail of gate output.
+
+    Tail-only truncation kept losing the failure itself: a pytest-timeout dump ends with
+    an idle daemon thread's stack, so the log carried that and nothing about the test that
+    actually hung — and canary_triage classifies from this text.
+    """
+    t = (text or "").strip()
+    if len(t) <= GATE_LOG_HEAD + GATE_LOG_TAIL:
+        return t
+    dropped = len(t) - GATE_LOG_HEAD - GATE_LOG_TAIL
+    return (t[:GATE_LOG_HEAD] + f"\n... [{dropped} chars omitted] ...\n" + t[-GATE_LOG_TAIL:])
+
+
+def _run_gate_stage(label, cmd, workdir, timeout):
     try:
-        r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         print(f"self_deploy: {label} timed out after {timeout}s")
         return False
@@ -284,11 +320,54 @@ def _run_gate_stage(label, cmd, repo, timeout):
         print(f"self_deploy: {label} failed to run ({e})")
         return False
     if r.returncode != 0:
-        tail = ((r.stdout or "") + (r.stderr or ""))[-2000:].strip()
+        detail = _excerpt((r.stdout or "") + (r.stderr or ""))
         print(f"self_deploy: {label} red (rc={r.returncode})" +
-              (f"\n{tail}" if tail else ""))
+              (f"\n{detail}" if detail else ""))
         return False
     return True
+
+
+def _canary_worktree_path(repo):
+    return CANARY_WORKTREE_DIR or os.path.join(repo, ".runtime", "canary-pin")
+
+
+def pin_checkout(repo, commit):
+    """Clean detached checkout of `commit`, or None when one cannot be made.
+
+    None is not a failure of the gate — the caller falls back to the live tree. A canary
+    that refused to run because a worktree could not be created would be a new way to
+    stall the fleet, and stalling the fleet is the thing being fixed.
+    """
+    if not CANARY_PINNED or not commit:
+        return None
+    path = _canary_worktree_path(repo)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError:
+        return None
+    unpin(repo, path)  # a leftover from a killed run must not be reused
+    r = _git(repo, ["worktree", "add", "--detach", "--force", path, commit],
+             CANARY_WORKTREE_TIMEOUT)
+    if r is None or r.returncode != 0:
+        print("self_deploy: could not pin a clean checkout "
+              f"({(r.stderr or '').strip()[:200] if r else 'git failed'}) — "
+              "falling back to the live tree")
+        return None
+    return path
+
+
+def unpin(repo, path):
+    """Remove the pinned checkout. Best effort; never raises."""
+    if not path:
+        return
+    _git(repo, ["worktree", "remove", "--force", path], CANARY_WORKTREE_TIMEOUT)
+    if os.path.exists(path):
+        try:
+            import shutil
+            shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
+    _git(repo, ["worktree", "prune"])
 
 
 def canary_gate(repo, base_commit=None, head_commit="HEAD"):
@@ -305,23 +384,33 @@ def canary_gate(repo, base_commit=None, head_commit="HEAD"):
         print("self_deploy: cannot establish boot-to-head diff — failing closed")
         return False
 
-    if not _run_gate_stage(
-            "compile gate", ["python3", "-m", "compileall", "-q", "runner"],
-            repo, min(CANARY_TIMEOUT, 120)):
-        return False
+    # Verify the candidate itself, in isolation from the tree the fleet is still writing to.
+    candidate = _resolve(repo, head_commit)
+    pinned = pin_checkout(repo, candidate)
+    workdir = pinned or repo
+    if pinned:
+        print(f"self_deploy: canary pinned to a clean checkout of {candidate[:8]}")
+    try:
+        if not _run_gate_stage(
+                "compile gate", ["python3", "-m", "compileall", "-q", "runner"],
+                workdir, min(CANARY_TIMEOUT, 120)):
+            return False
 
-    collect = ["python3", "-m", "pytest", "runner/tests", "--collect-only", "-q"]
-    if not _run_gate_stage("collection gate", collect, repo, CANARY_COLLECTION_TIMEOUT):
-        return False
+        collect = ["python3", "-m", "pytest", "runner/tests", "--collect-only", "-q"]
+        if not _run_gate_stage("collection gate", collect, workdir,
+                               CANARY_COLLECTION_TIMEOUT):
+            return False
 
-    tests = _selected_tests(repo, changed)
-    if not tests:
-        print("self_deploy: no critical canary tests found — failing closed")
-        return False
-    cmd = ["python3", "-m", "pytest", *tests, "-q", "-x"]
-    if _pytest_timeout_available():
-        cmd.append("--timeout=120")
-    return _run_gate_stage("bounded behavior gate", cmd, repo, CANARY_TIMEOUT)
+        tests = _selected_tests(workdir, changed)
+        if not tests:
+            print("self_deploy: no critical canary tests found — failing closed")
+            return False
+        cmd = ["python3", "-m", "pytest", *tests, "-q", "-x"]
+        if _pytest_timeout_available():
+            cmd.append("--timeout=120")
+        return _run_gate_stage("bounded behavior gate", cmd, workdir, CANARY_TIMEOUT)
+    finally:
+        unpin(repo, pinned)
 
 
 def request_restart(reason):

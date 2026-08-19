@@ -1225,9 +1225,12 @@ def run_markersentinel():
     reach master (one such file breaks every compile/collection/canary gate) OR sit
     uncommitted in this node's working tree (the pre-merge-commit anti-regression guard
     scans the working tree, so one such file makes git refuse EVERY merge commit here)."""
-    import conflict_marker_sentinel, enqueue
+    import conflict_marker_sentinel, swarm_enqueue
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    res = conflict_marker_sentinel.sweep(repo, enqueue.enqueue_task)
+    # NOT enqueue.enqueue_task: that takes three required keyword-only callables, so the
+    # one-argument call every swarm bot makes raised TypeError — swallowed by the bot's
+    # own `except Exception: filed = False`. This job was wired but inert until now.
+    res = conflict_marker_sentinel.sweep(repo, swarm_enqueue.enqueue)
     if res.get("found"):
         print(f"conflict_marker_sentinel: {len(res['found'])} file(s) with conflict "
               f"markers on HEAD; remediation filed={res['filed']}")
@@ -1235,6 +1238,39 @@ def run_markersentinel():
         print(f"conflict_marker_sentinel: {len(res['worktree'])} UNCOMMITTED file(s) with "
               f"conflict markers in the working tree — merge commits are blocked on this "
               f"node; remediation filed={res['filed']}")
+
+
+SELF_DEPLOY_LOG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".runtime", "logs", "self-deploy.log")
+CANARYWATCH_TAIL_BYTES = int(os.environ.get("ORCH_CANARYWATCH_TAIL_BYTES", "200000"))
+
+
+def run_canarywatch():
+    """Zero-token swarm bots #5 + #3: read the self-deploy log and, on a canary_failed
+    verdict, classify the failure and file the matching tier-1 remediation.
+
+    A red canary holds the running (green) version, so it stops the fleet from deploying
+    ANYTHING already merged until someone looks. Both bots landed pure and injectable and
+    were never wired, so nobody ever looked automatically. Only the tail is read: the log
+    is append-only and already 3MB+, and self_deploy_watchdog only needs the LAST verdict.
+    """
+    import self_deploy_watchdog, swarm_enqueue
+    try:
+        with open(SELF_DEPLOY_LOG, "rb") as fh:
+            try:
+                fh.seek(-CANARYWATCH_TAIL_BYTES, os.SEEK_END)
+            except OSError:
+                fh.seek(0)                      # log shorter than the tail window
+            text = fh.read().decode("utf-8", "replace")
+    except OSError as exc:
+        print(f"canarywatch: no self-deploy log to read ({exc})")
+        return None
+    res = self_deploy_watchdog.watch(text, swarm_enqueue.enqueue)
+    if res.get("action") == "triaged":
+        print(f"canarywatch: canary_failed at head {str(res.get('head') or '?')[:8]} "
+              f"classified as {res.get('class')}; remediation filed={res.get('filed')}")
+    return res
 
 
 JOBS = {
@@ -1270,6 +1306,7 @@ JOBS = {
     "dedup": run_dedup,
     "conflictresolve": run_conflictresolve,
     "markersentinel": run_markersentinel,
+    "canarywatch": run_canarywatch,
     "contcompact": run_contcompact,
     "backlogcompact": run_backlogcompact,
     "canaryecon": run_canaryecon,
