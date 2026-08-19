@@ -2940,6 +2940,7 @@ _SCHEDULE = [
     ("ev-900",        "ev_scheduler.py",    "interval", 900),   # EV-per-token queue ordering + zero-EV parking
     ("codercanary-1800","coder_canary.py",  "interval", 1800),  # force low-risk per-coder samples for learned routing
     ("routereplay-1800","route_counterfactual.py","interval",1800), # evaluate 50 route policies on one captured trace
+    ("cfr-3600","counterfactual_replay.py","interval",3600), # replay past decisions with updated models to detect policy divergence
     ("releaseattr-600","release_attribution.py","interval",600), # exact task/commit/release causal attribution backfill
     ("ollamacal-3600","ollama_calibrator.py","interval",3600),  # calibrate local model pass rate/latency for routing
     ("histmodel-night","model_historical_canary.py","daily",(1, 20)), # real merged-task canaries per local model

@@ -34,20 +34,23 @@ SAMPLE_SIZE = int(os.environ.get("ORCH_REPLAY_SAMPLE_SIZE", "100"))
 def _fetch_recent_decisions(lookback_days=None, limit=None):
     """Fetch completed tasks with routing metadata from the last N days."""
     import db
-    lookback = lookback_days or LOOKBACK_DAYS
-    limit = limit or SAMPLE_SIZE
-    cutoff = time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ",
-        time.gmtime(time.time() - lookback * 86400),
-    )
-    tasks = db.select("tasks", {
-        "select": "id,slug,kind,project_id,state,note,force_coder,attempt,updated_at",
-        "state": "in.(DONE,MERGED)",
-        "updated_at": f"gte.{cutoff}",
-        "order": "updated_at.desc",
-        "limit": str(limit),
-    }) or []
-    return tasks
+    try:
+        lookback = lookback_days or LOOKBACK_DAYS
+        limit = limit or SAMPLE_SIZE
+        cutoff = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() - lookback * 86400),
+        )
+        tasks = db.select("tasks", {
+            "select": "id,slug,kind,project_id,state,note,force_coder,attempt,updated_at",
+            "state": "in.(DONE,MERGED)",
+            "updated_at": f"gte.{cutoff}",
+            "order": "updated_at.desc",
+            "limit": str(limit),
+        }) or []
+        return tasks
+    except Exception:
+        return []
 
 
 def _current_model_roster():
@@ -81,6 +84,17 @@ def replay_decision(task, roster):
         quality_delta     — quality improvement if switched
         task_slug         — for logging
     """
+    if not task or not isinstance(task, dict):
+        return {
+            "changed": False,
+            "original_coder": "unknown",
+            "recommended": "unknown",
+            "quality_delta": 0.0,
+            "original_quality": 0.0,
+            "best_quality": 0.0,
+            "task_slug": "",
+            "task_kind": "build",
+        }
     original = task.get("force_coder") or "unknown"
     kind = task.get("kind", "build")
     slug = task.get("slug", "")
