@@ -107,20 +107,54 @@ def _fingerprint(key: str, value: str) -> str:
     return hashlib.sha1(f"{key}\x00{value}".encode()).hexdigest()[:16]
 
 
-def _seen_fingerprints() -> set:
-    """Fingerprints of config entries already assessed (any decision status)."""
-    try:
-        rows = db.select("approvals", {
-            "select": "detail", "kind": "eq.config", "limit": "2000",
-        }) or []
-        fps = set()
+SEEN_LOOKUP_CHUNK = int(os.environ.get("ORCH_CONFIG_APPROVAL_SEEN_CHUNK", "80"))
+
+
+def _seen_fingerprints(fingerprints) -> set:
+    """Which of `fingerprints` have already been assessed (any decision status).
+
+    Asks about EXACTLY the entries in this pass. The previous version asked the opposite
+    question — "give me 2000 config approvals, any 2000" — and built the seen-set from
+    whatever came back, unordered. That is a truncated scan of the kind db.py's own
+    TRUNCATED-SCAN DETECTOR was written for, and it had gone catastrophic: 77,206 config
+    approval rows for 205 distinct fingerprints, 7,386 of them written in the last 24 hours.
+
+    The loop is self-amplifying, which is why it ran away rather than plateauing. Every row
+    the sweep re-files makes the table bigger; a bigger table makes the fixed 2000-row window
+    a smaller fraction of it; a smaller fraction means more keys look unseen next pass. It
+    ends with essentially every key re-filed every cycle, forever.
+
+    It was also a direct multiplier on the 2026-08-19 outage: ~200 pointless writes per
+    cycle, each paying a full request timeout while the plane was 522ing. The "60 skipped
+    lines per cycle and nothing else" symptom was this.
+
+    Bounded by the size of THIS pass (<= `limit` fleet_config rows), not by the table.
+    The durable guarantee is the partial unique index on approvals(detail) WHERE
+    kind='config' — this query is the cheap path that avoids provoking it.
+    """
+    wanted = sorted({fp for fp in fingerprints if fp})
+    if not wanted:
+        return set()
+    seen = set()
+    for start in range(0, len(wanted), SEEN_LOOKUP_CHUNK):
+        chunk = wanted[start:start + SEEN_LOOKUP_CHUNK]
+        try:
+            rows = db.select("approvals", {
+                "select": "detail", "kind": "eq.config",
+                "detail": "in.({})".format(",".join(f"fp:{fp}" for fp in chunk)),
+            }) or []
+        except Exception:
+            # Fail toward NOT re-filing. An unreadable dedup index is a reason to skip this
+            # chunk for one cycle, never a reason to re-file every key in it — that is the
+            # runaway the fix above exists to end, and it would fire hardest during exactly
+            # the control-plane trouble that caused the read to fail.
+            seen.update(chunk)
+            continue
         for r in rows:
             d = str(r.get("detail") or "")
             if d.startswith("fp:"):
-                fps.add(d[3:])
-        return fps
-    except Exception:
-        return set()
+                seen.add(d[3:])
+    return seen
 
 
 def blocked_keys() -> set:
@@ -152,7 +186,6 @@ def sweep(limit: int = 200) -> tuple:
     if not ENABLED:
         return 0, 0
 
-    seen = _seen_fingerprints()
     try:
         rows = db.select("fleet_config", {
             "select": "key,value,note,updated_by",
@@ -160,6 +193,13 @@ def sweep(limit: int = 200) -> tuple:
         }) or []
     except Exception:
         return 0, 0
+
+    # Fingerprint first, THEN ask which of these are already assessed. The order matters:
+    # the lookup is now scoped to this pass's entries, so it cannot be outgrown by the
+    # approvals table the way an unordered "any 2000 rows" window was.
+    fingerprints = {_fingerprint(str(r.get("key") or ""), str(r.get("value") or ""))
+                    for r in rows if r.get("key")}
+    seen = _seen_fingerprints(fingerprints)
 
     approved = gated = consecutive_errors = 0
     abandoned_at = None

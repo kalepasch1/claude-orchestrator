@@ -30,7 +30,7 @@ this closes that gap with a cooperative, test-gated restart:
                            partial index on (kind,title) may reject dupes — caught+ignored).
                            Never raises; safe to call every loop.
 """
-import glob, os, sys, time, datetime, subprocess
+import glob, os, re, sys, time, datetime, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -100,6 +100,11 @@ CRITICAL_CANARY_TESTS = (
     "runner/tests/test_self_deploy.py",
     "runner/tests/test_self_deploy_canary.py",
     "runner/tests/test_self_deploy_boot_marker.py",
+    # The gate's own hermeticity and the origin-reconcile path are as load-bearing as
+    # anything else here, and both were absent: a bad CANARY_ENV_SENTINELS entry or a
+    # mis-classified fast-forward failure would have shipped through a green canary.
+    "runner/tests/test_self_deploy_hermetic_gate.py",
+    "runner/tests/test_self_deploy_ff_lock_contention.py",
     "runner/tests/test_all_modules_importable.py",
     "runner/tests/test_runner_core.py",
     "runner/tests/test_integration_sweeper.py",
@@ -223,6 +228,54 @@ def merge_in_scratch(repo, head, remote):
         remove_worktree(repo, path)
 
 
+# git serializes ref updates with a lockfile, and the live tree is a SHARED workspace: the
+# merge train, stash apply, auto_conflict_resolver and every agent commit are all taking
+# .git/HEAD.lock continuously. `git merge --ff-only` needs that lock, so on a busy node it
+# loses the race — observed on mac-lan 2026-08-19, where self_deploy merged origin cleanly
+# on a scratch checkout every single cycle and then failed to fast-forward the live branch
+# onto the result, for hours, while the node stayed 2 commits behind origin.
+#
+# Two separate bugs came out of that. Retrying is this one; the message is the other. Lock
+# contention is transient and the correct response is to wait and try again, so retry inside
+# the pass rather than surrendering a whole 180s cycle to a lock that clears in seconds.
+_LOCK_CONTENTION_RX = re.compile(
+    r"cannot lock ref|unable to create '[^']*\.lock'|\.lock': File exists|"
+    r"another git process seems to be running|index\.lock", re.I)
+FF_LOCK_RETRIES = int(os.environ.get("ORCH_FF_LOCK_RETRIES", "6"))
+FF_LOCK_BACKOFF_S = float(os.environ.get("ORCH_FF_LOCK_BACKOFF_S", "3"))
+
+
+def _is_lock_contention(result):
+    """Did this git invocation fail because another git process held the lock?"""
+    if result is None:
+        return False
+    return bool(_LOCK_CONTENTION_RX.search((result.stderr or "") + (result.stdout or "")))
+
+
+def _fast_forward(repo, target):
+    """git merge --ff-only, retried while — and only while — a git lock is the reason.
+
+    Returns (ok, contended, detail). `contended` distinguishes "the fleet was holding the
+    lock the whole time, try again next cycle" from "this genuinely is not a fast-forward",
+    which are opposite situations that produced an identical log line and an identical
+    approval card before.
+
+    Worst case ~45s (5 backoffs of 3/6/9/12/15s), which is noise inside the gate budget the
+    reaper lease in runner.py is sized against.
+    """
+    attempts = max(1, FF_LOCK_RETRIES)
+    last = None
+    for attempt in range(attempts):
+        last = _git(repo, ["merge", "--ff-only", target], ORIGIN_GIT_TIMEOUT)
+        if last is not None and last.returncode == 0:
+            return True, False, ""
+        if not _is_lock_contention(last):
+            return False, False, ((last.stderr or "").strip()[:400] if last else "git failed")
+        if attempt < attempts - 1:
+            time.sleep(FF_LOCK_BACKOFF_S * (attempt + 1))
+    return False, True, ((last.stderr or "").strip()[:400] if last else "git failed")
+
+
 def reconcile_origin(repo):
     """Make the deployable HEAD contain everything already merged on origin.
 
@@ -254,13 +307,20 @@ def reconcile_origin(repo):
     out = (r.stdout.strip() if r and r.returncode == 0 else "")
     behind = int(out) if out.isdigit() else 0
     if _is_ancestor(repo, head, remote):
-        if _git_ok(repo, ["merge", "--ff-only", remote]):
+        ok, contended, why = _fast_forward(repo, remote)
+        if ok:
             print(f"self_deploy: fast-forwarded to {ORIGIN_REMOTE}/{ORIGIN_BRANCH} "
                   f"{remote[:8]} (+{behind})")
             return {"tracked": True, "ok": True, "action": "fast_forward",
                     "remote": remote, "behind": behind}
+        if contended:
+            print(f"self_deploy: purely behind {ORIGIN_REMOTE}/{ORIGIN_BRANCH} {remote[:8]} "
+                  f"(+{behind}) but every fast-forward attempt lost the git ref lock to the "
+                  f"fleet's own commit traffic — nothing changed, retrying next cycle.")
+            return {"tracked": True, "ok": False, "action": "fast_forward_lock_contended",
+                    "remote": remote, "behind": behind, "detail": why}
         return {"tracked": True, "ok": False, "action": "fast_forward_failed",
-                "remote": remote, "behind": behind}
+                "remote": remote, "behind": behind, "detail": why}
     mt = _git(repo, ["merge-tree", "--write-tree", head, remote])
     if mt is None or mt.returncode not in (0, 1):
         # Unsupported/erroring merge-tree must not be misread as "conflicted": say so and
@@ -281,9 +341,19 @@ def reconcile_origin(repo):
         _file_divergence_card(behind, remote, detail)
         return {"tracked": True, "ok": False, "action": "merge_failed",
                 "remote": remote, "behind": behind, "detail": detail[:500]}
-    ff = _git(repo, ["merge", "--ff-only", merged])
-    if ff is None or ff.returncode != 0:
-        why = (ff.stderr or "").strip()[:400] if ff else "git failed"
+    ok, contended, why = _fast_forward(repo, merged)
+    if not ok and contended:
+        # NOT a divergence. The merge succeeded and the fast-forward is still valid; the
+        # fleet simply held .git/HEAD.lock for the whole retry window. Reporting this as
+        # "in-flight work would be overwritten" sent an operator looking for a conflict that
+        # does not exist, and — worse — filed a divergence approval card every 180s for a
+        # condition that clears on its own. No card here, and the next cycle just retries.
+        print(f"self_deploy: merged {remote[:8]} cleanly as {merged[:8]} but every "
+              f"fast-forward attempt lost the git ref lock to the fleet's own commit "
+              f"traffic — nothing was changed here, retrying next cycle.\n{why}")
+        return {"tracked": True, "ok": False, "action": "fast_forward_lock_contended",
+                "remote": remote, "behind": behind, "merged": merged, "detail": why}
+    if not ok:
         print(f"self_deploy: merged {remote[:8]} cleanly as {merged[:8]} but could not "
               f"fast-forward the live tree onto it (in-flight work would be "
               f"overwritten) — leaving it alone.\n{why}")
