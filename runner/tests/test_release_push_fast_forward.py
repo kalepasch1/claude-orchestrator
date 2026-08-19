@@ -104,6 +104,26 @@ class ReleasePushFastForwardTest(unittest.TestCase):
 
         self._patch("_git", spy)
 
+        # The prod push is fenced by delivery_lease, and these tests call
+        # _integrate_regate_and_push directly — below the layer that acquires the lease.
+        # delivery_lease.require(None, ...) raises only when required() or available() is
+        # true, and available() PROBES THE LIVE CONTROL PLANE and memoises the answer per
+        # process. So whether this file passed depended on whether that probe happened to
+        # succeed in this particular pytest process: green standalone, red inside the
+        # self-deploy release canary — and a red canary stops the whole fleet from
+        # deploying anything. Hold an explicit lease instead, which is what production
+        # does, and record the fence calls so the gating is still asserted rather than
+        # merely disabled.
+        import delivery_lease
+        self.lease = object()
+        self.fenced = []
+        for name, impl in (("held", lambda repo_key, role: self.lease),
+                           ("require", lambda lease, action:
+                            self.fenced.append((lease, action)))):
+            self.addCleanup(setattr, delivery_lease, name,
+                            getattr(delivery_lease, name))
+            setattr(delivery_lease, name, impl)
+
         # Gates are exercised separately; default to green and record the SHA they saw.
         self.gated_shas = []
         self._patch("_rerun_release_gates",
@@ -276,6 +296,22 @@ class ReleasePushFastForwardTest(unittest.TestCase):
         self.assertFalse(pushed)
         self.assertIn("rejected", log)
         self.assertTrue(any(f["gate"] == "push" for f in self.failed))
+
+    def test_the_prod_push_asks_the_delivery_lease_for_authority(self):
+        """The fence is stubbed above so the file is hermetic — prove it is still called.
+
+        Without this, neutralising the lease to de-flake the canary would silently delete
+        the coverage that the shared-ref write is fenced at all.
+        """
+        self._stage_commit()
+        self._advance_origin_prod()
+
+        pushed, _to_sha, log = self._push()
+
+        self.assertTrue(pushed, log)
+        self.assertTrue(self.fenced, "the prod push must be gated on a delivery lease")
+        self.assertTrue(all(lease is self.lease for lease, _action in self.fenced),
+                        "the fence must be checked with the lease this releaser holds")
 
 
 class NonFastForwardDetectionTest(unittest.TestCase):
