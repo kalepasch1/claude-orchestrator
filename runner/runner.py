@@ -3078,6 +3078,7 @@ _SCHEDULE = [
     ("vercelconfig-600","vercelconfig",     "interval", 600),   # deploy-config drift a local build can't catch
     ("botcommits-900","botcommits",         "interval", 900),   # bot-authored commits must parse
     ("markersentinel-300","markersentinel", "interval", 300),  # swarm bot #1: file remediation if conflict markers reach master
+    ("canarywatch-300","canarywatch",       "interval", 300),  # swarm bots #5+#3: triage a red self-deploy canary (it blocks ALL deploys)
     ("crashloop-300","crashloop",           "interval", 300),   # catch 100%-dead modules (preflight: 19d unnoticed)
     ("stubguard-900","stubguard",           "interval", 900),   # constant-return stubs shadowing real code (build stays GREEN)
     ("divergent-900","divergent",           "interval", 900),   # merges that dropped a symbol both sides authored (71cfd4ca6)
