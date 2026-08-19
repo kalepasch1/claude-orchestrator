@@ -28,7 +28,7 @@ this closes that gap with a cooperative, test-gated restart:
                            partial index on (kind,title) may reject dupes — caught+ignored).
                            Never raises; safe to call every loop.
 """
-import glob, os, sys, datetime, subprocess
+import glob, os, sys, time, datetime, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -39,7 +39,13 @@ BLOCK_TITLE = "Self-deploy blocked: bounded release canary failed"
 # The old gate ran all 8,599+ tests under one fixed timeout. It first failed during
 # collection, then (after collection was repaired) simply timed out after 900 seconds.
 # A restart safety check must be bounded independently of total suite size.
-CANARY_TIMEOUT = int(os.environ.get("ORCH_CANARY_TIMEOUT", "300"))
+# 300s was measured against an idle machine. The same 11-file critical set takes ~14s in a
+# quiet worktree and 233s on this node while the fleet is working, so 300 left almost no
+# margin and a loaded run timed out on green code. Still bounded, just honestly bounded.
+CANARY_TIMEOUT = int(os.environ.get("ORCH_CANARY_TIMEOUT", "600"))
+# How long a queued restart suppresses re-gating. The runner exits between tasks, so this
+# has to cover a long task; past it, we re-gate rather than trust a flag nobody consumed.
+RESTART_PENDING_MAX_AGE = int(os.environ.get("ORCH_RESTART_PENDING_MAX_AGE", "3600"))
 CANARY_COLLECTION_TIMEOUT = int(os.environ.get("ORCH_CANARY_COLLECTION_TIMEOUT", "180"))
 CANARY_MAX_CHANGED_TESTS = int(os.environ.get("ORCH_CANARY_MAX_CHANGED_TESTS", "60"))
 # The gate used to run in the LIVE tree — the one the fleet is committing to while the
@@ -490,6 +496,32 @@ def canary_gate(repo, base_commit=None, head_commit="HEAD"):
         unpin(repo, pinned)
 
 
+def restart_pending_for(head_commit):
+    """True when a restart into this exact commit is already queued and still fresh.
+
+    The runner exits cooperatively BETWEEN tasks, so the window between "restart
+    requested" and the process actually swapping can be many minutes. self_deploy runs
+    every 180s, and without this check it re-ran the full ~1000-test bounded gate for the
+    same already-green commit, over and over, on a machine the fleet has already
+    saturated. Observed 2026-08-18: c9570b0c passed the gate and requested a restart, the
+    very next cycle re-ran the gate, hit the 300s timeout under that self-inflicted load,
+    and filed a "canary failed" approvals card for code that was green two minutes earlier.
+
+    Bounded by RESTART_PENDING_MAX_AGE so a restart that never happens (keepalive dead,
+    runner wedged) cannot hide staleness forever — after that we re-gate and say so.
+    """
+    if not head_commit:
+        return False
+    try:
+        age = time.time() - os.path.getmtime(RESTART_FLAG)
+        if age > RESTART_PENDING_MAX_AGE:
+            return False
+        with open(RESTART_FLAG) as f:
+            return head_commit[:8] in f.read()
+    except OSError:
+        return False
+
+
 def request_restart(reason):
     """Cooperative restart signal: flag file + digest notification. Never kills anything."""
     ts = datetime.datetime.utcnow().isoformat()
@@ -535,6 +567,10 @@ def maybe_deploy(repo=None):
             print(f"self_deploy: up-to-date "
                   f"(running={st['running_commit'][:8] or '?'})")
             return {"deployed": False, "reason": "up-to-date", "origin": origin, **st}
+        if restart_pending_for(st["head_commit"]):
+            print(f"self_deploy: restart into {st['head_commit'][:8]} already requested — "
+                  f"waiting for the runner to exit between tasks (not re-running the gate)")
+            return {"deployed": False, "reason": "restart_pending", "origin": origin, **st}
         print(f"self_deploy: new code {st['head_commit'][:8]} "
               f"(running {st['running_commit'][:8]}) — running canary gate")
         if not canary_gate(repo, st["running_commit"], st["head_commit"]):
