@@ -38,12 +38,33 @@ def test_the_gate_never_inherits_live_control_plane_credentials(live_creds):
 
 
 def test_the_sentinels_are_set_not_deleted(live_creds):
-    """db._load_env() setdefault()s from runner/.env — a deleted var comes straight back."""
+    """db._load_env() setdefault()s from runner/.env — a deleted var comes straight back.
+
+    PRESENCE is the property that matters, and the only one. An earlier version also
+    demanded every sentinel be truthy, which was true of the three it was written against
+    and wrong the moment ORCH_SUPABASE_FALLBACK_URLS was added: that variable is a LIST, and
+    the value meaning "no fallback relays" is the empty string. Present-and-empty is a real
+    sentinel here; absent is the failure, because setdefault would then refill it from
+    runner/.env with the three live relays the hermetic gate exists to cut off.
+    """
     env = self_deploy.gate_env()
 
-    for key in self_deploy.CANARY_ENV_SENTINELS:
+    for key, sentinel in self_deploy.CANARY_ENV_SENTINELS.items():
         assert key in env, f"{key} must carry a sentinel, not be absent"
-        assert env[key], f"{key} must not be empty either"
+        assert env[key] == sentinel, f"{key} did not receive its sentinel value"
+
+
+def test_no_sentinel_leaves_a_live_value_behind(live_creds, monkeypatch):
+    """The point of the sentinels, stated independently of what any one of them contains."""
+    monkeypatch.setenv("ORCH_SUPABASE_FALLBACK_URLS",
+                       "https://relay-a.example,https://relay-b.example")
+
+    env = self_deploy.gate_env()
+
+    joined = " ".join(env[k] for k in self_deploy.CANARY_ENV_SENTINELS)
+    assert "supabase.co" not in joined
+    assert "relay-a.example" not in joined, \
+        "the fallback relay list survived — db._endpoints() would still reach production"
 
 
 def test_everything_else_is_still_inherited(live_creds, monkeypatch):
