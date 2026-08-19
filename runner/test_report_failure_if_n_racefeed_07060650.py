@@ -21,9 +21,14 @@ from unittest.mock import Mock, patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Disable external dependencies for test isolation
-os.environ["SUPABASE_URL"] = "http://localhost:test"
-os.environ["SUPABASE_SERVICE_KEY"] = "test-key"
+# Disable external dependencies for test isolation.
+#
+# setdefault, not assignment: this runs at IMPORT, and pytest imports every test module
+# during collection — so a plain assignment here repointed the CONTROL PLANE CREDENTIALS
+# for every test that ran afterwards in the same process, not just this file's. 35 other
+# modules already use setdefault for exactly this reason; this one did not.
+os.environ.setdefault("SUPABASE_URL", "http://localhost:test")
+os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-key")
 os.environ["ORCH_DB_ENABLED"] = "false"
 os.environ.setdefault("APPROVAL_PUSH_EMAIL", "test@example.com")
 
