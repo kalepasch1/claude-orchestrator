@@ -2,13 +2,12 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["ORCH_PROMPT_AB_TEST_ENABLED"] = "true"
-os.environ["ORCH_AB_MIN_SAMPLES"] = "2"  # Low threshold for test analysis
 os.environ["ORCH_DB_URL"] = ""
 os.environ["ORCH_SUPABASE_URL"] = ""
 os.environ["ORCH_SUPABASE_KEY"] = ""
 
-import prompt_ab_test
+from env_during_import import import_with_env
+prompt_ab_test = import_with_env("prompt_ab_test", ORCH_PROMPT_AB_TEST_ENABLED="true", ORCH_AB_MIN_SAMPLES="2")
 
 
 def test_assign_variant_returns_a_or_b():
