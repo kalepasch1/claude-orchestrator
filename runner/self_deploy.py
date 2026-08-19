@@ -15,7 +15,9 @@ this closes that gap with a cooperative, test-gated restart:
                            bounded critical + change-matched test set, all inside an
                            EPHEMERAL CHECKOUT PINNED TO THE CANDIDATE COMMIT — never the
                            live tree, which the fleet keeps committing to while the gate
-                           runs. True only when every stage exits 0. This keeps the restart
+                           runs — and under gate_env(), which denies the gate the
+                           production control plane it would otherwise inherit from the
+                           runner. True only when every stage exits 0. This keeps the restart
                            gate passable as the full suite grows while still failing closed
                            on syntax, collection and relevant behavioral regressions.
   request_restart(why)  -> touch runner/.restart_requested (reason + timestamp) AND insert a
@@ -62,6 +64,17 @@ CANARY_WORKTREE_TIMEOUT = int(os.environ.get("ORCH_CANARY_WORKTREE_TIMEOUT", "30
 # 2000 chars routinely captured nothing but a daemon thread's stack from a timeout dump.
 GATE_LOG_HEAD = int(os.environ.get("ORCH_CANARY_LOG_HEAD", "3000"))
 GATE_LOG_TAIL = int(os.environ.get("ORCH_CANARY_LOG_TAIL", "6000"))
+# The gate must not reach the production control plane — see gate_env().
+CANARY_HERMETIC = (os.environ.get("ORCH_CANARY_HERMETIC", "1").strip().lower()
+                   not in ("0", "false", "no", "off"))
+# Set, not deleted: db._load_env() setdefault()s these back from runner/.env, so a
+# deletion is silently undone on the unpinned fallback path. "http://localhost" is the
+# value the suite's own os.environ.setdefault fallbacks already use.
+CANARY_ENV_SENTINELS = {
+    "SUPABASE_URL": "http://localhost",
+    "SUPABASE_SERVICE_KEY": "canary-hermetic-no-live-control-plane",
+    "SUPABASE_ANON_KEY": "canary-hermetic-no-live-control-plane",
+}
 
 # These protect the exact path that turns merged code into running code, plus the release
 # truth/terminal-state fixes that prevent "merged" from being mistaken for "visible".
@@ -380,9 +393,40 @@ def _excerpt(text):
     return (t[:GATE_LOG_HEAD] + f"\n... [{dropped} chars omitted] ...\n" + t[-GATE_LOG_TAIL:])
 
 
+def gate_env():
+    """The environment the gate's subprocesses run in: no live control plane.
+
+    The canary is a CHILD OF THE RUNNER, so it inherits the runner's environment —
+    including the production Supabase credentials. And db.py's _load_env() re-injects
+    them from runner/.env at import anyway. So the gate's tests were talking to the live
+    control plane, which is why "green standalone, red in the canary" kept happening: the
+    same test would take a different branch depending on whether a real RPC answered.
+    delivery_lease.available() memoising a LIVE probe (see #47) is exactly that shape.
+
+    Measured on mac-lan 2026-08-19, identical 11-file critical set, same pinned checkout:
+
+        without credentials   19.7s, 1032 passed, 2 skipped
+        with credentials      still running after 5 minutes
+
+    The suite is designed for this — 34 test modules already carry
+    `os.environ.setdefault("SUPABASE_URL", "http://localhost")`, a fallback that simply
+    never engages when a real value is inherited. Pinning the sentinel rather than
+    deleting the variable matters: db._load_env() uses setdefault, so a deleted value
+    would just be refilled from runner/.env on the fallback (unpinned) path.
+
+    ORCH_CANARY_HERMETIC=0 restores the old inherit-everything behaviour.
+    """
+    env = dict(os.environ)
+    if not CANARY_HERMETIC:
+        return env
+    env.update(CANARY_ENV_SENTINELS)
+    return env
+
+
 def _run_gate_stage(label, cmd, workdir, timeout):
     try:
-        r = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True,
+                           timeout=timeout, env=gate_env())
     except subprocess.TimeoutExpired:
         print(f"self_deploy: {label} timed out after {timeout}s")
         return False
