@@ -6,7 +6,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 The .env file in runner/ is auto-loaded at import time by the _load_env() helper below.
 """
-import os, re, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
+import os, re, sys, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
 
 # ── DB failover detection ────────────────────────────────────────────────────
@@ -280,6 +280,69 @@ HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "3") or 3)
 # handshake failed) were missing and are as transient as the 521-523 already listed — a 525 in
 # particular is a TLS handshake that will usually succeed on the next attempt.
 HTTP_RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525}
+
+# Statuses that mean THE PROXY COULD NOT REACH THE ORIGIN — not an answer from PostgREST.
+#
+# The failover rule below ("never fail over on a 4xx/5xx, an HTTP status means the endpoint
+# answered") is right for PostgREST statuses and wrong for these: a 522 is Cloudflare saying
+# it never got a reply. Treating it as an answer had two consequences, both observed on
+# mac-lan 2026-08-19: the dead endpoint was PINNED — in memory and on disk, so every later
+# process started with it — and failover to the remaining endpoints never happened.
+#
+# 500/503 are deliberately NOT here: PostgREST and Postgres themselves return those, and
+# failing over on them would relabel a real server-side error as a connectivity problem.
+GATEWAY_STATUSES = {502, 504, 520, 521, 522, 523, 524, 525}
+
+# --- control-plane circuit breaker -------------------------------------------------------
+#
+# When the control plane is unreachable, every call still pays the full timeout budget —
+# ORCH_SUPABASE_TIMEOUT (20s here) times the retries, times each endpoint. On 2026-08-19 that
+# turned an 8-hour Supabase outage into a wedged fleet: one config_approval sweep advanced at
+# ONE KEY PER 25 SECONDS, the main loop stopped emitting scheduler lines entirely, and the
+# periodic reaper started killing jobs for outliving their lease. None of that work could
+# have succeeded; all of it was spent waiting on a socket.
+#
+# After THRESHOLD consecutive unreachable outcomes the plane is down, not the request: fail
+# fast with TransientDBError (which crash_loop_detector and periodic already classify as
+# environmental) until the cooldown expires. The first call after the cooldown goes through
+# for real — that is the half-open probe — so recovery costs at most one cooldown, and the
+# struggling origin sees one request per minute instead of thousands.
+DB_BREAKER_ENABLED = (os.environ.get("ORCH_DB_BREAKER", "1").strip().lower()
+                      not in ("0", "false", "no", "off"))
+DB_BREAKER_THRESHOLD = int(os.environ.get("ORCH_DB_BREAKER_THRESHOLD", "8") or 8)
+DB_BREAKER_COOLDOWN_S = float(os.environ.get("ORCH_DB_BREAKER_COOLDOWN_S", "60") or 60)
+_BREAKER = {"consecutive": 0, "open_until": 0.0, "trips": 0}
+
+
+def breaker_state():
+    """Snapshot for monitors and tests. Never raises."""
+    return dict(_BREAKER)
+
+
+def _breaker_blocks():
+    """True while the breaker is open. Expiry alone re-admits one real call (half-open)."""
+    return DB_BREAKER_ENABLED and time.monotonic() < _BREAKER["open_until"]
+
+
+def _breaker_record_answer():
+    """The origin answered — with data OR with a PostgREST status. Either way it is up."""
+    if _BREAKER["consecutive"] or _BREAKER["open_until"]:
+        _BREAKER["consecutive"] = 0
+        _BREAKER["open_until"] = 0.0
+
+
+def _breaker_record_unreachable():
+    _BREAKER["consecutive"] += 1
+    if DB_BREAKER_ENABLED and _BREAKER["consecutive"] >= DB_BREAKER_THRESHOLD:
+        was_open = _BREAKER["open_until"] > 0
+        _BREAKER["open_until"] = time.monotonic() + DB_BREAKER_COOLDOWN_S
+        if not was_open:
+            _BREAKER["trips"] += 1
+            sys.stderr.write(
+                f"[db] control plane unreachable {_BREAKER['consecutive']}x in a row — "
+                f"circuit breaker OPEN for {DB_BREAKER_COOLDOWN_S:.0f}s. Calls fail fast as "
+                f"TransientDBError instead of each paying the full timeout; the first call "
+                f"after the cooldown probes for real.\n")
 # Core orchestrator RPC operations that benefit from retries to tolerate transient failures
 CORE_RETRY_RPCS = {
     "acquire_branch_execution_lease", "heartbeat_branch_execution_lease", "release_branch_execution_lease",
@@ -537,6 +600,10 @@ def _req(method, path, body=None, headers=None, params=None):
          "Content-Type": "application/json"}
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
+    if _breaker_blocks():
+        raise TransientDBError(
+            f"control plane circuit breaker open ({_BREAKER['consecutive']} consecutive "
+            f"unreachable) — skipping {method} {path} instead of paying the timeout")
     last_exc = None
     bases = _base_urls()
     for i, base in enumerate(bases):
@@ -548,13 +615,17 @@ def _req(method, path, body=None, headers=None, params=None):
         probe_only = i < len(bases) - 1
         try:
             return _req_one(base, method, path, qs, data, h, probe_only=probe_only)
-        except urllib.error.HTTPError:
-            # HTTPError subclasses URLError, so without this it would be swallowed by the
-            # failover branch below and re-raised as a connectivity problem. An HTTP status
-            # means the endpoint answered — _req_one has already pinned it and applied the
-            # 409/404/retry policy. Failing over here would contradict the "never fail over on
-            # a 4xx/5xx" rule that _req_one documents, and would relabel a server-side 500 as
-            # an unreachable-network error.
+        except urllib.error.HTTPError as exc:
+            # A GATEWAY status is the proxy reporting it could not reach the origin, so this
+            # endpoint is unreachable in every sense that matters — fail over exactly as for
+            # a connection error. Anything else is a real answer from a reachable endpoint:
+            # _req_one has already pinned it and applied the 409/404/retry policy, and
+            # failing over would relabel a server-side 500 as a network problem.
+            if exc.code in GATEWAY_STATUSES:
+                last_exc = exc
+                if _ACTIVE_BASE.get("url") == base:
+                    _ACTIVE_BASE["url"] = None
+                continue
             raise
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             last_exc = exc
@@ -568,6 +639,7 @@ def _req(method, path, body=None, headers=None, params=None):
     # same way MissingRelationError classifies a structurally-absent table, so callers can tell
     # "the network blipped, skip this cycle" apart from "this job is permanently broken".
     # crash_loop_detector already treats TransientDBError as environmental, not a real defect.
+    _breaker_record_unreachable()
     raise TransientDBError(
         f"all Supabase endpoints unreachable for {method} {path}: {last_exc}") from last_exc
 
@@ -630,11 +702,18 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
             with urllib.request.urlopen(req, timeout=_to) as r:
                 raw = r.read().decode()
                 _pin(base)                   # this endpoint answered; pin it
+                _breaker_record_answer()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
-            # An HTTP status means the endpoint IS reachable — pin it and let the existing
-            # status handling decide. Never fail over on a 4xx/5xx.
-            _pin(base)
+            # A PostgREST status means the endpoint IS reachable — pin it and let the
+            # existing status handling decide. A GATEWAY status means the proxy never got a
+            # reply, so pinning it would make a dead endpoint sticky for this process AND
+            # (via the on-disk hint) for every process started afterwards. That is exactly
+            # how the fleet stayed bolted to a 522-ing endpoint on 2026-08-19 while three
+            # other endpoints went untried.
+            if e.code not in GATEWAY_STATUSES:
+                _pin(base)
+                _breaker_record_answer()
             # A flood-guard dedup rejection (HTTP 409) must NOT kill the task —
             # it means a unique constraint blocked a duplicate insert, which is
             # idempotent and safe to ignore. No callers depend on the return value
