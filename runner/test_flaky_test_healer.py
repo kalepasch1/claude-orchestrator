@@ -2,12 +2,12 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["ORCH_FLAKY_TEST_HEALER_ENABLED"] = "true"
 os.environ["ORCH_DB_URL"] = ""
 os.environ["ORCH_SUPABASE_URL"] = ""
 os.environ["ORCH_SUPABASE_KEY"] = ""
 
-import flaky_test_healer
+from env_during_import import import_with_env
+flaky_test_healer = import_with_env("flaky_test_healer", ORCH_FLAKY_TEST_HEALER_ENABLED="true")
 
 
 def test_record_test_result_tracks_pass_fail():

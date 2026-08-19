@@ -3,12 +3,12 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Set env vars before import to disable DB calls
-os.environ["ORCH_FLEET_REBALANCER_ENABLED"] = "true"
 os.environ["ORCH_DB_URL"] = ""
 os.environ["ORCH_SUPABASE_URL"] = ""
 os.environ["ORCH_SUPABASE_KEY"] = ""
 
-import fleet_rebalancer
+from env_during_import import import_with_env
+fleet_rebalancer = import_with_env("fleet_rebalancer", ORCH_FLEET_REBALANCER_ENABLED="true")
 
 
 def test_register_activity_does_not_crash():

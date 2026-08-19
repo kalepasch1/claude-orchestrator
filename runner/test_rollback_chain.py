@@ -3,12 +3,12 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Disable to avoid actual git operations
-os.environ["ORCH_ROLLBACK_CHAIN_ENABLED"] = "false"
 os.environ["ORCH_DB_URL"] = ""
 os.environ["ORCH_SUPABASE_URL"] = ""
 os.environ["ORCH_SUPABASE_KEY"] = ""
 
-import rollback_chain
+from env_during_import import import_with_env
+rollback_chain = import_with_env("rollback_chain", ORCH_ROLLBACK_CHAIN_ENABLED="false")
 
 
 def test_detect_regression_returns_dict_with_regression_key():

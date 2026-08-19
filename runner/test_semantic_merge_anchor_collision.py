@@ -17,16 +17,19 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# semantic_merge._ENABLED is bound at IMPORT time from ORCH_SEMANTIC_MERGE, and
-# test_semantic_merge.py sets these before its own import. Whichever test module is
-# imported FIRST wins, so this file must set the identical environment or it silently
-# breaks the sibling suite's two "disabled" tests when it happens to be collected first.
+# semantic_merge._ENABLED is bound at IMPORT time from ORCH_SEMANTIC_MERGE. This file and
+# test_semantic_merge.py used to race for it — whichever was collected FIRST won, and the
+# loser silently lost its "disabled" tests. Both now scope the variable to their own import
+# (the sibling reloads the module under it), so collection order no longer decides, and
+# neither leaves ORCH_SEMANTIC_MERGE set for the rest of the process.
 # The tests below call _three_way_merge/_ranges_conflict directly; neither reads _ENABLED.
-os.environ["ORCH_SEMANTIC_MERGE"] = "false"   # hard assignment: setdefault is a no-op
-os.environ["ORCH_DB_URL"] = ""                # when the fleet env already exports these
-os.environ["ORCH_DB_ENABLED"] = "false"
+os.environ["ORCH_DB_URL"] = ""                # setdefault is a no-op when the fleet env
+os.environ["ORCH_DB_ENABLED"] = "false"       # already exports these
 
-import semantic_merge  # noqa: E402
+from env_during_import import during_import  # noqa: E402
+
+with during_import(ORCH_SEMANTIC_MERGE="false"):
+    import semantic_merge  # noqa: E402
 
 
 def L(text):

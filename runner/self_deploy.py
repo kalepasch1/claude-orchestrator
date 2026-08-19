@@ -15,7 +15,9 @@ this closes that gap with a cooperative, test-gated restart:
                            bounded critical + change-matched test set, all inside an
                            EPHEMERAL CHECKOUT PINNED TO THE CANDIDATE COMMIT — never the
                            live tree, which the fleet keeps committing to while the gate
-                           runs. True only when every stage exits 0. This keeps the restart
+                           runs — and under gate_env(), which denies the gate the
+                           production control plane it would otherwise inherit from the
+                           runner. True only when every stage exits 0. This keeps the restart
                            gate passable as the full suite grows while still failing closed
                            on syntax, collection and relevant behavioral regressions.
   request_restart(why)  -> touch runner/.restart_requested (reason + timestamp) AND insert a
@@ -28,7 +30,7 @@ this closes that gap with a cooperative, test-gated restart:
                            partial index on (kind,title) may reject dupes — caught+ignored).
                            Never raises; safe to call every loop.
 """
-import glob, os, sys, datetime, subprocess
+import glob, os, sys, time, datetime, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -39,7 +41,13 @@ BLOCK_TITLE = "Self-deploy blocked: bounded release canary failed"
 # The old gate ran all 8,599+ tests under one fixed timeout. It first failed during
 # collection, then (after collection was repaired) simply timed out after 900 seconds.
 # A restart safety check must be bounded independently of total suite size.
-CANARY_TIMEOUT = int(os.environ.get("ORCH_CANARY_TIMEOUT", "300"))
+# 300s was measured against an idle machine. The same 11-file critical set takes ~14s in a
+# quiet worktree and 233s on this node while the fleet is working, so 300 left almost no
+# margin and a loaded run timed out on green code. Still bounded, just honestly bounded.
+CANARY_TIMEOUT = int(os.environ.get("ORCH_CANARY_TIMEOUT", "600"))
+# How long a queued restart suppresses re-gating. The runner exits between tasks, so this
+# has to cover a long task; past it, we re-gate rather than trust a flag nobody consumed.
+RESTART_PENDING_MAX_AGE = int(os.environ.get("ORCH_RESTART_PENDING_MAX_AGE", "3600"))
 CANARY_COLLECTION_TIMEOUT = int(os.environ.get("ORCH_CANARY_COLLECTION_TIMEOUT", "180"))
 CANARY_MAX_CHANGED_TESTS = int(os.environ.get("ORCH_CANARY_MAX_CHANGED_TESTS", "60"))
 # The gate used to run in the LIVE tree — the one the fleet is committing to while the
@@ -56,6 +64,17 @@ CANARY_WORKTREE_TIMEOUT = int(os.environ.get("ORCH_CANARY_WORKTREE_TIMEOUT", "30
 # 2000 chars routinely captured nothing but a daemon thread's stack from a timeout dump.
 GATE_LOG_HEAD = int(os.environ.get("ORCH_CANARY_LOG_HEAD", "3000"))
 GATE_LOG_TAIL = int(os.environ.get("ORCH_CANARY_LOG_TAIL", "6000"))
+# The gate must not reach the production control plane — see gate_env().
+CANARY_HERMETIC = (os.environ.get("ORCH_CANARY_HERMETIC", "1").strip().lower()
+                   not in ("0", "false", "no", "off"))
+# Set, not deleted: db._load_env() setdefault()s these back from runner/.env, so a
+# deletion is silently undone on the unpinned fallback path. "http://localhost" is the
+# value the suite's own os.environ.setdefault fallbacks already use.
+CANARY_ENV_SENTINELS = {
+    "SUPABASE_URL": "http://localhost",
+    "SUPABASE_SERVICE_KEY": "canary-hermetic-no-live-control-plane",
+    "SUPABASE_ANON_KEY": "canary-hermetic-no-live-control-plane",
+}
 
 # These protect the exact path that turns merged code into running code, plus the release
 # truth/terminal-state fixes that prevent "merged" from being mistaken for "visible".
@@ -86,6 +105,8 @@ TRACK_ORIGIN = (os.environ.get("ORCH_SELF_DEPLOY_TRACK_ORIGIN", "1").strip().low
                 not in ("0", "false", "no", "off"))
 ORIGIN_FETCH_TIMEOUT = int(os.environ.get("ORCH_ORIGIN_FETCH_TIMEOUT", "120"))
 ORIGIN_GIT_TIMEOUT = int(os.environ.get("ORCH_ORIGIN_GIT_TIMEOUT", "60"))
+RECONCILE_TIMEOUT = int(os.environ.get("ORCH_RECONCILE_TIMEOUT", "300"))
+RECONCILE_WORKTREE_DIR = os.environ.get("ORCH_RECONCILE_WORKTREE_DIR", "")
 DIVERGENCE_TITLE = "Self-deploy blocked: local master conflicts with origin"
 
 
@@ -123,18 +144,65 @@ def _remote_head(repo):
     return ""
 
 
-def _file_divergence_card(behind, remote_sha):
+def _file_divergence_card(behind, remote_sha, detail=""):
     try:
         db.insert("approvals", {
             "project": "ORCHESTRATOR", "kind": "self", "title": DIVERGENCE_TITLE,
             "why": f"{behind} commit(s) merged on {ORIGIN_REMOTE}/{ORIGIN_BRANCH} "
-                   f"({remote_sha[:8]}) cannot be merged into this node's master without "
-                   f"conflicts, so already-merged work is not running here.",
+                   f"({remote_sha[:8]}) cannot be merged into this node's master, so "
+                   f"already-merged work is not running here."
+                   + (f"\n\n{detail.strip()[:1500]}" if detail else ""),
             "value": "Resolve the divergence once and every merged PR goes live.",
             "risk": "None — nothing was force-resolved; the running code keeps serving.",
             "command": f"git merge {ORIGIN_REMOTE}/{ORIGIN_BRANCH}"})
     except Exception:
         pass  # unique partial index on (kind,title) rejects duplicates — fine
+
+
+def _reconcile_worktree_path(repo):
+    return RECONCILE_WORKTREE_DIR or os.path.join(repo, ".runtime", "reconcile-wt")
+
+
+def merge_in_scratch(repo, head, remote):
+    """Merge `remote` into `head` on a CLEAN checkout. Returns (merged_sha, detail).
+
+    Never merges in the live tree. The live tree always carries in-flight agent edits,
+    and this repo's pre-merge-commit anti-regression guard scans the WORKING TREE — so an
+    agent midway through rewriting ANY file makes the guard report that file's symbols as
+    "GONE after the merge" and refuse the merge commit, even though the merge does not
+    touch it. Observed 2026-08-18: an agent rewriting test_fleet_config_consumption.py
+    blocked every merge into master on this node, and three already-merged PRs could not
+    reach the running fleet.
+
+    Merging on a scratch checkout lets the guard judge the MERGE rather than somebody's
+    work in progress, and it means a rejected merge leaves nothing to unwind: the whole
+    checkout is thrown away. The caller then fast-forwards the live branch, which touches
+    only the files the merge actually changed and refuses (rather than clobbers) if that
+    would overwrite an agent's uncommitted work.
+    """
+    path = _reconcile_worktree_path(repo)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError as exc:
+        return "", f"cannot create the scratch worktree directory: {exc}"
+    remove_worktree(repo, path)  # a leftover from a killed run must not be reused
+    added = _git(repo, ["worktree", "add", "--detach", "--force", path, head],
+                 RECONCILE_TIMEOUT)
+    if added is None or added.returncode != 0:
+        detail = (added.stderr or "").strip() if added else "git failed"
+        return "", f"scratch worktree add failed: {detail[:400]}"
+    try:
+        merged = _git(path, ["merge", "--no-edit", remote], RECONCILE_TIMEOUT)
+        if merged is None or merged.returncode != 0:
+            out = (((merged.stdout or "") + (merged.stderr or "")).strip()
+                   if merged else "git failed")
+            return "", out[-1500:]
+        sha = _git(path, ["rev-parse", "HEAD"])
+        if sha is None or sha.returncode != 0 or not sha.stdout.strip():
+            return "", "the scratch merge produced no commit"
+        return sha.stdout.strip(), ""
+    finally:
+        remove_worktree(repo, path)
 
 
 def reconcile_origin(repo):
@@ -146,6 +214,10 @@ def reconcile_origin(repo):
       * otherwise merge ONLY after `git merge-tree` proves in memory that the merge is
         conflict-free, so the working tree is never left holding conflict markers (that
         exact failure mode stalled the whole fleet — see auto_conflict_resolver);
+      * that merge happens on a SCRATCH CHECKOUT, never in the live tree, and the live
+        branch is then fast-forwarded onto the result. The live tree always carries
+        in-flight agent edits and the pre-merge-commit guard scans the working tree, so
+        merging in place made an agent's half-written file veto every merge;
       * a conflicting divergence is REPORTED, never force-resolved, never reset --hard.
 
     Never raises. Returns a dict describing what happened.
@@ -183,16 +255,27 @@ def reconcile_origin(repo):
         _file_divergence_card(behind, remote)
         return {"tracked": True, "ok": False, "action": "conflicted",
                 "remote": remote, "behind": behind}
-    if not _git_ok(repo, ["merge", "--no-edit", remote]):
-        _git(repo, ["merge", "--abort"])
-        print(f"self_deploy: merge of {ORIGIN_REMOTE}/{ORIGIN_BRANCH} {remote[:8]} could "
-              f"not be applied to the working tree — aborted, nothing changed")
+    # Merge on a clean checkout, then fast-forward the live branch onto the result.
+    merged, detail = merge_in_scratch(repo, head, remote)
+    if not merged:
+        print(f"self_deploy: merge of {ORIGIN_REMOTE}/{ORIGIN_BRANCH} {remote[:8]} was "
+              f"refused on a clean checkout — nothing was changed here.\n{detail}")
+        _file_divergence_card(behind, remote, detail)
         return {"tracked": True, "ok": False, "action": "merge_failed",
-                "remote": remote, "behind": behind}
+                "remote": remote, "behind": behind, "detail": detail[:500]}
+    ff = _git(repo, ["merge", "--ff-only", merged])
+    if ff is None or ff.returncode != 0:
+        why = (ff.stderr or "").strip()[:400] if ff else "git failed"
+        print(f"self_deploy: merged {remote[:8]} cleanly as {merged[:8]} but could not "
+              f"fast-forward the live tree onto it (in-flight work would be "
+              f"overwritten) — leaving it alone.\n{why}")
+        _file_divergence_card(behind, remote, why)
+        return {"tracked": True, "ok": False, "action": "fast_forward_failed",
+                "remote": remote, "behind": behind, "merged": merged, "detail": why}
     print(f"self_deploy: absorbed {behind} commit(s) from {ORIGIN_REMOTE}/"
           f"{ORIGIN_BRANCH} {remote[:8]}")
     return {"tracked": True, "ok": True, "action": "merged", "remote": remote,
-            "behind": behind}
+            "behind": behind, "merged": merged}
 
 
 def current_commit(repo):
@@ -310,9 +393,40 @@ def _excerpt(text):
     return (t[:GATE_LOG_HEAD] + f"\n... [{dropped} chars omitted] ...\n" + t[-GATE_LOG_TAIL:])
 
 
+def gate_env():
+    """The environment the gate's subprocesses run in: no live control plane.
+
+    The canary is a CHILD OF THE RUNNER, so it inherits the runner's environment —
+    including the production Supabase credentials. And db.py's _load_env() re-injects
+    them from runner/.env at import anyway. So the gate's tests were talking to the live
+    control plane, which is why "green standalone, red in the canary" kept happening: the
+    same test would take a different branch depending on whether a real RPC answered.
+    delivery_lease.available() memoising a LIVE probe (see #47) is exactly that shape.
+
+    Measured on mac-lan 2026-08-19, identical 11-file critical set, same pinned checkout:
+
+        without credentials   19.7s, 1032 passed, 2 skipped
+        with credentials      still running after 5 minutes
+
+    The suite is designed for this — 34 test modules already carry
+    `os.environ.setdefault("SUPABASE_URL", "http://localhost")`, a fallback that simply
+    never engages when a real value is inherited. Pinning the sentinel rather than
+    deleting the variable matters: db._load_env() uses setdefault, so a deleted value
+    would just be refilled from runner/.env on the fallback (unpinned) path.
+
+    ORCH_CANARY_HERMETIC=0 restores the old inherit-everything behaviour.
+    """
+    env = dict(os.environ)
+    if not CANARY_HERMETIC:
+        return env
+    env.update(CANARY_ENV_SENTINELS)
+    return env
+
+
 def _run_gate_stage(label, cmd, workdir, timeout):
     try:
-        r = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True,
+                           timeout=timeout, env=gate_env())
     except subprocess.TimeoutExpired:
         print(f"self_deploy: {label} timed out after {timeout}s")
         return False
@@ -357,7 +471,15 @@ def pin_checkout(repo, commit):
 
 
 def unpin(repo, path):
-    """Remove the pinned checkout. Best effort; never raises."""
+    """Remove a scratch worktree and forget it. Best effort; never raises.
+
+    Named for its first caller (the pinned canary); `remove_worktree` is the general
+    alias used by the reconcile path. The body stays HERE rather than moving into
+    remove_worktree because the repo's merge regression guard reads a function whose body
+    shrinks to a single delegating call as `symbol/gutted` — and it is right to: that
+    shape is indistinguishable from a stub. A gutted `unpin` blocked the fleet's automatic
+    origin reconcile outright, so the delegation points the other way.
+    """
     if not path:
         return
     _git(repo, ["worktree", "remove", "--force", path], CANARY_WORKTREE_TIMEOUT)
@@ -368,6 +490,11 @@ def unpin(repo, path):
         except Exception:
             pass
     _git(repo, ["worktree", "prune"])
+
+
+def remove_worktree(repo, path):
+    """General name for unpin(): drop a scratch worktree and forget it."""
+    unpin(repo, path)
 
 
 def canary_gate(repo, base_commit=None, head_commit="HEAD"):
@@ -411,6 +538,32 @@ def canary_gate(repo, base_commit=None, head_commit="HEAD"):
         return _run_gate_stage("bounded behavior gate", cmd, workdir, CANARY_TIMEOUT)
     finally:
         unpin(repo, pinned)
+
+
+def restart_pending_for(head_commit):
+    """True when a restart into this exact commit is already queued and still fresh.
+
+    The runner exits cooperatively BETWEEN tasks, so the window between "restart
+    requested" and the process actually swapping can be many minutes. self_deploy runs
+    every 180s, and without this check it re-ran the full ~1000-test bounded gate for the
+    same already-green commit, over and over, on a machine the fleet has already
+    saturated. Observed 2026-08-18: c9570b0c passed the gate and requested a restart, the
+    very next cycle re-ran the gate, hit the 300s timeout under that self-inflicted load,
+    and filed a "canary failed" approvals card for code that was green two minutes earlier.
+
+    Bounded by RESTART_PENDING_MAX_AGE so a restart that never happens (keepalive dead,
+    runner wedged) cannot hide staleness forever — after that we re-gate and say so.
+    """
+    if not head_commit:
+        return False
+    try:
+        age = time.time() - os.path.getmtime(RESTART_FLAG)
+        if age > RESTART_PENDING_MAX_AGE:
+            return False
+        with open(RESTART_FLAG) as f:
+            return head_commit[:8] in f.read()
+    except OSError:
+        return False
 
 
 def request_restart(reason):
@@ -458,6 +611,10 @@ def maybe_deploy(repo=None):
             print(f"self_deploy: up-to-date "
                   f"(running={st['running_commit'][:8] or '?'})")
             return {"deployed": False, "reason": "up-to-date", "origin": origin, **st}
+        if restart_pending_for(st["head_commit"]):
+            print(f"self_deploy: restart into {st['head_commit'][:8]} already requested — "
+                  f"waiting for the runner to exit between tasks (not re-running the gate)")
+            return {"deployed": False, "reason": "restart_pending", "origin": origin, **st}
         print(f"self_deploy: new code {st['head_commit'][:8]} "
               f"(running {st['running_commit'][:8]}) — running canary gate")
         if not canary_gate(repo, st["running_commit"], st["head_commit"]):

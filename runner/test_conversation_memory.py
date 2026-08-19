@@ -2,12 +2,12 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["ORCH_CONVERSATION_MEMORY_ENABLED"] = "true"
 os.environ["ORCH_DB_URL"] = ""
 os.environ["ORCH_SUPABASE_URL"] = ""
 os.environ["ORCH_SUPABASE_KEY"] = ""
 
-import conversation_memory
+from env_during_import import import_with_env
+conversation_memory = import_with_env("conversation_memory", ORCH_CONVERSATION_MEMORY_ENABLED="true")
 
 
 def test_compress_transcript_returns_string():

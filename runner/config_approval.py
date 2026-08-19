@@ -22,6 +22,20 @@ import db
 POLICY_MARK = "auto-config-policy"
 ENABLED = os.environ.get("CONFIG_APPROVAL_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# Circuit breaker for the per-entry insert loop.
+#
+# The sweep does ONE network write per unreviewed fleet_config entry, and swallows each
+# failure individually. That is fail-soft per key but not per PASS: during a control-plane
+# outage every one of ~60 keys still pays a full request timeout, the pass takes minutes
+# instead of milliseconds, and the scheduler runs it again on the next tick. Observed on
+# mac-lan 2026-08-19 during a Supabase 522: the runner's main loop stopped emitting
+# scheduler lines entirely and did nothing but print 60 "skipped ... 522" lines per cycle,
+# so self-deploy stopped firing and the fleet stalled behind an outage it was supposed to
+# ride out. Once N writes fail consecutively the plane is down, not the key — abandon the
+# rest of the pass and retry on the next cycle. delivery_lease.available() states the same
+# principle: a control-plane hiccup must never manufacture a fleet-wide halt.
+CONSECUTIVE_ERROR_LIMIT = int(os.environ.get("ORCH_CONFIG_APPROVAL_ERROR_LIMIT", "5"))
+
 # Numeric bounds for high-blast-radius config keys. Values outside range → approval card.
 _NUMERIC_BOUNDS = {
     "MAX_PARALLEL": (1, 20),
@@ -126,8 +140,9 @@ def sweep(limit: int = 200) -> tuple:
     except Exception:
         return 0, 0
 
-    approved = gated = 0
-    for row in rows:
+    approved = gated = consecutive_errors = 0
+    abandoned_at = None
+    for index, row in enumerate(rows):
         key = str(row.get("key") or "")
         value = str(row.get("value") or "")
         note = str(row.get("note") or "")
@@ -163,11 +178,22 @@ def sweep(limit: int = 200) -> tuple:
                     "decision_text": f"auto-approved: {reason}",
                 })
                 approved += 1
+            consecutive_errors = 0
         except Exception as e:
+            consecutive_errors += 1
             print(f"config_approval: skipped {key}: {e}")
+            if consecutive_errors >= CONSECUTIVE_ERROR_LIMIT:
+                abandoned_at = index
+                print(f"config_approval: {consecutive_errors} consecutive write failures — "
+                      f"the control plane is down, not these keys. Abandoning this pass with "
+                      f"{len(rows) - index - 1} entr{'y' if len(rows) - index - 1 == 1 else 'ies'} "
+                      f"unassessed; the next cycle retries. Last error: {e}")
+                break
 
     if approved or gated:
         print(f"config_approval: auto-approved {approved}, gated {gated} of {len(rows)} fleet_config entries")
+    if abandoned_at is not None and not (approved or gated):
+        print(f"config_approval: no entries assessed of {len(rows)} — control plane unreachable")
     return approved, gated
 
 
