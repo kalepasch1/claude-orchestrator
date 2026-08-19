@@ -3,11 +3,11 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["ORCH_BRANCH_SPECULATOR_ENABLED"] = "false"
 os.environ["ORCH_DB_URL"] = ""
 os.environ["ORCH_DB_ENABLED"] = "false"
 
-import branch_speculator
+from env_during_import import import_with_env
+branch_speculator = import_with_env("branch_speculator", ORCH_BRANCH_SPECULATOR_ENABLED="false")
 
 
 def test_should_speculate_returns_bool_equivalent():

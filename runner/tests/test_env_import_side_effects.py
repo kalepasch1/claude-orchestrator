@@ -31,24 +31,12 @@ import re
 _RUNNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (env key, module path relative to runner/) — known, pre-existing, may only shrink.
-KNOWN_IMPORT_TIME_OVERRIDES = {
-    ("CLAUDE_ORCH_HOME", "tests/test_deploy_e2e.py"),
-    ("CLAUDE_ORCH_HOME", "tests/test_merge_to_preview.py"),
-    ("CLAUDE_ORCH_HOME", "tests/test_preview_env_manager.py"),
-    ("CLAUDE_ORCH_HOME", "tests/test_promote_rollback.py"),
-    ("CLAUDE_ORCH_HOME", "tests/test_smoke_runner.py"),
-    ("ORCH_AB_MIN_SAMPLES", "test_prompt_ab_test.py"),
-    ("ORCH_BRANCH_SPECULATOR_ENABLED", "test_branch_speculator.py"),
-    ("ORCH_CONVERSATION_MEMORY_ENABLED", "test_conversation_memory.py"),
-    ("ORCH_FLAKY_TEST_HEALER_ENABLED", "test_flaky_test_healer.py"),
-    ("ORCH_FLEET_REBALANCER_ENABLED", "test_fleet_rebalancer.py"),
-    ("ORCH_MODEL_CASCADE", "test_model_cascade.py"),
-    ("ORCH_OUTPUT_DISTILLER_ENABLED", "test_output_distiller.py"),
-    ("ORCH_PROMPT_AB_TEST_ENABLED", "test_prompt_ab_test.py"),
-    ("ORCH_ROLLBACK_CHAIN_ENABLED", "test_rollback_chain.py"),
-    ("ORCH_SEMANTIC_MERGE", "test_semantic_merge.py"),
-    ("ORCH_SEMANTIC_MERGE", "test_semantic_merge_anchor_collision.py"),
-}
+#
+# EMPTY, and it should stay that way. All 16 entries were drained in the same change that
+# introduced env_during_import.import_with_env / during_import: every one of those modules
+# reads its flag at IMPORT time, so the value has to exist before the module under test is
+# imported — it just no longer has to survive the import.
+KNOWN_IMPORT_TIME_OVERRIDES = set()
 
 _ENV_READ = re.compile(r'environ(?:\.get\(|\[)\s*[\'"]([A-Za-z_][A-Za-z0-9_]*)[\'"]')
 

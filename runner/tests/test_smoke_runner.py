@@ -9,10 +9,12 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _tmpdir = tempfile.mkdtemp()
-os.environ["CLAUDE_ORCH_HOME"] = _tmpdir
 
-import preview_env_manager
-from tests.smoke_tests import run_smoke_suite, SmokeResult
+from env_during_import import during_import
+
+with during_import(CLAUDE_ORCH_HOME=_tmpdir):
+    import preview_env_manager
+    from tests.smoke_tests import run_smoke_suite, SmokeResult
 
 
 class TestSmokeRunner(unittest.TestCase):
