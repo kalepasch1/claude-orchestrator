@@ -3,11 +3,11 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["ORCH_OUTPUT_DISTILLER_ENABLED"] = "true"
 os.environ["ORCH_DB_URL"] = ""
 os.environ["ORCH_DB_ENABLED"] = "false"
 
-import output_distiller
+from env_during_import import import_with_env
+output_distiller = import_with_env("output_distiller", ORCH_OUTPUT_DISTILLER_ENABLED="true")
 
 
 def test_distill_returns_dict_with_expected_keys():

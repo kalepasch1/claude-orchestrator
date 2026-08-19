@@ -10,9 +10,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Isolate registry to temp dir
 _tmpdir = tempfile.mkdtemp()
-os.environ["CLAUDE_ORCH_HOME"] = _tmpdir
 
-import preview_env_manager
+from env_during_import import during_import
+
+with during_import(CLAUDE_ORCH_HOME=_tmpdir):
+    import preview_env_manager
 
 
 class TestPreviewEnvManager(unittest.TestCase):
