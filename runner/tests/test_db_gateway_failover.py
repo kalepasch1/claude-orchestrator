@@ -52,7 +52,10 @@ def isolated(monkeypatch):
                        "https://second.example,https://third.example")
     monkeypatch.setattr(db, "_ACTIVE_BASE", {"url": None})
     monkeypatch.setattr(db, "_save_active_base", lambda url: None)
-    monkeypatch.setattr(db, "_BREAKER", {"consecutive": 0, "open_until": 0.0, "trips": 0})
+    # "probing" is not optional: _breaker_blocks() reads it on every call, so a dict
+    # without it turns the first request after a trip into a KeyError inside the lock.
+    monkeypatch.setattr(db, "_BREAKER",
+                        {"consecutive": 0, "open_until": 0.0, "trips": 0, "probing": False})
     monkeypatch.setattr(db, "DB_BREAKER_ENABLED", True)
     monkeypatch.setattr(db, "DB_BREAKER_THRESHOLD", 3)
     monkeypatch.setattr(db, "DB_BREAKER_COOLDOWN_S", 60.0)
@@ -196,7 +199,9 @@ def test_the_cooldown_re_admits_exactly_one_real_probe(monkeypatch):
         with pytest.raises(db.TransientDBError):
             db._req("GET", "/rest/v1/projects")
 
-    db._BREAKER["open_until"] = 0.0          # simulate the cooldown expiring
+    # A deadline in the PAST, not zero: open_until is both the deadline and the latch, so
+    # zeroing it simulates recovery rather than expiry and never reaches the half-open path.
+    db._BREAKER["open_until"] = db.time.monotonic() - 1.0
     before = len(calls)
     with pytest.raises(db.TransientDBError):
         db._req("GET", "/rest/v1/projects")

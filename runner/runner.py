@@ -3362,6 +3362,17 @@ _JOB_MAX_RUNTIME = {
     "release_train.py": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
     "releasetrain": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
     "integration_sweeper.py": int(os.environ.get("ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S", "7200")),
+    # selfdeploy-180 runs on a 180s cadence, so the scaled fallback gave it a 900s lease --
+    # far shorter than a worst-case gate pass. self_deploy.py's own budget is
+    # fetch(120) + scratch merge(300) + worktree add(300) + compile(600) + collection(180)
+    # + behaviour pytest(600) = ~2100s on a loaded node. Under the 900s fallback the reaper
+    # SIGKILLed the gate mid-pytest: no verdict, no restart requested, and the pinned canary
+    # worktree leaked because `finally: unpin()` never ran -- so merged code stopped
+    # deploying, the exact failure self-deploy exists to prevent. Overlap is still impossible
+    # (_is_still_running skips a launch while the previous instance is alive) and skipping a
+    # cycle is harmless: self_deploy is idempotent and re-gates on the next tick.
+    # Keep this in step with ORCH_CANARY_TIMEOUT in runner/self_deploy.py.
+    "self_deploy.py": int(os.environ.get("ORCH_SELF_DEPLOY_MAX_RUNTIME_S", "2400")),
 }
 
 
