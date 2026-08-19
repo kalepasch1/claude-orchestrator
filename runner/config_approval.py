@@ -36,6 +36,27 @@ ENABLED = os.environ.get("CONFIG_APPROVAL_ENABLED", "true").lower() in ("true", 
 # principle: a control-plane hiccup must never manufacture a fleet-wide halt.
 CONSECUTIVE_ERROR_LIMIT = int(os.environ.get("ORCH_CONFIG_APPROVAL_ERROR_LIMIT", "5"))
 
+# Not every failure is an outage, and the breaker above only makes sense for the ones that
+# are. A PostgREST rejection (oversized value, constraint, bad type) is per-key and
+# permanent: feeding it to the breaker aborts the pass and prints "the control plane is
+# down, not these keys" about keys that are, in fact, the problem — hiding a data bug behind
+# outage noise while every remaining healthy key goes unassessed on every cycle forever.
+#
+# Classified by exception type, and deliberately as an ALLOWLIST of known-permanent types:
+# anything unrecognised keeps the old environmental behaviour, which is the one already
+# proven to keep the main loop alive during a real outage.
+#
+# Resolved defensively so an older db.py without these names cannot break the import — an
+# empty tuple in an `except` clause simply never matches, which is exactly the right
+# degradation.
+def _exc(*names):
+    found = tuple(getattr(db, n) for n in names if isinstance(getattr(db, n, None), type))
+    return found or ()
+
+
+_PERMANENT_ERRORS = _exc("RequestRejectedError")
+_STRUCTURAL_ERRORS = _exc("MissingRelationError")
+
 # Numeric bounds for high-blast-radius config keys. Values outside range → approval card.
 _NUMERIC_BOUNDS = {
     "MAX_PARALLEL": (1, 20),
@@ -142,6 +163,7 @@ def sweep(limit: int = 200) -> tuple:
 
     approved = gated = consecutive_errors = 0
     abandoned_at = None
+    permanent_failures = []
     for index, row in enumerate(rows):
         key = str(row.get("key") or "")
         value = str(row.get("value") or "")
@@ -179,19 +201,54 @@ def sweep(limit: int = 200) -> tuple:
                 })
                 approved += 1
             consecutive_errors = 0
+        except _STRUCTURAL_ERRORS as e:
+            # The approvals relation is not deployed. Every remaining key will fail for the
+            # same reason, and no number of cycles changes that — this is the one case where
+            # abandoning immediately is right, and where "the control plane is down" would be
+            # an actively misleading thing to print.
+            abandoned_at = index
+            print(f"config_approval: the approvals table is unavailable ({e}). "
+                  f"Abandoning this pass at entry {index + 1} of {len(rows)}; this is a "
+                  f"schema problem, not an outage, and retrying will not fix it.")
+            break
+        except _PERMANENT_ERRORS as e:
+            # PostgREST rejected THIS row: an oversized value, a constraint, a bad type. It
+            # is per-key and permanent, so it must not feed the outage breaker. It used to:
+            # a handful of malformed fleet_config values in a row aborted the pass and
+            # printed "the control plane is down, not these keys" — precisely inverted, and
+            # it hid a real data bug behind outage noise while the remaining healthy keys
+            # went unassessed on every single cycle, forever.
+            permanent_failures.append((key, str(e)))
+            print(f"config_approval: rejected {key}: {e}")
         except Exception as e:
+            # Unknown failures stay on the environmental path. Fail toward the behaviour
+            # that is already proven to keep the main loop alive during an outage.
             consecutive_errors += 1
             print(f"config_approval: skipped {key}: {e}")
             if consecutive_errors >= CONSECUTIVE_ERROR_LIMIT:
                 abandoned_at = index
+                # The entries in the error window were NOT assessed either. Counting only
+                # the ones after `index` under-reported the gap by exactly the breaker
+                # width, so the log claimed 55 of 60 when the true answer was 60 of 60 —
+                # and 55 reads as "five got through".
+                never_attempted = len(rows) - index - 1
+                unassessed = consecutive_errors + never_attempted
                 print(f"config_approval: {consecutive_errors} consecutive write failures — "
                       f"the control plane is down, not these keys. Abandoning this pass with "
-                      f"{len(rows) - index - 1} entr{'y' if len(rows) - index - 1 == 1 else 'ies'} "
-                      f"unassessed; the next cycle retries. Last error: {e}")
+                      f"{unassessed} entr{'y' if unassessed == 1 else 'ies'} "
+                      f"unassessed ({consecutive_errors} failed, {never_attempted} never "
+                      f"attempted); the next cycle retries. Last error: {e}")
                 break
 
     if approved or gated:
         print(f"config_approval: auto-approved {approved}, gated {gated} of {len(rows)} fleet_config entries")
+    if permanent_failures:
+        # Surfaced separately on purpose. These never resolve on their own, so if they only
+        # ever appeared as "skipped" lines among outage noise nobody would ever fix them.
+        print(f"config_approval: {len(permanent_failures)} entr"
+              f"{'y' if len(permanent_failures) == 1 else 'ies'} were REJECTED and will fail "
+              f"identically every cycle until the value or schema is fixed: "
+              f"{', '.join(k for k, _ in permanent_failures[:10])}")
     if abandoned_at is not None and not (approved or gated):
         print(f"config_approval: no entries assessed of {len(rows)} — control plane unreachable")
     return approved, gated
