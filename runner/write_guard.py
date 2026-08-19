@@ -37,7 +37,13 @@ import logging
 import os
 import re
 import shutil
+import sys
 import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+import fleet_control
 
 log = logging.getLogger(__name__)
 
@@ -63,16 +69,22 @@ _PROSE_OPENER = re.compile(
 
 
 def enabled():
-    """Guard is on unless explicitly switched off."""
-    return os.environ.get("ORCH_WRITE_GUARD", "on").strip().lower() not in (
-        "0", "off", "false", "no")
+    """Guard is on unless explicitly switched off via ORCH_WRITE_GUARD. Fail-soft."""
+    try:
+        val = fleet_control.get_fleet_config("WRITE_GUARD", "on").strip().lower()
+        return val not in ("0", "off", "false", "no")
+    except Exception:
+        return True
 
 
 def test_dirs():
-    """Directories a test file may be written to."""
-    raw = os.environ.get("ORCH_WRITE_GUARD_TEST_DIRS", "")
-    dirs = tuple(d.strip().strip("/") for d in raw.split(",") if d.strip())
-    return dirs or DEFAULT_TEST_DIRS
+    """Directories a test file may be written to. Reads ORCH_WRITE_GUARD_TEST_DIRS. Fail-soft."""
+    try:
+        raw = fleet_control.get_fleet_config("WRITE_GUARD_TEST_DIRS", "")
+        dirs = tuple(d.strip().strip("/") for d in raw.split(",") if d.strip())
+        return dirs or DEFAULT_TEST_DIRS
+    except Exception:
+        return DEFAULT_TEST_DIRS
 
 
 def _norm(relpath):
@@ -170,7 +182,8 @@ def partition(paths, read=None):
         if read is not None:
             try:
                 body = read(p)
-            except Exception:
+            except Exception as exc:
+                log.debug("write_guard: could not read %r for content check: %s", p, exc)
                 body = None
         reason = check(p, body)
         if reason is None:

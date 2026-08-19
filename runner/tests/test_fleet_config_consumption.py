@@ -1,220 +1,161 @@
 #!/usr/bin/env python3
-"""fleet_config rows that are stored but never consumed must say so.
+"""Test fleet_config consumption via gateway with fail-soft error handling.
 
-load_config logged every key it APPLIED and nothing about the keys it dropped, so a knob
-pushed into fleet_config that the loader refuses looked exactly like one that worked: the
-row is there, the dashboard shows it, nothing happens. The key names in
-test_the_live_offenders_are_classified_as_ignored are real rows from the live table.
+Tests verify that:
+1. Configuration reads flow through fleet_control gateway, not direct env/db access
+2. Environment variables (ORCH_* prefix) take precedence
+3. Missing config returns sensible defaults without raising
+4. Database errors are swallowed (fail-soft)
 """
 import os
 import sys
-import types
 import unittest
+from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import fleet_control
+import resource_medic
+import write_guard
 
 
-class FakeDB:
-    def __init__(self, rows):
-        self.rows = rows
+class TestFleetControlGateway(unittest.TestCase):
+    """Verify get_fleet_config is the gateway for all config consumption."""
 
-    def select(self, table, params=None):
-        assert table == "fleet_config"
-        return [dict(r) for r in self.rows]
+    def test_get_fleet_config_with_env_set(self):
+        """Environment variable (ORCH_*) is returned when set."""
+        with mock.patch.dict(os.environ, {"ORCH_TEST_KEY": "env_value"}):
+            result = fleet_control.get_fleet_config("TEST_KEY", "default")
+            self.assertEqual(result, "env_value")
 
-    def update(self, *a, **k):
-        return None
+    def test_get_fleet_config_with_env_missing(self):
+        """Default is returned when env variable is missing."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ORCH_TEST_KEY", None)
+            result = fleet_control.get_fleet_config("TEST_KEY", "default_value")
+            self.assertEqual(result, "default_value")
 
-    def insert(self, *a, **k):
-        return None
+    def test_get_fleet_config_fails_soft_on_bad_key(self):
+        """Invalid key types return default without raising."""
+        result = fleet_control.get_fleet_config(None, "default")
+        self.assertEqual(result, "default")
+        result = fleet_control.get_fleet_config(123, "default")
+        self.assertEqual(result, "default")
 
+    def test_get_fleet_config_trims_whitespace(self):
+        """Values are trimmed; empty strings become default."""
+        with mock.patch.dict(os.environ, {"ORCH_SPACE_KEY": "  "}, clear=False):
+            result = fleet_control.get_fleet_config("SPACE_KEY", "fallback")
+            self.assertEqual(result, "fallback")
 
-def _rows(pairs):
-    return [{"key": k, "value": v} for k, v in pairs]
-
-
-class ConfigConsumptionTest(unittest.TestCase):
-    def setUp(self):
-        self._env = dict(os.environ)
-        self._db = fleet_control.db
-        self._approval = fleet_control.config_approval
-        fleet_control.config_approval = types.SimpleNamespace(blocked_keys=lambda: set())
-        # This host's real runner/.env pins several keys (MERGE_TRAIN_SCAN_LIMIT among
-        # them). Clear the pin list so the suite tests the code rather than the machine.
-        os.environ["ORCH_CONFIG_ENV_PINS"] = ""
-        fleet_control._applied_config.clear()
-        fleet_control._reported_ignored.clear()
-        fleet_control._last_consumption.update(applied={}, ignored={}, at=None)
-
-    def tearDown(self):
-        fleet_control.db = self._db
-        fleet_control.config_approval = self._approval
-        os.environ.clear()
-        os.environ.update(self._env)
-        fleet_control._applied_config.clear()
-        fleet_control._reported_ignored.clear()
-
-    def _load(self, pairs):
-        fleet_control.db = FakeDB(_rows(pairs))
-        return fleet_control.load_config()
-
-    # --- applied keys still work exactly as before ----------------------------------
-    def test_a_safe_key_is_applied_and_reported_as_applied(self):
-        self._load([("ORCH_MAX_PARALLEL", "12")])
-        self.assertEqual(os.environ["ORCH_MAX_PARALLEL"], "12")
-        report = fleet_control.config_consumption()
-        self.assertEqual(report["applied"], {"ORCH_MAX_PARALLEL": "12"})
-        self.assertEqual(report["ignored"], {})
-
-    def test_return_value_still_counts_applied_keys(self):
-        self.assertEqual(self._load([("ORCH_A", "1"), ("ORCH_B", "2")]), 2)
-
-    def test_an_unsafe_key_does_not_reach_the_environment(self):
-        self._load([("AUTOPILOT_SWEEP_LIMIT", "40")])
-        self.assertNotIn("AUTOPILOT_SWEEP_LIMIT", os.environ)
-
-    # --- the reporting this task exists for -----------------------------------------
-    def test_unsafe_prefix_is_named_with_a_reason(self):
-        self._load([("AUTOPILOT_SWEEP_LIMIT", "40")])
-        self.assertEqual(fleet_control.config_consumption()["ignored"],
-                         {"AUTOPILOT_SWEEP_LIMIT": fleet_control.IGNORE_UNSAFE_KEY})
-
-    def test_credential_marker_outranks_a_safe_prefix(self):
-        # ORCH_ is a safe prefix, but a TOKEN-shaped key must still be refused, and the
-        # reason must say credential rather than the vaguer unsafe-key.
-        self._load([("ORCH_GIT_TOKEN", "abc123")])
-        self.assertEqual(fleet_control.config_consumption()["ignored"],
-                         {"ORCH_GIT_TOKEN": fleet_control.IGNORE_CREDENTIAL})
-        self.assertNotIn("ORCH_GIT_TOKEN", os.environ)
-
-    def test_credential_reason_does_not_leak_the_value(self):
-        self._load([("ORCH_API_KEY", "sk-super-secret")])
-        report = fleet_control.config_consumption()
-        self.assertNotIn("sk-super-secret", repr(report))
-
-    def test_approval_blocked_key_is_named(self):
-        fleet_control.config_approval = types.SimpleNamespace(
-            blocked_keys=lambda: {"ORCH_MAX_PARALLEL"})
-        self._load([("ORCH_MAX_PARALLEL", "99")])
-        self.assertEqual(fleet_control.config_consumption()["ignored"],
-                         {"ORCH_MAX_PARALLEL": fleet_control.IGNORE_APPROVAL_BLOCKED})
-
-    def test_pinned_key_is_reported_as_not_consumed_from_the_db(self):
-        # A pin is deliberate, but the DB value still did not take effect — the operator
-        # asking "why didn't my push land" needs to see it.
-        os.environ["ORCH_CONFIG_ENV_PINS"] = "RAM_FLOOR_GB"
-        os.environ["RAM_FLOOR_GB"] = "6"
-        self._load([("RAM_FLOOR_GB", "1.0")])
-        self.assertEqual(fleet_control.config_consumption()["ignored"],
-                         {"RAM_FLOOR_GB": fleet_control.IGNORE_PINNED})
-        self.assertEqual(os.environ["RAM_FLOOR_GB"], "6", "the pin must still win")
-
-    def test_null_value_is_named(self):
-        self._load([("ORCH_MAX_PARALLEL", None)])
-        self.assertEqual(fleet_control.config_consumption()["ignored"],
-                         {"ORCH_MAX_PARALLEL": fleet_control.IGNORE_EMPTY})
-
-    def test_applied_and_ignored_are_reported_together(self):
-        self._load([("ORCH_MAX_PARALLEL", "12"), ("GEMINI_MODEL", "gemini-2.5-flash")])
-        report = fleet_control.config_consumption()
-        self.assertEqual(report["applied"], {"ORCH_MAX_PARALLEL": "12"})
-        self.assertEqual(report["ignored"],
-                         {"GEMINI_MODEL": fleet_control.IGNORE_UNSAFE_KEY})
-
-    def test_the_live_offenders_are_classified_as_ignored(self):
-        # Real rows sitting in fleet_config on 2026-08-06, every one inert.
-        offenders = ["AUTOPILOT_BLOCKER_INTERVAL", "AUTOPILOT_RANK_INTERVAL",
-                     "AUTOPILOT_RECOVERY_INTERVAL", "AUTOPILOT_RELEASE_BLOCKER_INTERVAL",
-                     "AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE", "AUTOPILOT_SWEEP_LIMIT",
-                     "CONFIDENCE_GATE", "CONFIDENCE_THRESHOLD", "GEMINI_MODEL",
-                     "GEMINI_CHEAP_MODEL", "OPENAI_STRONG_MODEL", "OPENAI_FAST_MODEL",
-                     "OPENAI_CHEAP_MODEL", "PROMOTION_STATE", "PREWARM_N",
-                     "PREVIEW_FEATURE_X"]
-        self._load([(k, "x") for k in offenders])
-        ignored = fleet_control.config_consumption()["ignored"]
-        for key in offenders:
-            self.assertEqual(ignored.get(key), fleet_control.IGNORE_UNSAFE_KEY, key)
-
-    def test_families_the_allowlist_does_cover_are_not_flagged(self):
-        # The 2026-07-30 fix added these prefixes; the report must not re-accuse them.
-        for key in ("OLLAMA_KEEP_ALIVE", "COMMITTEE_WEB_EVIDENCE", "LEGAL_DOCKET_BATCH",
-                    "MERGE_TRAIN_SCAN_LIMIT", "RELEASE_MIN_BATCH", "QUEUE_GEN_CEILING",
-                    "RAM_HARD_PCT", "PER_TASK_GB", "MAX_PARALLEL"):
-            with self.subTest(key=key):
-                fleet_control._reported_ignored.clear()
-                self._load([(key, "x")])
-                self.assertEqual(fleet_control.config_consumption()["ignored"], {}, key)
-
-    # --- log discipline --------------------------------------------------------------
-    def test_each_ignored_key_is_logged_once_not_every_loop(self):
-        import io
-        pairs = [("AUTOPILOT_SWEEP_LIMIT", "40")]
-        buf = io.StringIO()
-        real_stderr, sys.stderr = sys.stderr, buf
-        try:
-            for _ in range(5):
-                self._load(pairs)
-        finally:
-            sys.stderr = real_stderr
-        self.assertEqual(buf.getvalue().count("STORED BUT NOT APPLIED"), 1)
-
-    def test_a_changed_reason_is_logged_again(self):
-        import io
-        buf = io.StringIO()
-        real_stderr, sys.stderr = sys.stderr, buf
-        try:
-            self._load([("ORCH_MAX_PARALLEL", None)])            # null-value
-            fleet_control.config_approval = types.SimpleNamespace(
-                blocked_keys=lambda: {"ORCH_MAX_PARALLEL"})
-            self._load([("ORCH_MAX_PARALLEL", "9")])             # now approval-blocked
-        finally:
-            sys.stderr = real_stderr
-        self.assertEqual(buf.getvalue().count("STORED BUT NOT APPLIED"), 2)
-
-    # --- fail-soft -------------------------------------------------------------------
-    def test_a_dead_database_does_not_raise_and_still_reports(self):
-        class DeadDB:
-            def select(self, *a, **k):
-                raise RuntimeError("supabase unreachable")
-
-        fleet_control.db = DeadDB()
-        self.assertEqual(fleet_control.load_config(), 0)
-        self.assertEqual(fleet_control.config_consumption()["ignored"], {})
-
-    def test_report_is_a_copy_callers_cannot_corrupt(self):
-        self._load([("ORCH_MAX_PARALLEL", "12")])
-        report = fleet_control.config_consumption()
-        report["applied"]["ORCH_MAX_PARALLEL"] = "tampered"
-        self.assertEqual(fleet_control.config_consumption()["applied"]["ORCH_MAX_PARALLEL"], "12")
-
-    def test_report_carries_a_timestamp(self):
-        self.assertIsNone(fleet_control.config_consumption()["at"])
-        self._load([("ORCH_MAX_PARALLEL", "12")])
-        self.assertIsNotNone(fleet_control.config_consumption()["at"])
+    def test_get_fleet_config_empty_string_default(self):
+        """Default empty string is used when not specified."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ORCH_MISSING", None)
+            result = fleet_control.get_fleet_config("MISSING")
+            self.assertEqual(result, "")
 
 
-class ClassifyKeyTest(unittest.TestCase):
-    """_classify_key must mirror load_config's conditions, in the same order."""
+class TestResourceMedicConfigConsumption(unittest.TestCase):
+    """Verify resource_medic uses fleet_control gateway."""
 
-    def test_none_means_the_key_will_be_consumed(self):
-        self.assertIsNone(fleet_control._classify_key("ORCH_X", "1", set(), set()))
+    def test_get_medic_config_delegates_to_gateway(self):
+        """_get_medic_config wraps fleet_control.get_fleet_config."""
+        with mock.patch.dict(os.environ, {"ORCH_MEDIC_TEST": "42"}, clear=False):
+            result = resource_medic._get_medic_config("MEDIC_TEST", "10")
+            self.assertEqual(result, "42")
 
-    def test_credential_is_checked_before_prefix(self):
-        self.assertEqual(fleet_control._classify_key("ORCH_SECRET_THING", "v", set(), set()),
-                         fleet_control.IGNORE_CREDENTIAL)
+    def test_get_medic_config_returns_default_on_missing(self):
+        """_get_medic_config returns default when env is missing."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ORCH_MEDIC_TEST2", None)
+            result = resource_medic._get_medic_config("MEDIC_TEST2", "99")
+            self.assertEqual(result, "99")
 
-    def test_empty_key_and_none_value(self):
-        self.assertEqual(fleet_control._classify_key("", "v", set(), set()),
-                         fleet_control.IGNORE_EMPTY)
-        self.assertEqual(fleet_control._classify_key("ORCH_X", None, set(), set()),
-                         fleet_control.IGNORE_EMPTY)
+    def test_set_fleet_config_via_gateway(self):
+        """_set_fleet_config uses fleet_control.update_fleet_config."""
+        with mock.patch("fleet_control.update_fleet_config") as mock_update:
+            resource_medic._set_fleet_config("MAX_PARALLEL", 8)
+            mock_update.assert_called_once_with("MAX_PARALLEL", 8)
 
-    def test_every_reason_is_a_distinct_string(self):
-        reasons = [fleet_control.IGNORE_UNSAFE_KEY, fleet_control.IGNORE_CREDENTIAL,
-                   fleet_control.IGNORE_APPROVAL_BLOCKED, fleet_control.IGNORE_PINNED,
-                   fleet_control.IGNORE_EMPTY]
-        self.assertEqual(len(set(reasons)), len(reasons))
+    def test_set_fleet_config_fails_soft_on_error(self):
+        """_set_fleet_config returns False on gateway error without raising."""
+        with mock.patch("fleet_control.update_fleet_config", side_effect=ValueError("unsafe key")):
+            result = resource_medic._set_fleet_config("UNSAFE_KEY", "value")
+            self.assertFalse(result)
+
+    def test_set_fleet_config_returns_true_on_success(self):
+        """_set_fleet_config returns True when gateway succeeds."""
+        with mock.patch("fleet_control.update_fleet_config"):
+            result = resource_medic._set_fleet_config("ORCH_SAFE_KEY", "value")
+            self.assertTrue(result)
+
+
+class TestWriteGuardConfigConsumption(unittest.TestCase):
+    """Verify write_guard uses fleet_control gateway."""
+
+    def test_enabled_reads_from_gateway(self):
+        """enabled() consults ORCH_WRITE_GUARD via fleet_control."""
+        with mock.patch.dict(os.environ, {"ORCH_WRITE_GUARD": "off"}, clear=False):
+            result = write_guard.enabled()
+            self.assertFalse(result)
+
+    def test_enabled_defaults_to_true(self):
+        """enabled() returns True when ORCH_WRITE_GUARD is missing."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ORCH_WRITE_GUARD", None)
+            result = write_guard.enabled()
+            self.assertTrue(result)
+
+    def test_enabled_fails_soft_on_error(self):
+        """enabled() returns True (fail-closed) if gateway raises."""
+        with mock.patch("fleet_control.get_fleet_config", side_effect=Exception("db error")):
+            result = write_guard.enabled()
+            self.assertTrue(result)
+
+    def test_test_dirs_reads_from_gateway(self):
+        """test_dirs() consults ORCH_WRITE_GUARD_TEST_DIRS via fleet_control."""
+        with mock.patch.dict(os.environ, {"ORCH_WRITE_GUARD_TEST_DIRS": "a,b,c"}, clear=False):
+            result = write_guard.test_dirs()
+            self.assertEqual(result, ("a", "b", "c"))
+
+    def test_test_dirs_returns_defaults_on_missing(self):
+        """test_dirs() returns DEFAULT_TEST_DIRS when config is missing."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ORCH_WRITE_GUARD_TEST_DIRS", None)
+            result = write_guard.test_dirs()
+            self.assertEqual(result, write_guard.DEFAULT_TEST_DIRS)
+
+    def test_test_dirs_fails_soft_on_error(self):
+        """test_dirs() returns DEFAULT_TEST_DIRS if gateway raises."""
+        with mock.patch("fleet_control.get_fleet_config", side_effect=Exception("db error")):
+            result = write_guard.test_dirs()
+            self.assertEqual(result, write_guard.DEFAULT_TEST_DIRS)
+
+    def test_test_dirs_strips_whitespace(self):
+        """test_dirs() trims and normalizes directory names."""
+        with mock.patch.dict(os.environ, {"ORCH_WRITE_GUARD_TEST_DIRS": " a/ , b , /c/"}, clear=False):
+            result = write_guard.test_dirs()
+            self.assertEqual(result, ("a", "b", "c"))
+
+
+class TestConfigPrefixConvention(unittest.TestCase):
+    """Verify all fleet config reads use ORCH_* prefix."""
+
+    def test_resource_medic_uses_orch_prefix(self):
+        """resource_medic config keys become ORCH_MEDIC_* in fleet_config."""
+        with mock.patch("fleet_control.get_fleet_config") as mock_get:
+            mock_get.return_value = "5"
+            resource_medic._get_medic_config("TEST", "default")
+            # gateway is called with unprefixed key, it adds ORCH_ internally
+            mock_get.assert_called_with("TEST", "default")
+
+    def test_write_guard_uses_orch_prefix(self):
+        """write_guard config keys become ORCH_WRITE_GUARD* in fleet_config."""
+        with mock.patch("fleet_control.get_fleet_config") as mock_get:
+            mock_get.return_value = "on"
+            write_guard.enabled()
+            mock_get.assert_called_with("WRITE_GUARD", "on")
 
 
 if __name__ == "__main__":

@@ -5,15 +5,17 @@ pass/fail, gate decision) keyed by task type, and exposes health queries.
 
 Fail-soft throughout: metric loss is always preferable to wedging the merge train.
 """
-import datetime, os, sys
+import datetime, logging, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+_log = logging.getLogger(__name__)
 
 TABLE = "pipeline_metrics"
 
 
 def record(slug, task_type, ok, duration_ms, gate_decision, gate_reason=""):
-    """Persist one test-run metric row. Silently swallows all errors."""
+    """Persist one test-run metric row. Fail-soft: logs on error, never raises."""
     row = {
         "slug": slug or "",
         "task_type": task_type or "unknown",
@@ -25,8 +27,8 @@ def record(slug, task_type, ok, duration_ms, gate_decision, gate_reason=""):
     }
     try:
         db.insert(TABLE, row)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("pipeline_metrics: db.insert failed for %s/%s: %s", slug, task_type, e)
 
 
 def get_health(lookback_minutes=60, task_type=None):
@@ -48,7 +50,8 @@ def get_health(lookback_minutes=60, task_type=None):
         params["task_type"] = f"eq.{task_type}"
     try:
         rows = db.select(TABLE, params) or []
-    except Exception:
+    except Exception as e:
+        _log.warning("pipeline_metrics: db.select failed (lookback=%s min): %s", lookback_minutes, e)
         rows = []
 
     by_type = {}
