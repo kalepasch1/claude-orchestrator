@@ -464,10 +464,24 @@ def _express_capacity():
 
 SELF_MAINTENANCE_PREFIXES = (
     "canary-", "smoke-", "cont-", "recover-missing-branch-", "recovery-", "remediate-",
+    # "remediate-" did NOT cover "remediation-", and every swarm bot files the latter:
+    # conflict_marker_sentinel writes remediation-conflict-markers-*, canary_triage writes
+    # remediation-canary-*. So the whole swarm class escaped the share cap below and
+    # competed with product work for every lane. One missing suffix, entire class exempt.
+    "remediation-", "swarm-",
     "rework-", "relfix-", "qafix-", "copyfix-", "toolchain-repair-", "factory-",
     "backlog-batch-", "batch-mech-", "salvage-", "stash-", "gate-", "preflight-", "gc-",
     "dedup-",
 )
+
+# Where self-maintenance sorts on the PROJECT key. Strictly below every named product,
+# including the rank-13 default (prediction-markets-institute has no entry and lands there,
+# and it is a real product the owner names as a priority — self-work must not tie with it).
+SELF_WORK_PROJECT_RANK = 99
+
+# The projects that ARE the fleet. Self-maintenance filed here is the machine working on
+# itself; the same slugs filed against a product repo are product work and keep that rank.
+OWN_PROJECT_NAMES = frozenset({"beethoven", "orchestrator"})
 
 
 def _is_self_maintenance(task):
@@ -475,9 +489,33 @@ def _is_self_maintenance(task):
     return str((task or {}).get("slug") or "").startswith(SELF_MAINTENANCE_PREFIXES)
 
 
+def _is_own_project(name):
+    return str(name or "").strip().lower() in OWN_PROJECT_NAMES
+
+
 def _project_rank_name(name):
     """Return numeric priority for *name* (lower = higher priority, 13 = default/unknown)."""
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 13)
+
+
+def self_work_demoted():
+    """Is the self-maintenance project demotion active? ORCH_SELF_WORK_INHERITS_PROJECT_RANK=1 opts out."""
+    return str(os.environ.get("ORCH_SELF_WORK_INHERITS_PROJECT_RANK", "0")
+               ).strip().lower() not in ("1", "true", "yes", "on")
+
+
+def portfolio_rank(project_name, task, demoted=None):
+    """The PROJECT sort key for one task. Module-level so it is reachable from a test.
+
+    Lives out here rather than inside claim_task's closure because claim_task needs a live
+    control plane to reach, and a ranking rule that decides what the fleet works on next
+    should be assertable without one. The closure calls straight through.
+    """
+    if demoted is None:
+        demoted = self_work_demoted()
+    if demoted and _is_own_project(project_name) and _is_self_maintenance(task):
+        return SELF_WORK_PROJECT_RANK
+    return _project_rank_name(project_name)
 
 
 def localize_repo_path(repo_path):
@@ -2163,6 +2201,10 @@ def claim_task(runner_id):
     def _task_priority(t):
         return _num(t.get("priority"), 1000)
 
+    # Read once per claim, not per comparison: sort() calls the key function for every row
+    # in the scan (up to CLAIM_SCAN_LIMIT), and os.environ.get is not free at that count.
+    _self_work_demoted = self_work_demoted()
+
     def _blocker_portfolio_rank(t):
         # Higher score means this task clears more downstream/release work.
         if _is_recovery_task(t) and not recovery_backlog:
@@ -2175,7 +2217,21 @@ def claim_task(runner_id):
         # Owner directive: prioritize portfolio work in this exact product order. Keep this
         # independent from mutable DB priority so newly-added rows with stale/null values cannot
         # silently outrank the core apps.
-        return _project_rank_name(project_names.get(t.get("project_id")))
+        #
+        # The orchestrator's own project sits at rank 4 — ahead of madeus(5), vigil(6),
+        # smarter(7), illuminati(8), pareto(9) and everything below. That rank was written
+        # for orchestrator PRODUCT work, but self-maintenance rows filed into the same
+        # project inherit it, so a swarm bot's remediation task outranks user-directed work
+        # in five real products right here, at the eleventh key. The mechanism that is
+        # supposed to hold self-improvement below user work — ev_scheduler._self_improve_tier
+        # — only feeds _ev_rank, the TWENTY-FIRST key, so the sort is already decided by the
+        # time it is consulted. That is not a tuning gap; the guarantee simply was not
+        # reachable. Demote self-work in the fleet's own project below every named product,
+        # which is what "fills idle capacity" means. The same slug against a PRODUCT repo is
+        # product work and keeps its rank. ORCH_SELF_WORK_INHERITS_PROJECT_RANK=1 restores
+        # the old behaviour.
+        return portfolio_rank(project_names.get(t.get("project_id")), t,
+                              demoted=_self_work_demoted)
 
     def _ev_rank(t):
         if _is_release_fix_task(t):
