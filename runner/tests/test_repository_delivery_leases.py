@@ -114,6 +114,16 @@ class DeliveryLeaseTestBase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(lambda: setattr(delivery_lease, "_available", None))
         self.addCleanup(lambda: setattr(delivery_lease, "_probed_at", 0.0))
+        # ORCH_DELIVERY_LEASE_REQUIRED is process-global. A test in here closes the
+        # compatibility window and never reopens it, so every LATER test in the same
+        # pytest process saw require(None, ...) raise — including the release canary's
+        # push tests, which then failed only when the two files shared a process. Restore
+        # whatever the process started with.
+        _saved_required = os.environ.get("ORCH_DELIVERY_LEASE_REQUIRED")
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ORCH_DELIVERY_LEASE_REQUIRED", _saved_required)
+            if _saved_required is not None
+            else os.environ.pop("ORCH_DELIVERY_LEASE_REQUIRED", None))
 
     def acquire_as(self, owner, *, role=ROLE, generation=None, ttl=900):
         """Acquire as a named host. `generation` simulates a distinct process."""
