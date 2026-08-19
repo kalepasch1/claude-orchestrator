@@ -20,8 +20,47 @@ permissions:
   contents: read
 
 jobs:
+  # NOT-CONFIGURED IS NOT THE SAME AS BROKEN.
+  #
+  # The previous version failed the run when GEMINI_API_KEY was absent, on the principle
+  # that "a canary that cannot run is not a passing canary". That principle is right; the
+  # implementation defeated the canary anyway. Every 5 minutes, ~288 times a day, the run
+  # went red for a reason that never changes — 100 of the last 100 runs, and every one of
+  # them 6 seconds long. A signal that is always red carries no information: a genuine
+  # Gemini outage would have been indistinguishable from the missing secret, which is
+  # exactly the failure this canary exists to catch.
+  #
+  # So the run is no longer marked failed for a configuration gap. It is marked SKIPPED,
+  # with a warning annotation naming the cause. Nothing claims Gemini works — the canary
+  # job does not run at all — but a red Canary once again means Gemini is actually broken.
+  # Add the secret and the lane resumes with no further change.
+  #
+  # (The check lives in its own job because GitHub does not allow the `secrets` context in
+  # a job-level `if:`; it has to come through a job output.)
+  preflight:
+    name: preflight — is the gemini lane configured?
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check for GEMINI_API_KEY
+        id: check
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -n "$GEMINI_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            # One line on purpose: GitHub annotations are single-line, and a shell line
+            # continuation would fold the YAML indentation into the message text.
+            echo "::warning title=Gemini canary skipped::GEMINI_API_KEY is not set on this repository, so the gemini lane has no signal to give and is skipped rather than failed. Add the secret to resume it, or delete this workflow if the gemini path is retired. While this warning appears, the canary is NOT covering Gemini."
+
   gemini-canary:
     name: gemini — marker canary
+    needs: preflight
+    if: needs.preflight.outputs.configured == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -30,22 +69,11 @@ jobs:
       GEMINI_MODEL: gemini-2.0-flash
 
     steps:
-      # FIRST, deliberately. This guard used to sit after checkout + setup-python +
+      # The guard that used to live here ran after checkout + setup-python +
       # `pip install -r requirements.txt`, so every run with the secret missing provisioned
-      # a full Python environment before reporting a configuration gap. Between
-      # 2026-08-17 09:43 and 2026-08-18 11:39 that was 100 consecutive runs, zero
-      # successes, ~288/day. Checking first costs seconds and puts the real reason at the
-      # top of the log. It still fails: a canary that cannot run is not a passing canary.
-      - name: Fail fast when the secret is not configured
-        run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error::GEMINI_API_KEY secret is not set on this repository."
-            echo "::error::This canary has no signal to give until it is set. Either add the"
-            echo "::error::secret, or remove the gemini lane so it stops reporting a known gap"
-            echo "::error::every 5 minutes."
-            exit 1
-          fi
-
+      # a full Python environment before reporting a configuration gap. It was hoisted to
+      # first (ca4a9903), and is now a separate gating job — this job simply does not start
+      # unless the credential exists, so nothing is provisioned at all.
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
