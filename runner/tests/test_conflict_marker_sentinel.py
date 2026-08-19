@@ -26,4 +26,67 @@ def test_sweep_files_tier1_remediation(tmp_path):
 def test_sweep_clean_files_nothing(tmp_path):
     filed = []
     res = cms.sweep(_repo(tmp_path, "ok=1\n"), enqueue_fn=lambda rec: filed.append(rec))
-    assert res == {"found": [], "filed": False} and filed == []
+    assert res == {"found": [], "worktree": [], "filed": False} and filed == []
+
+
+# --- uncommitted markers: invisible to a HEAD grep, yet they block EVERY merge ---------
+# The pre-merge-commit anti-regression guard scans the WORKING TREE. On 2026-08-18 three
+# uncommitted darwin-kernel files carried markers while HEAD was clean, so git refused
+# every merge commit on the node and the HEAD-only sentinel reported nothing at all.
+
+def _dirty(repo, content):
+    """Overwrite the tracked file WITHOUT committing."""
+    open(os.path.join(repo, "m.py"), "w").write(content)
+
+
+def test_scan_worktree_sees_markers_that_head_scan_cannot(tmp_path):
+    repo = _repo(tmp_path, "a=1\nb=2\n")
+    _dirty(repo, CONFLICT)
+    assert cms.scan(repo) == [], "HEAD is clean — this is exactly why the old scan missed it"
+    assert cms.scan_worktree(repo) == ["m.py"]
+
+
+def test_sweep_files_a_distinct_remediation_for_uncommitted_markers(tmp_path):
+    repo = _repo(tmp_path, "a=1\nb=2\n")
+    _dirty(repo, CONFLICT)
+    filed = []
+    res = cms.sweep(repo, enqueue_fn=lambda rec: filed.append(rec))
+    assert res["found"] == []
+    assert res["worktree"] == ["m.py"]
+    assert res["filed"] is True
+    assert len(filed) == 1
+    assert filed[0]["slug"] == "remediation-conflict-markers-in-worktree"
+    assert filed[0]["priority"] == 1, "must stay tier-1: never ahead of user-directed work"
+    assert "merge commit" in filed[0]["prompt"]
+
+
+def test_committed_markers_are_not_reported_twice(tmp_path):
+    repo = _repo(tmp_path, CONFLICT)
+    filed = []
+    res = cms.sweep(repo, enqueue_fn=lambda rec: filed.append(rec))
+    assert res["found"] == ["m.py"]
+    assert res["worktree"] == [], "already covered by the HEAD finding"
+    assert len(filed) == 1
+
+
+def test_both_locations_file_one_task_each(tmp_path):
+    repo = _repo(tmp_path, CONFLICT)                      # m.py: markers on HEAD
+    open(os.path.join(repo, "other.py"), "w").write("ok=1\n")
+    _git(["add", "."], repo); _git(["commit", "-qm", "clean other"], repo)
+    open(os.path.join(repo, "other.py"), "w").write(CONFLICT)   # uncommitted markers
+    filed = []
+    res = cms.sweep(repo, enqueue_fn=lambda rec: filed.append(rec))
+    assert res["found"] == ["m.py"]
+    assert res["worktree"] == ["other.py"]
+    assert sorted(r["slug"] for r in filed) == [
+        "remediation-conflict-markers-in-worktree",
+        "remediation-conflict-markers-on-master",
+    ]
+
+
+def test_enqueue_failure_is_swallowed(tmp_path):
+    repo = _repo(tmp_path, "a=1\n")
+    _dirty(repo, CONFLICT)
+    def boom(rec): raise RuntimeError("db down")
+    res = cms.sweep(repo, enqueue_fn=boom)
+    assert res["worktree"] == ["m.py"] and res["filed"] is False

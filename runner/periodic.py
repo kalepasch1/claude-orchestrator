@@ -1221,14 +1221,20 @@ def run_shipped():
 
 
 def run_markersentinel():
-    """Zero-token swarm bot #1: file a tier-1 remediation task if tracked conflict
-    markers reach master (one such file breaks every compile/collection/canary gate)."""
+    """Zero-token swarm bot #1: file a tier-1 remediation task when conflict markers
+    reach master (one such file breaks every compile/collection/canary gate) OR sit
+    uncommitted in this node's working tree (the pre-merge-commit anti-regression guard
+    scans the working tree, so one such file makes git refuse EVERY merge commit here)."""
     import conflict_marker_sentinel, enqueue
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     res = conflict_marker_sentinel.sweep(repo, enqueue.enqueue_task)
     if res.get("found"):
         print(f"conflict_marker_sentinel: {len(res['found'])} file(s) with conflict "
               f"markers on HEAD; remediation filed={res['filed']}")
+    if res.get("worktree"):
+        print(f"conflict_marker_sentinel: {len(res['worktree'])} UNCOMMITTED file(s) with "
+              f"conflict markers in the working tree — merge commits are blocked on this "
+              f"node; remediation filed={res['filed']}")
 
 
 JOBS = {
