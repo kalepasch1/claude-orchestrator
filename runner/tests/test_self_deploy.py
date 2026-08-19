@@ -121,9 +121,15 @@ class TestCanaryGate(unittest.TestCase):
              patch.object(self_deploy, "_pytest_timeout_available", return_value=True), \
              patch.object(self_deploy.subprocess, "run", side_effect=_run):
             self.assertTrue(self_deploy.canary_gate("/repo", "aaa", "bbb"))
-        self.assertEqual(calls[0][0][:4], ["python3", "-m", "compileall", "-q"])
-        self.assertIn("--collect-only", calls[1][0])
-        pytest_cmd, kw = calls[-1]
+        # canary_gate now also shells out to git to pin a clean checkout of the candidate.
+        # With subprocess fully mocked no worktree can exist, so it falls back to the live
+        # repo — assert on the gate stages themselves rather than on call positions.
+        stages = [(cmd, kw) for cmd, kw in calls if cmd and cmd[0] == "python3"]
+        self.assertTrue(any(c[0][:2] == ["git", "rev-parse"] for c in calls),
+                        "the gate must resolve the exact commit it is verifying")
+        self.assertEqual(stages[0][0][:4], ["python3", "-m", "compileall", "-q"])
+        self.assertIn("--collect-only", stages[1][0])
+        pytest_cmd, kw = stages[-1]
         self.assertEqual(pytest_cmd[:4], ["python3", "-m", "pytest",
                                           "runner/tests/test_self_deploy.py"])
         self.assertIn("-x", pytest_cmd)
