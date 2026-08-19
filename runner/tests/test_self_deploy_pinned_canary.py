@@ -133,3 +133,18 @@ def test_gate_output_keeps_both_ends_so_failures_stay_classifiable(monkeypatch):
 
 def test_short_output_is_not_truncated():
     assert self_deploy._excerpt("  boom  ") == "boom"
+
+
+def test_both_worktree_removal_names_work(repo):
+    """unpin() and remove_worktree() are the same operation under two names.
+
+    The body lives in unpin() on purpose: a function whose body shrinks to one delegating
+    call reads as `symbol/gutted` to the merge regression guard, and a gutted unpin()
+    blocked the fleet's automatic origin reconcile until it was reshaped.
+    """
+    for remove in (self_deploy.unpin, self_deploy.remove_worktree):
+        pinned = self_deploy.pin_checkout(repo["path"], repo["head"])
+        assert pinned and os.path.exists(pinned)
+        remove(repo["path"], pinned)
+        assert not os.path.exists(pinned)
+        assert pinned not in _git(repo["path"], "worktree", "list").stdout

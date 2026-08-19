@@ -114,6 +114,17 @@ class ReleasePushFastForwardTest(unittest.TestCase):
         # deploying anything. Hold an explicit lease instead, which is what production
         # does, and record the fence calls so the gating is still asserted rather than
         # merely disabled.
+        # Same shape, second global: ORCH_SHADOW_MODE makes the promote path return
+        # "shadow mode: promotion withheld" instead of pushing. tools_live_verify used to
+        # set it at IMPORT time, and test_all_modules_importable imports every module
+        # first in the canary — so these tests failed on perfectly good code. Pin it here
+        # too: a test of push behaviour must not inherit the process's shadow setting.
+        _saved_shadow = os.environ.get("ORCH_SHADOW_MODE")
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ORCH_SHADOW_MODE", _saved_shadow)
+            if _saved_shadow is not None else os.environ.pop("ORCH_SHADOW_MODE", None))
+        os.environ["ORCH_SHADOW_MODE"] = "false"
+
         import delivery_lease
         self.lease = object()
         self.fenced = []
