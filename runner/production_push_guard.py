@@ -98,8 +98,14 @@ def verify(repo, commit):
     if os.environ.get("ORCH_ALLOW_UNVERIFIED_PROD_PUSH", "").lower() in {"1", "true", "yes", "on"}:
         return True, "BREAK-GLASS override: ORCH_ALLOW_UNVERIFIED_PROD_PUSH is set"
     return False, (
-        f"No green release-train proof exists for exact commit {commit[:12]} using `{command}`.\n"
-        "Push the change to orchestrator/dev and let release_train verify/promote it.\n"
+        f"No green build proof exists for exact commit {commit[:12]} using `{command}`.\n"
+        "\n"
+        "Earn one — it runs the real build in THIS checkout, and records nothing if it fails:\n"
+        f"    python3 {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'prove_build.py')} --repo {repo}\n"
+        "\n"
+        "Or push to orchestrator/dev and let release_train verify/promote it — but note the\n"
+        "train records its proofs against an isolated integration worktree, so a proof it\n"
+        "earns will not match a push from this path.\n"
         "Emergency only: set ORCH_ALLOW_UNVERIFIED_PROD_PUSH=1 after independently verifying the committed tree."
     )
 
