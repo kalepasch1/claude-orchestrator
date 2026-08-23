@@ -928,3 +928,69 @@ def invalidate() -> bool:
         return _invalidate_tracking()
     except Exception:
         return False
+
+
+# ── Merge-candidate gate ────────────────────────────────────────────────────
+
+# Anchored merge subjects git itself writes. These are the strong signals.
+_MERGE_SUBJECT_RE = re.compile(
+    r"^\s*merge\s+(pull\s+request\b|(remote-tracking\s+)?branch\b|tag\b|commit\b|\S)",
+    re.IGNORECASE,
+)
+# GitHub's squash/merge subject can appear anywhere in a multi-line body.
+_MERGE_PHRASE_RE = re.compile(r"merge\s+pull\s+request\b", re.IGNORECASE)
+# Bare "merge"/"merged" as a STANDALONE word, per the spec's matcher list.
+_MERGE_WORD_RE = re.compile(r"(?<![\w-])merged?(?![\w-])", re.IGNORECASE)
+# A revert of a merge is not a merge — it is the opposite, and replaying its
+# diff into merged-diff memory would teach the fleet the inverse of the lesson.
+_REVERT_RE = re.compile(r"(?<![\w-])revert(s|ed|ing)?(?![\w-])", re.IGNORECASE)
+
+
+def is_merge_candidate(commit_message: str) -> bool:
+    """True when a commit message likely represents a merge from another branch.
+
+    This is the message-only gate for merged-diff memory: it decides whether a
+    commit is worth extracting exemplars from before any repository work happens.
+
+    Matching, in order:
+      1. Reverts lose outright. "Revert \"Merge pull request #123 ...\"" is a
+         revert, not a merge, even though it contains a perfect merge subject —
+         so the revert check runs FIRST and short-circuits.
+      2. Anchored git/GitHub merge subjects: "Merge branch '...'",
+         "Merge remote-tracking branch '...'", "Merge pull request #N from ...".
+      3. "merge pull request" anywhere in the body, because the merge train
+         writes multi-line messages whose merge header is not always line 1.
+      4. A standalone "merge"/"merged" word, per the spec's matcher list.
+
+    Empty, whitespace-only, None and non-str inputs are False — a message that
+    says nothing is not evidence of a merge.
+
+    KNOWN LIMIT, stated rather than hidden: rule 4 is deliberately loose, so
+    prose that merely mentions merging ("document the merge policy") matches.
+    Message text is a heuristic, never proof. Where the repository is available,
+    a commit's PARENT COUNT is authoritative and should be preferred — see
+    runner/tests/test_merged_diff_memory_merge_detection.py, which asserts that
+    against a real git repo. This function exists for the paths that only ever
+    see a string.
+
+    Args:
+        commit_message: commit subject or full body.
+
+    Returns:
+        True if the message looks like a merge, False otherwise.
+    """
+    if not isinstance(commit_message, str):
+        return False
+    msg = commit_message.strip()
+    if not msg:
+        return False
+
+    # Reverts first — a revert of a merge contains a merge subject verbatim.
+    if _REVERT_RE.search(msg):
+        return False
+
+    if _MERGE_SUBJECT_RE.match(msg):
+        return True
+    if _MERGE_PHRASE_RE.search(msg):
+        return True
+    return bool(_MERGE_WORD_RE.search(msg))
