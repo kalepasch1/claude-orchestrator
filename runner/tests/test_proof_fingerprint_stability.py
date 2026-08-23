@@ -93,3 +93,41 @@ def test_a_new_package_root_changes_the_fingerprint():
         with open(os.path.join(repo, "packages", "new-thing", "package-lock.json"), "w") as f:
             f.write('{"lockfileVersion":3}')
         assert proof_graph.dependency_fingerprint(repo) != before
+
+
+def test_a_nested_git_checkout_does_not_change_the_fingerprint():
+    """A submodule is a separate project on its own release schedule."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = _make_repo(tmp)
+        before = proof_graph.dependency_fingerprint(repo)
+
+        sub = os.path.join(repo, "vendored-app")
+        os.makedirs(sub)
+        # A submodule has a .git FILE; a nested clone has a .git directory.
+        # Either marks it as somebody else's project.
+        with open(os.path.join(sub, ".git"), "w") as f:
+            f.write("gitdir: ../.git/modules/vendored-app\n")
+        with open(os.path.join(sub, "package-lock.json"), "w") as f:
+            f.write('{"lockfileVersion":3,"name":"someone-elses-app"}')
+
+        assert proof_graph.dependency_fingerprint(repo) == before, (
+            "a submodule's lockfile changed the host's fingerprint; reinstalling "
+            "the submodule would invalidate the host's build proof"
+        )
+
+
+def test_agent_worktrees_do_not_change_the_fingerprint():
+    """<repo>-wt/ worktrees are created and destroyed constantly."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = _make_repo(tmp)
+        before = proof_graph.dependency_fingerprint(repo)
+
+        wt = os.path.join(repo, "pasch-wt", "some-agent-branch")
+        os.makedirs(wt)
+        with open(os.path.join(wt, "package-lock.json"), "w") as f:
+            f.write('{"lockfileVersion":3,"name":"ephemeral"}')
+
+        assert proof_graph.dependency_fingerprint(repo) == before, (
+            "an agent worktree's lockfile changed the fingerprint; every "
+            "worktree created or removed would invalidate outstanding proofs"
+        )
