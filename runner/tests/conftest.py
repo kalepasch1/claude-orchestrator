@@ -76,18 +76,68 @@ def _reset_tdd_gate_cache():
 
 # Every control-plane module any test replaces via sys.modules[...] = ModuleType(...)
 # must be listed here, or it leaks into every module imported afterwards.
-# Keep in sync with:  grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py
-_REAL_MODULES = {
-    "db": _real_db,
-    "kill_switch": _real_kill_switch,
-    "log": _real_log,
-    "subscription_guard": _real_subscription_guard,
-    "provider_terms": _real_provider_terms,
-}
+#
+# The list used to be maintained by hand under a "keep in sync with this grep" note.
+# It had drifted: the grep names twenty modules and only these five were listed, so a
+# synthetic claude_cli, agentic_coders, notify, retry_policy, branch_lease and the rest
+# survived the restore and leaked into every module imported after them — the exact
+# failure this block exists to prevent, and a standing source of "passes alone, fails
+# in-suite" results. A comment asking a human to re-run a grep is not a mechanism.
+#
+# Derive it instead. Names that are not importable modules of their own (a test's
+# private ModuleType, or a package that is not installed) are simply absent, which is
+# the correct restore behaviour: there is no real module to put back.
+_REPLACEABLE_MODULES = (
+    "agentic_coders", "agentic_repair", "branch_lease", "capacity_pacer",
+    "causal_attribution", "claude_cli", "db", "exec_telemetry", "kill_switch", "log",
+    "notify", "prompt_assembler", "provider_terms", "queue_counters", "requests",
+    "retry_policy", "runner", "subscription_guard",
+)
+
+# Synthetic-only: invented by a test, with no real module behind the name. They still
+# have to be handled — a fake left registered under any name outlives the test that made
+# it — but the correct undo is to REMOVE the entry, not to put something back. Kept
+# separate from _REAL_MODULES so that map stays exactly what its name promises: real
+# module objects.
+_SYNTHETIC_ONLY_MODULES = frozenset({"_runner_module_under_test", "_test_hot_mod"})
+
+
+def _resolve_real_modules():
+    """Real module objects for every name a test may replace, best-effort.
+
+    Uses sys.modules first so an already-imported module is captured as-is rather than
+    re-executed, and never imports one that is not already importable — conftest runs
+    before every test in the suite, so an import error here would take the whole run
+    down to protect against a leak.
+    """
+    import importlib
+    resolved = {}
+    for name in _REPLACEABLE_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            try:
+                module = importlib.import_module(name)
+            except Exception:
+                continue
+        resolved[name] = module
+    return resolved
+
+
+_REAL_MODULES = _resolve_real_modules()
+# The five that were always listed are load-bearing: if one of them failed to resolve,
+# the guard is silently weaker than it looks, so say so rather than proceeding quietly.
+for _required in ("db", "kill_switch", "log", "subscription_guard", "provider_terms"):
+    if _REAL_MODULES.get(_required) is None:  # pragma: no cover - import-time invariant
+        raise RuntimeError(f"conftest could not resolve real module {_required!r}; "
+                           "module-leak protection would be incomplete")
 
 
 def _restore_real_modules():
     sys.modules.update(_REAL_MODULES)
+    # A name with no real module behind it cannot be restored, only cleared. Leaving the
+    # fake registered lets it outlive the test that installed it.
+    for _synthetic in _SYNTHETIC_ONLY_MODULES:
+        sys.modules.pop(_synthetic, None)
 
 
 @pytest.hookimpl(hookwrapper=True)

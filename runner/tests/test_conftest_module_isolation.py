@@ -50,14 +50,32 @@ def _faked_modules():
 
 class TestConftestRestoresEveryFake(unittest.TestCase):
     def test_every_faked_module_is_restorable(self):
-        missing = _faked_modules() - set(conftest._REAL_MODULES)
+        # Handled means restored to the real module OR cleared, for a name a test
+        # invented and no real module backs. Both undo the pollution; only checking the
+        # first left the synthetic names permanently unhandled and permanently red.
+        handled = set(conftest._REAL_MODULES) | set(conftest._SYNTHETIC_ONLY_MODULES)
+        missing = _faked_modules() - handled
         self.assertEqual(
             missing,
             set(),
             "These modules are faked by tests but conftest never restores them, so the "
             "fake leaks into every module collected afterwards. Add them to "
-            f"conftest._REAL_MODULES: {sorted(missing)}",
+            f"conftest._REAL_MODULES (or _SYNTHETIC_ONLY_MODULES if no real module "
+            f"backs the name): {sorted(missing)}",
         )
+
+    def test_synthetic_only_fakes_are_cleared_not_left_behind(self):
+        import types
+
+        for name in conftest._SYNTHETIC_ONLY_MODULES:
+            sys.modules[name] = types.ModuleType(name)
+        conftest._restore_real_modules()
+        for name in conftest._SYNTHETIC_ONLY_MODULES:
+            self.assertNotIn(
+                name, sys.modules,
+                f"{name} has no real module to restore, so it must be removed; leaving "
+                "the fake registered lets it outlive the test that installed it",
+            )
 
     def test_real_modules_are_actual_modules_not_fakes(self):
         for name, mod in conftest._REAL_MODULES.items():
