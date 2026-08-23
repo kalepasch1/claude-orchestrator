@@ -117,3 +117,121 @@ def pytest_collectstart(collector):
     if isinstance(collector, pytest.Module):
         _restore_real_modules()
     yield
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hermetic execution: no live network, no unbounded subprocess.
+#
+# This suite reached out to the real internet. blocked_triage's release-currency
+# scan shells out to `git ls-remote --heads origin` per project, so running the
+# tests took a trip to GitHub and back, once per repo. Two consequences, both
+# bad, and both observed:
+#
+#   - Suite duration became a function of GitHub's latency. Two pytest runs at
+#     once starved each other and looked exactly like a hang.
+#   - A network blip is indistinguishable from a real failure. That is how a red
+#     suite turns into background noise nobody reads.
+#
+# A unit test that needs the network is a unit test that is lying about what it
+# covers. Both guards below fail LOUDLY and name the fix, rather than silently
+# returning a stub — a stub would make the test pass while testing nothing.
+#
+# Opt out per test with @pytest.mark.allow_network when a test genuinely needs
+# a real socket. There is no opt-out for the missing-timeout guard: add the
+# timeout.
+# ─────────────────────────────────────────────────────────────────────────────
+import socket as _socket
+import subprocess as _subprocess
+
+
+class NetworkAccessInTest(RuntimeError):
+    """A test tried to open a real socket."""
+
+
+class UnboundedSubprocessInTest(RuntimeError):
+    """A test spawned a subprocess with no timeout."""
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "allow_network: this test genuinely needs a real socket; do not block it.",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _hermetic(request, monkeypatch):
+    if request.node.get_closest_marker("allow_network"):
+        yield
+        return
+
+    real_connect = _socket.socket.connect
+
+    def _blocked_connect(self, address, *a, **kw):
+        # AF_UNIX has no address family risk and is how local tooling talks to
+        # itself; only IP sockets leave the machine.
+        if self.family in (_socket.AF_INET, _socket.AF_INET6):
+            raise NetworkAccessInTest(
+                f"Test opened a network connection to {address!r}.\n"
+                f"Unit tests must not depend on a remote host — the suite's runtime "
+                f"and its pass/fail both become someone else's uptime.\n"
+                f"Mock the client, or mark the test @pytest.mark.allow_network if it "
+                f"truly needs a socket."
+            )
+        return real_connect(self, address, *a, **kw)
+
+    monkeypatch.setattr(_socket.socket, "connect", _blocked_connect, raising=False)
+
+    # Patching socket.connect only covers sockets THIS process opens. The calls
+    # that actually cost us were in children: blocked_triage shells out to
+    # `git ls-remote --heads origin`, and git opens its own connections, which
+    # no amount of monkeypatching here can see.
+    #
+    # Point children at a proxy on the discard port instead. Nothing listens
+    # there, so an outbound connection is refused in microseconds rather than
+    # waiting out a 60s timeout — the test still exercises the failure path it
+    # was always going to hit offline, it just stops paying GitHub latency to
+    # get there. GIT_TERMINAL_PROMPT=0 stops git blocking on a credential prompt
+    # when stdin is captured.
+    for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(var, "http://127.0.0.1:9")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    monkeypatch.setenv("GIT_ASKPASS", "/usr/bin/false")
+    monkeypatch.setenv("SSH_ASKPASS", "/usr/bin/false")
+
+    # db.py retries transient HTTP failures with exponential backoff
+    # (time.sleep(min(12, 2**attempt))). Offline, every attempt fails, so a test
+    # that reaches an unmocked db path pays the full retry ladder — measured at
+    # ~5 seconds per test across this suite, for calls that were never going to
+    # succeed. HTTP_RETRIES and HTTP_TIMEOUT are read once at import, so the
+    # ORCH_SUPABASE_* env knobs cannot reach them from here; patch the constants.
+    #
+    # One attempt, short timeout. A test that depends on the retry LADDER should
+    # set these itself and say why.
+    monkeypatch.setattr(_real_db, "HTTP_RETRIES", 1, raising=False)
+    monkeypatch.setattr(_real_db, "HTTP_TIMEOUT", 2.0, raising=False)
+
+    # A subprocess with no timeout can wedge the run forever. runner/ has ~531
+    # such call sites; this stops any of them being reached from a test without
+    # anyone noticing.
+    for name in ("run", "check_output", "call", "check_call"):
+        real = getattr(_subprocess, name, None)
+        if real is None:
+            continue
+
+        def _guard(*a, __real=real, __name=name, **kw):
+            if kw.get("timeout") is None:
+                raise UnboundedSubprocessInTest(
+                    f"subprocess.{__name}() called from a test with no timeout: "
+                    f"{(a[0] if a else kw.get('args'))!r}\n"
+                    f"An unbounded child can hang the suite indefinitely, and "
+                    f"subprocess timeout= cannot interrupt one already blocked in "
+                    f"the kernel on I/O. Pass timeout=."
+                )
+            return __real(*a, **kw)
+
+        monkeypatch.setattr(_subprocess, name, _guard, raising=False)
+
+    yield

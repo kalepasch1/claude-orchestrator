@@ -75,3 +75,56 @@ jobs:
         # which the scheduled canary workflow shells out to — could ship a syntax error and
         # still show a green CI.
         run: python -m compileall -q *.py > /dev/null
+
+  # The queue and the repo disagreed, and nothing was checking.
+  #
+  # tasks/*.task.json carried no status field at all, so "has this improvement
+  # shipped?" was unanswerable from the repo — you had to read public.tasks by
+  # hand, and it has 24k rows. The first reconciliation run found the honest
+  # answer: of 21 task files, ZERO were DEPLOYED_AND_VERIFIED. Six had merged
+  # without anyone verifying them, three were still open, three quarantined, and
+  # one had no queue row at all.
+  #
+  # Portfolio-wide the same gap: 8,078 PHANTOM_UNVERIFIED against 413 verified.
+  # That is what happens when MERGED is read as "done" — the reclassification
+  # that produced those phantoms had to be run retroactively, over thousands of
+  # rows, because nothing caught the drift as it happened.
+  #
+  # This job catches it as it happens. It fails when a task file has no single
+  # queue row, which is the condition under which nobody can say whether the
+  # work is done.
+  #
+  # Skipped rather than failed when credentials are absent — a fork PR has no
+  # secrets, and a job that is red on arrival for everyone teaches people to
+  # ignore CI. Same reasoning as runner-guards above.
+  task-reconciliation:
+    name: tasks — reconcile against the queue
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check for control-plane credentials
+        id: creds
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SUPABASE_URL / SUPABASE_SERVICE_KEY not set — skipping task reconciliation."
+          fi
+
+      - name: Reconcile task files against public.tasks
+        if: steps.creds.outputs.available == 'true'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        # --check reports without rewriting the files. Exit 1 when any task file
+        # is MISSING or AMBIGUOUS in the queue.
+        run: python3 runner/tools/reconcile_task_files.py --check
