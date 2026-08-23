@@ -6,5 +6,11 @@
   "submitted_by_label": "Codex operator-directed remediation",
   "prompt": "Build approved-source regulatory ingestion for regulation_scanner.py: source registry, robots/terms-aware fetch adapter, content-version storage, change extraction with confidence and provenance, and event publication to the durable compliance event router. Do not scrape or fetch unapproved sources. Add deterministic fixture tests for first observation, meaningful change, unchanged content, and malformed source responses.",
   "proof": "runner/tests/test_regulation_ingestion.py",
-  "note": "Follow-up identified during Round 8 audit: scanner is deliberately adapter-only and needs controlled production source integration."
+  "note": "Follow-up identified during Round 8 audit: scanner is deliberately adapter-only and needs controlled production source integration.",
+  "reconciliation": {
+    "db_state": "SUPERSEDED",
+    "status": "closed",
+    "completed_at": null,
+    "reconciled_at": "2026-08-23T14:30:16+00:00"
+  }
 }
