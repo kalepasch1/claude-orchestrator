@@ -21,12 +21,40 @@ def _home():
 
 def _path(): return os.path.join(_home(), "patch-proof-graph.jsonl")
 
+# Directories excluded from the dependency fingerprint.
+#
+# The fingerprint is meant to describe THIS PROJECT'S declared dependencies, so
+# that a proof earned against one set of lockfiles is not reused against
+# another. It was walking the whole repo, and .runtime/ is the orchestrator's
+# own scratch: deps/snapshots/ alone held 309 staged installs, each with its own
+# package-lock.json. 249 of the 256 lockfiles being hashed lived there.
+#
+# The effect was that any prewarm — creating a snapshot, publishing one, cleaning
+# one up — changed the fingerprint of every repo, and every outstanding build
+# proof stopped matching. prove_build would record a proof, read it back to
+# confirm it was durable, report GREEN, and then the pre-push guard moments later
+# would find nothing, because a snapshot had been written in between. "Earn a
+# proof, then push" could not work, and the only way past it was the break-glass
+# override the guard exists to make unnecessary.
+#
+# A cache belonging to the build tool is not an input to what is being built.
+_FINGERPRINT_PRUNE = {
+    ".git", "node_modules", ".nuxt", ".next", "dist", "build",
+    # orchestrator scratch and build output
+    ".runtime", ".output", ".vercel", ".orch", ".orch-tmp",
+    # python and test caches
+    ".venv", "venv", "__pycache__", ".pytest_cache", "coverage",
+    # archives kept on disk but not part of the project
+    "_to_delete", "_dormant", ".spine-wt",
+}
+
+
 def dependency_fingerprint(repo: str) -> str:
     repo = _canonical_repo(repo)
     h = hashlib.sha256()
     found = False
     for root, dirs, files in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in {".git", "node_modules", ".nuxt", ".next", "dist", "build"}]
+        dirs[:] = [d for d in dirs if d not in _FINGERPRINT_PRUNE]
         for name in sorted(files):
             if name not in LOCKFILES: continue
             path = os.path.join(root, name); found = True
