@@ -2454,15 +2454,45 @@ def run_task(t):
                 # Verify the ref actually landed on origin; if it never does, leave a durable marker
                 # so the branch is NOT eligible for local GC (governor now refuses to delete unshared).
                 _shared = False
+
+                def _already_on_origin():
+                    """Is this exact tip already reachable from origin/agent/<slug>?
+
+                    Asked by ancestry, not by reading push stderr. The old check matched
+                    "already exists" in the error text, which is true both when the other
+                    Mac already has our commit AND when it has a DIFFERENT commit under
+                    the same branch name — so a genuinely unshared branch was recorded as
+                    shared and became eligible for local GC. That is the exact path that
+                    produced the recover-missing-branch churn this block exists to end.
+                    """
+                    try:
+                        return subprocess.run(
+                            ["git", "merge-base", "--is-ancestor", f"agent/{slug}",
+                             f"origin/agent/{slug}"],
+                            cwd=repo, capture_output=True, text=True, timeout=60).returncode == 0
+                    except Exception:
+                        return False
+
                 for _attempt in range(3):
                     try:
+                        # Fetch before pushing. Two Macs share one queue and one branch
+                        # namespace, so a stale remote-tracking ref turns every push into a
+                        # non-fast-forward we would otherwise mistake for "already shared".
+                        # Fail-soft: offline keeps the old local-only behaviour.
+                        subprocess.run(["git", "fetch", "--quiet", "origin", f"agent/{slug}"],
+                                       cwd=repo, capture_output=True, text=True, timeout=120)
+                        if _already_on_origin():
+                            _shared = True
+                            break
                         _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
                                              cwd=repo, capture_output=True, text=True, timeout=180)
                         if _pr.returncode == 0:
                             _shared = True
                             break
-                        # non-ff (branch already on origin ahead) counts as shared
-                        if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
+                        # A rejected push may still mean the tip is on origin (another
+                        # writer pushed the same commits first) — but only ancestry can say
+                        # so. Never force: the other writer's work is not ours to discard.
+                        if _already_on_origin():
                             _shared = True
                             break
                         print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {(_pr.stderr or '')[-160:]}")
