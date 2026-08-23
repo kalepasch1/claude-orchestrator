@@ -1603,6 +1603,32 @@ def ensure_integration_card(project, slug, **kwargs):
 
 # ── the train ─────────────────────────────────────────────────────────────────
 
+DEFAULT_SCAN_LIMIT = "3000"
+
+
+def _scan_limit():
+    """The row limit for the card scan, with the legacy kill switch declined.
+
+    Extracted from _pick_cards so the interlock can be tested without a database. It was
+    covered only by a script in test_20260806_session_fixes.py that calls _pick_cards()
+    for real — pytest reports that file as skipped, so under the suite this rule was
+    verified nowhere, and it is the rule that decides whether the train scans anything at
+    all.
+
+    Non-positive and unparseable values fall back to the default rather than being
+    honoured: MERGE_TRAIN_SCAN_LIMIT=0 is the fleet-wide switch aimed at hosts too old to
+    honour integration_owner, and a host that does honour it declines to be starved by
+    it. A positive value is a genuine local override and is used as given.
+    """
+    limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", DEFAULT_SCAN_LIMIT)
+    try:
+        if int(str(limit).strip().strip('"')) <= 0:
+            return DEFAULT_SCAN_LIMIT
+    except (TypeError, ValueError):
+        return DEFAULT_SCAN_LIMIT
+    return limit
+
+
 def _pick_cards():
     """Approved merge-kind cards not yet handled by any integration path.
 
@@ -1667,12 +1693,7 @@ def _pick_cards():
     # Current code has integration_owner and does not need this switch to police itself, so it
     # declines to be disabled by it. Operators wanting a genuine local override set a positive
     # MERGE_TRAIN_SCAN_LIMIT; non-positive means "meant for the legacy hosts, not for me".
-    limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
-    try:
-        if int(str(limit).strip().strip('"')) <= 0:
-            limit = "3000"
-    except (TypeError, ValueError):
-        limit = "3000"
+    limit = _scan_limit()
     base = {"select": "*", "status": "eq.approved",
             "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
     unhandled = "or=(decided_by.is.null,and({}))".format(
