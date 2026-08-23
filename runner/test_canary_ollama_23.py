@@ -83,6 +83,11 @@ class CoderRoutingPercentileCanary(unittest.TestCase):
              patch.object(model_gateway, "available", return_value=["local", "deepseek"]):
             result = model_gateway._learned_route("orchestrator", "remediation", "bugfix", "standard")
         # Should reject this route because p95 > 400ms, even though avg is ok
+        # `assertA(...) or assertB(...)` does NOT mean "either is acceptable".
+        # assertA raises on failure, so B is never reached; and when A passes it returns
+        # None, so B runs too. The line therefore asserts A *and then* B — strictly more
+        # than it appears to. Read it as two assertions, and note that the second would
+        # subscript `result` after the first has established it is None.
         self.assertIsNone(result) or self.assertNotEqual(result[1], "llama3.2:3b")
 
     def test_remediation_priority_uses_stricter_slo_than_generic_tasks(self):
