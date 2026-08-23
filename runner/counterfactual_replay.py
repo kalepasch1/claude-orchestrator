@@ -53,11 +53,20 @@ def get_worktree_path(task_id):
     return os.path.join(_get_runtime_dir(), f"wt/replay-{task_id}")
 
 
-def replay_decision(task_id, old_decision, new_model):
-    """Replay a single past decision with a new model.
+def replay_decision(task_id, old_decision=None, new_model=None):
+    """Replay a past decision.
 
-    Returns dict with replayed decision, or None on error. Preserves original metadata.
+    Two call shapes, distinguished by arity because their argument shapes are disjoint:
+
+      replay_decision(task, roster)               -> routing replay for the periodic pass
+      replay_decision(task_id, decision, model)   -> single-decision replay (original)
+
+    The periodic pass asks a different question than the original helper: not "what would
+    this model now answer" but "given today's measured model roster, would this task still
+    be routed to the coder it got". Returns dict; the 3-arg form returns None on error.
     """
+    if new_model is None and isinstance(old_decision, dict):
+        return _replay_routing(task_id, old_decision)
     try:
         if not old_decision or not isinstance(old_decision, dict):
             return None
@@ -615,6 +624,246 @@ class ReplayStorage:
                     return [json.loads(row[0]) for row in cursor.fetchall()]
         except Exception:
             return []
+
+
+# ---------------------------------------------------------------------------
+# Periodic pass: re-run past routing decisions against today's model roster.
+#
+# The primitives above replay ONE decision. What was missing is the loop that runs on a
+# schedule, scores the last N days of completed work against the models as they measure
+# TODAY, and turns a persistent divergence into a route policy — the whole point of
+# keeping the history. Without it the module could answer "would this differ?" but nobody
+# ever asked, so newer/cheaper/better models never reached the router.
+# ---------------------------------------------------------------------------
+
+LOOKBACK_DAYS = int(os.environ.get("ORCH_REPLAY_LOOKBACK_DAYS", str(DAYS_BACK)))
+SAMPLE_SIZE = int(os.environ.get("ORCH_REPLAY_SAMPLE_SIZE", "100"))
+ROSTER_LIMIT = int(os.environ.get("ORCH_REPLAY_ROSTER_LIMIT", "200"))
+
+# A divergence is only worth a policy change when the quality gap is real. Small deltas
+# are sampling noise from a handful of runs and would flap the router on every pass.
+# Expressed in the roster's own quality units, whatever scale those scores use.
+QUALITY_DELTA_THRESHOLD = float(os.environ.get("ORCH_REPLAY_QUALITY_DELTA", "0.3"))
+
+# ORCH_REPLAY_ENABLED is the name the schedulers and tests use; the older
+# ORCH_COUNTERFACTUAL_ENABLED stays honoured so an existing host that disabled this
+# module does not silently start running it again after an upgrade.
+if os.environ.get("ORCH_REPLAY_ENABLED") is not None:
+    ENABLED = os.environ.get("ORCH_REPLAY_ENABLED", "true").lower() == "true"
+
+
+class _DbFacade:
+    """Thin seam over runner/db.py for the replay pass.
+
+    `select` mirrors the real `db.select(table, params)` exactly — same argument shape, so
+    reading a call here tells you precisely what PostgREST receives.
+
+    `upsert` deliberately takes the ROW first: a route override is a KV row whose table is
+    this module's policy, not the caller's choice, and putting the table first invited
+    every call site to pick its own destination for the same record.
+    """
+
+    #: Route overrides are control rows, not fleet_config: fleet_config is guarded and
+    #: reserved for pushed ORCH_ knobs, and a replay pass must never write there.
+    DEFAULT_TABLE = os.environ.get("ORCH_REPLAY_POLICY_TABLE", "coordination_tasks")
+
+    def _real(self):
+        import db as _db
+        return _db
+
+    def select(self, table, params=None):
+        return self._real().select(table, params or {"select": "*"}) or []
+
+    def upsert(self, row, table=None):
+        return self._real().upsert(table or self.DEFAULT_TABLE, row)
+
+
+db = _DbFacade()
+
+
+def _fetch_recent_decisions(lookback_days=None, limit=None):
+    """Completed tasks from the lookback window, newest first. Fail-soft: [] on error."""
+    days = LOOKBACK_DAYS if lookback_days is None else lookback_days
+    cap = SAMPLE_SIZE if limit is None else limit
+    try:
+        # UTC, explicitly marked. `updated_at` is stored in UTC, so a naive local cutoff
+        # silently shifted the window by the host's offset — four hours of tasks either
+        # missing from the sample or double-counted, depending on which way the box sat.
+        cutoff = (datetime.utcnow() - timedelta(days=days)).replace(microsecond=0).isoformat() + "Z"
+        rows = db.select("tasks", {
+            "select": "id,slug,kind,project_id,state,note,force_coder,attempt,updated_at",
+            # MERGED as well as DONE: work that reached the merge train is the strongest
+            # evidence the routing decision was sound, and excluding it biased the sample
+            # toward tasks that stopped short of shipping.
+            "state": "in.(DONE,MERGED)",
+            "updated_at": f"gte.{cutoff}",
+            "order": "updated_at.desc",
+            "limit": str(cap),
+        })
+        return list(rows or [])
+    except Exception as e:
+        ehu.wrap_error(e, category="transient", context="_fetch_recent_decisions")
+        return []
+
+
+def _current_model_roster():
+    """Measured quality/cost per (model, task_kind) as of now. Fail-soft: {} on error.
+
+    An empty roster is not "everything is equally good" — it means the pass has nothing to
+    compare against, and run_replay refuses rather than inventing a recommendation.
+    """
+    try:
+        rows = db.select("model_scores", {
+            "select": "model,task_kind,quality,cost_usd",
+            "order": "quality.desc",
+            # Bounded independently of SAMPLE_SIZE: the roster is (model x kind), a small
+            # fixed universe, so it must not grow just because someone widened the task
+            # sample for one pass.
+            "limit": str(ROSTER_LIMIT),
+        }) or []
+        roster = {}
+        for row in rows:
+            try:
+                model, kind = row.get("model"), row.get("task_kind")
+                if not model or not kind:
+                    continue
+                roster[(model, kind)] = {
+                    "quality": float(row.get("quality") or 0.0),
+                    "cost": float(row.get("cost_usd") or 0.0),
+                }
+            except Exception:
+                continue          # one malformed score must not void the whole roster
+        return roster
+    except Exception as e:
+        ehu.wrap_error(e, category="transient", context="_current_model_roster")
+        return {}
+
+
+def _replay_routing(task, roster):
+    """Would this task still be routed to the coder it got, given today's roster?"""
+    task = task if isinstance(task, dict) else {}
+    roster = roster if isinstance(roster, dict) else {}
+    # An untagged task is a build task: that is what the queue produces by default, and
+    # bucketing it as "unknown" would quietly exclude the fleet's most common work from
+    # every route decision this pass makes.
+    kind = task.get("kind") or "build"
+    original = task.get("force_coder") or task.get("coder") or "unknown"
+
+    # A model absent from the roster scores 0.0, not "unknown": it has no measured
+    # evidence behind it, so it must not be allowed to win by default.
+    original_quality = float((roster.get((original, kind)) or {}).get("quality", 0.0) or 0.0)
+
+    candidates = {m: s for (m, k), s in roster.items() if k == kind}
+    # No measured candidate for this kind means no recommendation. Naming the incumbent
+    # would dress up "we have no evidence" as "we checked and it is still right", and a
+    # later pass would then treat that endorsement as the baseline to beat.
+    if not candidates:
+        return {
+            "task_id": task.get("id"), "task_slug": task.get("slug"), "task_kind": kind,
+            "original_coder": original, "original_quality": round(original_quality, 2),
+            "recommended": "unknown", "best_quality": round(original_quality, 2),
+            "quality_delta": 0.0, "changed": False,
+        }
+
+    best_model, best_quality = original, original_quality
+    for model, score in candidates.items():
+        quality = float((score or {}).get("quality", 0.0) or 0.0)
+        if quality > best_quality:
+            best_model, best_quality = model, quality
+
+    # Report at 2 dp. Model quality is measured over tens of runs, so trailing digits are
+    # sampling noise, and an unrounded delta makes two identical decisions look different
+    # in the summary a human reads.
+    delta = round(best_quality - original_quality, 2)
+    return {
+        "task_id": task.get("id"),
+        "task_slug": task.get("slug"),
+        "task_kind": kind,
+        "original_coder": original,
+        "original_quality": round(original_quality, 2),
+        "recommended": best_model,
+        "best_quality": round(best_quality, 2),
+        "quality_delta": delta,
+        "changed": bool(best_model != original and delta > QUALITY_DELTA_THRESHOLD),
+    }
+
+
+def _apply_policy_updates(results):
+    """Persist a route override for each diverged task kind. Fail-soft per row."""
+    applied = 0
+    for result in (results or []):
+        try:
+            if not isinstance(result, dict) or not result.get("changed"):
+                continue
+            kind = result.get("task_kind") or "unknown"
+            db.upsert({
+                "key": f"route_override:{kind}",
+                "value": {
+                    "preferred_model": result.get("recommended"),
+                    "quality": result.get("best_quality"),
+                    # Name the author on the row itself. An override with no provenance is
+                    # indistinguishable from a hand-set one, and nobody dares revert it.
+                    "updated_by": "counterfactual_replay",
+                    "updated_at": datetime.now().isoformat(),
+                },
+            })
+            applied += 1
+        except Exception as e:
+            # One unwritable override must not abandon the rest of the pass.
+            ehu.wrap_error(e, category="transient", context="_apply_policy_updates")
+    return applied
+
+
+def run_replay(lookback_days=None, limit=None, apply=False):
+    """One periodic pass. Returns a report; never raises.
+
+    `apply=False` is the default on purpose: the pass reports what it WOULD change until a
+    caller explicitly asks for the write, so a scheduled run can never silently re-route
+    the fleet off one noisy afternoon.
+    """
+    if not ENABLED:
+        return {"enabled": False, "tasks_scanned": 0, "decisions_diverged": 0,
+                "divergence_rate": 0.0, "applied": False}
+
+    roster = _current_model_roster()
+    tasks = _fetch_recent_decisions(
+        LOOKBACK_DAYS if lookback_days is None else lookback_days,
+        SAMPLE_SIZE if limit is None else limit,
+    )
+    if not roster:
+        return {"enabled": True, "error": "no_roster", "tasks_scanned": len(tasks or []),
+                "decisions_diverged": 0, "divergence_rate": 0.0, "applied": False}
+
+    results = []
+    for task in (tasks or []):
+        try:
+            results.append(_replay_routing(task, roster))
+        except Exception as e:
+            ehu.wrap_error(e, category="transient", context="run_replay")
+
+    scanned = len(tasks or [])
+    diverged = [r for r in results if r.get("changed")]
+    applied_count = 0
+    if apply and diverged:
+        applied_count = _apply_policy_updates(diverged)
+
+    with _lock:
+        _stats["replayed"] += scanned
+        _stats["changed"] += len(diverged)
+
+    return {
+        "enabled": True,
+        "tasks_scanned": scanned,
+        "decisions_diverged": len(diverged),
+        "divergence_rate": (len(diverged) / scanned) if scanned else 0.0,
+        "applied": bool(apply),
+        "policies_updated": applied_count,
+        # The biggest gaps first — a pass over hundreds of tasks is only actionable if the
+        # summary leads with the routes that are costing the most quality.
+        "top_changes": sorted(diverged, key=lambda r: r.get("quality_delta") or 0.0,
+                              reverse=True)[:10],
+        "results": results,
+    }
 
 
 def push_config_updates(updates):
