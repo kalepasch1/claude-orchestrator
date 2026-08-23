@@ -1858,6 +1858,27 @@ def test_trigger(task_id):
 test_trigger.last_error = ""
 
 
+# Slug prefixes that mark a row as a QUESTION FOR A PERSON rather than work.
+#
+# Kept here, at the claim chokepoint, as well as in agentic_repair. The repair
+# guard was added first and only covers repair — but an escalation sitting in
+# QUEUED looks exactly like ordinary work to this function, so an agent could
+# still CLAIM one, hand it to a coder and burn attempts on a row no coder can
+# resolve. Measured: the standing Guardrail-8 escalation reached attempt=4 that
+# way, and its note was rewritten to "Continue the same implementation to
+# completion" — over the text a human was supposed to read.
+#
+# These rows must be visible to a person and invisible to the dispatcher. The
+# whole point of an escalation is that the machine has stopped; letting the
+# machine pick it up puts the alarm inside the fire.
+OPERATOR_DECISION_SLUG_PREFIXES = ("escalate-", "human-decision-")
+
+
+def is_operator_decision_slug(slug) -> bool:
+    """True when *slug* names an escalation / human-decision record, not work."""
+    return str(slug or "").startswith(OPERATOR_DECISION_SLUG_PREFIXES)
+
+
 def claim_task(runner_id):
     """Atomically claim one QUEUED task whose dependencies are satisfied.
 
@@ -1919,6 +1940,16 @@ def claim_task(runner_id):
                                       "state": "eq.QUEUED",
                                       "order": "created_at.asc",
                                       "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        # An escalation is not claimable work. Filtered here rather than in the
+        # PostgREST query because "not like any of N prefixes" is awkward to
+        # express server-side and this scan is already in memory; the cost is a
+        # startswith over at most CLAIM_SCAN_LIMIT rows.
+        _escalations = [t for t in queued if is_operator_decision_slug(t.get("slug"))]
+        if _escalations:
+            queued = [t for t in queued if not is_operator_decision_slug(t.get("slug"))]
+            print(f"[claim] skipped {len(_escalations)} operator-decision row(s) awaiting a person: "
+                  + ", ".join(str(t.get('slug'))[:60] for t in _escalations[:3]), flush=True)
+
         # Sync to local mirror on successful fetch
         try:
             # FULL SCAN class — and YES, truncation here can corrupt claims. The audit

@@ -31,6 +31,30 @@ MARKER = "AGENTIC-REPAIR DIRECTIVE"
 #   BLIND   — a repair with NO failure evidence (empty note and log_tail) is a guess. Guessing
 #             repeatedly cannot converge, so blind repairs get a much lower ceiling.
 GLOBAL_REPAIR_CEILING = int(os.environ.get("ORCH_GLOBAL_REPAIR_CEILING", "8"))
+
+# A second ceiling, on `attempt` rather than `remediation_count`.
+#
+# WHY BOTH.
+#
+# remediation_count only advances when a repair goes through repair_patch() AND
+# the caller happened to SELECT that column. `attempt` advances down other paths
+# too. The two therefore diverge, and they diverged enormously:
+#
+#     slug                                             attempt   remediation_count
+#     copyfix-…-public-landing-domain-intent-labels        170                   6
+#     copyfix-…-public-landing-founder-navigation          131                   2
+#     copyfix-…-public-landing-hero-control                124                   4
+#     factory-unblock-…-fix-compilation-types              108                   5
+#
+# Every one of those is UNDER the ceiling of 8. The ceiling was not broken; it was
+# counting about 3.5% of the work actually being done and concluding, correctly
+# from what it could see, that the task had barely been tried. A task attempted
+# 170 times is not converging, whatever the remediation counter says.
+#
+# Deliberately higher than GLOBAL_REPAIR_CEILING: `attempt` includes retries that
+# are not repairs (a lost lease, a runner restart), so it should tolerate more
+# before parking. It is a backstop, not the primary bound.
+GLOBAL_ATTEMPT_CEILING = int(os.environ.get("ORCH_GLOBAL_ATTEMPT_CEILING", "20"))
 BLIND_REPAIR_CEILING = int(os.environ.get("ORCH_BLIND_REPAIR_CEILING", "4"))
 
 TERMINAL_NOTE_PREFIX = "repair-ceiling:"
@@ -299,6 +323,45 @@ _BLIND_DIRECTIVE = (
 )
 
 
+def _true_counters(task):
+    """(remediation_count, attempt) for *task*, re-read if the caller did not select them.
+
+    Both ceilings below read these off the row the caller passed in. A sweep that
+    selects a narrow column set therefore handed the ceiling a 0 for a counter
+    that was actually 6, and the bound silently did not apply — which is how a
+    task reached attempt=170 while its remediation_count read 6.
+
+    Absent is not zero. Absent means unknown, and the safe response to an unknown
+    counter is to go and find out, not to assume the task is fresh. One indexed
+    read by id, only on the path that was previously guessing.
+
+    Fail-soft: if the read fails we fall back to whatever the row carried, which
+    is the old behaviour and no worse than it.
+    """
+    rc = task.get("remediation_count")
+    attempts = task.get("attempt")
+    if rc is not None and attempts is not None:
+        return int(rc or 0), int(attempts or 0)
+
+    task_id = task.get("id")
+    if task_id:
+        try:
+            import db
+            rows = db.select("tasks", {
+                "select": "remediation_count,attempt",
+                "id": f"eq.{task_id}",
+                "limit": "1",
+            }) or []
+            if rows:
+                if rc is None:
+                    rc = rows[0].get("remediation_count")
+                if attempts is None:
+                    attempts = rows[0].get("attempt")
+        except Exception:
+            pass
+    return int(rc or 0), int(attempts or 0)
+
+
 def repair_patch(task, signal, category="rework", directive=None, prefer_non_claude=False):
     """Return a db.update patch dict that re-queues a task with an agentic repair prompt.
 
@@ -314,8 +377,12 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     if is_operator_decision(task):
         return _awaiting_operator_patch(task)
 
-    rc = int(task.get("remediation_count") or 0)
+    rc, attempts = _true_counters(task)
     blind = not has_evidence(task, signal)
+    # A task tried this many times is stuck on something a requeue does not
+    # reach. See GLOBAL_ATTEMPT_CEILING for why this exists alongside rc.
+    if attempts >= GLOBAL_ATTEMPT_CEILING:
+        return _terminal_patch(task, category, rc, blind, signal)
     # The GLOBAL ceiling is checked first, even for a task that never ran: a row that has been
     # through the machinery this many times and still has not executed once is stuck on something
     # structural (repo not mounted, an unsatisfiable dependency) that no requeue will resolve.
@@ -347,9 +414,14 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
         "model": coder,
         "note": f"agentic-repair:{category}",
     }
-    # Advance attempt only when the caller selected it, mirroring the prompt rule below.
-    if "attempt" in task:
-        patch["attempt"] = int(task.get("attempt") or 0) + 1
+    # Advance from the TRUE attempt count, not from whatever the caller selected.
+    #
+    # This used to be `if "attempt" in task`, so a sweep with a narrow column set
+    # repaired the task without advancing the counter at all. Combined with the
+    # ceiling reading the same absent column as 0, a task could be repaired
+    # without limit and without either bound ever noticing. _true_counters()
+    # already resolved the real value above; use it.
+    patch["attempt"] = attempts + 1
     # Only rewrite the prompt when the caller actually selected it. Sweep jobs that query a narrow
     # column set (periodic.run_unstick used to select id,slug,note,transient_retries,project_id)
     # would otherwise get in_session_prompt()'s fallback — "Complete the task '<slug>'." — written

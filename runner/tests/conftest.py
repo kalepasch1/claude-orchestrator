@@ -145,8 +145,24 @@ import subprocess as _subprocess
 import warnings
 
 
-class NetworkAccessInTest(RuntimeError):
-    """A test tried to open a real socket."""
+class NetworkAccessInTest(ConnectionRefusedError):
+    """A test tried to open a real socket.
+
+    Deliberately a ConnectionRefusedError — an OSError — and not a bare
+    RuntimeError.
+
+    The first version raised RuntimeError, which no caller in this codebase is
+    written to expect. Code that already handles being offline (this fleet is
+    fail-soft nearly everywhere) took an error path it has no branch for, and
+    tests that had been passing went red for the wrong reason: not because they
+    needed the network, but because they were handed an exception no production
+    caller could ever see.
+
+    An offline machine refuses the connection. Simulating exactly that means
+    fail-soft code follows the branch it would really follow, and only code that
+    genuinely CANNOT proceed without a remote host fails — which is the signal
+    this guard exists to produce.
+    """
 
 
 class UnboundedSubprocessInTest(UserWarning):
@@ -178,9 +194,10 @@ def _hermetic(request, monkeypatch):
         # itself; only IP sockets leave the machine.
         if self.family in (_socket.AF_INET, _socket.AF_INET6):
             raise NetworkAccessInTest(
-                f"Test opened a network connection to {address!r}.\n"
+                111,  # ECONNREFUSED, so errno-inspecting callers behave normally
+                f"Connection refused by the test suite's hermetic guard: {address!r}. "
                 f"Unit tests must not depend on a remote host — the suite's runtime "
-                f"and its pass/fail both become someone else's uptime.\n"
+                f"and its pass/fail both become someone else's uptime. "
                 f"Mock the client, or mark the test @pytest.mark.allow_network if it "
                 f"truly needs a socket."
             )

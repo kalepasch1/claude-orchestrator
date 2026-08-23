@@ -502,6 +502,68 @@ def _dir():
     return path
 
 
+def _publish(receipt):
+    """Mirror a receipt into public.shipped_metrics, where readers look for it.
+
+    WHY THIS EXISTS.
+
+    store() wrote receipts to .runtime/journey-receipts/ and nowhere else. Those
+    files are host-local: invisible to every other runner, to the web UI, and —
+    critically — to canonical_proof_ledger, which reads its journey evidence from
+    the `shipped_metrics` TABLE.
+
+    So the producer wrote files and the only consumer read a table, and the two
+    never met. DEPLOYED_AND_VERIFIED requires an exact live release SHA AND a
+    passing journey receipt; releases were healthy the whole time, and the second
+    half could never be satisfied. Nothing was marked verified for sixteen days.
+
+    Fail-soft on purpose. The file on disk is the durable record; this is the
+    copy the fleet can see. If the control plane is unreachable, the receipt is
+    still written locally and can be backfilled — losing the mirror must never
+    lose the evidence.
+    """
+    try:
+        import db
+    except Exception:
+        return False
+    try:
+        verdict = str(receipt.get("verdict") or "").lower()
+        recorded = receipt.get("recorded_at")
+        try:
+            from datetime import datetime, timezone
+            recorded_iso = datetime.fromtimestamp(float(recorded), timezone.utc).isoformat()
+        except Exception:
+            recorded_iso = None
+        row = {
+            "id": receipt.get("id"),
+            "slug": receipt.get("slug"),
+            "release_sha": receipt.get("sha"),
+            # The ledger matches a task's required journey by name. Fall back to
+            # the probe kind so a receipt is never keyed on an empty string.
+            "journey": receipt.get("journey") or receipt.get("probe") or "default",
+            "ok": verdict == PASS,
+            "verdict": verdict or None,
+            "url": receipt.get("url"),
+            "environment": receipt.get("environment"),
+            "required": bool(receipt.get("required")),
+            "detail": {
+                "assertion_count": receipt.get("assertion_count"),
+                "duration_ms": receipt.get("duration_ms"),
+                "failed_assertions": receipt.get("failed_assertions") or [],
+                "note": receipt.get("note"),
+            },
+        }
+        if recorded_iso:
+            row["recorded_at"] = recorded_iso
+        if not row["id"] or not row["release_sha"]:
+            return False
+        db.upsert("shipped_metrics", row)
+        return True
+    except Exception as exc:
+        print(f"[production_journey] receipt mirror failed (kept on disk): {exc}", flush=True)
+        return False
+
+
 def store(receipt):
     """Persist a receipt atomically. Returns its path. Already redacted by _finalise."""
     path = os.path.join(_dir(), f"{receipt['id']}.json")
@@ -509,6 +571,10 @@ def store(receipt):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(receipt, f, indent=2, sort_keys=True, default=str)
     os.replace(tmp, path)
+    # Disk first, then publish. A receipt that exists only in the database is one
+    # an unreachable control plane can lose; a receipt that exists only on disk is
+    # one no consumer can read. It needs to be in both.
+    _publish(receipt)
     return path
 
 
