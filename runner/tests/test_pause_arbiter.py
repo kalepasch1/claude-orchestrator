@@ -143,3 +143,105 @@ class TestEscalationAfterConsecutiveTrips(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRecheckNeverLiftsWhatItDoesNotOwn(unittest.TestCase):
+    """The interlock: recheck() may only lift pauses it can account for.
+
+    An operator's manual STOP, a pre-arbiter pause, an unregistered reason code, a
+    checker that raises — in every one of those the arbiter is looking at a pause it
+    cannot reason about, and the only safe move is to leave it alone. These paths carried
+    no tests, and they are the ones where a wrong answer resumes a fleet somebody
+    deliberately stopped.
+    """
+
+    def setUp(self):
+        sys.modules.update({"kill_switch": _ks, "db": _db, "subscription_guard": _sg})
+        self._tmpdir = tempfile.mkdtemp()
+        pause_arbiter.STATE_FILE = os.path.join(self._tmpdir, "state.json")
+        _paused["v"] = False
+        _approvals.clear()
+        self._saved_audit = _sg.audit
+
+    def tearDown(self):
+        _sg.audit = self._saved_audit
+        for name, module in _real_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    def test_a_pause_with_no_arbiter_metadata_is_left_alone(self):
+        # A manual STOP. Nothing in the state file describes it, so the arbiter has no
+        # basis for deciding it is safe to resume — and resuming it would silently undo
+        # a human decision.
+        _paused["v"] = True
+        result = pause_arbiter.recheck()
+        self.assertTrue(result["paused"])
+        self.assertEqual(result["action"], "none")
+        self.assertIn("no arbiter metadata", result.get("reason", ""))
+
+    def test_an_unregistered_reason_code_is_never_lifted(self):
+        # Typed, but by a producer this arbiter does not know how to clear. Without a
+        # clear_check there is no evidence the condition ended.
+        pause_arbiter.pause("some_future_reason", "tripped", ttl_s=0)
+        _paused["v"] = True
+        result = pause_arbiter.recheck()
+        self.assertEqual(result["action"], "none")
+
+    def test_a_checker_that_raises_does_not_lift_without_an_expired_ttl(self):
+        # An error is not evidence the condition cleared. Treating it as one would make a
+        # broken checker the fastest way to resume the fleet.
+        def _boom():
+            raise RuntimeError("probe unavailable")
+
+        pause_arbiter.register("flaky_probe", _boom, auto_expirable=True)
+        pause_arbiter.pause("flaky_probe", "tripped", ttl_s=99999)
+        _paused["v"] = True
+        result = pause_arbiter.recheck()
+        self.assertEqual(result["action"], "none")
+        self.assertIn("errored", result.get("reason", ""))
+
+    def test_a_checker_that_raises_lifts_only_once_the_ttl_has_expired(self):
+        # The deliberate exception: an auto-expirable pause whose checker is broken must
+        # not become permanent. The TTL is the fallback, and it has to have elapsed.
+        def _boom():
+            raise RuntimeError("probe unavailable")
+
+        pause_arbiter.register("flaky_probe_expired", _boom, auto_expirable=True)
+        pause_arbiter.pause("flaky_probe_expired", "tripped", ttl_s=0)
+        _paused["v"] = True
+        result = pause_arbiter.recheck()
+        self.assertEqual(result["action"], "lifted")
+        self.assertIn("TTL", result.get("reason", ""))
+
+    def test_a_non_expirable_pause_is_not_lifted_by_its_ttl(self):
+        # auto_expirable=False means time alone is never enough.
+        def _boom():
+            raise RuntimeError("probe unavailable")
+
+        pause_arbiter.register("manual_only", _boom, auto_expirable=False)
+        pause_arbiter.pause("manual_only", "tripped", ttl_s=0)
+        _paused["v"] = True
+        result = pause_arbiter.recheck()
+        self.assertEqual(result["action"], "none")
+
+    def test_an_is_paused_failure_reports_an_error_rather_than_resuming(self):
+        # If the arbiter cannot even tell whether the fleet is paused, it must not act.
+        original = _ks.is_paused
+        _ks.is_paused = lambda *a: (_ for _ in ()).throw(RuntimeError("kill switch unreachable"))
+        try:
+            result = pause_arbiter.recheck()
+        finally:
+            _ks.is_paused = original
+        self.assertEqual(result["action"], "none")
+        self.assertIn("is_paused failed", result.get("error", ""))
+
+    def test_stale_metadata_is_dropped_when_the_fleet_is_not_paused(self):
+        # Housekeeping: the state file must not accumulate entries for pauses that no
+        # longer exist, or a later trip would inherit a stale streak and escalate early.
+        pause_arbiter.pause("billing_key_presence", "trip 1", by="billing_guard")
+        _paused["v"] = False
+        result = pause_arbiter.recheck()
+        self.assertFalse(result["paused"])
+        self.assertEqual(pause_arbiter._load_state().get("global:"), None)
