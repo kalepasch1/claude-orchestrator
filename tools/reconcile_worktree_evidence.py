@@ -163,6 +163,47 @@ def is_generated(path: str) -> bool:
     return any(h in p for h in GENERATED_HINTS)
 
 
+def base_blob(base: str, path: str, cwd: str) -> str:
+    """Blob sha of `path` in `base`, or "" when the base does not carry it.
+
+    Fail-soft: any git error is reported as "not in base" rather than raising,
+    because a missing lookup must never wedge a reconciliation run.
+    """
+    out = git("rev-parse", "%s:%s" % (base, path.replace(os.sep, "/")), cwd=cwd)
+    out = out.strip()
+    return out if len(out) == 40 and all(c in "0123456789abcdef" for c in out) else ""
+
+
+def worktree_blob(root: str, path: str) -> str:
+    """Blob sha the untracked working-tree file would hash to (or "")."""
+    abs_path = os.path.join(root, path)
+    if not os.path.isfile(abs_path):
+        return ""
+    out = git("hash-object", "--", abs_path, cwd=root).strip()
+    return out if len(out) == 40 else ""
+
+
+def split_untracked_against_base(files: "list[str]", root: str, base: str,
+                                 repo: str) -> "tuple[list[str], list[str], list[str]]":
+    """Partition untracked paths into (new, identical_to_base, differs_from_base).
+
+    An untracked file is only NEW when the base branch does not carry the path at
+    all. A worktree checked out at an older commit reports paths as untracked
+    that the default branch has since started tracking; without this check they
+    were reported as RECOVERABLE_VALUE and looked like dropped work.
+    """
+    new, same, differs = [], [], []
+    for f in files:
+        blob = base_blob(base, f, repo)
+        if not blob:
+            new.append(f)
+        elif blob == worktree_blob(root, f):
+            same.append(f)
+        else:
+            differs.append(f)
+    return new, same, differs
+
+
 # --------------------------------------------------------------------------
 # classification
 # --------------------------------------------------------------------------
@@ -268,13 +309,35 @@ def classify_worktree(item: Item, path: str, head: str, branch: str,
         )
         item.evidence = "git apply --check --3way rejected"
     else:
-        # Untracked-only: nothing to conflict with, so the content is new.
-        item.classification = "RECOVERABLE_VALUE"
-        item.disposition = (
-            f"{len(real)} untracked new file(s) with no tracked counterpart; "
-            "review and land through an agent branch. Source left untouched."
-        )
-        item.evidence = "untracked-only working tree"
+        # Untracked-only. "Untracked" is relative to THIS worktree's checkout,
+        # not to the base branch, so a stale worktree reports paths the base has
+        # since started tracking. Only paths the base does not carry are new.
+        untracked_real = [f for f in untracked if not is_generated(f)]
+        new, same, differs = split_untracked_against_base(
+            untracked_real, path, base, repo)
+        if not new and not differs:
+            item.classification = "ALREADY_PRESENT"
+            item.disposition = (
+                f"{len(same)} untracked path(s) are byte-identical to {base}; "
+                "the worktree simply predates the commit that added them"
+            )
+            item.evidence = "untracked paths match base blobs"
+        elif not new:
+            item.classification = "CONFLICTED_NEEDS_FOCUSED_TASK"
+            item.disposition = (
+                f"{len(differs)} untracked path(s) already exist in {base} with "
+                "different content; queue a focused follow-up rather than "
+                "overwriting the newer tracked version: " + ", ".join(differs[:6])
+            )
+            item.evidence = "untracked paths diverge from base blobs"
+        else:
+            item.files = sorted(new + differs)
+            item.classification = "RECOVERABLE_VALUE"
+            item.disposition = (
+                f"{len(new)} untracked new file(s) absent from {base}; "
+                "review and land through an agent branch. Source left untouched."
+            )
+            item.evidence = "untracked-only working tree, %d new vs base" % len(new)
 
 
 def classify_artifact(item: Item, path: str, base: str, repo: str,
