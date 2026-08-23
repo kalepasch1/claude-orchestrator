@@ -36,6 +36,7 @@ ENV FLAGS
   ORCH_JOURNEY_BUDGET_S       default 120 (seconds, whole journey)
   ORCH_JOURNEY_RETRIES        default 2   (extra attempts per step)
   ORCH_JOURNEY_BACKOFF_S      default 1.0 (base of exponential backoff)
+  ORCH_JOURNEY_MAX_BODY       default 2000000 (bytes of response body read per step)
 """
 import hashlib
 import json
@@ -104,6 +105,19 @@ def retries():
 
 def backoff_seconds():
     return max(0.0, _float_env("ORCH_JOURNEY_BACKOFF_S", 1.0))
+
+
+def max_body_bytes():
+    """How much of a response body an assertion may be evaluated against.
+
+    This is a bound, not a preference: an unbounded read turns a probe into a
+    memory hazard against a hostile or broken origin. But the bound has to be
+    larger than the pages being asserted on. It was 200_000 and apparently.cc's
+    /pricing is 667_737 bytes of server-rendered HTML with the Nuxt payload
+    inlined, so every assertion about the second half of that page was evaluated
+    against bytes that were never read.
+    """
+    return max(1024, _int_env("ORCH_JOURNEY_MAX_BODY", 2_000_000))
 
 
 # -------------------------------------------------------------------- redaction
@@ -250,6 +264,32 @@ def spec_for_task(task, *, environment="production"):
 # --------------------------------------------------------------------- probing
 
 
+class _Headers(dict):
+    """Response headers with case-insensitive lookup, plus a truncation flag.
+
+    urllib returns an email.message.Message whose keys are canonical-cased
+    ("Content-Type"). dict(...) of it keeps that casing and loses the
+    case-insensitive lookup HTTP requires, so `headers.get("content-type")`
+    returned None for every response ever probed and EVERY expect_header
+    assertion failed with actual=None. Nothing caught it because no journey had
+    ever run against a real origin.
+
+    Test doubles inject plain dicts; those keep plain-dict behaviour and report
+    .truncated as False via getattr's default.
+    """
+
+    truncated = False
+
+    def get(self, key, default=None):
+        if dict.__contains__(self, key):
+            return dict.get(self, key)
+        want = str(key).lower()
+        for k, v in self.items():
+            if str(k).lower() == want:
+                return v
+        return default
+
+
 def _default_http(url, timeout=20, headers=None):
     """Plain GET returning (status, body, headers). Injectable for tests."""
     import urllib.error
@@ -258,14 +298,21 @@ def _default_http(url, timeout=20, headers=None):
         {"User-Agent": "beethoven-production-journey/1.0"}, **(headers or {})))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read(200000).decode("utf-8", "replace")
-            return r.status, body, dict(r.headers)
+            cap = max_body_bytes()
+            # One byte past the cap, so truncation is detected rather than assumed.
+            raw = r.read(cap + 1)
+            h = _Headers(r.headers)
+            h.truncated = len(raw) > cap
+            return r.status, raw[:cap].decode("utf-8", "replace"), h
     except urllib.error.HTTPError as e:
+        cap = max_body_bytes()
         try:
-            body = e.read(20000).decode("utf-8", "replace")
+            raw = e.read(cap + 1)
         except Exception:
-            body = ""
-        return e.code, body, dict(getattr(e, "headers", {}) or {})
+            raw = b""
+        h = _Headers(getattr(e, "headers", {}) or {})
+        h.truncated = len(raw) > cap
+        return e.code, raw[:cap].decode("utf-8", "replace"), h
     except Exception as e:
         return None, f"transport error: {e}", {}
 
@@ -293,13 +340,23 @@ def _run_http_step(step, base_url, http):
     body = body or ""
     assertions = [{"name": "status", "expected": step.get("expect_status", 200),
                    "actual": status, "ok": status == step.get("expect_status", 200)}]
+    # A body we only partly read cannot answer "is this string absent?". Reporting
+    # unproven as absent is how a truncated error page promotes as a clean one — the
+    # exact substitution this module exists to refuse.
+    cut = bool(getattr(headers, "truncated", False))
+    inconclusive = f"inconclusive: response body truncated at {len(body)} bytes"
     for name, expected in _assertions_of(step):
         if name == "body_contains":
             ok = all(str(x) in body for x in _listify(expected))
-            actual = "present" if ok else "absent"
+            actual = "present" if ok else (inconclusive if cut else "absent")
         elif name == "body_absent":
             ok = all(str(x) not in body for x in _listify(expected))
-            actual = "absent" if ok else "present"
+            if not ok:
+                actual = "present"
+            elif cut:
+                ok, actual = False, inconclusive
+            else:
+                actual = "absent"
         else:  # header
             hdr, want = (list(expected.items())[0] if isinstance(expected, dict)
                          else (str(expected), None))

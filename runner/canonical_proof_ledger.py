@@ -307,11 +307,24 @@ def _journey_receipt(release_sha, journeys, required_journey=None):
         if not candidates:
             return None, f"no receipt for the task-defined journey {required_journey!r}"
 
-    passing = [r for r in candidates if (r or {}).get("ok") is True]
-    if not passing:
-        return None, "production journey receipt exists but did not pass"
+    # The CURRENT verdict, not the best one ever recorded. Selecting any passing row
+    # meant a release that passed at 10:00 and failed the same journey at 11:00 still
+    # certified as verified: the newer evidence was simply skipped over. A journey is
+    # re-run precisely because production changes, so the latest run is the only one
+    # that describes production now.
+    #
+    # Sorted here rather than trusted from the caller: gather_evidence() reads
+    # recorded_at.asc today, and a projection this load-bearing must not depend on a
+    # read order declared three functions away.
+    latest = max(candidates, key=lambda r: str((r or {}).get("recorded_at") or ""))
+    if (latest or {}).get("ok") is not True:
+        superseded = sum(1 for r in candidates if (r or {}).get("ok") is True)
+        detail = (f" (an earlier receipt passed; {superseded} superseded)" if superseded
+                  else "")
+        return None, ("the most recent production journey receipt for this release "
+                      f"did not pass{detail}")
 
-    row = passing[-1]
+    row = latest
     return receipt("production_journey", row.get("url") or release_sha,
                    f"journey={row.get('journey')} recorded_at={row.get('recorded_at')}"), ""
 
