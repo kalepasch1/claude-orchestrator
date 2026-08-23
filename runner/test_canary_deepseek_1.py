@@ -48,7 +48,11 @@ class CanaryTypoFixValidation(unittest.TestCase):
             (r'\bseperate\b', 'separate'),
             (r'\boccassion\b', 'occasion'),
             (r'\bdefinately\b', 'definitely'),
-            (r'\benvironment\b', 'environment'),  # environment vs enviroment
+            # The misspelling, not the correct word. This entry used to read
+            # r'\benvironment\b' — which matches every correctly spelled use — so the
+            # check reported a typo for files that had none, and only stayed quiet
+            # because it scans the first ten files and none of them happened to say it.
+            (r'\benviroment\b', 'environment'),
         ]
 
         # Scan test files for common typos
@@ -330,13 +334,20 @@ class CanaryBehaviorPreservation(unittest.TestCase):
         with open(test_file, 'r') as f:
             tree = ast.parse(f.read())
 
-        # Count assertions to verify tests are intact
+        # Count assertions to verify tests are intact.
+        #
+        # Both spellings. The count used to look only for self.assertX() calls, and
+        # test_branch_naming.py is a pytest file written with bare `assert` statements —
+        # so it found zero assertions in a file with six and reported the tests as
+        # removed. A check that only recognises one of the two test styles this repo
+        # uses will always eventually accuse the other of having no tests.
         assertion_count = 0
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Attribute):
-                    if node.func.attr.startswith('assert'):
-                        assertion_count += 1
+            if isinstance(node, ast.Assert):
+                assertion_count += 1
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr.startswith('assert'):
+                    assertion_count += 1
 
         # Canary tasks don't remove or break assertions
         self.assertGreater(assertion_count, 0,
@@ -497,8 +508,16 @@ class CanaryCodeStyleConsistency(unittest.TestCase):
 
         convention_violations = []
 
+        # unittest's own lifecycle hooks are camelCase by definition; renaming them to
+        # satisfy a style check would stop them running at all. The check flagged setUp
+        # and would have flagged tearDown and setUpClass the moment one was added.
+        UNITTEST_HOOKS = {'setUp', 'tearDown', 'setUpClass', 'tearDownClass',
+                          'setUpModule', 'tearDownModule', 'addCleanup'}
+
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in UNITTEST_HOOKS:
+                    continue
                 # Function names should be snake_case
                 if not re.match(r'^[a-z_][a-z0-9_]*$', node.name):
                     # Private functions can start with underscore
@@ -521,7 +540,14 @@ class CanaryCodeStyleConsistency(unittest.TestCase):
 
         # Canary tasks maintain import organization
         # (This is a quality check, not strict)
-        import_section_found = any('import' in line for line in lines[:20])
+        #
+        # Parsed rather than eyeballed at the top of the file. The window used to be
+        # lines[:20], and test_canary_ollama_23.py opens with a 30-line module
+        # docstring, so the check concluded a file with eleven imports had none.
+        tree = ast.parse(''.join(lines))
+        import_section_found = any(
+            isinstance(node, (ast.Import, ast.ImportFrom)) for node in ast.walk(tree)
+        )
         self.assertTrue(import_section_found or len(lines) < 5,
                        "Imports should be present and organized")
 
