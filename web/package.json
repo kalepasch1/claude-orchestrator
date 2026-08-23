@@ -4,6 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "nuxt dev",
+    "prebuild": "npm run verify:contracts",
+    "verify:contracts": "node scripts/verify-navigation-contract.mjs && node scripts/verify-admin-index.mjs",
+    "verify:all": "for f in scripts/verify-*.mjs; do echo \"\u2500\u2500 $f\"; node \"$f\" || echo \"   ^ FAILING\"; done",
     "build": "nuxt build",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
