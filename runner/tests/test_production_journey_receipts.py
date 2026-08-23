@@ -142,9 +142,40 @@ class HttpJourneyTest(unittest.TestCase):
         self.assertEqual(self._run(journey, [(200, "x", {"content-type": "application/pdf"})])["verdict"],
                          pj.FAIL)
 
-    def test_transport_error_is_a_failure_not_a_crash(self):
+    def test_transport_error_is_unreachable_not_a_failure(self):
+        """CHANGED DELIBERATELY. This asserted FAIL, and FAIL was the wrong answer.
+
+        should_roll_back() returns True for a required journey that FAILED, so a
+        probe that never got a response could order a rollback. Measured on the
+        fleet host: apparently.cc refused the TLS handshake from that machine --
+        on 1.2 and 1.3, from LibreSSL and from OpenSSL 3.6 -- while www.madeus.cc
+        on the same Vercel edge IP answered 200 from the same shell, and a cloud
+        probe reached apparently.cc perfectly at that moment. Under the old rule
+        the fleet would have rolled back a release that was serving everyone
+        correctly, because of its own network.
+        """
         r = self._run(CHECKOUT_JOURNEY, [(None, "transport error: timed out")])
+        self.assertEqual(r["verdict"], pj.UNREACHABLE)
+        self.assertFalse(pj.should_roll_back(r), "unreachable must never roll back")
+        ok, why = pj.gate(r)
+        self.assertFalse(ok, "and it must not promote either")
+        self.assertIn("could not be reached", why)
+
+    def test_a_real_failure_outranks_an_unreachable_step(self):
+        """One step that genuinely disproved something is still a FAIL."""
+        journey = {"probe": "http", "steps": [
+            {"name": "gone", "path": "/a", "expect_body_contains": "x"},
+            {"name": "wrong", "path": "/b", "expect_body_contains": "yes"}]}
+        r = self._run(journey, [(None, "transport error: timed out"), (200, "no")])
         self.assertEqual(r["verdict"], pj.FAIL)
+        self.assertTrue(pj.should_roll_back(r))
+
+    def test_a_transport_error_records_what_happened(self):
+        r = self._run(CHECKOUT_JOURNEY, [(None, "transport error: WRONG_VERSION_NUMBER")])
+        failed = r["failed_assertions"]
+        self.assertTrue(failed)
+        self.assertEqual(failed[0]["assertion"], "transport")
+        self.assertIn("WRONG_VERSION_NUMBER", str(failed[0]["actual"]))
 
     def test_timing_is_recorded(self):
         r = self._run(CHECKOUT_JOURNEY, [(200, HTML)])

@@ -55,6 +55,22 @@ FAIL = "fail"
 FLAKY = "flaky"
 SKIPPED = "skipped"
 
+# The probe never got an answer. Distinct from FAIL, and the distinction is the
+# difference between "production is wrong" and "we could not see production".
+#
+# Measured on the fleet host 2026-08-23: apparently.cc could not be reached at
+# all -- `tlsv1 alert protocol version`, on both TLS 1.2 and 1.3, from system
+# LibreSSL AND from OpenSSL 3.6, while www.madeus.cc on the SAME Vercel edge IP
+# answered 200 from the same shell. SNI-specific, and nothing to do with the site,
+# which the cloud probe reached perfectly at that exact moment.
+#
+# Every assertion then read `actual=None`, every step failed, the verdict was
+# FAIL -- and should_roll_back() returns True for a required journey that FAILED.
+# The fleet would have rolled back a healthy release because its own host could
+# not resolve a handshake. An instrument that cannot see must not be able to
+# order a retreat.
+UNREACHABLE = "unreachable"
+
 # A journey that was never declared or never ran. Distinct from FAIL: nothing proved it
 # broken, but nothing proved it worked either, and that must not promote.
 MISSING = "missing"
@@ -338,6 +354,14 @@ def _run_http_step(step, base_url, http):
     url = _join(base_url or "", step.get("path") or "/")
     status, body, headers = http(url, timeout=step["timeout_s"])
     body = body or ""
+    if status is None:
+        # No response at all: DNS, TLS, connect or read failed. There is nothing
+        # here to assert against, and asserting anyway would manufacture a verdict
+        # about production out of a fact about the network.
+        return ([{"name": "transport", "expected": "a response",
+                  "actual": body or "no response", "ok": False,
+                  "transport_error": True}], url, f"transport failure: {body[:200]}")
+
     assertions = [{"name": "status", "expected": step.get("expect_status", 200),
                    "actual": status, "ok": status == step.get("expect_status", 200)}]
     # A body we only partly read cannot answer "is this string absent?". Reporting
@@ -455,13 +479,22 @@ def run_journey(spec, *, base_url="", sha="", environment=None, http=None, comma
                 detail = (detail + " | budget exhausted mid-retry").strip(" |")
                 break
 
+        if step_verdict == FAIL and assertions and all(
+                a.get("transport_error") for a in assertions if not a["ok"]):
+            step_verdict = UNREACHABLE
+
         steps_out.append({
             "name": step["name"], "probe": step["probe"], "verdict": step_verdict,
             "attempts": attempts, "duration_ms": int(max(0.0, clock() - step_started) * 1000),
             "target": target, "assertions": assertions, "detail": detail,
         })
         if step_verdict == FAIL:
+            # A real failed assertion outranks unreachability: one step that
+            # genuinely disproved something is a FAIL for the whole journey even
+            # if another step could not be reached.
             verdict = FAIL
+        elif step_verdict == UNREACHABLE and verdict != FAIL:
+            verdict = UNREACHABLE
         elif step_verdict == FLAKY and verdict == PASS:
             verdict = FLAKY
 
@@ -526,6 +559,9 @@ def gate(receipt, *, required=True):
             return True, "journey flaky (allowed by ORCH_JOURNEY_ALLOW_FLAKY)"
         return False, ("journey flaky: production was observed in two states within one "
                        "run; a retry-only pass is not delivery")
+    if verdict == UNREACHABLE:
+        return False, ("production could not be reached from this host, so nothing "
+                       "was proved either way; this is not evidence the release is bad")
     if verdict == MISSING:
         return (False, HTTP_200_ONLY_REASON) if (required or receipt.get("required")) \
             else (True, "no journey required")
@@ -539,9 +575,12 @@ def gate(receipt, *, required=True):
 def should_roll_back(receipt):
     """A required journey that FAILED after deployment is a bad release, not a bad task.
 
-    Flaky and missing do not trigger rollback: neither is evidence that production is
-    broken, only that it is unproven. Rolling back on unproven would make the fleet
-    thrash on its own instrumentation gaps.
+    Flaky, missing and UNREACHABLE do not trigger rollback: none is evidence that
+    production is broken, only that it is unproven. Rolling back on unproven would
+    make the fleet thrash on its own instrumentation gaps -- and unreachable is the
+    sharpest case of that, because a host that cannot complete a TLS handshake with
+    the production domain would otherwise order a rollback of a release that is
+    serving traffic correctly to everyone else.
     """
     if not receipt or not _on("ORCH_JOURNEY_ENABLED"):
         return False
