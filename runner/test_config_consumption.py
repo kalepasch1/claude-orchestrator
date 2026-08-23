@@ -671,7 +671,12 @@ def run_all_tests():
                 if method_name.startswith("test_") and callable(method):
                     test_count += 1
                     try:
-                        method()
+                        # `vars(cls)` yields the plain function, so calling it bare raised
+                        # "missing 1 required positional argument: 'self'" for EVERY test
+                        # in this file — the suite reported 0/49 no matter what the code
+                        # did, which is indistinguishable from a suite that is failing for
+                        # a real reason. Bind it to an instance so the assertions run.
+                        method(obj())
                         pass_count += 1
                         print(f"  PASS  {name}.{method_name}")
                     except AssertionError as e:

@@ -54,6 +54,38 @@ def _env_number(name: str, default: float, cast=float, minimum=None):
         return default
 
 
+def _consumable_from_db(key: str, value: str) -> bool:
+    """May this raw fleet_config row be consumed, or did the fleet decline it?
+
+    `fleet_control.load_config()` never applies a row that `_classify_key` rejects —
+    credential-marker keys (the 2026-08-02 plaintext-credential incident), keys outside
+    the safe ORCH_ prefix set, keys with an open approval card, and keys the host pinned
+    to its local .env. The direct-read fallback below reads the same table, so without
+    this it consumed exactly the rows the gateway exists to refuse.
+
+    Fail CLOSED: if the classifier cannot be reached, the raw row is not consumable and
+    the caller falls back to env — matching `_safe_key`'s own fail-closed fallback. That
+    is the only branch here that is not fail-soft, deliberately: dropping to env costs a
+    default, consuming a declined credential costs the incident.
+    """
+    try:
+        if fleet_control is None:
+            return False
+        try:
+            import config_approval
+            blocked = config_approval.blocked_keys() or set()
+        except Exception:
+            blocked = set()          # approval plane down != key approved; _classify_key
+                                     # still applies the credential/unsafe/pin checks
+        try:
+            pins = fleet_control._env_pins()
+        except Exception:
+            pins = set()
+        return fleet_control._classify_key(key, value, blocked, pins) is None
+    except Exception:
+        return False
+
+
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
 
@@ -187,7 +219,14 @@ class _ConfigConsumer:
                     import db
                     rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
                     if rows:
-                        value = str(rows[0].get("value") or "").strip()
+                        raw = str(rows[0].get("value") or "").strip()
+                        # A raw row is NOT a consumable value. fleet_control.load_config()
+                        # refuses credential-marker keys, unsafe keys, approval-blocked keys
+                        # and env-pinned keys before any of them reach os.environ. This
+                        # last-resort path read the same table with none of that, so a key
+                        # the fleet had deliberately declined was still handed to callers
+                        # here — and then cached for the TTL. Same predicate, one owner.
+                        value = raw if _consumable_from_db(key, raw) else None
                 except Exception:
                     pass
 
