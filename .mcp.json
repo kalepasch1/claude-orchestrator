@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "heretomorrow": {
+      "command": "npx",
+      "args": ["--no-install", "tsx", "mcp/server.ts"],
+      "env": {
+        "NODE_ENV": "development",
+        "HT_ENV": "prod"
+      }
+    }
+  }
+}
