@@ -57,8 +57,12 @@ def record(project, slug, model, logpath):
         os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
         with open(LEDGER, "a") as f:
             f.write(json.dumps(row) + "\n")
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - cost accounting must not wedge a run
+        # A broad catch is the fail-soft convention here; a SILENT one is the
+        # defect. Losing a cost row unannounced is how the ledger quietly stops
+        # matching reality, so say so and keep going.
+        print("cost_ledger: could not append row (%s); continuing" % exc,
+              file=sys.stderr)
     return row
 
 
