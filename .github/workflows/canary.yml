@@ -6,9 +6,12 @@ name: Canary
 #   * validate step fails -> the key works but the model returned unexpected output.
 on:
   schedule:
-    # Every 5 minutes. GitHub queues rather than guarantees this cadence on a busy
+    # Every 30 minutes. Was every 5, which is 288 runs/day and was the single
+    # largest line item on the Actions bill. A canary proves the release path still
+    # works; it does not need sub-half-hour resolution to do that.
+    # GitHub queues rather than guarantees this cadence on a busy
     # runner pool; treat gaps in the history as scheduler lag, not as a passing canary.
-    - cron: '*/5 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 # A backed-up schedule can otherwise stack identical runs on top of each other.
