@@ -63,6 +63,19 @@ class CoderRoutingPercentileCanary(unittest.TestCase):
 
     def test_percentile_p95_tracked_separate_from_average(self):
         """Normal path: p95 is computed and tracked independently from average."""
+        # Three patches, each doing something different, and only one of them obvious:
+        #
+        #   MagicMock() + db.select.return_value — the route table the gateway reads.
+        #     The row below is the whole point of the test: its average is inside the
+        #     SLO while its p95 is not, which is the tail latency an average hides.
+        #   patch.dict(sys.modules, {"db": db}) — model_gateway does `import db` at call
+        #     time, so the mock has to be installed as the MODULE, not passed in. This
+        #     is why runner/tests/conftest.py restores real control-plane modules
+        #     between test files: a substitution like this outlives the test that made
+        #     it and leaks into whatever is imported next.
+        #   patch.object(model_gateway, "available", ...) — pins provider availability so
+        #     the assertion is about the percentile decision and not about which
+        #     providers happen to be reachable on this machine.
         db = MagicMock()
         db.select.return_value = [{
             "provider": "local",
