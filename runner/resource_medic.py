@@ -41,14 +41,20 @@ JOURNAL = os.path.join(RUNTIME, "medic.jsonl")
 STATE = os.path.join(RUNTIME, "medic_state.json")
 SENTINEL_LOG = os.path.join(RUNTIME, "sentinel.log")
 
-# thresholds (env-tunable)
-THRASH_WINDOW_MIN = int(os.environ.get("MEDIC_THRASH_WINDOW_MIN", "60"))
-MODEL_CLAMP_THRASH_N = int(os.environ.get("MEDIC_MODEL_CLAMP_N", "4"))
-RESTART_STORM_N = int(os.environ.get("MEDIC_RESTART_STORM_N", "6"))
-AGENT_MAX_MIN = int(os.environ.get("MEDIC_AGENT_MAX_MIN", "150"))
-LOG_CAP_MB = int(os.environ.get("MEDIC_LOG_CAP_MB", "20"))
-PRESSURE_WARN = int(os.environ.get("MEDIC_PRESSURE_WARN_PCT", "25"))   # free% below this = warn
-PRESSURE_CRIT = int(os.environ.get("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% below this = critical
+import fleet_control
+
+def _get_medic_config(key, default):
+  """Consume medic-specific config via fleet_control gateway. Fail-soft."""
+  return fleet_control.get_fleet_config(key, default)
+
+# thresholds (env-tunable, via ORCH_MEDIC_* keys in fleet_config)
+THRASH_WINDOW_MIN = int(_get_medic_config("MEDIC_THRASH_WINDOW_MIN", "60"))
+MODEL_CLAMP_THRASH_N = int(_get_medic_config("MEDIC_MODEL_CLAMP_N", "4"))
+RESTART_STORM_N = int(_get_medic_config("MEDIC_RESTART_STORM_N", "6"))
+AGENT_MAX_MIN = int(_get_medic_config("MEDIC_AGENT_MAX_MIN", "150"))
+LOG_CAP_MB = int(_get_medic_config("MEDIC_LOG_CAP_MB", "20"))
+PRESSURE_WARN = int(_get_medic_config("MEDIC_PRESSURE_WARN_PCT", "25"))   # free% below this = warn
+PRESSURE_CRIT = int(_get_medic_config("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% below this = critical
 
 
 def _now():
@@ -71,15 +77,18 @@ def journal(bot, action, detail="", durable=False):
 
 def load_state():
     try:
-        return json.load(open(STATE))
+        with open(STATE) as f:
+            return json.load(f)
     except Exception:
+        # Fail-soft: on first run or corruption, start with empty state. Medic must never crash on startup.
         return {}
 
 
 def save_state(st):
     try:
         os.makedirs(RUNTIME, exist_ok=True)
-        json.dump(st, open(STATE, "w"), indent=1)
+        with open(STATE, "w") as f:
+            json.dump(st, f, indent=1)
     except OSError:
         pass
 
@@ -89,10 +98,9 @@ def sh(*args, timeout=60):
 
 
 def _set_fleet_config(key, value):
-    """Durable, fleet-wide (both Macs) via the config gateway. Safe keys only."""
+    """Durable, fleet-wide (both Macs) via fleet_control gateway. Safe keys only. Fail-soft."""
     try:
-        import db
-        db.insert("fleet_config", {"key": key, "value": str(value)}, upsert=True)
+        fleet_control.update_fleet_config(key, value)
         return True
     except Exception:
         return False
@@ -154,7 +162,7 @@ def memory_guard(st):
     # 4) recurring memory warns => the sustained-load cap is too high for this box: lower it durably
     if st.get("mem_warn_streak", 0) >= 5:
         try:
-            cur = int(os.environ.get("MAX_PARALLEL", "10"))
+            cur = int(_get_medic_config("MAX_PARALLEL", "10"))
             new = max(4, cur - 2)
             if new < cur and _set_fleet_config("MAX_PARALLEL", new):
                 _set_fleet_config("MAX_PARALLEL_CEILING", new)
@@ -186,7 +194,8 @@ def _loaded_models():
 
 def _unload_heaviest_model():
     models = _loaded_models()
-    if models and models[0][0] >= float(os.environ.get("MEDIC_UNLOAD_MIN_GB", "8")):
+    min_gb = float(_get_medic_config("MEDIC_UNLOAD_MIN_GB", "8"))
+    if models and models[0][0] >= min_gb:
         name = models[0][1]
         try:
             sh("ollama", "stop", name, timeout=90)
@@ -236,28 +245,30 @@ def _recent_events(minutes):
     events = []
     # medic journal
     try:
-        for line in open(JOURNAL):
-            try:
-                r = json.loads(line)
-                t = datetime.datetime.fromisoformat(r["at"].replace("Z", "+00:00"))
-                if t.replace(tzinfo=None) >= cutoff.replace(tzinfo=None):
-                    events.append((r.get("bot", ""), r.get("action", ""), r.get("detail", "")))
-            except Exception:
-                continue
+        with open(JOURNAL) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                    t = datetime.datetime.fromisoformat(r["at"].replace("Z", "+00:00"))
+                    if t.replace(tzinfo=None) >= cutoff.replace(tzinfo=None):
+                        events.append((r.get("bot", ""), r.get("action", ""), r.get("detail", "")))
+                except Exception:
+                    continue
     except OSError:
         pass
     # sentinel log (ram-clamp / dedupe / runner-cycled / extra-keepalive-killed)
     try:
-        for line in open(SENTINEL_LOG):
-            for tag in ("ram-clamp", "dedupe", "runner-cycled", "runner-wedged",
-                        "extra-keepalive-killed", "zombie-agent-reaped"):
-                if tag in line:
-                    ts = line.split(" ", 1)[0].replace("Z", "")
-                    try:
-                        if datetime.datetime.fromisoformat(ts) >= cutoff:
-                            events.append(("sentinel", tag, line.strip()[-120:]))
-                    except Exception:
-                        pass
+        with open(SENTINEL_LOG) as f:
+            for line in f:
+                for tag in ("ram-clamp", "dedupe", "runner-cycled", "runner-wedged",
+                            "extra-keepalive-killed", "zombie-agent-reaped"):
+                    if tag in line:
+                        ts = line.split(" ", 1)[0].replace("Z", "")
+                        try:
+                            if datetime.datetime.fromisoformat(ts) >= cutoff:
+                                events.append(("sentinel", tag, line.strip()[-120:]))
+                        except Exception:
+                            pass
     except OSError:
         pass
     return events
@@ -272,7 +283,7 @@ def thrash_hunter(st):
     clamp_events = [d for b, a, d in ev if a in ("ram-clamp", "unloaded-model")]
     if len(clamp_events) >= MODEL_CLAMP_THRASH_N:
         models = set(re.findall(r"([\w./:-]+:\d+\w*|[\w./-]+:latest)", " ".join(clamp_events)))
-        already = set(os.environ.get("ORCH_CANARY_ONLY_OLLAMA_MODELS", "").split(","))
+        already = set(_get_medic_config("CANARY_ONLY_OLLAMA_MODELS", "").split(","))
         newbl = sorted(m for m in models if m and m not in already)
         if newbl:
             merged = ",".join(sorted(x for x in already | set(newbl) if x))
@@ -288,7 +299,7 @@ def thrash_hunter(st):
     restart_n = counts.get("runner-cycled", 0) + counts.get("runner-wedged", 0)
     if restart_n >= RESTART_STORM_N:
         try:
-            cur = int(os.environ.get("MAX_PARALLEL", "10"))
+            cur = int(_get_medic_config("MAX_PARALLEL", "10"))
             new = max(4, cur - 2)
             if new < cur and _set_fleet_config("MAX_PARALLEL", new):
                 _set_fleet_config("MAX_PARALLEL_CEILING", new)
@@ -361,7 +372,7 @@ def loop_breaker(st):
     # if the runner is being cycled repeatedly AND memory is fine, the cycling itself is the
     # problem (my restarts resetting work) — back off: request a cool-down flag other guards honor.
     if flaps >= RESTART_STORM_N and (memory_free_pct() or 100) >= PRESSURE_WARN:
-        cool_until = time.time() + int(os.environ.get("MEDIC_COOLDOWN_S", "1800"))
+        cool_until = time.time() + int(_get_medic_config("MEDIC_COOLDOWN_S", "1800"))
         st["restart_cooldown_until"] = cool_until
         journal("loop_breaker", "restart-cooldown",
                 f"{flaps} cycles/{THRASH_WINDOW_MIN}min with healthy RAM -> 30min cool-down (stop churn)")

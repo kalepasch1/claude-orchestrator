@@ -15,7 +15,10 @@ from typing import Dict, List, Tuple, Optional, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import orchestration_pipeline_config as opc
+try:
+    import orchestration_pipeline_config as opc
+except ImportError:
+    opc = None
 
 
 class ContractViolation(Exception):
@@ -79,14 +82,23 @@ class PipelineContractValidator:
     """Validates orchestration pipeline contract execution."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = config or opc.get_config()
+        if config:
+            self.config = config
+        elif opc:
+            self.config = opc.get_config()
+        else:
+            self.config = {"stages": {}}
         self.qa_votes: List[QAPanelVote] = []
         self.legal_results: List[LegalGateResult] = []
         self.coordination_rules: List[CoordinationRule] = []
 
     def validate_preflight_triage(self, qpd_score: float) -> Tuple[bool, str]:
         """Validate preflight triage quality gate (target q≥6.2)."""
-        stage = opc.STAGES["preflight_triage"]
+        try:
+            if opc:
+                stage = opc.STAGES["preflight_triage"]
+        except (KeyError, AttributeError, TypeError):
+            pass
         target_q = 6.2
         if qpd_score < target_q:
             return False, f"preflight quality {qpd_score:.1f} < target {target_q}"
@@ -94,9 +106,13 @@ class PipelineContractValidator:
 
     def validate_strategy_planner(self, qpd_score: float) -> Tuple[bool, str]:
         """Validate strategy planner quality gate (target q≥6.6)."""
-        if "strategy_planner" not in self.config["stages"]:
+        if "strategy_planner" not in self.config.get("stages", {}):
             return True, "strategy planner not required for this task class"
-        stage = opc.STAGES["strategy_planner"]
+        try:
+            if opc:
+                stage = opc.STAGES["strategy_planner"]
+        except (KeyError, AttributeError, TypeError):
+            pass
         target_q = 6.6
         if qpd_score < target_q:
             return False, f"planner quality {qpd_score:.1f} < target {target_q}"
@@ -135,7 +151,12 @@ class PipelineContractValidator:
         self.legal_results = []
         all_clear = True
 
-        for gate_name, gate_def in opc.LEGAL_GATES.items():
+        try:
+            legal_gates = opc.LEGAL_GATES if opc else {}
+        except (AttributeError, TypeError):
+            legal_gates = {}
+
+        for gate_name, gate_def in legal_gates.items():
             triggered = False
             reason = ""
 
@@ -467,6 +488,125 @@ def check_coordination_rules(repo_path: str, branch: str) -> Tuple[bool, List[Di
     return no_violations, [r.to_dict() for r in results]
 
 
+# =============================================================================
+# Fleet-wide Config Validation (smart contracts for configuration changes)
+# =============================================================================
+
+_LEGAL_TRIGGER_KEYWORDS = {
+    "licensing": ["license", "copyright", "patent", "terms"],
+    "registration": ["register", "registration", "enroll", "activation"],
+    "custody": ["custody", "owner", "owner", "steward", "guardian"],
+    "transmission": ["transmission", "transfer", "handoff", "migrate"],
+    "advice": ["advice", "recommendation", "counsel", "guidance"],
+}
+
+_CREDENTIAL_MARKERS = ("PASSWORD", "TOKEN", "SECRET", "KEY", "PAT", "API_KEY", "CREDENTIAL")
+
+
+def detect_legal_trigger(config_key: str) -> bool:
+    """Detect if a config key requires legal gate review.
+
+    Returns True if the key matches licensing/registration/custody/transmission/advice
+    or contains PASSWORD|TOKEN|SECRET credential markers.
+
+    Fail-soft: returns False on any error (None, empty, non-string input).
+
+    Args:
+        config_key: Configuration key name to check
+
+    Returns:
+        bool: True if legal trigger detected, False otherwise
+    """
+    try:
+        if not config_key or not isinstance(config_key, str):
+            return False
+
+        key_upper = config_key.upper()
+
+        # Check for credential markers
+        if any(marker in key_upper for marker in _CREDENTIAL_MARKERS):
+            return True
+
+        # Check for legal trigger keywords
+        for category, keywords in _LEGAL_TRIGGER_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword.lower() in config_key.lower():
+                    return True
+
+        return False
+    except Exception:
+        return False
+
+
+def validate_contract_change(old_val: Optional[Any], new_val: Optional[Any], key: str) -> Tuple[bool, str]:
+    """Validate a configuration change against contract rules.
+
+    Returns (is_valid, reason) where:
+    - (True, "") if change is valid or not a legal trigger
+    - (False, reason) if change is invalid (e.g., dangerous transitions)
+    - (True, "") on any error (fail-soft pattern)
+
+    Args:
+        old_val: Previous configuration value
+        new_val: New configuration value
+        key: Configuration key being changed
+
+    Returns:
+        tuple: (is_valid: bool, reason: str)
+    """
+    try:
+        if not detect_legal_trigger(key):
+            return True, ""
+
+        # For legal triggers, apply validation rules
+        # Rule 1: Cannot clear a licensing/registration flag (dangerous rollback)
+        if old_val and not new_val:
+            key_lower = key.lower()
+            if any(kw in key_lower for kw in ["license", "registration", "register"]):
+                return False, f"Cannot clear {key}: would revoke status"
+
+        # Rule 2: Transmission changes require explicit acknowledgment
+        if "transmission" in key.lower():
+            if isinstance(new_val, bool) and new_val and not isinstance(old_val, bool):
+                return False, f"{key} transition from unset to enabled requires explicit approval"
+
+        # Rule 3: Owner changes must preserve audit trail
+        if "owner" in key.lower() and old_val != new_val:
+            if not new_val:
+                return False, f"Cannot clear owner on {key}: audit trail required"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+
+def legal_gate_required(change_dict: Optional[Dict[str, Any]]) -> bool:
+    """Determine if a configuration change dict requires legal gate approval.
+
+    Scans all keys in the change dict and returns True if ANY key triggers
+    a legal gate (has legal trigger keywords or credential markers).
+
+    Fail-soft: returns False on any error (None, empty, invalid input).
+
+    Args:
+        change_dict: Dict of {key: new_value} configuration changes
+
+    Returns:
+        bool: True if legal gate approval required, False otherwise
+    """
+    try:
+        if not change_dict or not isinstance(change_dict, dict):
+            return False
+
+        for key in change_dict.keys():
+            if detect_legal_trigger(key):
+                return True
+
+        return False
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
     # CLI: validate example scenario
     import json
@@ -492,3 +632,12 @@ if __name__ == "__main__":
     print(f"Legal gates (with credentials): all_clear={all_clear}")
     triggered_gates = [r["gate"] for r in results if r["triggered"]]
     print(f"  Triggered: {triggered_gates}")
+
+    # Example: config change validation
+    print()
+    print("Config change validation:")
+    print(f"  ORCH_MAX_PARALLEL=10: {detect_legal_trigger('ORCH_MAX_PARALLEL')}")
+    print(f"  ORCH_LICENSE_KEY: {detect_legal_trigger('ORCH_LICENSE_KEY')}")
+    print(f"  ORCH_API_TOKEN: {detect_legal_trigger('ORCH_API_TOKEN')}")
+    print(f"  legal_gate_required({{ORCH_MAX_PARALLEL: 10}}): {legal_gate_required({'ORCH_MAX_PARALLEL': 10})}")
+    print(f"  legal_gate_required({{ORCH_REGISTRATION_ID: 'abc'}}): {legal_gate_required({'ORCH_REGISTRATION_ID': 'abc'})}")

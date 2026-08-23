@@ -51,6 +51,7 @@ export interface Passport {
 
 const DAY = 86_400_000;
 
+<<<<<<< HEAD
 /**
  * Canonical form used for the digest and content id — NOT for storage.
  *
@@ -93,6 +94,24 @@ function canonicalBody<T extends { claims: Claim[] }>(body: T): T {
       return ka < kb ? -1 : ka > kb ? 1 : 0;
     }),
   };
+=======
+/** Canonical claim ordering so the digest is independent of caller-supplied order. */
+function sortClaims(claims: Claim[]): Claim[] {
+  return [...claims].sort(
+    (a, b) =>
+      a.kind.localeCompare(b.kind) ||
+      a.issuer.localeCompare(b.issuer) ||
+      a.issuedAt.localeCompare(b.issuedAt) ||
+      a.expiresAt.localeCompare(b.expiresAt) ||
+      a.value - b.value,
+  );
+}
+
+/** Digest body with claims in canonical order — order-independent, while the
+ *  stored passport preserves the caller-supplied claim order. */
+function canonicalBody(body: { subject: string; version: 1; claims: Claim[]; issuedAt: string }) {
+  return { ...body, claims: sortClaims(body.claims) };
+>>>>>>> agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-run-tests
 }
 
 export function buildPassport(params: {
@@ -106,10 +125,16 @@ export function buildPassport(params: {
     claims: params.claims,
     issuedAt: params.issuedAt ?? new Date().toISOString(),
   };
+<<<<<<< HEAD
   const canonical = canonicalBody(body);
   const digest = sha256Canonical(canonical);
   return {
     id: contentId('pass', canonical),
+=======
+  const digest = sha256Canonical(canonicalBody(body));
+  return {
+    id: contentId('pass', canonicalBody(body)),
+>>>>>>> agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-run-tests
     ...body,
     digest,
     signature: signDigest(digest),

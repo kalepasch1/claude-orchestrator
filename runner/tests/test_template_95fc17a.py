@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,6 +34,22 @@ def _jsonl(path, rows):
     with open(path, "w") as f:
         for row in rows:
             f.write((row if isinstance(row, str) else json.dumps(row)) + "\n")
+
+
+@contextmanager
+def _store(rows=None):
+    """Point patch_templates at a private JSONL store for the duration of a test.
+
+    rows=None means "the fallback file does not exist" — the five tests that
+    needed that case each hand-rolled a TemporaryDirectory purely to name a path
+    inside it that they then never created.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "patch_templates.jsonl")
+        if rows is not None:
+            _jsonl(path, rows)
+        with patch.object(pt, "_fallback_path", return_value=path):
+            yield path
 
 
 class LookupContractTest(unittest.TestCase):

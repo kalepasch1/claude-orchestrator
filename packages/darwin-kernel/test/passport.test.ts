@@ -10,6 +10,7 @@ import {
   type Claim,
   type ClaimKind,
 } from '../src/passport/passport.ts';
+import type { ProductId } from '../src/types.ts';
 
 test('passport: builds passport with valid structure', () => {
   const claims = [
@@ -104,10 +105,15 @@ test('passport: verify rejects passport with invalid signature', () => {
 });
 
 test('passport: verify rejects all-expired passport', () => {
+<<<<<<< HEAD
   // asOf must be AFTER expiresAt for the claim to be expired. This previously used
   // 2020-01-01 against a claim expiring 2020-01-02 — one day BEFORE expiry — so the
   // implementation correctly reported the claim live and the assertion was simply wrong.
   const past = new Date('2020-06-01');
+=======
+  // asOf strictly after the claim's expiresAt (2020-01-02) so it is genuinely expired
+  const past = new Date('2020-02-01');
+>>>>>>> agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-run-tests
   const expiredClaim: Claim = {
     kind: 'kyc_verified',
     issuer: 'galop',
@@ -180,10 +186,15 @@ test('passport: hasClaim returns false for missing claim kind', () => {
 });
 
 test('passport: hasClaim returns false for expired claim', () => {
+<<<<<<< HEAD
   // asOf must be AFTER expiresAt for the claim to be expired. This previously used
   // 2020-01-01 against a claim expiring 2020-01-02 — one day BEFORE expiry — so the
   // implementation correctly reported the claim live and the assertion was simply wrong.
   const past = new Date('2020-06-01');
+=======
+  // asOf strictly after the claim's expiresAt (2020-01-02) so it is genuinely expired
+  const past = new Date('2020-02-01');
+>>>>>>> agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-run-tests
   const expiredClaim: Claim = {
     kind: 'kyc_verified',
     issuer: 'galop',
@@ -362,10 +373,15 @@ test('passport: claim expiry is checked at exact boundary', () => {
 
 test('passport: issuer field is arbitrary string', () => {
   const claims = [
+<<<<<<< HEAD
     // Deliberately non-ProductId issuers: the runtime accepts arbitrary strings,
     // which is exactly what this test pins down. Cast past the nominal type.
     claim('kyc_verified', 'custom_provider_xyz' as unknown as Claim['issuer'], 1),
     claim('accredited', 'another-issuer-123' as unknown as Claim['issuer'], 1),
+=======
+    claim('kyc_verified', 'custom_provider_xyz' as ProductId, 1),
+    claim('accredited', 'another-issuer-123' as ProductId, 1),
+>>>>>>> agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-run-tests
   ];
 
   const passport = buildPassport({ subject: 'user_1', claims });

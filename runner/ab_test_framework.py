@@ -16,10 +16,13 @@ Env vars (all optional, with defaults):
 """
 import hashlib
 import json
+import logging
 import threading
 import time
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict, field
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -151,7 +154,9 @@ def record_metric(test_name: str, variant: str, metric_name: str, value: float) 
             _try_gc()
 
             return True
-    except Exception:
+    except Exception as e:
+        _log.warning("ab_test_framework: record_metric failed for %s/%s/%s: %s",
+                     test_name, variant, metric_name, e)
         return False
 
 
@@ -218,8 +223,9 @@ def get_metrics(test_name: str, variant: Optional[str] = None) -> Dict[str, List
                 if m not in result:
                     result[m] = []
                 result[m].extend([asdict(r) for r in records])
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("ab_test_framework: get_metrics failed for test=%s variant=%s: %s",
+                     test_name, variant, e)
     return result
 
 
