@@ -317,10 +317,20 @@ class ConventionChecker(ast.NodeVisitor):
             # it, so the pattern kept spreading.
             if self._is_silently_discarded(handler):
                 exc_name = self._get_exception_name(handler.type) if handler.type else "bare except"
+                # The remediation text must name only what actually clears the
+                # warning. It used to also offer "or add a comment naming why it
+                # is safe to ignore", which _is_silently_discarded deliberately
+                # does NOT honour (a comment is not available at runtime). Callers
+                # followed that advice literally -- branch_lease.py:114 and
+                # regression.py:36 both carry such a comment and are still flagged
+                # -- and a linter whose fix instructions do not clear its own
+                # warning teaches operators to ignore it.
                 msg = (
                     f"Handler for '{exc_name}' discards the error with no diagnostic: "
                     "bind it (`except X as e`) and log/print what was dropped, or "
-                    "add a comment naming why it is safe to ignore"
+                    "re-raise. An explanatory comment does not clear this warning "
+                    "(it is not available at runtime); it is severity=warning so an "
+                    "intentional swallow can be triaged rather than blocked"
                 )
                 self.violations.append((handler.lineno, "no-silent-error", msg))
                 self._v2_violations.append(ConventionViolation(
