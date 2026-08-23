@@ -208,7 +208,8 @@ def gather_evidence(select_fn, project=None, slugs=None):
     UNKNOWN — not as absent, and certainly not as passing. The distinction is the entire
     difference between "we checked and there is nothing" and "we could not check".
     """
-    evidence = {"artifacts": {}, "releases": [], "journeys": {}, "read_errors": []}
+    evidence = {"artifacts": {}, "releases": [], "journeys": {}, "read_errors": [],
+                "project": project}
 
     artifact_params = {"select": "slug,branch,commit_sha,touched_files,test_log,captured_at"}
     if slugs:
@@ -251,18 +252,43 @@ def gather_evidence(select_fn, project=None, slugs=None):
 # The projection
 # ---------------------------------------------------------------------------
 
-def _live_release_for(artifact_sha, releases, artifact_at=None):
+def _live_release_for(artifact_sha, releases, artifact_at=None, contains_fn=None,
+                     project=None):
     """Find the live release that contains `artifact_sha`, or explain why there is none.
 
     Returns (release_row_or_None, reason). `reason` is only meaningful when the row is
     None, and names the specific defect: no release, stale release, dead release.
+
+    CONTAINMENT, NOT ONLY EQUALITY. This used to require the release head to BE the
+    artifact commit. That is right for a fleet that deploys branch heads and wrong for
+    any repo that merges to a trunk and deploys the trunk, because a merge commit
+    necessarily has a different sha from the work inside it. After 419 real production
+    releases were reconciled into the table, SIX artifacts in the whole history matched
+    by sha -- not six percent, six rows -- and every other MERGED task reported "no
+    release names this artifact commit as its head", which was true and useless.
+
+    `contains_fn(head_sha, artifact_sha, project)` answers reachability, and returns
+    None for "could not check". None is not False here: an unreadable clone must not
+    render as an absence of shipped work. Exact matches never consult it.
     """
     if not _sha(artifact_sha):
         return None, "task has no artifact commit to look for"
 
     matching = [r for r in releases if _sha_matches((r or {}).get("to_sha"), artifact_sha)]
+    exact = {id(r) for r in matching}
+    if contains_fn is not None:
+        for r in releases:
+            if id(r) in exact:
+                continue
+            if contains_fn((r or {}).get("to_sha"), artifact_sha, project) is True:
+                matching.append(r)
+        # Newest first among contained releases, so the release actually serving the
+        # commit is preferred over the first one that happened to absorb it.
+        matching.sort(key=lambda r: str((r or {}).get("created_at") or ""))
     if not matching:
-        return None, "no release names this artifact commit as its head"
+        if contains_fn is None:
+            return None, "no release names this artifact commit as its head"
+        return None, "no live release contains this artifact commit"
 
     for rel in matching:
         status = str((rel or {}).get("deploy_status") or "").strip().lower()
@@ -329,7 +355,7 @@ def _journey_receipt(release_sha, journeys, required_journey=None):
                    f"journey={row.get('journey')} recorded_at={row.get('recorded_at')}"), ""
 
 
-def project_task(task, evidence, required_journey=None):
+def project_task(task, evidence, required_journey=None, contains_fn=None):
     """Project ONE task into a proof verdict. Never raises.
 
     Returns:
@@ -379,7 +405,10 @@ def project_task(task, evidence, required_journey=None):
         # here. It says nothing about production, and nothing downstream may read it as
         # though it did.
         release, why = _live_release_for(artifact_sha, evidence.get("releases") or [],
-                                         (artifact or {}).get("captured_at"))
+                                         (artifact or {}).get("captured_at"),
+                                         contains_fn=contains_fn,
+                                         project=(task.get("project")
+                                                  or evidence.get("project")))
         if release is None:
             reasons.append("MERGED proves integration reachability only")
             reasons.append(why)
@@ -391,15 +420,18 @@ def project_task(task, evidence, required_journey=None):
             return {"slug": slug, "state": state, "level": LEVEL_MERGED,
                     "verdict": verdict, "receipt": artifact_receipt, "reasons": reasons}
 
+        how = "head" if _sha_matches(release.get("to_sha"), artifact_sha) else "contains"
         release_receipt = receipt("release", release.get("id"),
-                                  f"to_sha={release.get('to_sha')} status={release.get('deploy_status')} "
+                                  f"to_sha={release.get('to_sha')} match={how} "
+                                  f"status={release.get('deploy_status')} "
                                   f"url={release.get('vercel_url') or ''}")
 
         # --- RELEASED: live release with the exact sha -------------------------
         journey, why = _journey_receipt(release.get("to_sha"), evidence.get("journeys") or {},
                                         required_journey)
         if journey is None:
-            reasons.append("live release contains the artifact commit")
+            reasons.append("live release is the artifact commit" if how == "head"
+                           else "live release contains the artifact commit")
             reasons.append(why)
             return {"slug": slug, "state": state, "level": LEVEL_RELEASED,
                     "verdict": PENDING, "receipt": release_receipt, "reasons": reasons}
@@ -418,7 +450,8 @@ def project_task(task, evidence, required_journey=None):
                 "reasons": [f"projection failed: {exc}"]}
 
 
-def build_ledger(select_fn, project=None, tasks=None, required_journeys=None):
+def build_ledger(select_fn, project=None, tasks=None, required_journeys=None,
+                 contains_fn=None):
     """Project a set of tasks. Returns {"project", "entries", "summary", "read_errors"}.
 
     `tasks` may be omitted, in which case the task rows are read (paginated) for the
@@ -434,7 +467,8 @@ def build_ledger(select_fn, project=None, tasks=None, required_journeys=None):
     slugs = [t.get("slug") for t in tasks if isinstance(t, dict) and t.get("slug")]
     evidence = gather_evidence(select_fn, project=project, slugs=slugs)
 
-    entries = [project_task(t, evidence, required_journeys.get((t or {}).get("slug")))
+    entries = [project_task(t, evidence, required_journeys.get((t or {}).get("slug")),
+                            contains_fn=contains_fn)
                for t in tasks]
 
     summary = {v: 0 for v in VERDICTS}
