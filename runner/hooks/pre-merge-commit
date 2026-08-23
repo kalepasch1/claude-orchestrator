@@ -41,8 +41,30 @@ esac
 [ -f "$GUARD" ] || exit 0
 command -v python3 > /dev/null 2>&1 || exit 0
 
+# MERGE_MSG lives in the PER-WORKTREE git dir, not the common one.
+#
+# This read used $git_dir (--git-common-dir). In the main checkout the two are the
+# same path, so it worked. In a linked worktree --git-common-dir points at the
+# shared .git while git writes MERGE_MSG to .git/worktrees/<name>/MERGE_MSG — so
+# the hook found nothing, passed an empty message to the guard, and EVERY
+# deletion-intent marker was invisible. A hand merge in a worktree could not be
+# declared intentional at all; the only way through was --no-verify or
+# ORCH_MERGE_REGRESSION_GUARD=false, both of which switch off the whole guard.
+# That is the opposite of what this hook is for, and the orchestrator does most
+# of its merging in worktrees.
+#
+# Read the per-worktree dir first, fall back to the common dir. $git_dir is left
+# alone above so the legacy-hook lookup keeps its existing semantics.
+wt_git_dir="$(git rev-parse --git-dir)"
+case "$wt_git_dir" in
+  /*) ;;
+  *) wt_git_dir="$(pwd)/$wt_git_dir" ;;
+esac
+
 msg=""
-if [ -f "$git_dir/MERGE_MSG" ]; then
+if [ -f "$wt_git_dir/MERGE_MSG" ]; then
+  msg="$(cat "$wt_git_dir/MERGE_MSG")"
+elif [ -f "$git_dir/MERGE_MSG" ]; then
   msg="$(cat "$git_dir/MERGE_MSG")"
 fi
 

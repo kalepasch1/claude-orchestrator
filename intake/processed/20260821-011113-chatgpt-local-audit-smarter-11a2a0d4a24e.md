@@ -1,0 +1,323 @@
+PROJECT: smarter
+
+- id: chatgpt-local-reconcile-smarter-11a2a0d4a24e
+  title: Reconcile local ChatGPT/Codex build evidence for smarter
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `11a2a0d4a24e7447f2c0103db6de62dc669383d5739c86ac7c9af5e6391274ee`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "bridge_result_tail": "y_guard: name drift 82550c811374 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift ef934d0fdaf0 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 8ca432b0684f 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift ef13f3bc1ff2 'Kale Aaron Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift e0a6e590b197 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift dd0e15dc692d 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 569a12509140 'Kale Aaron Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 49aa7d75c77c 'Kale Aaron Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift b0c4fa9efb41 'Kale Aaron Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 33a2a1b9a95b 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 9c61c2e12cb2 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 006e605299ef 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift ceda46e07b59 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift db388915b151 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 50a05e86ace9 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift c1fb50fddac9 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 413404b58020 'Kale Aaron Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 1638443f2c10 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 06ea7eac4bca 'Kale Aaron Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 268beaa194a0 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift ef35abe55df5 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift cc40cdfcb993 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 0384ac60d22a 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift f4ac2fc26953 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 2a30b4f321d8 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift c0e9f358a420 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 2b7229c64f9b 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 133eef37ad53 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift adb26d4c7200 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 624e057e15cf 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 7ddadb1806a0 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift 8665fb2b3787 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: name drift fe0a764b31c6 'Kale Pasch' (canonical 'kalepasch1') \u2014 cosmetic, not blocking\nauthor_identity_guard: REFUSED. Fix with\n    git config user.name \"kalepasch1\"\n    git config user.email \"kalepasch@gmail.com\"\n    git rebase -i --exec 'git commit --amend --no-edit --reset-author' <base>\nBreak-glass: ORCH_AUTHOR_IDENTITY_GUARD=warn\nerror: failed to push some refs to 'https://github.com/kalepasch1/smarter.git'\nERROR: push failed\n",
+        "kind": "chatgpt_bridge_artifact",
+        "mtime": 1786107291,
+        "path": "/Users/kpasch/Documents/chatgpt-dropbox/_failed/20260807-085521--smarter--apparently-framework-merge.patch",
+        "sha256": "6b8f95f50a07e35d461a3e16e95bc748fb4e1431500a49de455f0cf8889fde82",
+        "size": 533431,
+        "status": "failed"
+      },
+      {
+        "branch": "DETACHED",
+        "change_count": 2,
+        "changes": [
+          "server/utils/darwin/capabilities.ts",
+          "tests/smarter-capabilities.spec.ts"
+        ],
+        "changes_digest": "8231d1e2e6fda631a17bb115a26cf47a3c1f6978d064c4bbc93bd11e033116e4",
+        "head": "ba214e3cc4dc0bfec2ed1deead9f7a3658449227",
+        "kind": "dirty_worktree",
+        "newest_change_mtime": 1786237007,
+        "path": "/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/integration-worktrees/5eed4d232cc6fd3c7073"
+      },
+      {
+        "branch": "DETACHED",
+        "change_count": 295,
+        "changes_digest": "06da9b699f68a7beea5ee0701c444e44d5cd232f0e55f31af46a601345b3d059",
+        "changes_sample": [
+          ".deploy-canary",
+          ".gitignore.bak",
+          ".recovery-intent-adversarial-second-opinion-split-the-build-task-in-slice-5-match-prior-artifact.txt",
+          ".recovery-intent-backlog-batch-smarter-4109d59.txt",
+          ".recovery-intent-backlog-batch-smarter-70d19d8.txt",
+          ".recovery-intent-batch-mech-backlog-batch-beethoven-b040840-resolve-merge-conflicts-in-darwin-kernel-3.txt",
+          ".recovery-intent-consensus-engine-spec-fix-auto-filer-409-handler.txt",
+          ".recovery-intent-cont-34e96f.txt",
+          ".recovery-intent-cont-49a5d9.txt",
+          ".recovery-intent-cont-cb7e0d.txt",
+          ".recovery-intent-cont-e555f3.txt",
+          ".recovery-intent-contracts-smarter.txt",
+          ".recovery-intent-copyfix-smarter-07180848-slice-1.txt",
+          ".recovery-intent-curation-snapshot-diff-alerts.txt",
+          ".recovery-intent-dropbox-smarter-embeddable-core-apparently-pareto-real-member-identi-1-embeddable-core-the-hard-blocker-first.txt",
+          ".recovery-intent-dropbox-smarter-embeddable-core-apparently-pareto-real-member-identi-master-task.txt",
+          ".recovery-intent-qafix-smarter-2bb54956eba4.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-fix-app-store-typescript-errors.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-fix-error-handling-test-typescript-error.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-fix-implicit-any-in-htsparkline.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-remove-duplicate-code-pricinggridreconst.txt",
+          ".recovery-intent-qafix-smarter-llm-api-retry-test-adapt-patch-template.txt",
+          ".recovery-intent-recover-missing-branch-copyfix-smarter-07190105-slice-3.txt",
+          ".recovery-intent-recover-missing-branch-copyfix-smarter-07190105-slice-4-create-patch.txt",
+          ".recovery-intent-recover-missing-branch-copyfix-smarter-07190105-slice-4-integration-validation.txt",
+          ".recovery-intent-recover-missing-branch-remediate-secret-cont-1c7ac65f-047f094-e4ae63.txt",
+          ".recovery-intent-recover-missing-branch-rework-legal-rework-legal-court-efiling-engine-6ed453e-940db0e.txt",
+          ".recovery-intent-recover-missing-branch-rework-secret-rework-secret-cade-negotiation-determine-sm-b615c90-86706d6.txt",
+          ".recovery-intent-relfix-smarter-07182307-apply-adapted-dedup-patch.txt",
+          ".recovery-intent-relfix-smarter-07182307-integrate-patch-locate-patch-template-references.txt"
+        ],
+        "changes_total": 100,
+        "head": "f1f9914a00ed88687d8227445cd977ade620308f",
+        "kind": "dirty_worktree",
+        "newest_change_mtime": 0,
+        "path": "/private/tmp/merge-qa-xqxhwu3f/candidate"
+      },
+      {
+        "branches": [
+          {
+            "committed_at": 1786121959,
+            "ref": "agent/backlog-batch-smarter-82f15de",
+            "sha": "eafe369dcf954e799433414bbab111e7bbfdf127",
+            "subject": "regen-from-cache(template): backlog-batch-smarter-82f15de"
+          },
+          {
+            "committed_at": 1787048813,
+            "ref": "agent/chatgpt-local-reconcile-smarter-5eb1d9d1325f",
+            "sha": "f1f9914a00ed88687d8227445cd977ade620308f",
+            "subject": "agent: chatgpt-local-reconcile-smarter-5eb1d9d1325f"
+          },
+          {
+            "committed_at": 1786116698,
+            "ref": "agent/copyfix-smarter-07190105-slice-3",
+            "sha": "a96112d5503740447937f118b9cc72b5b6aa5e86",
+            "subject": "recovery-intent-stub: recover-missing-branch-copyfix-smarter-07190105-slice-3"
+          },
+          {
+            "committed_at": 1787040913,
+            "ref": "agent/dropbox-smarter-embeddable-core-apparently-pareto--slice-1",
+            "sha": "1ef2248cec5798c2bd399a9321bbfcd33eba321d",
+            "subject": "agent: dropbox-smarter-embeddable-core-apparently-pareto--slice-1 \u2014 finish the alias fix across the remaining specs"
+          },
+          {
+            "committed_at": 1786128033,
+            "ref": "agent/qafix-smarter-9c3a08b5d8dd-adapt-merge-diff-pricinggrid-dedup-verify-changes",
+            "sha": "26b7d46b34c4d07e5d78b156482bca7e500b172d",
+            "subject": "salvage: interrupted work for qafix-smarter-9c3a08b5d8dd-adapt-merge-diff-pricinggrid-dedup-verify-changes"
+          },
+          {
+            "committed_at": 1786129202,
+            "ref": "agent/qafix-smarter-9c3a08b5d8dd-fix-htsparkline-ts-implicit-any-add-type-annotations",
+            "sha": "c3970515e9fa82451328d47f0175403b2afe260d",
+            "subject": "salvage: interrupted work for qafix-smarter-9c3a08b5d8dd-fix-htsparkline-ts-implicit-any-add-type-annotations"
+          },
+          {
+            "committed_at": 1786130208,
+            "ref": "agent/qafix-smarter-9c3a08b5d8dd-fix-htsparkline-ts-implicit-any-compile-file",
+            "sha": "f25e19279284afe925ff7f2c95c5814fdeab363a",
+            "subject": "salvage: interrupted work for qafix-smarter-9c3a08b5d8dd-fix-htsparkline-ts-implicit-any-compile-file"
+          },
+          {
+            "committed_at": 1786116698,
+            "ref": "agent/recover-missing-branch-copyfix-smarter-07190105-slice-3",
+            "sha": "a96112d5503740447937f118b9cc72b5b6aa5e86",
+            "subject": "recovery-intent-stub: recover-missing-branch-copyfix-smarter-07190105-slice-3"
+          },
+          {
+            "committed_at": 1786116899,
+            "ref": "agent/recover-missing-branch-remediate-weekly-lint-smarter-c5700f",
+            "sha": "69a3e90c6d1c710fb547c1686d2a7dff49d406ef",
+            "subject": "recovery-intent-stub: recover-missing-branch-remediate-weekly-lint-smarter-c5700f"
+          },
+          {
+            "committed_at": 1786117087,
+            "ref": "agent/recover-missing-branch-smarter-5-95-add-advanced-options-toggle",
+            "sha": "3ff4b0a3af1c2f178cb4bb333249e18b13b1d360",
+            "subject": "recovery-intent-stub: recover-missing-branch-smarter-5-95-add-advanced-options-toggle"
+          },
+          {
+            "committed_at": 1786116952,
+            "ref": "agent/recover-missing-branch-smarter-5-95-implement-strict-decision-budget",
+            "sha": "293c2bba36f57b03eb53d53c9e988ae88672be92",
+            "subject": "recovery-intent-stub: recover-missing-branch-smarter-5-95-implement-strict-decision-budget"
+          },
+          {
+            "committed_at": 1786118378,
+            "ref": "agent/relfix-smarter-07182307-integrate-patch-add-patch-integration-tests",
+            "sha": "f124507884ce3c5925d8277321721c515a19b461",
+            "subject": "regen-from-cache(template): relfix-smarter-07182307-integrate-patch-add-patch-integration-tests"
+          },
+          {
+            "committed_at": 1786117087,
+            "ref": "agent/smarter-5-95-add-advanced-options-toggle",
+            "sha": "3ff4b0a3af1c2f178cb4bb333249e18b13b1d360",
+            "subject": "recovery-intent-stub: recover-missing-branch-smarter-5-95-add-advanced-options-toggle"
+          },
+          {
+            "committed_at": 1786116952,
+            "ref": "agent/smarter-5-95-implement-strict-decision-budget",
+            "sha": "293c2bba36f57b03eb53d53c9e988ae88672be92",
+            "subject": "recovery-intent-stub: recover-missing-branch-smarter-5-95-implement-strict-decision-budget"
+          },
+          {
+            "committed_at": 1784950301,
+            "ref": "canary-pipeline-heartbeat-20260724",
+            "sha": "5ada2f0ba346a788339cddf5135db672e9d516e2",
+            "subject": "chore: pipeline heartbeat canary for 2026-07-24"
+          }
+        ],
+        "count": 15,
+        "kind": "local_only_branch_tips",
+        "repo": "/Users/kpasch/Documents/smarter"
+      },
+      {
+        "count": 21,
+        "items": [
+          {
+            "created_at": 1787154970,
+            "ref": "stash@{0}",
+            "sha": "82367eaeb26646aacd50fc23faadeb035af515ab",
+            "subject": "WIP on spine/kernel-v1: 3aed44300 fix(deps): take the nine reachable advisories"
+          },
+          {
+            "created_at": 1787113437,
+            "ref": "stash@{1}",
+            "sha": "913a45cb1c81b4bc77265a3264311fdaa89e9f52",
+            "subject": "WIP on agent/contracts-smarter: ba214e3cc chore: bump pasch and prediction-markets-institute/pmi submodule pointers"
+          },
+          {
+            "created_at": 1785411633,
+            "ref": "stash@{2}",
+            "sha": "92226f1e293a49c01875caa0a739fe3946e435b4",
+            "subject": "WIP on review/agent-access: c53b7fff6 test: lock in the review-access safety properties"
+          },
+          {
+            "created_at": 1784916709,
+            "ref": "stash@{3}",
+            "sha": "127dca052b66d6b0f32715f3010cf199c59d0d9d",
+            "subject": "WIP on main: 4f3e300cd feat: role-based intelligence platform overhaul"
+          },
+          {
+            "created_at": 1784685042,
+            "ref": "stash@{4}",
+            "sha": "a0cc43108eef0f44b3e7a45aa65ad869de3c8144",
+            "subject": "WIP on main: 0ec77bcee Merge branch 'agent/backlog-batch-smarter-6c8e892'"
+          },
+          {
+            "created_at": 1784684917,
+            "ref": "stash@{5}",
+            "sha": "1f703d03d72b4e69246f3f55dedba525bd9c2a14",
+            "subject": "WIP on main: 8397d6755 fix: robust ignoreCommand (use VERCEL_GIT_PREVIOUS_SHA fallback)"
+          },
+          {
+            "created_at": 1784684677,
+            "ref": "stash@{6}",
+            "sha": "c9b0d4b7dfe6b71524a916e527c9fed498019f6f",
+            "subject": "On main: pre-force-merge"
+          },
+          {
+            "created_at": 1784680445,
+            "ref": "stash@{7}",
+            "sha": "7b2d0e589e19a421fb66076e568595c456ac22af",
+            "subject": "WIP on main: 1b41c09b6 perf: add ignoreCommand to skip builds on non-code changes"
+          },
+          {
+            "created_at": 1784677825,
+            "ref": "stash@{8}",
+            "sha": "136a1afacaa2ded44411b081cf59ebe7cce659d6",
+            "subject": "On main: auto-stash for push-retry"
+          },
+          {
+            "created_at": 1784425581,
+            "ref": "stash@{9}",
+            "sha": "bf9933dd48e747b4da11ce16924c34658aeec554",
+            "subject": "WIP on main: e78b242ab Merge remote-tracking branch 'origin/agent/copyfix-smarter-07180848-slice-5'"
+          },
+          {
+            "created_at": 1784422595,
+            "ref": "stash@{10}",
+            "sha": "be96aeab543a2d11ee1b3606fd83ff383c89b09d",
+            "subject": "WIP on main: 64231b2b6 feat(growth): wire the distribution flywheel into the app"
+          },
+          {
+            "created_at": 1784422351,
+            "ref": "stash@{11}",
+            "sha": "c31fc24c6e2aeea52451848e1b162e138c7b55fc",
+            "subject": "WIP on main: 64231b2b6 feat(growth): wire the distribution flywheel into the app"
+          },
+          {
+            "created_at": 1784421658,
+            "ref": "stash@{12}",
+            "sha": "498667b7361ec313c58cba5ffb181789f9008b21",
+            "subject": "On agent/cont-fdd544: cowork-cleanup-stash"
+          },
+          {
+            "created_at": 1784173605,
+            "ref": "stash@{13}",
+            "sha": "4838f0fb57a31bf29660b74bec785d07a6b9d719",
+            "subject": "WIP on agent/growth-foundation-wired: 8dda3c3 recovery: preserve final restored source state"
+          },
+          {
+            "created_at": 1784172140,
+            "ref": "stash@{14}",
+            "sha": "78b0ae662b757a265efe0d9f38baaae15f7a77a1",
+            "subject": "WIP on growth-foundation-wired: 8dda3c3 recovery: preserve final restored source state"
+          },
+          {
+            "created_at": 1784133466,
+            "ref": "stash@{15}",
+            "sha": "01985b68c767ceb823e9298fbd838a54a8140cbd",
+            "subject": "WIP on main: 8685ff8 chore: repair Vercel deployment attribution"
+          },
+          {
+            "created_at": 1784002673,
+            "ref": "stash@{16}",
+            "sha": "242b08e3651871ef686cd31a3b7d29e78dd1cc83",
+            "subject": "WIP on agent/client-ask-my-matter: 71be71d integrate: origin/wt-sweep/bx1-1783987090 into main (legacy worktree consolidation)"
+          },
+          {
+            "created_at": 1784002247,
+            "ref": "stash@{17}",
+            "sha": "2a9457fdd39558c075ff8a5e06b963ddad84cd73",
+            "subject": "WIP on agent/smarter-5-95: 0979ea2 feat: lint-decision-budgets enforces 5/95 rule via trust dial"
+          },
+          {
+            "created_at": 1783986336,
+            "ref": "stash@{18}",
+            "sha": "24f6ad23841c73d2a0abf5562b2fafe286986b29",
+            "subject": "On agent/rework-legal-recover-missing-branch-cont-0dea9b55-slice-1-bb48850: manual-restore-1783986336"
+          },
+          {
+            "created_at": 1783971188,
+            "ref": "stash@{19}",
+            "sha": "cbce3ff19a8536709ad9776c5ebf419ebc68f56b",
+            "subject": "WIP on qafix-smarter-07120631: 56dd195 fix: escape quote in semanticRedTeam.ts breaking build"
+          },
+          {
+            "created_at": 1783310584,
+            "ref": "stash@{20}",
+            "sha": "b70cdd75fd46c4d8e6c54b639eaf2433cef8f65d",
+            "subject": "On merge-train-tmp: recover_and_ship: pre-merge dirt 1783310584"
+          }
+        ],
+        "kind": "stashes",
+        "repo": "/Users/kpasch/Documents/smarter"
+      }
+    ]

@@ -144,7 +144,10 @@ class TestEnqueueTaskDeps(unittest.TestCase):
 
         def _select(table, params):
             if table == "projects":
-                return [{"id": "pid-1", "name": "beethoven", "repo_path": "/tmp/b"}]
+                return [
+                    {"id": "pid-1", "name": "beethoven", "repo_path": "/tmp/b"},
+                    {"id": "pid-2", "name": "apparently", "repo_path": "/tmp/a"},
+                ]
             # tasks table — already_present check: return empty so it proceeds
             return []
 

@@ -12,7 +12,7 @@ Requires the same env as the runner (SUPABASE_URL + service key, read by db.py).
 Idempotent: coalesces equivalent open intent while allowing completed intent to recur.
 """
 import datetime
-import os, sys, json
+import os, sys, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import pipeline_contract
@@ -66,6 +66,173 @@ def project_by_name(name):
 def project_id_by_name(name):
     p = project_by_name(name)
     return p["id"] if p else None
+
+
+def parse_cross_project_dep(dep_str: str) -> tuple:
+    """Parse 'project:slug' or 'slug' into (project_name, slug).
+
+    Returns: (project_name, slug) for cross-project deps or (None, dep_str) for bare deps.
+    Raises: ValueError if format is invalid.
+    """
+    dep_str = str(dep_str or "").strip()
+    if not dep_str:
+        raise ValueError("empty dependency string")
+
+    if ':' not in dep_str:
+        return (None, dep_str)
+
+    parts = dep_str.split(':', 1)
+    if len(parts) != 2:
+        raise ValueError(f"invalid dependency format: '{dep_str}'")
+
+    project, slug = parts[0].strip(), parts[1].strip()
+
+    if not project:
+        raise ValueError(f"empty project name in dependency: '{dep_str}'")
+    if not slug:
+        raise ValueError(f"empty task slug in dependency: '{dep_str}'")
+
+    if not re.match(r'^[a-zA-Z0-9_-]+$', project):
+        raise ValueError(f"invalid project name '{project}' in dependency '{dep_str}': "
+                        "project names must contain only alphanumeric characters, hyphens, and underscores")
+
+    if not re.match(r'^[a-zA-Z0-9_-]+$', slug):
+        raise ValueError(f"invalid task slug '{slug}' in dependency '{dep_str}': "
+                        "task slugs must contain only alphanumeric characters, hyphens, and underscores")
+
+    return (project, slug)
+
+
+def _get_all_known_projects():
+    """Fetch all known projects from the projects table."""
+    try:
+        rows = db.select("projects", {"select": "id,name"}) or []
+        return {p.get("name"): p.get("id") for p in rows if p.get("name")}
+    except Exception:
+        return {}
+
+
+def _find_cycle_from_deps(enqueue_project_id, enqueue_slug, initial_deps, target_project_id, target_slug,
+                          visited=None, rec_stack=None):
+    """Recursively check if any initial dependency transitively depends on the target task.
+
+    Args:
+        enqueue_project_id: The project ID of the task being enqueued
+        enqueue_slug: The slug of the task being enqueued
+        initial_deps: List of direct dependencies of the task being enqueued
+        target_project_id: The project ID we're checking for (same as enqueue_project_id for bare deps)
+        target_slug: The slug we're checking for (the enqueue_slug)
+        visited: Set of (project_id, slug) tuples already visited
+        rec_stack: Set of (project_id, slug) tuples in current recursion stack
+
+    Returns:
+        Cycle path as a list if found, None otherwise
+    """
+    if visited is None:
+        visited = set()
+    if rec_stack is None:
+        rec_stack = set()
+
+    for dep in initial_deps:
+        try:
+            dep_project, dep_slug = parse_cross_project_dep(dep)
+            if dep_project is None:
+                dep_project_id = enqueue_project_id
+            else:
+                canonical = canonical_project_name(dep_project)
+                dep_project_id = project_id_by_name(canonical)
+                if not dep_project_id:
+                    continue
+
+            task_key = (dep_project_id, dep_slug)
+            if task_key == (target_project_id, target_slug):
+                return [enqueue_slug, dep_slug]
+
+            if task_key in rec_stack:
+                continue
+
+            if task_key in visited:
+                continue
+
+            visited.add(task_key)
+            rec_stack.add(task_key)
+
+            try:
+                rows = db.select("tasks", {
+                    "select": "deps",
+                    "project_id": f"eq.{dep_project_id}",
+                    "slug": f"eq.{dep_slug}",
+                }) or []
+
+                if rows:
+                    task_row = rows[0]
+                    sub_deps = task_row.get("deps") or []
+                    if isinstance(sub_deps, str):
+                        sub_deps = [d.strip() for d in sub_deps.split(",") if d.strip()]
+
+                    cycle = _find_cycle_from_deps(enqueue_project_id, enqueue_slug, sub_deps,
+                                                 target_project_id, target_slug, visited, rec_stack)
+                    if cycle:
+                        return [enqueue_slug, dep_slug] + cycle[1:]
+            except Exception:
+                pass
+
+            rec_stack.discard(task_key)
+        except Exception:
+            pass
+
+    return None
+
+
+def validate_and_normalize_deps(project_id, task_slug, deps):
+    """Validate and normalize dependencies for a task.
+
+    Args:
+        project_id: The project ID of the enqueuing task
+        task_slug: The slug of the enqueuing task
+        deps: List of dependency strings (bare slugs or 'project:slug' format)
+
+    Returns:
+        List of validated and normalized dependencies
+
+    Raises:
+        ValueError: If validation fails (unknown project, invalid format, circular dep)
+    """
+    if not deps:
+        return []
+
+    if isinstance(deps, str):
+        deps = [d.strip() for d in deps.split(",") if d.strip()]
+
+    validated = []
+    known_projects = _get_all_known_projects()
+
+    for dep in deps:
+        try:
+            dep_project, dep_slug = parse_cross_project_dep(dep)
+        except ValueError as e:
+            raise ValueError(f"[enqueue] Invalid dependency '{dep}': {str(e)}")
+
+        if dep_project is None:
+            validated.append(dep_slug)
+        else:
+            canonical = canonical_project_name(dep_project)
+            if canonical not in known_projects:
+                known_names = sorted(known_projects.keys())
+                suggestion = ""
+                if known_names:
+                    suggestion = f" Known projects: {', '.join(known_names)}."
+                raise ValueError(f"[enqueue] Unknown project '{dep_project}' in dependency '{dep}'.{suggestion}")
+
+            validated.append(f"{canonical}:{dep_slug}")
+
+    cycle = _find_cycle_from_deps(project_id, task_slug, validated, project_id, task_slug)
+    if cycle:
+        cycle_str = " → ".join(cycle + [cycle[0]])
+        raise ValueError(f"[enqueue] Circular dependency detected: {cycle_str}. "
+                        f"Task '{task_slug}' cannot depend on itself transitively.")
+
+    return validated
 
 
 def already_present(project_id, slug):
@@ -224,7 +391,12 @@ def _enqueue_one(spec, proj, pid):
         "note": pipeline_contract.note(spec.get("note", ""), source=spec.get("source", "json-enqueue")),
     }
     if spec.get("deps"):
-        row["deps"] = spec["deps"]
+        try:
+            validated_deps = validate_and_normalize_deps(pid, spec["slug"], spec["deps"])
+            if validated_deps:
+                row["deps"] = validated_deps
+        except ValueError as e:
+            sys.exit(str(e))
     if spec.get("model"):
         row["model"] = spec["model"]
     if spec.get("submitted_by_label"):

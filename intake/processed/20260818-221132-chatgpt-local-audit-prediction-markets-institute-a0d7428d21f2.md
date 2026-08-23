@@ -1,0 +1,54 @@
+PROJECT: prediction-markets-institute
+
+- id: chatgpt-local-reconcile-prediction-markets-institute-a0d7428d21f2
+  title: Reconcile local ChatGPT/Codex build evidence for prediction-markets-institute
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `a0d7428d21f28bf2b9101fbe1763bcbff05d34e9d2344d015c3de1cec8005db7`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "branches": [
+          {
+            "committed_at": 1787067416,
+            "ref": "agent/backlog-batch-prediction-markets-institute-349a57f",
+            "sha": "b8eb5704e16430d350067ec59aad33e0f457bb35",
+            "subject": "recovery-intent-stub: backlog-batch-prediction-markets-institute-349a57f"
+          },
+          {
+            "committed_at": 1785679679,
+            "ref": "agent/shadow-facc0b03-cowork",
+            "sha": "fd982fd818974048497b393f64220540e9b44bc6",
+            "subject": "recovery-intent-stub: shadow-facc0b03-cowork"
+          },
+          {
+            "committed_at": 1785682756,
+            "ref": "agent/shadow-facc0b03-orchestrator_native",
+            "sha": "002924d648e5a2eebd65b85129d02306aa60cb75",
+            "subject": "recovery-intent-stub: shadow-facc0b03-orchestrator_native"
+          }
+        ],
+        "count": 3,
+        "kind": "local_only_branch_tips",
+        "repo": "/Users/kpasch/Documents/smarter/prediction-markets-institute/pmi"
+      }
+    ]

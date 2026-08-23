@@ -190,7 +190,41 @@ def package_roots(repo):
     return out
 
 
+def _vercel_install_cmd(repo):
+    """The install command the repo's own deploy uses, if it declares one.
+
+    WHY THIS COMES FIRST.
+
+    The picker below infers a manager from which lockfile is present, and a
+    package-lock.json means `npm ci`. That is a good default and it is wrong
+    whenever the project has already answered the question itself.
+
+    smarter's vercel.json says `npm install --legacy-peer-deps`, and it says so
+    because `npm ci` CANNOT run in that repo: the lockfile carries cac@7.0.0
+    where a nested vite-node wants cac@6.7.14, and ci refuses a lockfile it
+    considers out of sync. So every prewarm for that project failed at the
+    install step — before a line of the app compiled — and the build gate
+    reported a red that said nothing whatsoever about the commit. Vercel itself
+    was building it green the whole time, because Vercel reads vercel.json.
+
+    A gate that installs differently from the deploy is not testing the deploy.
+    """
+    try:
+        with open(os.path.join(repo, "vercel.json"), encoding="utf-8") as f:
+            declared = str(json.load(f).get("installCommand") or "").strip()
+    except Exception:
+        return None
+    if not declared:
+        return None
+    return declared
+
+
 def _manager(repo):
+    declared_install = _vercel_install_cmd(repo)
+    if declared_install:
+        # Run it through the shell, as Vercel does — it is a command line, not argv.
+        return "npm", ["bash", "-lc", declared_install]
+
     pnpm = shutil.which("pnpm") or _tool("pnpm")
     yarn = shutil.which("yarn") or _tool("yarn")
     npm = _tool("npm")
@@ -239,7 +273,11 @@ def _dev_env(manager, cmd):
         env["NODE_ENV"] = "development"
     env.pop("NPM_CONFIG_PRODUCTION", None)
     env["NPM_CONFIG_INCLUDE"] = "dev"
-    if manager == "npm" and "--include=dev" not in cmd:
+    # A shell form (["bash","-lc", "<command line>"]) must not be appended to as
+    # argv — the flag would land on bash, not on npm. NPM_CONFIG_INCLUDE above
+    # already carries the same instruction and npm reads it either way.
+    shell_form = len(cmd) >= 2 and cmd[0].endswith("bash") and cmd[1] == "-lc"
+    if manager == "npm" and not shell_form and "--include=dev" not in cmd:
         cmd = [*cmd, "--include=dev"]
     elif manager == "pnpm" and "--prod" not in cmd:
         cmd = [*cmd, "--dev"] if "--dev" not in cmd else cmd
@@ -395,8 +433,23 @@ def _deps_ready_local(repo):
     try:
         with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
             manifest = json.load(f)
-        declared_deps = any(manifest.get(k) for k in
-                            ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"))
+        # Only dependencies and devDependencies are installed INTO this package.
+        #
+        # peerDependencies are supplied by whoever consumes the package — npm
+        # creates no node_modules for a package that merely declares one — and
+        # optionalDependencies are, by definition, allowed to be absent.
+        # Counting either as "this package must have an install" makes readiness
+        # unsatisfiable forever: smarter/packages/smarter-core declares exactly
+        # one optional peer (h3) and nothing else, so it had no node_modules,
+        # was marked not-ready on every check, and failed prove_build for the
+        # whole repo — over a package that was correctly installed by having
+        # nothing to install.
+        #
+        # This is the second instance of this bug in this function. The tsconfig
+        # one below has the same shape: a gate nothing can satisfy does not stop
+        # bad builds, it manufactures repair work and the corruption that comes
+        # with concurrent installs.
+        declared_deps = any(manifest.get(k) for k in ("dependencies", "devDependencies"))
     except Exception:
         declared_deps = True
     nm = os.path.join(repo, "node_modules")
@@ -527,7 +580,10 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
         os.makedirs(_snapshot_dir(), exist_ok=True)
         build_root = tempfile.mkdtemp(prefix=_fingerprint(repo) + ".building-",
                                       dir=_snapshot_dir())
-        for name in ("package.json", *_LOCKS, ".npmrc"):
+        # vercel.json comes along because _vercel_install_cmd reads it. Without it
+        # the staging dir looks like a bare package.json + lockfile, _manager
+        # infers `npm ci`, and the project's own declared installCommand is lost.
+        for name in ("package.json", *_LOCKS, ".npmrc", "vercel.json"):
             src = os.path.join(repo, name)
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(build_root, name))
@@ -544,7 +600,22 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
         if lock_file:
             lock_file.close()
         return {"ok": False, "error": f"snapshot staging failed: {e}"}
-    manager, cmd = _manager(build_root)
+    # _manager(repo), NOT _manager(build_root).
+    #
+    # The install command is a property of the PROJECT, not of the temporary
+    # directory we stage into. build_root holds only package.json, the lockfile
+    # and .npmrc, so _vercel_install_cmd found no vercel.json there, returned
+    # None, and the lockfile-based fallback chose `npm ci` — for smarter, whose
+    # vercel.json declares `npm install --legacy-peer-deps` precisely BECAUSE
+    # npm ci cannot run against its lockfile (cac@7.0.0 vs a nested
+    # vite-node wanting cac@6.7.14). Every prewarm for that project failed at
+    # the install step, so prove_build reported a red that said nothing about
+    # the commit, while Vercel built the same tree green because Vercel reads
+    # vercel.json.
+    #
+    # Both halves matter: the copy above so anything else in build_root can see
+    # it, and reading from `repo` so the decision does not depend on staging.
+    manager, cmd = _manager(repo)
     # The fleet installs in order to build AND TEST, so devDependencies are mandatory for
     # it. See _dev_env: NODE_ENV=production on this host was silently omitting them.
     cmd, _env = _dev_env(manager, cmd)

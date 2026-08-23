@@ -1,0 +1,351 @@
+PROJECT: smarter
+
+- id: chatgpt-local-reconcile-smarter-4de1025de94f
+  title: Reconcile local ChatGPT/Codex build evidence for smarter
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `4de1025de94f3ec03cc62e25a6355a9dd790bb2fab8ca0edd90cda899180b6c1`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "count": 296,
+        "items_digest": "0595cef99483e6b0d8c7d53b35d0d10b7dd75a662027d3b26f40ece56c0fd890",
+        "items_sample": [
+          {
+            "created_at": 1785715647,
+            "ref": "refs/orch-rescue/20260803T000727-breach-remediation",
+            "sha": "9b3148de2f99d13574659b61ea24047d15048d82",
+            "subject": "On agent/breach-remediation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715647,
+            "ref": "refs/orch-rescue/20260803T000727-cade-mirror-negotiation",
+            "sha": "95fe86f5311205dd387c844f58d1215df3b8a2c0",
+            "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715647,
+            "ref": "refs/orch-rescue/20260803T000727-cc-legacy-margin-removal",
+            "sha": "71bd1fbfb0bc3f24bab62bba5d4ea651918dcf8f",
+            "subject": "On agent/cc-legacy-margin-removal: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715647,
+            "ref": "refs/orch-rescue/20260803T000727-smarter",
+            "sha": "10530a6210789087de3d7965deeaa1bafc3cd136",
+            "subject": "On main: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715648,
+            "ref": "refs/orch-rescue/20260803T000728-cc-mutual-default-fund",
+            "sha": "a18c29c29c0a901f0d0a25d169a4201b670e33ed",
+            "subject": "On agent/cc-mutual-default-fund: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715648,
+            "ref": "refs/orch-rescue/20260803T000728-cc-solvency-passport",
+            "sha": "632e8ba21c21bd71428ff025bb1bdd15e0ca99fb",
+            "subject": "On agent/cc-solvency-passport: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785683216,
+            "ref": "refs/orch-rescue/20260803T000728-consensus-engine-spec-fix-auto-filer-409-handler",
+            "sha": "b594891854e9a33e23b93fe197b132ae4d6b9ee0",
+            "subject": "agent: consensus-engine-spec-fix-auto-filer-409-handler"
+          },
+          {
+            "created_at": 1785715648,
+            "ref": "refs/orch-rescue/20260803T000728-convention-conformance-lints",
+            "sha": "e6819f3735624f97427c187309d8f13043113b59",
+            "subject": "On agent/convention-conformance-lints: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715648,
+            "ref": "refs/orch-rescue/20260803T000728-hive-enforcement-velocity-index",
+            "sha": "90781eee55b5bdfa7d75410bb4d1e819753ad1b8",
+            "subject": "On agent/hive-enforcement-velocity-index: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715648,
+            "ref": "refs/orch-rescue/20260803T000728-hive-support-entity-relationship-source",
+            "sha": "a94354ed905a225b223430815672bf2b117a04ba",
+            "subject": "On agent/hive-support-entity-relationship-source: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715648,
+            "ref": "refs/orch-rescue/20260803T000728-merged-diff-memory",
+            "sha": "07d83c096db241ae386eb1a076702f3a18121109",
+            "subject": "On agent/merged-diff-memory: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715649,
+            "ref": "refs/orch-rescue/20260803T000729-orch-config-consumption",
+            "sha": "57818828bef5b0ebe15221b043d7db56b2e4da62",
+            "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715649,
+            "ref": "refs/orch-rescue/20260803T000729-pinned-express-lane",
+            "sha": "5f39034c4d5416c86ae21d49af5f983bb70e579d",
+            "subject": "On agent/pinned-express-lane: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715649,
+            "ref": "refs/orch-rescue/20260803T000729-ploeh-s2s-bridge-tomorrow",
+            "sha": "abd08b5d9e6de2e2d1b5941c6feb230729427b25",
+            "subject": "On agent/ploeh-s2s-bridge-tomorrow: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715649,
+            "ref": "refs/orch-rescue/20260803T000729-prompt-evolution-bandit",
+            "sha": "bcc402754b6e4d046f0c64d9c523f29d6b294f1a",
+            "subject": "On agent/prompt-evolution-bandit: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-breach-remediation",
+            "sha": "b1bc57fa57f47181f4126177d0afa720b3e05eff",
+            "subject": "On agent/breach-remediation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-cade-mirror-negotiation",
+            "sha": "3bd43d43816a55688976fe6933755b452598531f",
+            "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-cc-legacy-margin-removal",
+            "sha": "d2cb93bca37e97c0082270caffee1c8ff29174e5",
+            "subject": "On agent/cc-legacy-margin-removal: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-cc-mutual-default-fund",
+            "sha": "840092e5647509cd95693bcc1b21864db7824ccb",
+            "subject": "On agent/cc-mutual-default-fund: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-cc-solvency-passport",
+            "sha": "1c7964bb400c10a2d4fcd940706a3c70c6a67e95",
+            "subject": "On agent/cc-solvency-passport: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785683216,
+            "ref": "refs/orch-rescue/20260803T000753-consensus-engine-spec-fix-auto-filer-409-handler",
+            "sha": "b594891854e9a33e23b93fe197b132ae4d6b9ee0",
+            "subject": "agent: consensus-engine-spec-fix-auto-filer-409-handler"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-convention-conformance-lints",
+            "sha": "5f6edce4dff4349214efedfe597ab3b231b5786e",
+            "subject": "On agent/convention-conformance-lints: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-hive-enforcement-velocity-index",
+            "sha": "4f3adc78f14f8fe780f302e4140fb5cc2c95b13e",
+            "subject": "On agent/hive-enforcement-velocity-index: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-hive-support-entity-relationship-source",
+            "sha": "c4bfcd669d850e722fd4ab91d170204e189215a3",
+            "subject": "On agent/hive-support-entity-relationship-source: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715673,
+            "ref": "refs/orch-rescue/20260803T000753-smarter",
+            "sha": "d45e5218693d18f2fe1e4ca24473bf26104a763b",
+            "subject": "On main: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715674,
+            "ref": "refs/orch-rescue/20260803T000754-merged-diff-memory",
+            "sha": "38117b3e40e666679df759ec93f6bda7d507359d",
+            "subject": "On agent/merged-diff-memory: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715674,
+            "ref": "refs/orch-rescue/20260803T000754-orch-config-consumption",
+            "sha": "3a26b922ff42ece33959caea596f25af0a36dc64",
+            "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715674,
+            "ref": "refs/orch-rescue/20260803T000754-pinned-express-lane",
+            "sha": "ac99de136e6b2451b5cef84ef89c42feb0385619",
+            "subject": "On agent/pinned-express-lane: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715674,
+            "ref": "refs/orch-rescue/20260803T000754-ploeh-s2s-bridge-tomorrow",
+            "sha": "8d483f8369e9443ac77108235bc801cdac1774b8",
+            "subject": "On agent/ploeh-s2s-bridge-tomorrow: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715674,
+            "ref": "refs/orch-rescue/20260803T000754-prompt-evolution-bandit",
+            "sha": "308783ed8fb52524eed335d923943235a3f30ea9",
+            "subject": "On agent/prompt-evolution-bandit: orch-rescue: periodic sweep"
+          }
+        ],
+        "items_total": 296,
+        "kind": "orchestrator_rescue_refs",
+        "repo": "/Users/kpasch/Documents/smarter"
+      },
+      {
+        "count": 21,
+        "items": [
+          {
+            "created_at": 1787154970,
+            "ref": "stash@{0}",
+            "sha": "82367eaeb26646aacd50fc23faadeb035af515ab",
+            "subject": "WIP on spine/kernel-v1: 3aed44300 fix(deps): take the nine reachable advisories"
+          },
+          {
+            "created_at": 1787113437,
+            "ref": "stash@{1}",
+            "sha": "913a45cb1c81b4bc77265a3264311fdaa89e9f52",
+            "subject": "WIP on agent/contracts-smarter: ba214e3cc chore: bump pasch and prediction-markets-institute/pmi submodule pointers"
+          },
+          {
+            "created_at": 1785411633,
+            "ref": "stash@{2}",
+            "sha": "92226f1e293a49c01875caa0a739fe3946e435b4",
+            "subject": "WIP on review/agent-access: c53b7fff6 test: lock in the review-access safety properties"
+          },
+          {
+            "created_at": 1784916709,
+            "ref": "stash@{3}",
+            "sha": "127dca052b66d6b0f32715f3010cf199c59d0d9d",
+            "subject": "WIP on main: 4f3e300cd feat: role-based intelligence platform overhaul"
+          },
+          {
+            "created_at": 1784685042,
+            "ref": "stash@{4}",
+            "sha": "a0cc43108eef0f44b3e7a45aa65ad869de3c8144",
+            "subject": "WIP on main: 0ec77bcee Merge branch 'agent/backlog-batch-smarter-6c8e892'"
+          },
+          {
+            "created_at": 1784684917,
+            "ref": "stash@{5}",
+            "sha": "1f703d03d72b4e69246f3f55dedba525bd9c2a14",
+            "subject": "WIP on main: 8397d6755 fix: robust ignoreCommand (use VERCEL_GIT_PREVIOUS_SHA fallback)"
+          },
+          {
+            "created_at": 1784684677,
+            "ref": "stash@{6}",
+            "sha": "c9b0d4b7dfe6b71524a916e527c9fed498019f6f",
+            "subject": "On main: pre-force-merge"
+          },
+          {
+            "created_at": 1784680445,
+            "ref": "stash@{7}",
+            "sha": "7b2d0e589e19a421fb66076e568595c456ac22af",
+            "subject": "WIP on main: 1b41c09b6 perf: add ignoreCommand to skip builds on non-code changes"
+          },
+          {
+            "created_at": 1784677825,
+            "ref": "stash@{8}",
+            "sha": "136a1afacaa2ded44411b081cf59ebe7cce659d6",
+            "subject": "On main: auto-stash for push-retry"
+          },
+          {
+            "created_at": 1784425581,
+            "ref": "stash@{9}",
+            "sha": "bf9933dd48e747b4da11ce16924c34658aeec554",
+            "subject": "WIP on main: e78b242ab Merge remote-tracking branch 'origin/agent/copyfix-smarter-07180848-slice-5'"
+          },
+          {
+            "created_at": 1784422595,
+            "ref": "stash@{10}",
+            "sha": "be96aeab543a2d11ee1b3606fd83ff383c89b09d",
+            "subject": "WIP on main: 64231b2b6 feat(growth): wire the distribution flywheel into the app"
+          },
+          {
+            "created_at": 1784422351,
+            "ref": "stash@{11}",
+            "sha": "c31fc24c6e2aeea52451848e1b162e138c7b55fc",
+            "subject": "WIP on main: 64231b2b6 feat(growth): wire the distribution flywheel into the app"
+          },
+          {
+            "created_at": 1784421658,
+            "ref": "stash@{12}",
+            "sha": "498667b7361ec313c58cba5ffb181789f9008b21",
+            "subject": "On agent/cont-fdd544: cowork-cleanup-stash"
+          },
+          {
+            "created_at": 1784173605,
+            "ref": "stash@{13}",
+            "sha": "4838f0fb57a31bf29660b74bec785d07a6b9d719",
+            "subject": "WIP on agent/growth-foundation-wired: 8dda3c3 recovery: preserve final restored source state"
+          },
+          {
+            "created_at": 1784172140,
+            "ref": "stash@{14}",
+            "sha": "78b0ae662b757a265efe0d9f38baaae15f7a77a1",
+            "subject": "WIP on growth-foundation-wired: 8dda3c3 recovery: preserve final restored source state"
+          },
+          {
+            "created_at": 1784133466,
+            "ref": "stash@{15}",
+            "sha": "01985b68c767ceb823e9298fbd838a54a8140cbd",
+            "subject": "WIP on main: 8685ff8 chore: repair Vercel deployment attribution"
+          },
+          {
+            "created_at": 1784002673,
+            "ref": "stash@{16}",
+            "sha": "242b08e3651871ef686cd31a3b7d29e78dd1cc83",
+            "subject": "WIP on agent/client-ask-my-matter: 71be71d integrate: origin/wt-sweep/bx1-1783987090 into main (legacy worktree consolidation)"
+          },
+          {
+            "created_at": 1784002247,
+            "ref": "stash@{17}",
+            "sha": "2a9457fdd39558c075ff8a5e06b963ddad84cd73",
+            "subject": "WIP on agent/smarter-5-95: 0979ea2 feat: lint-decision-budgets enforces 5/95 rule via trust dial"
+          },
+          {
+            "created_at": 1783986336,
+            "ref": "stash@{18}",
+            "sha": "24f6ad23841c73d2a0abf5562b2fafe286986b29",
+            "subject": "On agent/rework-legal-recover-missing-branch-cont-0dea9b55-slice-1-bb48850: manual-restore-1783986336"
+          },
+          {
+            "created_at": 1783971188,
+            "ref": "stash@{19}",
+            "sha": "cbce3ff19a8536709ad9776c5ebf419ebc68f56b",
+            "subject": "WIP on qafix-smarter-07120631: 56dd195 fix: escape quote in semanticRedTeam.ts breaking build"
+          },
+          {
+            "created_at": 1783310584,
+            "ref": "stash@{20}",
+            "sha": "b70cdd75fd46c4d8e6c54b639eaf2433cef8f65d",
+            "subject": "On merge-train-tmp: recover_and_ship: pre-merge dirt 1783310584"
+          }
+        ],
+        "kind": "stashes",
+        "repo": "/Users/kpasch/Documents/smarter"
+      }
+    ]

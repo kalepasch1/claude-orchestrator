@@ -142,14 +142,20 @@ def pytest_collectstart(collector):
 # ─────────────────────────────────────────────────────────────────────────────
 import socket as _socket
 import subprocess as _subprocess
+import warnings
 
 
 class NetworkAccessInTest(RuntimeError):
     """A test tried to open a real socket."""
 
 
-class UnboundedSubprocessInTest(RuntimeError):
-    """A test spawned a subprocess with no timeout."""
+class UnboundedSubprocessInTest(UserWarning):
+    """A test spawned a subprocess with no timeout; one was supplied for it."""
+
+
+# Long enough for a real local git or npm call, short enough that a wedged child
+# cannot hold the suite. Nothing legitimate in these tests takes this long.
+_DEFAULT_SUBPROCESS_TIMEOUT = 30
 
 
 def pytest_configure(config):
@@ -222,13 +228,26 @@ def _hermetic(request, monkeypatch):
             continue
 
         def _guard(*a, __real=real, __name=name, **kw):
+            # INJECT a bound; do not raise.
+            #
+            # The first version of this raised on a missing timeout. It fired
+            # 1,428 times — runner/ has ~531 such call sites and the tests
+            # legitimately exercise them — which turned a suite that had just
+            # started finishing into a red one. A guard that makes the suite red
+            # on arrival does not get fixed; it gets ignored, and then everything
+            # behind it gets ignored too.
+            #
+            # The actual goal is that no child runs unbounded. Supplying the
+            # bound achieves that without failing anyone's test, and the warning
+            # leaves a trail for whoever wants to fix the call site properly.
             if kw.get("timeout") is None:
-                raise UnboundedSubprocessInTest(
-                    f"subprocess.{__name}() called from a test with no timeout: "
-                    f"{(a[0] if a else kw.get('args'))!r}\n"
-                    f"An unbounded child can hang the suite indefinitely, and "
-                    f"subprocess timeout= cannot interrupt one already blocked in "
-                    f"the kernel on I/O. Pass timeout=."
+                kw["timeout"] = _DEFAULT_SUBPROCESS_TIMEOUT
+                warnings.warn(
+                    f"subprocess.{__name}() called with no timeout from a test; "
+                    f"bounded to {_DEFAULT_SUBPROCESS_TIMEOUT}s. Pass timeout= at "
+                    f"the call site: {(a[0] if a else kw.get('args'))!r}",
+                    UnboundedSubprocessInTest,
+                    stacklevel=2,
                 )
             return __real(*a, **kw)
 

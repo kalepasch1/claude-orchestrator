@@ -452,7 +452,7 @@ class ConventionChecker(ast.NodeVisitor):
             value_str = node.value.value
             if any(
                 value_str.lower().startswith(prefix)
-                for prefix in ["sk-", "api-", "pk_", "secret_", "token_"]
+                for prefix in _SECRET_VALUE_PREFIXES
             ):
                 var_name = node.target.id.lower()
                 if any(pattern in var_name for pattern in _SECRET_PATTERNS):

@@ -65,6 +65,28 @@ import sys
 RUNNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RUNNER)
 
+#: The environment as the OPERATOR had it, captured before a single orchestrator
+#: module is imported.
+#:
+#: `import build_gate` pulls in `db`, whose module scope reads runner/.env and
+#: os.environ.setdefault()s every key in it — including SUPABASE_URL and
+#: SUPABASE_SERVICE_KEY for the ORCHESTRATOR FLEET's project. Those then flow
+#: into the build subprocess, which is how a perfectly good tree fails:
+#:
+#:     [rls] public.rls_posture_report() is missing from this database.
+#:     [vercel-build] "npm run build" exited with code 1.
+#:
+#: The function is not missing. The app's prebuild guard was pointed at a
+#: different Supabase project, one that has none of this app's schema. Unset,
+#: that guard skips; set to the wrong project, it fails — so the fleet's
+#: credentials turn a green build red and say nothing about the commit. The
+#: same ambient-credential defect took the app's test suite down.
+#:
+#: Restoring this snapshot before the build is the whole fix: the orchestrator's
+#: environment belongs to the orchestrator, and the build gets exactly what the
+#: person running it had.
+OPERATOR_ENV = os.environ.copy()
+
 
 def git(repo, *args):
     return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
@@ -85,6 +107,17 @@ def main():
     ap.add_argument("--allow-dirty", action="store_true",
                     help="build anyway with uncommitted changes. Records NOTHING — the "
                          "proof would attest a tree nobody can push.")
+    ap.add_argument("--keep-orchestrator-env", action="store_true",
+                    help="do NOT restore the operator's environment before building. Only "
+                         "useful when the orchestrator's own credentials are genuinely the "
+                         "ones the build should use — for the fleet's own repo, not an app's.")
+    ap.add_argument("--skip-dep-prewarm", action="store_true",
+                    help="do not let build_gate reinstall dependencies first. Use when "
+                         "node_modules is already correct for the lockfile; the overlay "
+                         "links the existing tree either way. On this machine the prewarm's "
+                         "`npm ci` invocation is itself broken, which fails the build before "
+                         "a line of the app is compiled — a red that says nothing about the "
+                         "commit.")
     args = ap.parse_args()
 
     repo = os.path.realpath(args.repo)
@@ -128,6 +161,24 @@ def main():
     print(f"prove_build: repo    {repo}")
     print(f"prove_build: commit  {commit}")
     print(f"prove_build: command {cmd}")
+    if args.skip_dep_prewarm:
+        os.environ["ORCH_BUILD_GATE_INSTALL_DEPS"] = "false"
+        print("prove_build: dependency prewarm skipped; building against the installed tree.")
+
+    # Hand the build the operator's environment, not the orchestrator's. See
+    # OPERATOR_ENV above. Keys this tool set on purpose are preserved.
+    if not args.keep_orchestrator_env:
+        injected = sorted(k for k in os.environ
+                          if k not in OPERATOR_ENV and not k.startswith("ORCH_"))
+        for k in injected:
+            del os.environ[k]
+        for k, v in OPERATOR_ENV.items():
+            os.environ[k] = v
+        if injected:
+            print(f"prove_build: dropped {len(injected)} variable(s) the orchestrator injected "
+                  f"into this process: {', '.join(injected[:8])}"
+                  + (" …" if len(injected) > 8 else ""))
+
     print(f"prove_build: running the real build (timeout {args.timeout}s). This is not quick.")
     sys.stdout.flush()
 
