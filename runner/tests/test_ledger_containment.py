@@ -85,13 +85,41 @@ def test_a_release_predating_the_artifact_cannot_certify_it_even_if_reachable():
     assert why == ledger.STALE_RELEASE_NOTE
 
 
-def test_the_exact_head_wins_over_a_later_release_that_merely_contains_it():
+def test_the_newest_live_release_containing_it_wins():
+    """Present tense. The newest containing release is the one serving it now.
+
+    Changed from preferring the exact head: an exact match answers "which release
+    first shipped this", and the ledger is asking "is this in production now".
+    Picking the older one sends _journey_receipt() looking for evidence against a
+    release nobody is running, so a task sits at RELEASED with a passing receipt
+    for the CURRENT release one row away -- which is exactly what happened on the
+    first real run.
+    """
     exact = _release(ARTIFACT, created="2026-08-10T00:00:00Z", rid="rel_exact")
+    merged = _release(MERGE_HEAD, created="2026-08-20T00:00:00Z", rid="rel_merge")
+    rel, _ = ledger._live_release_for(
+        ARTIFACT, [exact, merged],
+        contains_fn=_contains({(MERGE_HEAD, ARTIFACT): True}))
+    assert rel["id"] == "rel_merge"
+
+
+def test_an_exact_head_still_wins_when_it_is_the_newest():
+    exact = _release(ARTIFACT, created="2026-08-25T00:00:00Z", rid="rel_exact")
     merged = _release(MERGE_HEAD, created="2026-08-20T00:00:00Z", rid="rel_merge")
     rel, _ = ledger._live_release_for(
         ARTIFACT, [merged, exact],
         contains_fn=_contains({(MERGE_HEAD, ARTIFACT): True}))
     assert rel["id"] == "rel_exact"
+
+
+def test_a_dead_newest_release_falls_through_to_a_live_older_one():
+    dead = _release(MERGE_HEAD, created="2026-08-25T00:00:00Z", rid="rel_dead",
+                    status="failed")
+    live = _release(OTHER, created="2026-08-20T00:00:00Z", rid="rel_live")
+    rel, _ = ledger._live_release_for(
+        ARTIFACT, [dead, live],
+        contains_fn=_contains({(MERGE_HEAD, ARTIFACT): True, (OTHER, ARTIFACT): True}))
+    assert rel["id"] == "rel_live"
 
 
 def test_exact_matches_never_consult_the_oracle():

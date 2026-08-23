@@ -282,9 +282,16 @@ def _live_release_for(artifact_sha, releases, artifact_at=None, contains_fn=None
                 continue
             if contains_fn((r or {}).get("to_sha"), artifact_sha, project) is True:
                 matching.append(r)
-        # Newest first among contained releases, so the release actually serving the
-        # commit is preferred over the first one that happened to absorb it.
-        matching.sort(key=lambda r: str((r or {}).get("created_at") or ""))
+        # NEWEST FIRST, and the ordering is load-bearing rather than cosmetic.
+        #
+        # The ledger's question is present tense: is this work in production now?
+        # The newest live release containing the commit is the one currently
+        # serving it, and it is the one whose journey receipt describes production
+        # as it stands. Preferring the oldest containing release -- the one that
+        # first absorbed the commit -- answers a different question ("when did this
+        # ship") and then looks for a receipt against a release nobody is running,
+        # so every task sits at RELEASED with a passing receipt one row away.
+        matching.sort(key=lambda r: str((r or {}).get("created_at") or ""), reverse=True)
     if not matching:
         if contains_fn is None:
             return None, "no release names this artifact commit as its head"
