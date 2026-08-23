@@ -36,10 +36,14 @@ class TestSignificantWords:
     """Tests for significant words extraction."""
 
     def test_significant_words_basic(self):
-        words = session_proof._significant_words("hello world testing")
-        assert "hello" in words
-        assert "world" in words
-        assert "testing" in words
+        # "hello" and "world" are five letters, and SIG_WORD_MIN_LEN is 6 — this asked
+        # for the opposite of what test_significant_words_filters_short asserts two
+        # methods below, so one of the pair could never pass. The threshold is the
+        # documented behaviour; the example words were the mistake.
+        words = session_proof._significant_words("session verified module")
+        assert "session" in words
+        assert "verified" in words
+        assert "module" in words
 
     def test_significant_words_filters_short(self):
         words = session_proof._significant_words("the a is testing framework")
@@ -310,7 +314,7 @@ class TestIntegration:
         """Test with actual git repo setup."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Initialize a git repo
-            subprocess.run(["git", "init"], cwd=tmpdir, capture_output=True, check=True)
+            subprocess.run(["git", "init", "-b", "master"], cwd=tmpdir, capture_output=True, check=True)
             subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmpdir, capture_output=True, check=True)
             subprocess.run(["git", "config", "user.name", "Test"], cwd=tmpdir, capture_output=True, check=True)
 
@@ -343,7 +347,7 @@ class TestIntegration:
     def test_verify_session_noise_files_excluded(self):
         """Verify that noise files are properly excluded from work product."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            subprocess.run(["git", "init"], cwd=tmpdir, capture_output=True, check=True)
+            subprocess.run(["git", "init", "-b", "master"], cwd=tmpdir, capture_output=True, check=True)
             subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmpdir, capture_output=True, check=True)
             subprocess.run(["git", "config", "user.name", "Test"], cwd=tmpdir, capture_output=True, check=True)
 
@@ -376,9 +380,15 @@ class TestIntegration:
             assert any("no non-noise diff" in r for r in result["reasons"])
 
     def test_verify_session_mixed_files(self):
-        """Verify with both real and noise files."""
+        """Verify with both real and noise files.
+
+        `git init -b master` names the base branch explicitly. Without it the repo gets
+        whatever the host's init.defaultBranch says, so `git diff master...agent/test`
+        failed, _diff_numstat fell back to [], and diff_files was 0 for a reason with
+        nothing to do with the noise filter this test is about.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
-            subprocess.run(["git", "init"], cwd=tmpdir, capture_output=True, check=True)
+            subprocess.run(["git", "init", "-b", "master"], cwd=tmpdir, capture_output=True, check=True)
             subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmpdir, capture_output=True, check=True)
             subprocess.run(["git", "config", "user.name", "Test"], cwd=tmpdir, capture_output=True, check=True)
 

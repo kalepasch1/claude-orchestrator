@@ -119,7 +119,10 @@ class TestSessionTimeoutForNYDeadline:
 
     def test_session_starting_at_10_30pm_completes_by_11_30pm(self):
         """Session starting at 10:30pm NY can complete by 11:30pm with 1-hour timeout."""
-        start_time_seconds = 10.5 * 3600  # 10:30pm
+        # 10:30 PM is 22.5 hours into the day, not 10.5 — the original figure was
+        # 10:30 AM, so the assertion compared a morning start against an evening
+        # deadline and could never hold.
+        start_time_seconds = 22.5 * 3600  # 10:30pm
         timeout_seconds = 3600  # 1 hour
         completion_seconds = start_time_seconds + timeout_seconds
 
@@ -417,6 +420,10 @@ class TestTimezoneMathVerification:
         if end_minute >= 60:
             end_hour += 1
             end_minute -= 60
+        # Wrap the day. Without this 23:00 + 60min produced hour 24, which is not a
+        # clock reading and satisfied neither branch of the assertion below — the test
+        # was asserting against its own missing rollover, not against the timeout.
+        end_hour %= 24
 
         # 11pm + 60 min = midnight (which is after 11:10pm)
         # end_hour=0 means next day

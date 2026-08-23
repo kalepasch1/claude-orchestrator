@@ -26,7 +26,11 @@ import re
 import subprocess
 
 STALL_RX = re.compile(
-    r"what would you like to work on|i'm ready to help|i don't have a specific task",
+    # "what would you like ME to work on" is the phrasing the CLI actually produces, and
+    # the literal pattern missed it — so the most common blank session of all scored as
+    # real work. Allow an optional object between "like" and "to".
+    r"what would you like (?:me |us )?to work on|i'm ready to help|"
+    r"i don't have a specific task",
     re.IGNORECASE)
 
 TESTS_PASS_RX = re.compile(
@@ -36,6 +40,10 @@ TESTS_PASS_RX = re.compile(
 # paths that don't count as real work product
 NOISE_PREFIXES = (".claude/",)
 NOISE_SUFFIXES = (".log", "settings.local.json")
+# ...and directories that are noise wherever they appear, not just at the repo root. A
+# session that wrote only `packages/api/.claude/state.json` did no more work than one that
+# wrote `.claude/state.json`, but the prefix test only caught the second.
+NOISE_DIRS = (".claude",)
 
 MIN_PROMPT_LEN = 40      # skip the echo check for prompts shorter than this
 ECHO_WINDOW = 400        # only sample the head of the prompt
@@ -45,7 +53,10 @@ SIG_WORD_MIN_LEN = 6     # "significant" = longer than 5 chars
 
 def _is_noise(path):
     p = path.strip()
-    return p.startswith(NOISE_PREFIXES) or p.endswith(NOISE_SUFFIXES)
+    if p.startswith(NOISE_PREFIXES) or p.endswith(NOISE_SUFFIXES):
+        return True
+    # git reports POSIX-separated paths even on Windows, so splitting on "/" is enough.
+    return any(segment in NOISE_DIRS for segment in p.split("/")[:-1])
 
 
 def _diff_numstat(repo, branch, base):
