@@ -14,6 +14,7 @@ Runs as a periodic job.
 import os, sys, subprocess, json, time, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import worktree_identity
 
 WARM_WORKTREE_COUNT = int(os.environ.get("ORCH_WARM_WORKTREES", "5"))
 HEALTH_TABLE = "repo_health"
@@ -213,6 +214,10 @@ def _warm_worktrees(repo, project_name, base, result):
             r = subprocess.run(["git", "worktree", "add", "-f", wt_path, branch],
                               cwd=repo, capture_output=True, timeout=120)
             if r.returncode == 0:
+                # Stamp before anything else touches it: a warm worktree can be
+                # claimed by a task before the daemon finishes installing deps,
+                # and an unstamped worktree is indistinguishable from abandoned.
+                worktree_identity.stamp(wt_path, slug, branch=branch, repo=repo)
                 # Install deps in worktree
                 if os.path.isfile(os.path.join(wt_path, "package.json")):
                     subprocess.run(["npm", "install", "--prefer-offline"],
