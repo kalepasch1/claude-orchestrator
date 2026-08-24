@@ -337,6 +337,39 @@ class ConventionChecker(ast.NodeVisitor):
             yield child
             stack.extend(ast.iter_child_nodes(child))
 
+    @staticmethod
+    def _is_process_exit(raise_node: ast.Raise) -> bool:
+        """True for `raise SystemExit(...)` / `raise SystemExit`.
+
+        SystemExit is the documented way a CLI entry point ends the process;
+        treating it as "raises on bad input" produced a false positive on every
+        main() in the repo and taught operators to ignore the rule.
+        """
+        exc = raise_node.exc
+        if exc is None:
+            return False
+        if isinstance(exc, ast.Call):
+            exc = exc.func
+        if isinstance(exc, ast.Attribute):
+            return exc.attr == 'SystemExit'
+        return isinstance(exc, ast.Name) and exc.id == 'SystemExit'
+
+    def _reraise_nodes(self, node: ast.FunctionDef) -> set:
+        """ids of bare `raise` statements sitting inside an except handler.
+
+        A bare re-raise propagates an error the handler has already observed;
+        it is not the function raising on bad input.
+        """
+        found = set()
+        for child in self._own_nodes(node):
+            if not isinstance(child, ast.Try):
+                continue
+            for handler in child.handlers:
+                for inner in ast.walk(handler):
+                    if isinstance(inner, ast.Raise) and inner.exc is None:
+                        found.add(id(inner))
+        return found
+
     def _check_fail_soft_error_handling(self, node: ast.FunctionDef) -> None:
         """
         Rule 1: Fail-soft error handling
@@ -351,11 +384,23 @@ class ConventionChecker(ast.NodeVisitor):
         if len(self.function_context) > 1:
             return
 
+        reraise_nodes = self._reraise_nodes(node)
+
         has_raise = False
         for child in self._own_nodes(node):
-            if isinstance(child, ast.Raise):
-                has_raise = True
-                break
+            if not isinstance(child, ast.Raise):
+                continue
+            if self._is_process_exit(child):
+                # `raise SystemExit(...)` is how a CLI entry point exits the
+                # process. It is control flow, not raising on bad input, and
+                # flagging it made every main() in the repo a false positive.
+                continue
+            if id(child) in reraise_nodes:
+                # A bare `raise` inside an except handler re-raises after the
+                # handler has already logged — the documented fail-soft shape.
+                continue
+            has_raise = True
+            break
 
         if has_raise:
             # Check if there are try/except blocks that handle errors gracefully
