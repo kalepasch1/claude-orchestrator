@@ -6,11 +6,14 @@ Deletes local agent branches whose tasks are in terminal states (DONE,
 MERGED, QUARANTINED) and whose branches are older than GC_MIN_AGE_DAYS.
 Never touches remote branches — that's the merge train's job.
 
-Env vars:
+Env vars (defaults below are the ones the code actually applies — this block drifted
+from the constants and claimed dry-run defaulted on and the batch was 20, which is the
+opposite of the real behaviour on both counts):
     ORCH_BRANCH_GC_ENABLED     "true" to enable (default "true")
-    ORCH_BRANCH_GC_DRY_RUN     "true" for dry-run (default "true")
+    ORCH_BRANCH_GC_DRY_RUN     "true" for dry-run (default "false")
     ORCH_BRANCH_GC_MIN_AGE     min age in days before GC (default 3)
-    ORCH_BRANCH_GC_BATCH       max branches per run (default 20)
+    ORCH_BRANCH_GC_BATCH       max branches per run (default 100)
+    ORCH_BRANCH_GC_GIT_TIMEOUT seconds per git invocation (default 15)
 """
 import os
 import subprocess
@@ -23,7 +26,11 @@ ENABLED = os.environ.get("ORCH_BRANCH_GC_ENABLED", "true").lower() in ("1", "tru
 DRY_RUN = os.environ.get("ORCH_BRANCH_GC_DRY_RUN", "false").lower() in ("1", "true", "yes")
 MIN_AGE_DAYS = int(os.environ.get("ORCH_BRANCH_GC_MIN_AGE", "3"))
 BATCH_SIZE = int(os.environ.get("ORCH_BRANCH_GC_BATCH", "100"))
-TIMEOUT = 15
+
+#: Per-`git` wall-clock budget. ORCH_-prefixed so a slow checkout can be given more
+#: headroom through fleet_control.py instead of a code change; CLAUDE.md's rule is that
+#: a bare literal bound is the defect, not the bound itself.
+TIMEOUT = int(os.environ.get("ORCH_BRANCH_GC_GIT_TIMEOUT", "15") or 15)
 
 
 def _git(repo, *args):
@@ -123,12 +130,24 @@ def run():
     """CLI entry point — collect garbage with terminal slugs from DB."""
     try:
         import db
-        rows = db.select("tasks", {
+        # FULL SCAN, not a window. `terminal` is used as a membership set: a slug missing
+        # from it makes collect_garbage() skip that branch, so a truncated read does not
+        # under-delete gracefully — it silently and permanently strands every branch whose
+        # task fell outside the page. PostgREST caps a single response at 1,000 rows no
+        # matter what `limit` says, and this repo has far more than 1,000 terminal tasks,
+        # so the previous bare db.select() saw an arbitrary, unordered 1,000 of them.
+        # db.select_all pages to exhaustion with a deterministic order (see db.py's
+        # scan-window note and docs/scan-window-audit-2026-08-06.md).
+        rows = db.select_all("tasks", {
             "select": "slug",
             "state": "in.(DONE,MERGED,QUARANTINED)",
-        }) or []
+        }, order="id.asc") or []
         terminal = {r["slug"] for r in rows if r.get("slug")}
-    except Exception:
+    except Exception as e:
+        # Fail-soft, but LOUD: an empty set makes the run a no-op that prints
+        # "0 deleted, N skipped", which is indistinguishable from "nothing to collect".
+        print(f"branch_gc: DB error fetching terminal slugs ({type(e).__name__}: {e}) — "
+              f"treating nothing as terminal; this run will delete nothing")
         terminal = set()
 
     repo = os.environ.get("ORCH_REPO_PATH",
