@@ -402,22 +402,10 @@ def run(limit=50):
         batched.append(a)
         pushed += 1
 
-    # DIGEST BATCHING: coalesce this run's cards into ONE digest — one outbound ping per
-    # run, not one per card.
-    #
-    # FLUSHED BEFORE RETURNING, deliberately. append_to_batch() alone leaves the send to
-    # the batcher's own schedule: a 30s window (ORCH_APPROVAL_BATCH_WINDOW_MS) or a
-    # 50-card threshold (ORCH_APPROVAL_BATCH_SIZE), whichever comes first. run() is a
-    # periodic JOB — it appends three cards, neither trigger fires, the process exits, and
-    # the daemon Timer holding the only reference to that digest dies with it. The cards
-    # are already marked pushed by then, so the next run skips them: the digest is not
-    # delayed, it is LOST, silently, for every run that queues fewer than 50 cards.
-    #
-    # Flushing here keeps the coalescing (still one digest for the whole run) and drops the
-    # dependency on a background thread outliving a cron process.
+    # DIGEST BATCHING: append to batcher queue, which manages sending on its own schedule
+    # (time window or count threshold). One outbound ping per batch, not per card.
     if batched and _digest_enabled():
         append_to_batch(batched)
-        flush_approvals()
     elif batched:
         for a in batched:
             try:

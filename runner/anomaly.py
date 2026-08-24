@@ -18,6 +18,35 @@ __all__ = ["check"]
 RECENT = int(os.environ.get("ANOMALY_RECENT", "30"))     # last N tasks
 SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
+# EMERGENCE FLOORS — the ratio test cannot see a metric that appears out of nothing.
+#
+# `now > baseline * SPIKE` is undefined when the baseline is 0: any multiple of zero is
+# zero, so the comparison is skipped. That silently exempted the single most important
+# case this module exists for. A fleet whose trailing 270 tasks all passed has a baseline
+# fail_rate of exactly 0.0; when the recent 30 ALL fail, the ratio branch is unreachable
+# and check() returns ok=True. Total failure was the one anomaly guaranteed not to alert.
+#
+# So a metric that was absent and is now present alerts on its own absolute level. The
+# floors are what keeps that from firing on a single unlucky task: one failure in thirty
+# is 0.033 and stays quiet; a third of the window failing does not.
+_DEFAULT_FLOORS = {
+    "fail_rate": 0.10,          # >10% of the recent window failing
+    "rate_limit_rate": 0.10,
+    "cost_per_task": 0.05,      # USD/task appearing where there was no spend
+    "avg_duration_s": 60.0,     # a minute per task where the baseline was unmeasured
+}
+
+
+def _floor(metric: str) -> float:
+    """Absolute level at which *metric* alerts on a zero baseline. Env-overridable."""
+    raw = os.environ.get(f"ANOMALY_FLOOR_{metric.upper()}")
+    if raw is None:
+        return _DEFAULT_FLOORS.get(metric, 0.0)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_FLOORS.get(metric, 0.0)
+
 
 def _rate(rows: list[dict[str, Any]], pred: Callable[[dict[str, Any]], bool]) -> float:
     """Return fraction of rows matching pred (0.0 if empty)."""
@@ -47,8 +76,14 @@ def check() -> dict[str, Any]:
     }
     alerts = []
     for name, (now, baseline) in metrics.items():
-        if baseline > 0 and now > baseline * SPIKE:
-            alerts.append(f"{name}: {now:.3f} vs baseline {baseline:.3f} ({now/baseline:.1f}x)")
+        if baseline > 0:
+            if now > baseline * SPIKE:
+                alerts.append(
+                    f"{name}: {now:.3f} vs baseline {baseline:.3f} ({now/baseline:.1f}x)")
+        elif now > _floor(name):
+            # Emergence: no baseline to multiply, so judge the level itself.
+            alerts.append(
+                f"{name}: {now:.3f} vs baseline 0.000 (new; floor {_floor(name):.3f})")
     for a in alerts:
         db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
             "title": "Anomaly detected in orchestrator vitals",
