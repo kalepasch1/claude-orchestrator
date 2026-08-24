@@ -15,3 +15,9 @@ with `patch_templates.lookup(template_id)`.
 | 918597e30434 | `runner/patch_templates.py` (`lookup`, `pre_claim_hook`) — branch-recovery template | `runner/tests/test_template_918597e3.py` |
 
 When adding a new hash-scoped test, add a row here in the same commit.
+
+This is no longer a convention kept in sync by grep — `test_patch_template_registry_integrity.py`
+enforces it in BOTH directions: every row must point at files that exist, and every
+hash-scoped test file must have a row. The second direction is the one that rots
+silently: a test with no row is invisible to the reuse path, so a recovery pass concludes
+the work does not exist and rebuilds it.
