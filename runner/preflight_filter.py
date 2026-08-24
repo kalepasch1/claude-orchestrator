@@ -148,6 +148,57 @@ def should_skip_note(note: str) -> bool:
     return any(pat in note for pat in SKIP_NOTE_PATTERNS)
 
 
+#: Hard ceiling, read the same way _preflight_check_inner reads it, so the claim-time
+#: guard and the dispatch-time guard can never disagree about what "exhausted" means.
+def _hard_ceiling() -> int:
+    try:
+        return int(os.environ.get("ORCH_PREFLIGHT_HARD_CEILING", "12"))
+    except (TypeError, ValueError):
+        return 12
+
+
+def exhausted_attempts(task: dict) -> int:
+    """The task's attempt count when it is past the hard ceiling, else 0.
+
+    THE HOLE THIS CLOSES. The ceiling already existed in _preflight_check_inner, and it
+    works — at DISPATCH. Its enforcement at CLAIM time goes through the note: a rejection
+    quarantines the task with a note starting "preflight:", and should_skip_note keeps it
+    from being claimed again.
+
+    But a note is mutable state, and the agentic-repair loop REWRITES it. Every rework /
+    orphaned-running / missing-branch requeue replaces the note with its own directive
+    text ("This is not a fresh requeue. Continue the same implementation..."), which
+    contains none of SKIP_NOTE_PATTERNS. The skip evaporates, the task is claimed again,
+    attempt increments, preflight rejects it again, the loop rewrites the note again.
+
+    factory-unblock-improve-immediate-auto-merge-on-te-slice-4-fix-compilation-types
+    reached ATTEMPT 108 against a hard ceiling of 12 exactly this way.
+
+    The attempt COUNT cannot be rewritten by a requeue, so the ceiling is enforced from it
+    directly and the note is no longer load-bearing. Returns the count rather than a bool
+    so the caller can say how far past the line it got.
+    """
+    try:
+        attempt = int((task if isinstance(task, dict) else {}).get("attempt") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return attempt if attempt >= _hard_ceiling() else 0
+
+
+def should_skip_task(task: dict) -> bool:
+    """Claim-time guard: skip on a quarantine note OR on an unrewritable attempt count.
+
+    Fail-soft — anything unreadable is NOT skipped, because wrongly refusing to claim
+    real work is worse than one extra attempt.
+    """
+    try:
+        if should_skip_note(str((task if isinstance(task, dict) else {}).get("note") or "")):
+            return True
+        return bool(exhausted_attempts(task))
+    except Exception:
+        return False
+
+
 def apply_to_batch(tasks: list, quarantine_fn=None) -> tuple:
     """Filter a batch of tasks, quarantining non-actionable ones."""
     dispatchable = []

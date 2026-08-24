@@ -2501,20 +2501,27 @@ def claim_task(runner_id):
     # PREFLIGHT: skip tasks with notes indicating prior quarantine cycle
     try:
         import preflight_filter as _pf
-        _skip_note = _pf.should_skip_note
+        # should_skip_task also enforces the attempt hard ceiling. The note-only check
+        # was defeatable: the agentic-repair loop rewrites `note` on every requeue, so a
+        # "preflight:" quarantine note vanished and the task became claimable again —
+        # which is how one task reached attempt 108 against a ceiling of 12.
+        _skip_note = lambda n: _pf.should_skip_note(n)  # noqa: E731 (kept for fallback parity)
+        _skip_task = _pf.should_skip_task
     except ImportError:
         _SKIP_NOTE_PATTERNS = ("swarm-parallel-fail", "legacy direct improvement",
                                "Meta-decomposition loop", "queue-bankruptcy",
                                "sentinel-dedupe", "semantic-dedupe", "preflight:",
                                "non-actionable:", "GC:")
         _skip_note = lambda n: any(pat in n for pat in _SKIP_NOTE_PATTERNS)
+        _skip_task = lambda t: _skip_note(str((t or {}).get("note") or ""))
 
     done = _done_slugs()
     for t in queued or []:
         if _cooling_down(t):
             continue
-        # Skip recycled/garbage tasks before claiming
-        if _skip_note(str(t.get("note") or "")):
+        # Skip recycled/garbage tasks, and tasks past the attempt hard ceiling, before
+        # claiming. The attempt count survives a requeue; the note does not.
+        if _skip_task(t):
             continue
         pid = t.get("project_id")
         if pid:
