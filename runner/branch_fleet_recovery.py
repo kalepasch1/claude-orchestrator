@@ -40,6 +40,39 @@ def _branch_exists_remote(repo, branch):
     """Check if branch exists on remote, using authenticated git operations."""
     return git_auth.branch_exists_remote(repo, branch, "origin")
 
+#: How many times a slug may be re-wrapped in the `recover-` prefix before the
+#: sweep refuses to requeue it again. Generation 0 is the original task, so the
+#: default of 1 permits exactly one recovery attempt.
+MAX_GENERATION = int(os.environ.get("ORCH_FLEET_RECOVERY_MAX_GENERATION", "1"))
+
+RECOVERY_PREFIX = "recover-"
+
+
+def recovery_generation(slug):
+    """How many `recover-` wrappers this slug already carries.
+
+    `recover_branch` requeues a lost branch as `recover-<slug>`. Nothing stopped
+    the *recovery* task from being swept in turn: once it reached DONE and its
+    own branch `agent/recover-<slug>` went missing, the next sweep produced
+    `recover-recover-<slug>`, then `recover-recover-recover-<slug>`, without
+    bound. Every generation re-attempted the same patch against the same paths,
+    which is why one file (e.g. packages/darwin-kernel/src/passport/passport.ts)
+    kept coming back with an identical conflict — the conflict was not being
+    retried, it was being *recreated* by a new task each cycle.
+
+    Counting the prefixes is what makes that loop observable, and capping it is
+    what stops it. Fail-soft: a non-string slug reports generation 0.
+    """
+    if not isinstance(slug, str):
+        return 0
+    generation = 0
+    remainder = slug
+    while remainder.startswith(RECOVERY_PREFIX):
+        generation += 1
+        remainder = remainder[len(RECOVERY_PREFIX):]
+    return generation
+
+
 def recover_branch(task, repo_path, base_branch="master"):
     slug = task.get("slug", "")
     branch = f"agent/{slug}"
@@ -60,7 +93,19 @@ def recover_branch(task, repo_path, base_branch="master"):
     if not git_auth.pat_available():
         _log.info("skipping recovery for %s (PAT unavailable)", slug)
         return {"recovered": False, "strategy": "pat_unavailable"}
-    recovery_slug = f"recover-{slug}"
+    generation = recovery_generation(slug)
+    if generation >= MAX_GENERATION:
+        # Refuse to deepen the chain. Logged with the generation so the loop is
+        # legible in the sweep output instead of showing up as an ever-growing
+        # slug nobody connects back to the original task.
+        _log.warning(
+            "refusing to requeue %s: recovery generation %d >= max %d "
+            "(branch %s still missing; the chain is looping, not converging)",
+            slug, generation, MAX_GENERATION, branch,
+        )
+        return {"recovered": False, "strategy": "max_generation_exceeded",
+                "detail": f"generation={generation} max={MAX_GENERATION}"}
+    recovery_slug = f"{RECOVERY_PREFIX}{slug}"
     try:
         existing = db.select("tasks", {"select": "id", "slug": f"eq.{recovery_slug}",
                    "project_id": f"eq.{task.get('project_id')}", "limit": "1"}) or []
