@@ -69,14 +69,22 @@ def _detect_test_cmd(repo_path: str) -> str:
             pass
 
     # Check for pytest
+    #
+    # These used to end in `2>&1 || true`. `_run_cmd` derives passed from
+    # `returncode == 0`, so `|| true` made run_unit_tests report ok=True for every
+    # Python project no matter how many tests failed — the continuous-testing pipeline
+    # reported success unconditionally, which is worse than not running at all because
+    # it looks like coverage. `2>&1` went with it: it folded stderr into stdout, so the
+    # `note` field built from stderr was always empty on failure, leaving nothing to
+    # diagnose from either.
     for name in ("pyproject.toml", "setup.cfg", "pytest.ini"):
         if os.path.isfile(os.path.join(repo_path, name)):
-            return "python -m pytest --tb=short -q 2>&1 || true"
+            return "python -m pytest --tb=short -q"
 
     # Check runner/tests
     test_dir = os.path.join(repo_path, "runner", "tests")
     if os.path.isdir(test_dir):
-        return f"python -m pytest {test_dir} --tb=short -q 2>&1 || true"
+        return f"python -m pytest {test_dir} --tb=short -q"
 
     return ""
 
@@ -103,7 +111,10 @@ def run_browser_tests(repo_path: str) -> dict:
     if not BROWSER_TESTS_ENABLED:
         return {"ok": True, "note": "browser tests disabled (set ORCH_BROWSER_TESTS=true)"}
 
-    cmd = BROWSER_TEST_CMD or "python -m pytest tests/browser --tb=short -q 2>&1 || true"
+    # Same `|| true` defect as the unit-test commands: browser tests reported ok=True
+    # whatever happened, and browser smoke tests are precisely the ones nobody watches
+    # closely enough to notice they had stopped meaning anything.
+    cmd = BROWSER_TEST_CMD or "python -m pytest tests/browser --tb=short -q"
     result = _run_cmd(cmd, repo_path, timeout=TEST_TIMEOUT * 2)
     return {
         "ok": result["passed"],
