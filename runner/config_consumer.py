@@ -191,16 +191,31 @@ class _ConfigConsumer:
                 except Exception:
                     pass
 
-            # Fall back to environment
-            if value is None or not value:
-                value = self.get(key, default).strip()
-                if not value:
+            # Fall back to environment. `resolved` tracks whether the value came from a
+            # real source (gateway, DB, env) as opposed to the caller's own default.
+            resolved = bool(value)
+            if not resolved:
+                from_env = self.get(key, "").strip()
+                if from_env:
+                    value, resolved = from_env, True
+                else:
                     value = default
 
-            # Cache and return
-            with self._lock:
-                self._cache[key] = (value, time.time())
-                self._evict_locked()
+            # Cache ONLY a resolved value. Caching the fallback was wrong twice over:
+            #
+            #  * The cache is keyed on `key` alone, but the fallback is the CALLER's
+            #    `default`. So load_config("X", "a") followed by load_config("X", "b")
+            #    returned "a" — one caller's default silently served to another.
+            #  * A gateway blip pinned that default for a full TTL, so config stayed
+            #    stale for a minute after the gateway had already recovered. This is the
+            #    exact staleness the layer exists to prevent for everyone else.
+            #
+            # An unresolved read is cheap (a gateway miss plus an env lookup), so simply
+            # not caching it is the correct trade.
+            if resolved:
+                with self._lock:
+                    self._cache[key] = (value, time.time())
+                    self._evict_locked()
             return value
         except Exception:
             return default
