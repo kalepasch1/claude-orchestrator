@@ -14,12 +14,21 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner"))
 
 # Mock db before importing patch_templates so no network/Supabase is touched.
+#
+# RESTORED IMMEDIATELY AFTER THE IMPORT — see the same note in test_failure_forecast.py.
+# Leaving the stub in sys.modules poisoned every file collected afterwards.
+_previous_db = sys.modules.get("db")
 mock_db = types.ModuleType("db")
 mock_db.select = lambda *a, **kw: []
 mock_db.insert = lambda *a, **kw: None
 sys.modules["db"] = mock_db
 
 import patch_templates  # noqa: E402
+
+if _previous_db is None:
+    sys.modules.pop("db", None)
+else:
+    sys.modules["db"] = _previous_db
 
 
 class LookupContractTest(unittest.TestCase):

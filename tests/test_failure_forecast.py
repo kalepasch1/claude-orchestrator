@@ -7,12 +7,25 @@ import types
 # Ensure runner/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "runner"))
 
-# Create a mock db module so failure_forecast can import it at module level
+# Create a mock db module so failure_forecast can import it at module level.
+#
+# RESTORED IMMEDIATELY AFTER THE IMPORT. This stub used to be left in sys.modules for
+# the rest of the session, so every test file collected after this one inherited it and
+# `db.update` / `db.TransientDBError` vanished — 13 tests across the integration-sweeper,
+# prompt-evolver and queue-materializer suites failed in the full run and passed in
+# isolation, with the victim set depending on collection order. failure_forecast keeps
+# the reference it captured during its own import, so the stub still does its job here.
+_previous_db = sys.modules.get("db")
 mock_db_module = types.ModuleType("db")
 mock_db_module.select = lambda *a, **kw: []
 sys.modules["db"] = mock_db_module
 
 import failure_forecast  # noqa: E402
+
+if _previous_db is None:
+    sys.modules.pop("db", None)
+else:
+    sys.modules["db"] = _previous_db
 
 
 class MockDB:
