@@ -99,16 +99,19 @@ class TestCycleTimeRegression(unittest.TestCase):
                 "sample_count": 100,
             }
         }
-        # Mock db.select to return 5-day metrics on second call
-        call_count = [0]
-        def select_side_effect(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # First call: 30-day metrics
-                return []  # This is mocked via _stage_metrics_summary
-            else:
-                # Second call: 5-day metrics
-                return [{"avg_cycle_time_seconds": 118.0}]  # 18% increase
+        # Answer on the QUERY, not on the call ordinal.
+        #
+        # The previous version returned [] for call #1 "because that one is the 30-day
+        # metrics" — but _stage_metrics_summary is patched out two lines below, so it never
+        # touches db at all. The first (and only) db.select inside the planner IS the 5-day
+        # regression lookup, and it was being handed the empty list meant for a call that
+        # does not happen. The regression branch could never run, in the test written to
+        # prove the regression branch runs.
+        def select_side_effect(table, params=None):
+            params = params or {}
+            if table == "stage_metrics" and params.get("window_days") == "eq.5":
+                return [{"avg_cycle_time_seconds": 118.0}]   # 18% over the 100.0 baseline
+            return []
 
         with patch.object(meta_loop, "AUTO_TUNE_ENABLE", True), \
              patch.object(meta_loop, "_stage_metrics_summary", return_value=metrics), \

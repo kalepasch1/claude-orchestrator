@@ -177,6 +177,83 @@ def first_try_yield(days: int = 30) -> dict:
     return result
 
 
+def stage_metrics(days: int = 0) -> dict:
+    """Write one `stage_metrics` row per (project_id, kind): cycle time + first-try yield.
+
+    cycle_time_by_kind() and first_try_yield() above each answer ONE question, globally,
+    from a single column set, and neither is persisted. auto_tune() therefore compares the
+    fleet against itself with no per-project, per-kind history to compare against — a build
+    regression in one project is averaged away by every other project's builds. This is the
+    per-segment, persisted form both of them needed.
+
+    Completion is measured from the OUTCOME row, not from tasks.updated_at. updated_at moves
+    on every touch — a note rewrite, a claim, a repair — so it measures "when we last wrote
+    to the row", which for a heavily-repaired task is nowhere near when the work finished.
+    The outcome row is written once, when the work actually completed.
+
+    days=0 (the default) means no recency cutoff: this is a backfillable metric writer, and
+    silently dropping everything older than a month is how a metrics table ends up empty
+    after a quiet period. Pass a positive `days` to bound the window.
+
+    Fail-soft: a DB error, a missing table or an unparseable timestamp yields zero rows
+    written rather than an exception — nothing downstream should stall on telemetry.
+    """
+    written = 0
+    try:
+        tasks = db.select("tasks", {
+            "select": "id,project_id,kind,created_at,remediation_count,state",
+            "state": "eq.MERGED",
+        }) or []
+        outcomes = db.select("outcomes", {"select": "task_id,created_at"}) or []
+    except Exception as e:
+        print(f"improvement_measure.stage_metrics: telemetry read failed ({e}); fail-soft")
+        return {"stage_metrics_written": 0}
+
+    finished_at = {}
+    for row in outcomes:
+        task_id = row.get("task_id")
+        stamp = _parse_ts(row.get("created_at") or "")
+        if task_id and stamp >= 0:
+            # Earliest outcome wins: a retried task can carry several, and the first is when
+            # the work first completed.
+            if task_id not in finished_at or stamp < finished_at[task_id]:
+                finished_at[task_id] = stamp
+
+    cutoff = (time.time() - days * 86400) if days and days > 0 else None
+    groups: dict = {}
+    for task in tasks:
+        created = _parse_ts(task.get("created_at") or "")
+        if created < 0 or (cutoff is not None and created < cutoff):
+            continue
+        key = (task.get("project_id") or "unknown", task.get("kind") or "build")
+        bucket = groups.setdefault(key, {"durations": [], "tasks": 0, "first_try": 0})
+        bucket["tasks"] += 1
+        if int(task.get("remediation_count") or 0) == 0:
+            bucket["first_try"] += 1
+        done = finished_at.get(task.get("id"))
+        if done is not None:
+            bucket["durations"].append(max(0.0, done - created))
+
+    for (project_id, kind), bucket in sorted(groups.items()):
+        durations = bucket["durations"]
+        row = {
+            "project_id": project_id,
+            "kind": kind,
+            "tasks_measured": bucket["tasks"],
+            "avg_cycle_time_seconds": (round(sum(durations) / len(durations), 1)
+                                       if durations else None),
+            "first_try_yield_pct": (round(100.0 * bucket["first_try"] / bucket["tasks"], 1)
+                                    if bucket["tasks"] else None),
+        }
+        try:
+            db.insert("stage_metrics", row)
+            written += 1
+        except Exception as e:  # noqa: BLE001 - one bad row must not stop the rest
+            print(f"improvement_measure.stage_metrics: insert failed for "
+                  f"{project_id}/{kind} ({e}); fail-soft")
+    return {"stage_metrics_written": written, "groups": len(groups)}
+
+
 def load_tuning_state() -> dict:
     """Load persisted pipeline tuning state; return defaults if missing or corrupt."""
     try:

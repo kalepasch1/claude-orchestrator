@@ -193,8 +193,14 @@ def _plan_auto_tune_decisions():
                             "status": "active"
                         }
                         decisions.append(decision)
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - logged, then degraded (fail-soft)
+            # A silent `pass` here hid the regression detector failing entirely: if the
+            # stage_metrics query errored (missing table, bad filter, DB blip) the planner
+            # returned a clean, empty, entirely plausible-looking result and nobody could
+            # tell it apart from "no regression found". Broad catches are this repo's
+            # documented fail-soft convention; unlogged ones are the defect.
+            print(f"meta_loop: cycle-time regression check failed for {proj_id}/{kind} "
+                  f"({type(e).__name__}: {e}); fail-soft, no decision emitted")
 
     return decisions
 
