@@ -32,22 +32,35 @@ def _queue_depths():
         ) or []
         return {r["state"]: r["cnt"] for r in rows}
     except Exception:
-        return {}
+        # None, not {}. An empty queue and an unreachable control plane are opposite
+        # facts; a monitor that renders them identically is worse than no monitor.
+        return None
 
 
 def _throughput(window_hours=1):
-    """Tasks completed in the last N hours."""
+    """Tasks completed in the last N hours. None when the count is unavailable.
+
+    Two bugs lived in one line here.
+
+    COUNT BY FETCH. This selected rows and returned len(). PostgREST caps a response at
+    1000 rows whatever the query asks for, so throughput SATURATED at 1000 — past that
+    the dashboard showed the same number no matter how much the fleet actually did, and
+    the 24h window hit the ceiling long before the 1h window did, making 24h look *worse*
+    than 1h. db.count asks the server for the exact number and transfers no rows.
+
+    OUTAGE RENDERED AS ZERO. The except returned 0, which on a MONITORING surface is the
+    worst possible default: a control-plane outage and a fleet that completed nothing
+    produce the identical reading, so the dashboard is calmest exactly when it should be
+    loudest. None means UNKNOWN and callers must not render it as 0.
+    """
     try:
         import db
-        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(hours=window_hours)).isoformat() + "Z"
-        rows = db.select("tasks", {
-            "select": "id",
-            "state": "eq.DONE",
-            "updated_at": f"gte.{cutoff}",
-        }) or []
-        return len(rows)
+        cutoff = (datetime.datetime.utcnow()
+                  - datetime.timedelta(hours=window_hours)).isoformat() + "Z"
+        got = db.count("tasks", {"state": "eq.DONE", "updated_at": f"gte.{cutoff}"})
+        return int(got or 0)
     except Exception:
-        return 0
+        return None
 
 
 def _pending_approvals():
@@ -71,7 +84,7 @@ def _pending_approvals():
             for r in rows
         ]
     except Exception:
-        return []
+        return None  # UNKNOWN, not "nothing is waiting" — see _throughput.
 
 
 def _project_summary():
@@ -89,7 +102,7 @@ def _project_summary():
             summary.setdefault(name, {})[r.get("state", "?")] = r.get("cnt", 0)
         return summary
     except Exception:
-        return {}
+        return None  # UNKNOWN, not "no projects" — see _throughput.
 
 
 def snapshot():
@@ -111,17 +124,29 @@ def snapshot():
             return _STATE["last_snapshot"]
 
     depths = _queue_depths()
+    approvals = _pending_approvals()
     result = {
-        "queue_depths": depths,
-        "total_tasks": sum(depths.values()),
+        "queue_depths": depths if depths is not None else {},
+        # `is not None`, not truthiness: an EMPTY depths dict means a genuinely empty
+        # queue and must total 0, while None means we could not ask.
+        "total_tasks": sum(depths.values()) if depths is not None else None,
         "throughput_1h": _throughput(1),
         "throughput_24h": _throughput(24),
-        "pending_approvals": _pending_approvals(),
-        "pending_count": 0,
+        "pending_approvals": approvals if approvals is not None else [],
+        "pending_count": len(approvals) if approvals is not None else None,
         "project_summary": _project_summary(),
         "snapshot_at": now,
     }
-    result["pending_count"] = len(result["pending_approvals"])
+    # DEGRADED is the field a dashboard must read before it renders anything. Every
+    # metric that could not be measured is named here, so an outage is visible as an
+    # outage instead of as a very quiet fleet. A snapshot with a non-empty `degraded`
+    # list must never be presented as a healthy reading.
+    result["degraded"] = sorted(
+        name for name in ("queue_depths", "throughput_1h", "throughput_24h",
+                          "pending_count", "project_summary")
+        if (depths is None and name == "queue_depths")
+        or (result.get(name) is None and name != "queue_depths"))
+    result["ok"] = not result["degraded"]
 
     with _lock:
         _STATE["last_snapshot"] = result
@@ -132,8 +157,14 @@ def snapshot():
 
 
 def approval_queue():
-    """Return just the pending approvals for the dashboard widget."""
-    return _pending_approvals()
+    """Pending approvals for the dashboard widget. [] when unavailable.
+
+    This one keeps the list contract because the widget iterates it directly; callers
+    that need to distinguish "none waiting" from "could not ask" should read
+    `snapshot()["degraded"]`.
+    """
+    got = _pending_approvals()
+    return got if got is not None else []
 
 
 def stats():
@@ -150,12 +181,18 @@ def run():
     snap = snapshot()
     try:
         import db
+        def _fmt(value):
+            # "unknown" is spelled out. "None tasks" in an inbox title reads like a
+            # formatting bug and gets ignored; "unknown" reads like an outage.
+            return "unknown" if value is None else value
+
         depths_str = ", ".join(f"{k}={v}" for k, v in snap["queue_depths"].items())
+        prefix = "Monitor" if snap.get("ok", True) else "Monitor DEGRADED"
         db.insert("inbox", {
             "kind": "monitor_snapshot",
-            "title": f"Monitor: {snap['total_tasks']} tasks, "
-                     f"{snap['throughput_1h']} done/1h, "
-                     f"{snap['pending_count']} awaiting approval",
+            "title": f"{prefix}: {_fmt(snap['total_tasks'])} tasks, "
+                     f"{_fmt(snap['throughput_1h'])} done/1h, "
+                     f"{_fmt(snap['pending_count'])} awaiting approval",
             "body": f"Queue: {depths_str}\n"
                     f"Throughput 24h: {snap['throughput_24h']}\n"
                     f"Pending approvals: {snap['pending_count']}",
