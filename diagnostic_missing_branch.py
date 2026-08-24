@@ -2,10 +2,100 @@
 """
 Diagnostic tool for missing branch analysis.
 This script analyzes the merge-train pressure state and identifies root causes of missing branches.
+
+NEVER ANSWER "DOES BRANCH X EXIST?" FROM A LOCAL REF
+----------------------------------------------------
+`git branch -r` lists remote-TRACKING refs, which are a snapshot of the last
+`git fetch`. In a clone that has not fetched recently they are simply stale, and
+a branch that is present on origin reads as missing. A wrong "missing" here is
+expensive rather than merely noisy: it files a reconstruct-the-patch task, and
+the agent then rebuilds work that was on origin the whole time. This module's
+entire task family — `backlog-batch-beethoven-ccacb00-verify-branch-existence-
+reconstruct-minimal-patch` and its siblings — was generated exactly that way:
+`agent/backlog-batch-beethoven-ccacb00` is on origin at 988649bb.
+
+So branch existence is answered against ORIGIN, via
+`branch_availability_check.branch_exists_remote()` (`git ls-remote --heads`),
+which already existed and which this diagnostic simply was not calling. Every
+verdict below reports the SOURCE it came from, so a later reader can re-verify
+the claim instead of inheriting it.
 """
-import os, sys, json
+import os, sys, json, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner"))
 import db
+
+try:
+    import branch_availability_check as _bac
+except Exception:  # pragma: no cover - diagnostic must run even if runner is unimportable
+    _bac = None
+    print("WARNING: branch_availability_check unavailable; "
+          "remote branch verification degraded to local refs")
+
+
+#: Verdicts. UNKNOWN is deliberately distinct from MISSING — "we could not ask
+#: origin" must never be recorded as "it is not there", because that is the
+#: reading that files a spurious reconstruct-the-patch task.
+PRESENT = "PRESENT"
+MISSING = "MISSING"
+UNKNOWN = "UNKNOWN"
+
+
+def branch_status(repo, branch):
+    """Authoritative existence verdict for `branch`, answered from origin.
+
+    Returns ``(verdict, source)`` where verdict is PRESENT / MISSING / UNKNOWN
+    and source names where the answer came from, e.g. ``origin (ls-remote)``.
+    Fail-soft: any error yields ``(UNKNOWN, ...)`` rather than raising or
+    guessing MISSING.
+    """
+    if not repo or not isinstance(repo, str) or not os.path.isdir(repo):
+        return UNKNOWN, "no usable repo path"
+    if not branch or not isinstance(branch, str):
+        return UNKNOWN, "no branch given"
+    if _bac is not None:
+        try:
+            exists = _bac.branch_exists_remote(repo, branch)
+            if exists is True:
+                return PRESENT, "origin (ls-remote)"
+            if exists is False:
+                return MISSING, "origin (ls-remote)"
+        except Exception:
+            pass
+    # Fallback: ask origin directly rather than falling back to a local ref.
+    try:
+        r = subprocess.run(["git", "ls-remote", "--heads", "origin", branch],
+                           cwd=repo, capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            return (PRESENT if r.stdout.strip() else MISSING), "origin (ls-remote)"
+    except Exception:
+        pass
+    return UNKNOWN, "origin unreachable — NOT treated as missing"
+
+
+def write_branch_status(repo, branch, path="branch-status.txt"):
+    """Write the verdict for `branch` to `path` and return it.
+
+    The artifact this task family keeps asking to read and which nothing ever
+    produced. Carries the source and the resolved SHA so the claim stays
+    re-verifiable rather than becoming folklore.
+    """
+    verdict, source = branch_status(repo, branch)
+    sha = ""
+    if verdict == PRESENT:
+        try:
+            r = subprocess.run(["git", "ls-remote", "--heads", "origin", branch],
+                               cwd=repo, capture_output=True, text=True, timeout=15)
+            sha = (r.stdout.split() or [""])[0]
+        except Exception:
+            sha = ""
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("%s\nbranch: %s\nsource: %s\nsha: %s\n"
+                     % (verdict, branch, source, sha))
+    except OSError as exc:  # pragma: no cover - fail-soft
+        print("Could not write %s: %s" % (path, exc))
+    return verdict
 
 def analyze_missing_branches():
     """Analyze missing branch issues across projects."""
@@ -94,37 +184,77 @@ def check_branch_consistency():
             continue
             
         try:
-            # Check for agent branches in the project
-            import subprocess
+            # ORIGIN, not `git branch -r`. Remote-tracking refs are a snapshot of the
+            # last fetch; in a stale clone they under-report and every under-report
+            # becomes a spurious reconstruct-the-patch task.
             result = subprocess.run(
-                ["git", "branch", "-r"], 
-                cwd=repo_path, 
-                capture_output=True, 
-                text=True, 
+                ["git", "ls-remote", "--heads", "origin", "refs/heads/agent/*"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
                 timeout=30
             )
-            
-            if result.returncode == 0:
-                remote_branches = result.stdout.strip().split('\n')
-                agent_branches = [b for b in remote_branches if b.startswith('origin/agent/')]
-                
-                print(f"Project {project_name}: Found {len(agent_branches)} agent branches")
-                
-                # Check tasks that should have corresponding branches
-                tasks = db.select("tasks", {
-                    "select": "id,slug,state",
-                    "project_id": f"eq.{project_id}",
-                    "slug": "like.agent/%"
-                }) or []
-                
-                print(f"  Project {project_name}: Found {len(tasks)} agent-related tasks")
-                
-            else:
-                print(f"Project {project_name}: Could not list remote branches")
-                
+
+            if result.returncode != 0:
+                # Could not ask origin. Say so; do NOT fall back to local refs and
+                # do NOT report anything as missing.
+                print(f"Project {project_name}: could not reach origin "
+                      f"({(result.stderr or '').strip()[:120]}); "
+                      f"branch existence UNKNOWN, nothing reported missing")
+                continue
+
+            on_origin = set()
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+                    on_origin.add(parts[1][len("refs/heads/"):])
+
+            print(f"Project {project_name}: {len(on_origin)} agent branches on origin")
+
+            # Tasks whose work should be sitting on a branch right now.
+            tasks = db.select("tasks", {
+                "select": "id,slug,state",
+                "project_id": f"eq.{project_id}",
+                "state": "in.(DONE,MERGED,RUNNING)"
+            }) or []
+
+            truly_missing = [
+                t for t in tasks
+                if t.get("slug") and f"agent/{t['slug']}" not in on_origin
+            ]
+            print(f"  {len(tasks)} tasks expected to have a branch; "
+                  f"{len(truly_missing)} with no branch ON ORIGIN")
+            for task in truly_missing[:10]:
+                # Re-verify individually before naming it — a wildcard listing that
+                # was truncated or raced must not convict a branch on its own.
+                verdict, source = branch_status(repo_path, f"agent/{task['slug']}")
+                if verdict == MISSING:
+                    print(f"    MISSING agent/{task['slug']} "
+                          f"({task['state']}) [verified against {source}]")
+                else:
+                    print(f"    {verdict} agent/{task['slug']} "
+                          f"({task['state']}) [{source}] — not missing after all")
+
         except Exception as e:
             print(f"Project {project_name}: Error checking branches - {e}")
 
-if __name__ == "__main__":
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv:
+        # `diagnostic_missing_branch.py <branch> [repo]` — answer one branch and
+        # write branch-status.txt, which is what the verify-branch-existence task
+        # family asks to read.
+        branch = argv[0]
+        repo = argv[1] if len(argv) > 1 else os.path.dirname(os.path.abspath(__file__))
+        verdict = write_branch_status(repo, branch)
+        v, source = branch_status(repo, branch)
+        print("%s %s [%s]" % (v, branch, source))
+        # Exit 0 when present, 1 when genuinely missing, 2 when unanswerable.
+        return {PRESENT: 0, MISSING: 1}.get(verdict, 2)
     analyze_missing_branches()
     check_branch_consistency()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
