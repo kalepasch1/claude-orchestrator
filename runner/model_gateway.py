@@ -334,9 +334,16 @@ def _groq(model, prompt):
     return d["choices"][0]["message"]["content"], round(cost, 6)
 
 
+#: The one xAI chat endpoint. Exported so a caller has something to import instead of
+#: retyping the URL: it is currently spelled out in swarm_executor.py,
+#: vendor_capabilities.py and (as the /models sibling) model_scout.py, which is three
+#: places that can drift from the owner without anything noticing.
+XAI_CHAT_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+
+
 def _xai(model, prompt):
     """xAI Grok — real-time data, OpenAI-compatible API."""
-    d = _post("https://api.x.ai/v1/chat/completions",
+    d = _post(XAI_CHAT_ENDPOINT,
               {"Authorization": f"Bearer {provider_credentials.get('xai')}"},
               {"model": model, "messages": [{"role": "user", "content": prompt}],
                "max_tokens": 8192})
