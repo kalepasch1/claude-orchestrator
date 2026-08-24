@@ -203,9 +203,43 @@ def _rollback(project, repo, prod, last_good):
     return True
 
 
+#: A deployfix prompt says "fix the smallest build/deploy issue and make the production
+#: build pass". Without a build log there is nothing to fix from, so the task is
+#: unactionable by construction — and CANCELED is the state that reliably has no log,
+#: because a canceled deployment never emitted build events.
+_LOGLESS_STATES = {"CANCELED"}
+
+
+def _unactionable_deploy_fix(state, log_tail):
+    """Reason this deployfix would be unactionable, or "" when it is worth queueing.
+
+    THE EVIDENCE. deployfix-beethoven-07152141 and -07160115 both carry "Release status:
+    CANCELED" and an EMPTY "# Vercel/build log tail:", and neither ever produced a single
+    touched file; 07152141 was retried until "reached budget cap (4)". An executor cannot
+    fix a build from an empty log, so each retry re-derived the same nothing. Filing a
+    task with no evidence in it is worse than filing none: it consumes a claim slot and
+    looks like queue progress.
+
+    Narrow on purpose. Only a LOGLESS state with a genuinely empty tail is refused. An
+    ERROR with no log still queues, because ERROR means a build ran and failed and the
+    missing log is a fetch problem worth a human look — not proof there is nothing wrong.
+    """
+    if str(state or "").upper() not in _LOGLESS_STATES:
+        return ""
+    if (log_tail or "").strip():
+        return ""
+    return ("state=%s with an empty build log: a canceled deployment emits no build "
+            "events, so a build-fix task would have nothing to act on" % (state or "?"))
+
+
 def _queue_deploy_fix(project_row, release, state, vercel_project, log_tail=""):
     try:
         if not project_row.get("id"):
+            return
+        unactionable = _unactionable_deploy_fix(state, log_tail)
+        if unactionable:
+            print("deploy_verify: NOT queueing deployfix for %s — %s"
+                  % (release.get("project"), unactionable))
             return
         existing = db.select("tasks", {"select": "slug", "project_id": f"eq.{project_row.get('id')}",
                                        "state": "in.(QUEUED,RUNNING,RETRY,BLOCKED)"}) or []
