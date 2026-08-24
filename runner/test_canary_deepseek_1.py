@@ -48,7 +48,11 @@ class CanaryTypoFixValidation(unittest.TestCase):
             (r'\bseperate\b', 'separate'),
             (r'\boccassion\b', 'occasion'),
             (r'\bdefinately\b', 'definitely'),
-            (r'\benvironment\b', 'environment'),  # environment vs enviroment
+            # The pattern must be the MISSPELLING, not the correct word. This entry
+            # was `\benvironment\b` -> 'environment', so every file that spelled
+            # "environment" correctly was reported as carrying a typo and the test
+            # failed permanently on a clean tree.
+            (r'\benviroment\b', 'environment'),
         ]
 
         # Scan test files for common typos
@@ -330,10 +334,15 @@ class CanaryBehaviorPreservation(unittest.TestCase):
         with open(test_file, 'r') as f:
             tree = ast.parse(f.read())
 
-        # Count assertions to verify tests are intact
+        # Count assertions to verify tests are intact.
+        # Both styles count: unittest's `self.assertX(...)` calls AND bare `assert`
+        # statements (pytest style). Counting only the former reported 0 assertions
+        # for any pytest-style module — test_branch_naming.py is one — and failed.
         assertion_count = 0
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
+            if isinstance(node, ast.Assert):
+                assertion_count += 1
+            elif isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Attribute):
                     if node.func.attr.startswith('assert'):
                         assertion_count += 1
@@ -497,8 +506,17 @@ class CanaryCodeStyleConsistency(unittest.TestCase):
 
         convention_violations = []
 
+        # unittest's own hooks are camelCase by mandate — renaming them to snake_case
+        # would silently stop them from running. They are API, not style violations.
+        unittest_api_names = {
+            'setUp', 'tearDown', 'setUpClass', 'tearDownClass',
+            'setUpModule', 'tearDownModule', 'asyncSetUp', 'asyncTearDown',
+        }
+
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in unittest_api_names:
+                    continue
                 # Function names should be snake_case
                 if not re.match(r'^[a-z_][a-z0-9_]*$', node.name):
                     # Private functions can start with underscore
@@ -521,7 +539,15 @@ class CanaryCodeStyleConsistency(unittest.TestCase):
 
         # Canary tasks maintain import organization
         # (This is a quality check, not strict)
-        import_section_found = any('import' in line for line in lines[:20])
+        #
+        # Parse the imports rather than scanning `lines[:20]` for the substring
+        # "import": a module with a long header docstring puts its first import well
+        # past line 20 (test_canary_ollama_23.py starts importing at line 50), which
+        # made this fail on a file whose imports are perfectly well organized.
+        tree = ast.parse(''.join(lines))
+        import_section_found = any(
+            isinstance(node, (ast.Import, ast.ImportFrom))
+            for node in ast.walk(tree))
         self.assertTrue(import_section_found or len(lines) < 5,
                        "Imports should be present and organized")
 

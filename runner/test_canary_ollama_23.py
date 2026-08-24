@@ -63,6 +63,9 @@ class CoderRoutingPercentileCanary(unittest.TestCase):
 
     def test_percentile_p95_tracked_separate_from_average(self):
         """Normal path: p95 is computed and tracked independently from average."""
+        # `db` is mocked throughout this module so the routing decisions under test are
+        # driven purely by the latency rows below — no Supabase round-trip, and no
+        # dependence on whatever the live telemetry table happens to hold today.
         db = MagicMock()
         db.select.return_value = [{
             "provider": "local",
