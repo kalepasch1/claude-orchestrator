@@ -2973,6 +2973,7 @@ _SCHEDULE = [
     ("sessions-120",  "session_watcher.py", "interval", 120),   # read paused/finished sessions
     ("loops-300",     "loops.py",           "interval", 300),   # per-app learning/remediation loops
     ("unstick-180",   "unstick",            "interval", 180),   # auto-requeue transient-blocked tasks
+    ("schedsnap-180", "schedsnapshot",      "interval", 180),   # heartbeat for the staleness monitor
     ("dagfix-600",    "dagfix",             "interval", 600),   # heal dep graph: ghost/redundant/orphan
     ("batchmech-900", "batchmech",          "interval", 900),   # fold mechanical tasks (cold-start save)
     ("selftune-daily","selftune",           "daily",    (7, 0)),# outcome-driven confidence tuning

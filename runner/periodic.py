@@ -622,6 +622,22 @@ def run_unstick():
     print(f"unstick: requeued {requeued} transient-blocked, {capped} over-cap, {terminal} terminal (left alone)")
 
 
+def run_schedsnapshot():
+    """Publish the scheduler heartbeat that check_scheduler_snapshot_staleness() reads.
+
+    The monitor had no producer at all — scheduler_status_snapshots held one ad-hoc
+    batch row from 2026-07-22 — so it alerted 2,695 times on a table nothing wrote to.
+    See runner/scheduler_snapshot.py for the full finding.
+    """
+    try:
+        import scheduler_snapshot
+        return scheduler_snapshot.run()
+    except Exception as e:  # noqa: BLE001 - logged, then degraded (fail-soft)
+        print(f"periodic: schedsnapshot failed ({type(e).__name__}: {e}); fail-soft",
+              flush=True)
+        return {"published": False}
+
+
 def run_dagfix():
     """Keep the dependency graph healthy: drop ghost/redundant dep edges, flag true orphans."""
     import dag_optimizer
@@ -1288,6 +1304,7 @@ JOBS = {
     "fleet_e2e_audit": run_fleet_e2e_audit,
     "batch": run_batch,
     "unstick": run_unstick,
+    "schedsnapshot": run_schedsnapshot,
     "dagfix": run_dagfix,
     "dagspecunblock": run_dagspecunblock,
     "selftune": run_selftune,
