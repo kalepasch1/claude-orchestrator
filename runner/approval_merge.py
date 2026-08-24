@@ -265,6 +265,79 @@ def _rebase_isolated(repo, base, branch):
             pass
 
 
+# ── redo policy ───────────────────────────────────────────────────────────────────────
+# A conflict redo exists for ONE situation: the branch forked from a stale base, so
+# rebuilding it on a fresh base makes the conflict disappear. When the SAME files
+# conflict again after a redo, the conflict is in the work itself and no number of
+# further rebuilds will change that. Spending the remaining redos anyway costs a full
+# agent rebuild per attempt and ends at the same "needs manual rebase" verdict — the
+# behaviour observed with runner/config_consumer.py. Detect the repeat, stop, and report
+# the same outcome immediately.
+_CONFLICT_FILES_TAG = "[conflict-files:"
+
+
+def conflicting_files(repo, base, branch):
+    """Paths that conflict merging `branch` into `base`, sorted. Never raises.
+
+    Uses `git merge-tree --write-tree`, which computes the merge in memory — no
+    worktree, no checkout, no mutation of the repository.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "--name-only", base, branch],
+            cwd=repo, capture_output=True, text=True, timeout=120)
+    except Exception:
+        return []
+    if proc.returncode == 0:
+        return []                                  # merged cleanly; nothing conflicts
+    # Output shape: the resulting tree oid, then one conflicted path per line, then a
+    # BLANK line, then human-readable "Auto-merging …" / "CONFLICT (content): …" prose.
+    # Stop at the blank line — the prose repeats the same paths in sentences, and letting
+    # it through would make two identical conflicts compare as different sets.
+    paths = set()
+    for line in (proc.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            break
+        if len(line) >= 40 and all(c in "0123456789abcdef" for c in line):
+            continue                               # the tree oid, dropped by shape
+        paths.add(line)
+    return sorted(paths)
+
+
+def encode_conflict_files(paths):
+    """Render a conflict set into a note tag, so the next pass can compare against it."""
+    return f"{_CONFLICT_FILES_TAG}{','.join(sorted(set(paths)))}]" if paths else ""
+
+
+def decode_conflict_files(note):
+    """Recover the conflict set a previous redo recorded. [] when absent/garbled."""
+    text = str(note or "")
+    start = text.find(_CONFLICT_FILES_TAG)
+    if start < 0:
+        return []
+    end = text.find("]", start)
+    if end < 0:
+        return []
+    body = text[start + len(_CONFLICT_FILES_TAG):end]
+    return sorted({p.strip() for p in body.split(",") if p.strip()})
+
+
+def should_stop_redoing(previous, current):
+    """True when another redo cannot help: the same files conflict again.
+
+    Requires BOTH sets to be non-empty — an unknown conflict set (git unavailable, older
+    git, a parse miss) must fall back to the existing redo behaviour rather than
+    declaring a permanent conflict on no evidence. A current set that is a SUBSET of the
+    previous one still counts: the redo resolved some files and stalled on the rest,
+    which is convergence to the same manual rebase.
+    """
+    prev, cur = set(previous or []), set(current or [])
+    if not prev or not cur:
+        return False
+    return cur <= prev
+
+
 def _integrate(repo, branch, base, test_cmd=TEST_CMD):
     """Merge agent/<slug> into `base` correctly, regardless of what's checked out, and (optionally)
     push so Vercel deploys. Frees any leftover worktree first (the real bug)."""
@@ -473,7 +546,14 @@ def run():
             # the up-to-date base, up to a cap; delete the stale branch so the worktree is recreated.
             tr = int(t.get("transient_retries") or 0)
             cap = _bounded_int("MERGE_CONFLICT_REDO_CAP", 2, ceiling=_MAX_REDO_CAP)
-            if tr < cap:
+            # NARROWER RETRY POLICY: only spend a redo when it can plausibly help.
+            files = conflicting_files(repo, base, branch)
+            seen_before = decode_conflict_files(t.get("note"))
+            persistent = should_stop_redoing(seen_before, files)
+            if persistent:
+                print(f"[approval_merge] {slug}: same files conflict after a redo "
+                      f"({', '.join(files)}); skipping {cap - tr} remaining redo(s)")
+            if tr < cap and not persistent:
                 # FIX 2026-08-04 (cowork audit): a merge CONFLICT is not a reason to destroy
                 # committed work. This force-deleted the branch so the worktree would be
                 # rebuilt, taking the agent's commits with it — the redo then re-generated
@@ -492,17 +572,31 @@ def run():
                     category="conflict",
                     directive=f"Resolve the merge conflict by rebuilding the same task on fresh {base}, run tests, and commit.")
                 patch["transient_retries"] = tr + 1
+                # Record WHICH files conflicted, so the next pass can tell "stale base,
+                # try again" from "this conflict is in the work itself".
+                tag = encode_conflict_files(files)
+                if tag:
+                    patch["note"] = f"{str(patch.get('note') or '').strip()} {tag}".strip()
                 db.update("tasks", {"id": t["id"]}, patch)
                 # re-open the card as pending so it flows again once rebuilt+judged
                 db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:redo"})
                 _notify(f"[merge] {slug}: conflict — rebuilding on fresh {base} ({tr+1}/{cap})")
                 handled += 1
                 continue
-            # exhausted redo cap -> genuine conflict needing a human/agent resolution
-            db.update("tasks", {"id": t["id"]}, {"state": "CONFLICT",
-                      "note": f"merge-handler: CONFLICT after {cap} redo attempts — needs manual rebase"})
-            db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
-            _notify(f"[merge] {slug}: still conflicts after {cap} redos — needs a look")
+            # Redos exhausted, OR proven useless. Same terminal state and same file list
+            # either way — only the number of rebuilds burned getting here differs.
+            attempts = f"{tr} redo attempt{'' if tr == 1 else 's'}" if persistent \
+                else f"{cap} redo attempts"
+            why = " (same files conflicted again; remaining redos skipped)" if persistent else ""
+            file_list = f" files: {', '.join(files)}." if files else ""
+            db.update("tasks", {"id": t["id"]}, {
+                "state": "CONFLICT",
+                "note": (f"merge-handler: CONFLICT after {attempts}{why} — needs manual "
+                         f"rebase.{file_list} {encode_conflict_files(files)}".strip())})
+            db.update("approvals", {"id": c["id"]},
+                      {"decided_by": f"{MARK}:conflict-persistent" if persistent
+                       else f"{MARK}:conflict-exhausted"})
+            _notify(f"[merge] {slug}: still conflicts after {attempts}{why} — needs a look")
             handled += 1
             continue
         state, sha = _split_result(result)
