@@ -228,6 +228,13 @@ def _free_branch(repo, branch):
     return True
 
 
+#: branch -> conflicting paths from that branch's most recent failed rebase. Recorded by
+#: _rebase_isolated before `git rebase --abort` wipes the index, and read by the
+#: redo-cap-exhausted path so the terminal note can name the actual files. A plain dict
+#: on purpose: this is a diagnostic breadcrumb, and a stale entry is harmless.
+LAST_CONFLICT_FILES: dict = {}
+
+
 def _rebase_isolated(repo, base, branch):
     """Rebase `branch` onto `base` WITHOUT ever checking `branch` out in `repo` itself.
 
@@ -255,6 +262,14 @@ def _rebase_isolated(repo, base, branch):
             return False
         ok = subprocess.run(["git", "rebase", base], cwd=wt, capture_output=True).returncode == 0
         if not ok:
+            # Capture the conflicting paths BEFORE --abort resets the index. Without
+            # this the terminal note could only say "CONFLICT", and an operator had no
+            # way to tell a one-file collision from a whole-branch divergence.
+            try:
+                import conflict_exhaustion
+                LAST_CONFLICT_FILES[branch] = conflict_exhaustion.unmerged_files(repo, cwd=wt)
+            except Exception:
+                LAST_CONFLICT_FILES[branch] = []
             subprocess.run(["git", "rebase", "--abort"], cwd=wt, capture_output=True)
         return ok
     finally:
@@ -499,10 +514,13 @@ def run():
                 handled += 1
                 continue
             # exhausted redo cap -> genuine conflict needing a human/agent resolution
-            db.update("tasks", {"id": t["id"]}, {"state": "CONFLICT",
-                      "note": f"merge-handler: CONFLICT after {cap} redo attempts — needs manual rebase"})
+            import conflict_exhaustion
+            exhausted_note = conflict_exhaustion.note(
+                "merge-handler", redos=tr, cap=cap, branch=branch, base=base,
+                repo=repo, files=LAST_CONFLICT_FILES.get(branch))
+            db.update("tasks", {"id": t["id"]}, {"state": "CONFLICT", "note": exhausted_note})
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
-            _notify(f"[merge] {slug}: still conflicts after {cap} redos — needs a look")
+            _notify(f"[merge] {slug}: {exhausted_note}")
             handled += 1
             continue
         state, sha = _split_result(result)

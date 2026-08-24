@@ -1844,8 +1844,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
             _log(pname, slug, "REDO", f"rebase conflict{files_hint}, rebuild on fresh {base} ({tr+1}/{cap})")
             return "redo"
-        _task_patch(task, {"state": "CONFLICT",
-                           "note": f"train: still conflicts after {cap} redos - needs manual rebase.{files_hint}"})
+        import conflict_exhaustion
+        exhausted_note = conflict_exhaustion.note(
+            "train", redos=tr, cap=cap, branch=branch, base=base,
+            repo=repo, files=conflict_detail)
+        _task_patch(task, {"state": "CONFLICT", "note": exhausted_note})
+        print(f"CONFLICT-EXHAUSTED {slug}: {exhausted_note}")
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
         _attribute_train_outcome(slug, task, "conflict", integrated=False)
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted{files_hint}")

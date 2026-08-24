@@ -56,11 +56,21 @@ class RebaseIsolatedOutcomesTest(unittest.TestCase):
 
     def test_conflict_aborts_and_returns_false(self):
         with patch("os.makedirs"), patch("os.path.isdir", return_value=True), \
-             patch("subprocess.run", side_effect=[_proc(0), _proc(1), _proc(0), _proc(0)]) as m:
+             patch("subprocess.run",
+                   side_effect=[_proc(0), _proc(1), _proc(0), _proc(0), _proc(0)]) as m:
             ok = approval_merge._rebase_isolated(REPO, "main", "agent/x")
         self.assertFalse(ok)
-        abort_call = m.call_args_list[2]
-        self.assertEqual(abort_call.args[0], ["git", "rebase", "--abort"])
+        # Located by content, not by index: the conflict path now also captures the
+        # unmerged paths before aborting, and pinning "abort is call #3" made an added
+        # diagnostic read look like a regression.
+        commands = [call.args[0] for call in m.call_args_list if call.args]
+        self.assertIn(["git", "rebase", "--abort"], commands)
+        capture = ["git", "diff", "--name-only", "--diff-filter=U"]
+        self.assertIn(capture, commands)
+        self.assertLess(commands.index(capture), commands.index(["git", "rebase", "--abort"]),
+                        "conflicting paths must be read before --abort clears the index")
+        abort_call = next(c for c in m.call_args_list
+                          if c.args and c.args[0] == ["git", "rebase", "--abort"])
         self.assertNotEqual(abort_call.kwargs.get("cwd"), REPO)
 
     def test_worktree_add_failure_returns_false(self):
