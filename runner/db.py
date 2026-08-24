@@ -2089,6 +2089,17 @@ def claim_task(runner_id):
     # recovery above: express work still goes first, but only up to its own reservation.
     express_capacity = _express_capacity()
     express_lane_open = express_capacity > 0 and active_express < express_capacity
+    # The bound above only ever restrained the numeric-priority half of "express".
+    # `_pinned_rank` sits AHEAD of `_express_rank` in the sort key and was ungated, so a
+    # pinned batch still claimed every lane until it drained — which is the exact
+    # starvation _express_rank's own docstring says the ceiling exists to prevent, for the
+    # exact case it names. `_is_express_row` already counts pinned tasks against
+    # express_capacity, so the reservation was being spent without being enforced.
+    #
+    # Only fires when the reservation is genuinely FULL. With express disabled
+    # (capacity 0) or room left, pinned ordering is untouched: an operator's pin still
+    # goes first, it just cannot take the whole machine.
+    express_lane_full = express_capacity > 0 and active_express >= express_capacity
     # FAIR ROUND-ROBIN across projects: prefer the project that has gone LONGEST without activity, so
     # every app gets worked (not just the biggest/highest-priority queue). Within that, honor priority,
     # ROI weight, then FIFO. This is what lets a single-slot runner still touch ALL projects in rotation.
@@ -2144,6 +2155,9 @@ def claim_task(runner_id):
     def _pinned_rank(t):
         # Pinned tasks claim before unpinned: rank 0 for pinned, 1 for unpinned.
         # Only treat as pinned if both pinned=True and pin_rank is set and non-zero.
+        # Sorts as unpinned once the express reservation is FULL — see express_lane_full.
+        if express_lane_full:
+            return 1
         if not t.get("pinned"):
             return 1
         rank = t.get("pin_rank")
@@ -2186,6 +2200,8 @@ def claim_task(runner_id):
         # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
         # Negative ranks are valid (more negative = higher priority).
         # Rank 0 or missing treated as unpinned (rank 9999).
+        if express_lane_full:
+            return 9999
         rank = t.get("pin_rank")
         if rank is None or rank == 0:
             return 9999
