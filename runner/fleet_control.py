@@ -243,6 +243,19 @@ def get_fleet_config(key, default=""):
         return default
 
 
+def get_config(key, default=""):
+    """Canonical name for a fleet_config read. Delegates to get_fleet_config.
+
+    Both names exist because callers arrived from two directions: fleet-control
+    code says get_fleet_config (it is talking about the fleet_config table),
+    while runner-side consumers say get_config (they are just reading a knob).
+    Recovered call sites use either. This is the module-level delegation the
+    repo already uses elsewhere, not a second implementation — there is exactly
+    one place the ORCH_ prefix, the strip and the fail-soft default are decided.
+    """
+    return get_fleet_config(key, default)
+
+
 def update_fleet_config(key, value):
     """Upsert a fleet config key and publish a ConfigChanged event for ORCH_* keys.
 
