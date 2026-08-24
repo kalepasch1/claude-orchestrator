@@ -338,6 +338,67 @@ def classify(jobs):
     return findings
 
 
+def coalesce_by_signature(findings):
+    """Collapse findings that share a signature into one, naming every affected job.
+
+    One module-level failure crashes every scheduled job at once, because they all
+    import the same module before any job body runs. Firing per JOB turned a single
+    `NameError: name 'run_editorial' is not defined` into TWENTY-ONE queued tasks
+    (measured: 33 tasks under one detector fingerprint, in just 3 traceback groups
+    of 21, 10 and 2). Each one costs an agent a full run to reach the same
+    conclusion about the same already-fixed line.
+
+    Per-SIGNATURE dedupe alone is not the answer either, and `state_key` below
+    records why it was abandoned: with a job+signature slug, the first job wrote
+    state[sig] and every other job's identical signature was suppressed, so genuinely
+    broken jobs went unreported.
+
+    This keeps both properties. One task per signature — and it LISTS every job the
+    signature killed, so nothing is suppressed; the jobs are in the body instead of
+    in separate tickets. A signature affecting a single job produces the same
+    single-job task it always did.
+
+    Order is preserved from `classify`, which has already ranked by blast radius.
+    """
+    merged = {}
+    order = []
+    for f in findings or []:
+        sig = f.get("signature")
+        first = sig not in merged
+        if first:
+            merged[sig] = dict(f)
+            merged[sig]["jobs"] = []
+            order.append(sig)
+        m = merged[sig]
+        m["jobs"].append({
+            "job": f.get("job"), "count": f.get("count", 0), "share": f.get("share", 0),
+            "err_path": f.get("err_path"), "reasons": list(f.get("reasons") or []),
+        })
+        # `first` rather than an identity check: `dict(f)` above is a COPY, so
+        # `f is not merged[sig]` is true even for the finding that seeded the group
+        # and its count was added twice.
+        if not first:
+            m["count"] = m.get("count", 0) + f.get("count", 0)
+            # Worst case wins: one dead module among many crash-loopers is still a
+            # dead module, and downgrading it because a sibling was merely repeating
+            # would hide the more serious of the two.
+            for r in (f.get("reasons") or []):
+                if r not in m["reasons"]:
+                    m["reasons"].append(r)
+            if f.get("severity") == "critical":
+                m["severity"] = "critical"
+    out = []
+    for sig in order:
+        m = merged[sig]
+        # The representative job is the worst-hit one; the rest are listed in the body.
+        m["jobs"].sort(key=lambda j: -j.get("count", 0))
+        m["job"] = m["jobs"][0]["job"]
+        m["err_path"] = m["jobs"][0]["err_path"]
+        m["job_count"] = len(m["jobs"])
+        out.append(m)
+    return out
+
+
 def state_key(finding):
     """The dedupe key for one finding: JOB **and** signature.
 
@@ -348,6 +409,13 @@ def state_key(finding):
     100%-dead modules (cost-intelligence, credresolver), could never file a task. The bot
     watching the bots was itself silent.
     """
+    # Signature-only again, but ONLY because findings are coalesced by signature
+    # before they get here (see coalesce_by_signature): the single task names every
+    # affected job, so dedupe can no longer suppress a job into silence. The
+    # job+signature key remains correct for any caller that skips coalescing, which
+    # is why the job is still in the key when a finding carries no `jobs` list.
+    if finding.get("jobs"):
+        return finding.get("signature", "")
     return "%s|%s" % (finding.get("job", ""), finding.get("signature", ""))
 
 
@@ -360,6 +428,17 @@ def _should_fire(finding, state, now):
         legacy = state.get(finding["signature"])
         if legacy and legacy.get("job") == finding["job"]:
             prior = legacy
+    # Migration the other way, for coalesced findings: this signature was previously
+    # tracked as one "<job>|<signature>" entry PER JOB. Without this, the first run
+    # after coalescing looks brand new and re-alerts every signature at once — the
+    # noise the coalescing exists to remove. The most recent per-job entry stands in
+    # for the group, because any one of them firing means the group was already seen.
+    if not prior and finding.get("jobs"):
+        candidates = [state.get("%s|%s" % (j.get("job", ""), finding.get("signature", "")))
+                      for j in finding["jobs"]]
+        candidates = [c for c in candidates if c]
+        if candidates:
+            prior = max(candidates, key=lambda c: float(c.get("last_alert") or 0))
     if not prior:
         return True, "new"
     if (now - float(prior.get("last_alert") or 0)) >= COOLDOWN_S:
@@ -385,11 +464,24 @@ def _file_task(finding, project_row, filer):
     """Turn one finding into remediation work. Dedupe is the DB; the budget is the filer."""
     if not FILE_TASKS:
         return "disabled"
-    slug = guard_tasks.stable_slug("crashloop", finding["job"], finding["signature"][:8])
+    jobs = finding.get("jobs") or [{"job": finding["job"], "count": finding.get("count", 0),
+                                    "share": finding.get("share", 0),
+                                    "err_path": finding.get("err_path")}]
+    # One slug per SIGNATURE when the failure spans jobs, so a shared root cause is one
+    # task rather than one per job. A single-job signature keeps the old job-based slug,
+    # so existing tasks and their dedupe state stay addressable.
+    slug = (guard_tasks.stable_slug("crashloop", "sig", finding["signature"][:8])
+            if len(jobs) > 1
+            else guard_tasks.stable_slug("crashloop", finding["job"], finding["signature"][:8]))
+    affected = ("".join("  - %s: %d occurrence(s) in %s\n" % (j["job"], j["count"], j["err_path"])
+                        for j in jobs))
+    spans = ("This ONE failure is killing %d scheduled jobs. They share a signature, so "
+             "they share a cause — fix it once.\n\nAffected jobs:\n%s\n"
+             % (len(jobs), affected)) if len(jobs) > 1 else ""
     severity = guard_tasks.CRITICAL if "module_dead" in finding["reasons"] else guard_tasks.HIGH
     return filer.file(
         project_row.get("id"), slug,
-        ("A scheduled job is in a CRASH LOOP and has been failing silently.\n\n"
+        (("A scheduled job is in a CRASH LOOP and has been failing silently.\n\n" + spans) +
                        "job: %s\nlog: %s\noccurrences: %d (%.0f%% of this job's tracebacks)\n"
                        "why it fired: %s\n%s\n"
                        "Fix the root cause, then confirm the job actually runs "
@@ -402,10 +494,15 @@ def _file_task(finding, project_row, filer):
                           finding["job"].replace("-", "_"), finding["err_path"],
                           finding["traceback"])),
         severity=severity, project_name="ORCHESTRATOR",
-        title="%s is %s — %s x%d" % (finding["job"],
-                                     "100% DEAD" if severity == guard_tasks.CRITICAL
+        title=("%d jobs are %s — %s x%d" % (len(jobs),
+                                            "100%% DEAD" if severity == guard_tasks.CRITICAL
+                                            else "crash-looping",
+                                            finding["exception"][:100], finding["count"])
+               if len(jobs) > 1 else
+               "%s is %s — %s x%d" % (finding["job"],
+                                     "100%% DEAD" if severity == guard_tasks.CRITICAL
                                      else "crash-looping",
-                                     finding["exception"][:100], finding["count"]),
+                                     finding["exception"][:100], finding["count"])),
         escalate_why=("%d identical tracebacks in %s. Last frame: %s."
                       % (finding["count"], finding["err_path"], finding["last_frame"])))
 
@@ -441,7 +538,7 @@ def run(log_dir=None, window_hours=None, dry_run=False):
         print("crash_loop_detector: disabled")
         return {"enabled": False}
     jobs = scan(log_dir, window_hours)
-    findings = classify(jobs)
+    findings = coalesce_by_signature(classify(jobs))
     state = _load_state()
     now = time.time()
     project_row = _orchestrator_project() if not dry_run else {}
@@ -501,7 +598,7 @@ def run(log_dir=None, window_hours=None, dry_run=False):
 def stats():
     """Module statistics for the dashboard."""
     try:
-        findings = classify(scan())
+        findings = coalesce_by_signature(classify(scan()))
         return {"enabled": ENABLED, "findings": len(findings),
                 "dead_modules": len([f for f in findings if "module_dead" in f["reasons"]]),
                 "tracked_signatures": len(_load_state())}
