@@ -3527,13 +3527,21 @@ def _reap_zombie_tasks():
                                  and account not in live_runner_ids
                                  and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
             if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
-                patch = agentic_repair.repair_patch(
-                    t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
-                        else "zombie-reaper: stale RUNNING >30min"),
-                    category="orphaned-running",
-                    directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
-                db.update("tasks", {"id": t["id"]}, patch)
-                reclaimed += 1
+                # Per-task guard, not per-batch. Without it one unwritable row raised
+                # into the outer handler and abandoned every task after it in the
+                # list — so a single bad task could keep the rest of the orphan
+                # backlog un-reclaimed indefinitely, and which ones got rescued
+                # depended on their position in the query result.
+                try:
+                    patch = agentic_repair.repair_patch(
+                        t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
+                            else "zombie-reaper: stale RUNNING >30min"),
+                        category="orphaned-running",
+                        directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
+                    db.update("tasks", {"id": t["id"]}, patch)
+                    reclaimed += 1
+                except Exception as e:
+                    print(f"[zombie-reaper] could not reclaim {t.get('slug') or t.get('id')}: {e}")
         if reclaimed:
             print(f"[zombie-reaper] reclaimed {reclaimed} stale RUNNING tasks")
         retry_cutoff = (datetime.datetime.now(datetime.timezone.utc)
