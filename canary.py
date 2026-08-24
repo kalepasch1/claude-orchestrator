@@ -6,6 +6,9 @@ canary-gemini-25 series (define-valida / setup-basic-c / exit-code-en slices):
     immediately after imports, guarded so an embedding application's logging
     configuration is never clobbered.
   * validate_canary(response_text) -> bool  (str -> bool)
+  * process_response(response_text) -> int  (0 when the marker is present, 1 when
+    it is absent) — the one place the predicate becomes a process exit status, so
+    `main()`, the tests and embedding pipelines cannot drift apart.
   * CLI integration: `python canary.py <text…>` exits 0 when the canary marker
     is present, 1 when absent — so pipelines can gate on the exit code.
   * parse_gemini_text(payload) -> str, and `python canary.py --request-only [PATH]`,
@@ -134,6 +137,25 @@ def request_only(path=None, out=None):
     return 0
 
 
+def process_response(response_text) -> int:
+    """Map a model response to the CLI exit code: 0 = marker present, 1 = absent.
+
+    This is the single place the boolean predicate is turned into a process exit
+    status, so `main()`, the pytest suite and any embedding pipeline all agree on
+    the contract instead of each re-deriving `0 if ok else 1`:
+
+        process_response("The canary sings") == 0
+        process_response("no bird")          == 1
+
+    Fail-soft per repo convention: any non-string (None, dict, bytes) is a failed
+    validation, i.e. exit code 1 — never an exception.
+    """
+    ok = validate_canary(response_text)
+    code = 0 if ok else 1
+    logger.info("process_response: exit code %d", code)
+    return code
+
+
 def main(argv=None) -> int:
     """Validate CLI-provided text; exit 0 iff the canary marker is present.
 
@@ -145,11 +167,12 @@ def main(argv=None) -> int:
         rest = args[1:]
         return request_only(rest[0] if rest else None)
     text = " ".join(args)
-    if validate_canary(text):
+    code = process_response(text)
+    if code == 0:
         logger.info("canary: validation passed")
-        return 0
-    logger.error("canary: validation failed")
-    return 1
+    else:
+        logger.error("canary: validation failed")
+    return code
 
 
 if __name__ == "__main__":
