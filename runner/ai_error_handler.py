@@ -21,14 +21,40 @@ HIGH_CONFIDENCE_THRESHOLD = float(
 # Pattern registry — (compiled_regex, category, confidence)
 # ---------------------------------------------------------------------------
 _PATTERNS: list[tuple[re.Pattern, str, float]] = [
+    # billing / quota exhaustion — MUST precede auth and resource.
+    #
+    # A provider that answers "403 permission-denied: your team has used all available
+    # credits" matches the auth pattern (403) at 0.90 confidence, and auth was a
+    # transient category, so the runner retried it at 4s, 8s, 16s and 32s and then
+    # failed anyway. Sixty seconds burned per task, and identically for every
+    # subsequent task routed to that provider, because no amount of waiting adds
+    # credits to an account. This is the failure that exhausted retries on
+    # improve-distribute-test-runners-across-fleet-8-slice-3.
+    #
+    # Ordering is load-bearing: classify_error returns the FIRST match, so these must
+    # sit above both the auth 403 rule and the resource "quota exceeded" rule.
+    (re.compile(r"used all available credits|purchase more credits|"
+                r"spending limit|billing (?:hard )?limit|"
+                r"insufficient (?:credit|funds|quota|balance)|"
+                r"payment required|402\b", re.I), "billing", 0.95),
+    (re.compile(r"(?:credit|quota)s? (?:exhausted|depleted|used up)|"
+                r"exceeded your current quota|out of credits", re.I), "billing", 0.92),
+
     # dependency / import
     (re.compile(r"ModuleNotFoundError|ImportError|No module named", re.I), "dependency", 0.95),
     (re.compile(r"package .* not found|pip install|requirements\.txt", re.I), "dependency", 0.85),
     (re.compile(r"cannot import name", re.I), "dependency", 0.80),
 
-    # auth
+    # auth — expiry rules FIRST.
+    #
+    # classify_error returns the first match and reports it as `pattern`, which is the
+    # only evidence is_transient gets. "401: token expired" matching the numeric rule
+    # first would report pattern="401" and throw away the one detail that makes it
+    # retryable, so the specific rule has to win.
+    (re.compile(r"token(?:s)? (?:has )?expired|expired token|session expired|"
+                r"credential(?:s)? expired", re.I), "auth", 0.90),
     (re.compile(r"401|403|Unauthorized|Forbidden|AuthenticationError", re.I), "auth", 0.90),
-    (re.compile(r"token expired|invalid token|permission denied", re.I), "auth", 0.88),
+    (re.compile(r"invalid token|permission denied", re.I), "auth", 0.88),
     (re.compile(r"Access Denied|credentials", re.I), "auth", 0.75),
 
     # timeout
@@ -53,11 +79,28 @@ _PATTERNS: list[tuple[re.Pattern, str, float]] = [
     (re.compile(r"Exception|Error", re.I), "runtime", 0.50),
 ]
 
-# Transient categories — worth an automatic retry
-_TRANSIENT_CATEGORIES = {"timeout", "resource", "auth"}
+# Transient categories — worth an automatic retry.
+#
+# `auth` is deliberately NOT here any more. It covered both "the token expired, refresh
+# and it works" and "this account is not allowed to do this, ever", and the retry loop
+# could not tell them apart — so every hard 403 cost four backoff sleeps before failing.
+# Token expiry is still retried, via _RETRYABLE_AUTH below, which requires positive
+# evidence of expiry rather than assuming it.
+_TRANSIENT_CATEGORIES = {"timeout", "resource"}
+
+# Auth errors worth one retry: a credential that WAS valid and aged out. Anything else
+# (permission denied, forbidden, invalid key) needs a human, not a sleep.
+_RETRYABLE_AUTH = re.compile(
+    r"token expired|expired token|session expired|token has expired|"
+    r"credential(?:s)? expired|refresh(?:ing)? the token", re.I)
+
+# Categories that can never be fixed by waiting. Retrying them is pure cost: the runner
+# burns its backoff budget and the task fails in exactly the same way.
+_PERMANENT_CATEGORIES = {"billing"}
 
 # Severity ordering (lower index = higher severity)
-_SEVERITY_ORDER = ["resource", "auth", "syntax", "dependency", "timeout", "runtime", "unknown"]
+_SEVERITY_ORDER = ["billing", "resource", "auth", "syntax", "dependency", "timeout",
+                   "runtime", "unknown"]
 
 # ---------------------------------------------------------------------------
 # Remediation lookup
@@ -95,6 +138,14 @@ _REMEDIATIONS: dict[str, list[str]] = {
         "Reduce batch size / concurrency.",
         "Check for memory leaks in long-running processes.",
         "If OOMKilled: increase container memory limit.",
+    ],
+    "billing": [
+        "STOP RETRYING — no amount of backoff adds credits to an account.",
+        "Add credits or raise the spending limit for the failing provider.",
+        "Until then, take that provider out of the routing rotation so tasks are not "
+        "routed into a guaranteed failure.",
+        "Check whether other tasks are failing the same way: one exhausted provider "
+        "fails every task routed to it, not just this one.",
     ],
     "unknown": [
         "Inspect the full error log for context.",
@@ -141,10 +192,26 @@ def suggest_remediation(classification: dict) -> list[str]:
     return list(_REMEDIATIONS.get(category, _REMEDIATIONS["unknown"]))
 
 
+def is_permanent(classification: dict) -> bool:
+    """Return *True* if no amount of retrying can change the outcome.
+
+    Currently: billing/quota exhaustion. Callers should stop retrying, surface the
+    provider, and let a human add credits or reroute.
+    Fail-soft: bad input → ``False``.
+    """
+    if not classification or not isinstance(classification, dict):
+        return False
+    return classification.get("category", "unknown") in _PERMANENT_CATEGORIES
+
+
 def is_transient(classification: dict) -> bool:
     """Return *True* if the error is likely transient and worth retrying.
 
-    Transient categories: timeout, resource, auth (token expiry).
+    Transient: timeout, resource, and auth ONLY when the text shows a credential
+    actually expired. A flat 403/permission-denied is not retried — it used to be, and
+    that is how a provider's "you are out of credits" answer cost four backoff sleeps
+    per task, on every task, indefinitely.
+
     Fail-soft: bad input → ``False`` (don't retry what we don't understand).
     """
     if not classification or not isinstance(classification, dict):
@@ -152,6 +219,16 @@ def is_transient(classification: dict) -> bool:
 
     category = classification.get("category", "unknown")
     confidence = classification.get("confidence", 0.0)
+
+    # Permanent beats everything, including a high-confidence match.
+    if is_permanent(classification):
+        return False
+
+    if category == "auth":
+        # Requires positive evidence of expiry. `pattern` is what classify_error
+        # matched; fall back to any text the caller kept on the dict.
+        evidence = f"{classification.get('pattern', '')} {classification.get('text', '')}"
+        return bool(_RETRYABLE_AUTH.search(evidence))
 
     if category in _TRANSIENT_CATEGORIES and confidence >= HIGH_CONFIDENCE_THRESHOLD:
         return True

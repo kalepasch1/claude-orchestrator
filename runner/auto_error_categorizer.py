@@ -77,10 +77,27 @@ _TRANSIENT_PATTERNS = re.compile(
     r"read timed out|write timed out)"
 )
 
+# Billing / quota exhaustion. Checked BEFORE the two lists below and short-circuits to
+# permanent, because it is the one failure that is unambiguously not worth a retry and
+# that both lists get wrong:
+#   * _TRANSIENT_PATTERNS matches "quota exceeded" and "resource_exhausted", which is
+#     exactly how a provider phrases "you are out of credits";
+#   * _PERMANENT_PATTERNS spells it "permission\s*denied", which does NOT match the
+#     literal `'code': 'permission-denied'` that providers actually return — the hyphen
+#     is not whitespace. So the real message fell through to AMBIGUOUS.
+# Retrying a spent account cannot succeed, and it fails identically for every task
+# routed to that provider until a human adds credits.
+_BILLING_PATTERNS = re.compile(
+    r"(?i)(used all available credits|purchase more credits|spending limit|"
+    r"billing\s*(hard\s*)?limit|insufficient\s*(credit|funds|quota|balance)|"
+    r"payment\s*required|exceeded your current quota|"
+    r"(credit|quota)s?\s*(exhausted|depleted)|out of credits)"
+)
+
 _PERMANENT_PATTERNS = re.compile(
     r"(?i)(syntax\s*error|type\s*error|name\s*error|"
     r"attribute\s*error|import\s*error|module\s*not\s*found|"
-    r"permission\s*denied|forbidden|unauthorized|"
+    r"permission[\s_-]*denied|forbidden|unauthorized|"
     r"invalid\s*(argument|parameter|input|config)|"
     r"not\s*found|does\s*not\s*exist|"
     r"assertion\s*error|test.*fail|"
@@ -120,10 +137,16 @@ def categorize(error_text, context=None):
             return learned
 
         # Static pattern matching
+        is_billing = bool(_BILLING_PATTERNS.search(text))
         is_transient = bool(_TRANSIENT_PATTERNS.search(text))
         is_permanent = bool(_PERMANENT_PATTERNS.search(text))
 
-        if is_transient and not is_permanent:
+        if is_billing:
+            # Short-circuits both lists. High confidence: the wording is specific
+            # enough that a false positive would have to be someone quoting a billing
+            # error, and the cost of a false negative is a permanent retry loop.
+            category, confidence = PERMANENT, 0.95
+        elif is_transient and not is_permanent:
             category, confidence = TRANSIENT, 0.85
         elif is_permanent and not is_transient:
             category, confidence = PERMANENT, 0.85
