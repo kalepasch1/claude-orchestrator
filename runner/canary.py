@@ -234,6 +234,72 @@ def validate_canary(response_text):
     return False
 
 
+# ── what "failure" means in the canary flow ───────────────────────────────────────────
+#
+# It was never written down. `verdict == "promote"` was compared inline in three places,
+# so "failure" was defined by implication — and each site had to re-decide what an absent
+# or unrecognised verdict meant. One definition, stated once, fail-closed:
+#
+#   SUCCESS  exactly one thing: a dict result whose verdict is "promote". Every metric
+#            that was checked was within its threshold.
+#   FAILURE  everything else, specifically:
+#              * verdict "rollback"       — a threshold was breached, or metrics were
+#                                           unreachable after all retries
+#              * an unrecognised verdict  — the evaluator returned something no caller
+#                                           understands
+#              * a missing verdict, or a non-dict result — the evaluation did not
+#                                           complete
+#
+# Fail-closed on the unknown cases is the whole point: this gauge gates a deploy. Reading
+# "I could not tell" as success is how a broken evaluator promotes a broken release.
+PROMOTE = "promote"
+ROLLBACK = "rollback"
+
+
+def is_failure(result):
+    """True when `result` is a canary FAILURE, per the definition above. Never raises."""
+    if not isinstance(result, dict):
+        return True
+    return result.get("verdict") != PROMOTE
+
+
+def failure_reason(result):
+    """Why this result is a failure, or None when it is a success. Never empty."""
+    if not is_failure(result):
+        return None
+    if not isinstance(result, dict):
+        return f"evaluation did not return a result (got {type(result).__name__})"
+    verdict = result.get("verdict")
+    reason = str(result.get("reason") or "").strip()
+    if verdict is None:
+        return f"evaluation returned no verdict{f': {reason}' if reason else ''}"
+    if verdict != ROLLBACK:
+        return f"unrecognised verdict {verdict!r}{f': {reason}' if reason else ''}"
+    return reason or "rollback with no reason given"
+
+
+def record_result(result):
+    """Stamp the canary_last_success gauge from an evaluation result.
+
+    The gauge was only ever written by main(). Any caller that used `evaluate()` as a
+    library — the deploy gate does — got a verdict while the gauge kept the timestamp of
+    the previous success, so an alert on gauge staleness stayed quiet through exactly the
+    failure it exists to catch. Returns True when the result was a success.
+    """
+    if is_failure(result):
+        record_failure()
+        return False
+    record_success()
+    return True
+
+
+def evaluate_and_record(metrics_url=None):
+    """`evaluate()` with the gauge kept honest. Prefer this over calling evaluate()."""
+    result = evaluate(metrics_url)
+    record_result(result)
+    return result
+
+
 def evaluate(metrics_url=None):
     metrics_url = metrics_url or os.environ.get("METRICS_URL")
     if not metrics_url:
@@ -306,14 +372,13 @@ def main(argv=None):
         start_metrics_server()
 
     result = evaluate(argv[0] if argv else None)
-    if result.get("verdict") == "promote":
-        record_success()
-    else:
-        # Failure check location: a rollback must clear the gauge, not leave
-        # the previous success timestamp standing.
-        record_failure()
+    # ONE definition of failure (see is_failure): the gauge, the log line and the exit
+    # code can no longer disagree about whether this run passed.
+    ok = record_result(result)
+    if not ok:
+        _log.warning("canary FAILURE: %s", failure_reason(result))
     print(json.dumps(result))
-    return 0 if result.get("verdict") == "promote" else 1
+    return 0 if ok else 1
 
 
 class _MetricsHandler(BaseHTTPRequestHandler):
