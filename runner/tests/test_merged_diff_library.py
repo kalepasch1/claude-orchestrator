@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import merged_diff_library as mdl
 import patch_transplant
+import transplant_discipline
 import diff_compiler
 
 
@@ -574,7 +575,14 @@ class RecordTest(unittest.TestCase):
 
 class PatchTransplantHintTest(unittest.TestCase):
     TASK = {"id": "t1", "prompt": "add stripe webhook verification handler"}
-    HIT = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": 0.5,
+    # Similarity must clear transplant_discipline.MIN_TRANSPLANT_SIMILARITY, which is the
+    # spec's 0.55. This fixture was pinned at 0.5 back when patch_transplant.hint() carried
+    # its own env-defaulted 0.18 floor; when the floor was consolidated into
+    # transplant_discipline and raised, hint() correctly started returning "" for it and
+    # five tests here went red against working code. Derive the value from the floor so
+    # tuning the floor cannot silently invalidate the fixture a third time.
+    HIT = [{"project": "tomorrow", "slug": "stripe-hook",
+            "similarity": transplant_discipline.MIN_TRANSPLANT_SIMILARITY + 0.05,
             "summary": "prior stripe hook", "diff": "+ old patch"}]
 
     def test_returns_transplant_hint_when_hit(self):
@@ -589,9 +597,14 @@ class PatchTransplantHintTest(unittest.TestCase):
         self.assertEqual(result, "")
 
     def test_returns_empty_when_similarity_below_threshold(self):
-        low_hit = [{**self.HIT[0], "similarity": 0.01}]
-        with patch.object(patch_transplant.merged_diff_library, "find", return_value=low_hit), \
-             patch.dict(os.environ, {"ORCH_PATCH_TRANSPLANT_MIN_SIM": "0.18"}):
+        # ORCH_PATCH_TRANSPLANT_MIN_SIM is dead: the floor moved to
+        # transplant_discipline.MIN_TRANSPLANT_SIMILARITY (env ORCH_TRANSPLANT_MIN_SIM)
+        # so hint() and find_transplant_source() cannot disagree. This test passed only
+        # because 0.01 is below every candidate floor; assert against the real one so it
+        # keeps testing rejection rather than coincidence.
+        low_hit = [{**self.HIT[0],
+                    "similarity": transplant_discipline.MIN_TRANSPLANT_SIMILARITY - 0.01}]
+        with patch.object(patch_transplant.merged_diff_library, "find", return_value=low_hit):
             result = patch_transplant.hint(self.TASK)
         self.assertEqual(result, "")
 
@@ -617,7 +630,10 @@ class PatchTransplantHintTest(unittest.TestCase):
 
 class PatchTransplantPreClaimHookTest(unittest.TestCase):
     TASK = {"id": "t1", "prompt": "add stripe webhook verification handler"}
-    HIT = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": 0.5,
+    # Same stale-floor fixture as PatchTransplantHintTest above — pre_claim_hook only
+    # rewrites the prompt when hint() returns something, so 0.5 made it a no-op.
+    HIT = [{"project": "tomorrow", "slug": "stripe-hook",
+            "similarity": transplant_discipline.MIN_TRANSPLANT_SIMILARITY + 0.05,
             "summary": "prior stripe hook", "diff": "+ old patch"}]
 
     def test_prepends_hint_to_task_prompt(self):
