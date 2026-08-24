@@ -225,6 +225,53 @@ def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
+MAX_TURNS_MESSAGE = "Reached maximum number of turns"
+
+#: Substrings the CLI / SDK use when a run ends because it exhausted --max-turns.
+_MAX_TURNS_MARKERS = ("error_max_turns", "maximum number of turns", "max turns exceeded")
+
+
+def detect_max_turns(raw, text="", stderr=""):
+    """True when this result ended because the agent ran out of turns.
+
+    The condition is invisible in ``text`` (which comes back empty), so without an
+    explicit signal the runner cannot tell "ran out of turns" from "had nothing to
+    say" and retries the same wedged call. Fail-soft: any unexpected shape is False.
+    """
+    try:
+        if isinstance(raw, dict):
+            if str(raw.get("subtype") or "").strip() == "error_max_turns":
+                return True
+            if raw.get("error_max_turns") is True:
+                return True
+            if str(raw.get("terminal_reason") or "") == "max_turns":
+                return True
+        blob = " ".join(str(p) for p in (text, stderr) if p).lower()
+        return any(m in blob for m in _MAX_TURNS_MARKERS)
+    except Exception:
+        return False
+
+
+def annotate_max_turns(result, raw=None, text="", stderr=""):
+    """Attach ``error_max_turns`` / ``terminal_reason`` / ``error`` when applicable.
+
+    Returns ``result`` unchanged (and unannotated) when the run ended normally, so a
+    clean success never grows a spurious error field.
+    """
+    try:
+        if not isinstance(result, dict):
+            return result
+        if not detect_max_turns(raw if raw is not None else result, text, stderr):
+            return result
+        result["error_max_turns"] = True
+        result["terminal_reason"] = "max_turns"
+        result.setdefault("error", (text or stderr or MAX_TURNS_MESSAGE).strip()
+                          or MAX_TURNS_MESSAGE)
+    except Exception:
+        pass
+    return result
+
+
 def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         permission="acceptEdits", timeout=None, output_only=True):
     """Metered Claude call. Returns {text, cost_usd, input_tokens, output_tokens, returncode, raw}."""
@@ -291,7 +338,9 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
                     subscription_tracker.record_call("claude-max", "success", model)
                 except Exception:
                     pass
-            return result
+            return annotate_max_turns(result, raw=result.get("raw"),
+                                      text=result.get("text", ""),
+                                      stderr=result.get("stderr", ""))
         except Exception as exc:
             log.warning("Agent SDK path failed (%s); falling back to CLI subprocess", exc)
             # Fall through to CLI path below
@@ -369,8 +418,9 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         subscription_tracker.record_call("claude-max", _cli_outcome, model)
     except Exception:
         pass
-    return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
-            "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or ""}
+    result = {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
+              "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or ""}
+    return annotate_max_turns(result, raw=raw, text=text, stderr=proc.stderr or "")
 
 
 def status():

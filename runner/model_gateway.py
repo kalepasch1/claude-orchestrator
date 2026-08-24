@@ -350,7 +350,15 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "claude":
         import claude_cli
         r = claude_cli.run(prompt, model, project=project, max_turns=1, permission=None, timeout=timeout)
-        return {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+        out = {"text": r.get("text", ""), "cost_usd": r.get("cost_usd", 0),
+               "provider": provider, "model": model}
+        # Diagnostics explaining WHY the call ended must survive the gateway. Dropping
+        # them turned "hit --max-turns" into an indistinguishable empty-text success.
+        for _k in ("error", "terminal_reason", "error_max_turns", "returncode",
+                   "stderr", "rate_limit_type", "skipped"):
+            if isinstance(r, dict) and r.get(_k) is not None and _k not in out:
+                out[_k] = r[_k]
+        return out
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
     else:
