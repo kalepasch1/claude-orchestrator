@@ -1827,6 +1827,40 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     _orig_fork = _git(repo, "merge-base", branch, base).stdout.strip()  # pre-rebase fork point
     rebase_ok, conflict_detail = _rebase_onto_base(repo, branch, base)  # (2)
     if not rebase_ok:
+        # (2b) MINIMAL EXTRACTION BEFORE PAYING FOR A REBUILD.
+        #
+        # The branch that failed to rebase is frequently not carrying a real content
+        # conflict — it is carrying the agent's leftovers alongside the change. Every
+        # extra file in the range is another chance to collide with a base that has
+        # moved. minimal_commit.extract() rebuilds the branch from the task's own
+        # artifact commit onto the current base, keeping only that task's files, and
+        # refuses (leaving the branch untouched) on anything it cannot do safely:
+        # more than max_files paths, any generated tree, a patch that will not apply.
+        #
+        # This runs only on the path that was already going to DELETE the branch and
+        # spend an agent rebuild, so the downside of an attempt is a few git commands.
+        # Everything downstream is unchanged: post-fork regression, the content
+        # regression gate and the test run all still have to pass afterwards. Set
+        # ORCH_MINIMAL_COMMIT_ON_CONFLICT=0 to skip it.
+        if os.environ.get("ORCH_MINIMAL_COMMIT_ON_CONFLICT", "1").strip().lower() \
+                not in ("0", "false", "no", "off"):
+            try:
+                import minimal_commit
+                extracted = minimal_commit.extract(repo, branch, base, task)
+            except Exception as exc:  # noqa: BLE001 — never let recovery break integration
+                extracted = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+            if extracted.get("ok"):
+                rebase_ok, conflict_detail = _rebase_onto_base(repo, branch, base)
+                _log(pname, slug, "MINIMAL",
+                     "extracted {0} file(s) onto {1} @ {2}; rebase {3}".format(
+                         len(extracted.get("files") or []), base,
+                         str(extracted.get("commit") or "")[:12],
+                         "clean" if rebase_ok else "still conflicts"))
+            else:
+                _log(pname, slug, "MINIMAL",
+                     f"not extracted ({extracted.get('reason')}); falling through to rebuild")
+
+    if not rebase_ok:
         # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
         # on the new base, not rot as CONFLICT (that's what stalled the queue before).
         tr = int(task.get("transient_retries") or 0)

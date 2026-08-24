@@ -266,3 +266,117 @@ def test_accelerators_are_wired_into_delivery_paths():
     assert "ThreadPoolExecutor" in release_source
     assert "global_lease" not in __import__("inspect").getsource(release_train.run)
     assert "_load_env()" in open(swarm_executor.__file__, encoding="utf-8").read()
+
+
+# ── minimal_commit is now wired into the merge train's conflict path ──────────
+# The wiring assertion above (`"minimal_commit.extract" in merge_source`) had been
+# red since the module was written: extract() had tests, and nothing called it.
+# These cover the behaviour the wiring buys, not just its presence in the source.
+
+def _repo_with_scratch_commit_after_the_task(tmp_path):
+    """agent/x = base -> the task's commit -> a commit of the agent's own scratch.
+
+    This is the shape runner._commit_agent_work()'s blind `git add -A` produced: the
+    real change lands, then the coding tool's transcript is swept up behind it. The
+    scratch commit touches a file base has since edited, so rebasing the WHOLE branch
+    conflicts — even though the task's own commit collides with nothing.
+
+    Returns (repo, base, artifact_sha) where artifact_sha is the task's commit, not
+    the branch tip.
+    """
+    repo = init_repo(tmp_path)
+    (repo / "app.py").write_text("v1\n")
+    (repo / "notes.md").write_text("base notes\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    base = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+
+    git(repo, "checkout", "-b", "agent/x")
+    (repo / "feature.py").write_text("def feature():\n    return 1\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "agent: the task")
+    artifact = git(repo, "rev-parse", "HEAD")
+
+    (repo / "notes.md").write_text("agent scratch\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "agent: transcript sweep")
+
+    git(repo, "checkout", base)
+    (repo / "notes.md").write_text("base notes, edited upstream\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base moves")
+    return repo, base, artifact
+
+
+def test_minimal_extraction_turns_a_noisy_conflict_into_a_clean_rebase(tmp_path):
+    repo, base, artifact = _repo_with_scratch_commit_after_the_task(tmp_path)
+
+    conflicted = subprocess.run(["git", "rebase", base, "agent/x"],
+                                cwd=repo, capture_output=True, text=True)
+    assert conflicted.returncode != 0, "fixture must actually conflict"
+    subprocess.run(["git", "rebase", "--abort"], cwd=repo, capture_output=True)
+
+    result = minimal_commit.extract(str(repo), "agent/x", base,
+                                    {"slug": "x", "artifact_commit": artifact})
+    assert result["ok"], result
+    assert result["files"] == ["feature.py"], "only the task's own file may be carried"
+
+    clean = subprocess.run(["git", "rebase", base, "agent/x"],
+                           cwd=repo, capture_output=True, text=True)
+    assert clean.returncode == 0, clean.stderr
+    assert git(repo, "show", "agent/x:feature.py").startswith("def feature()")
+    # base's version of the file the scratch commit touched is untouched.
+    assert git(repo, "show", f"{base}:notes.md") == "base notes, edited upstream"
+
+
+def test_minimal_extraction_declines_rather_than_guessing_on_generated_trees(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "app.py").write_text("v1\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    base = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+
+    git(repo, "checkout", "-b", "agent/y")
+    (repo / "dist").mkdir()
+    (repo / "dist" / "bundle.js").write_text("//built\n")
+    (repo / "app.py").write_text("v2\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "agent: work + build output")
+    tip = git(repo, "rev-parse", "HEAD")
+
+    result = minimal_commit.extract(str(repo), "agent/y", base,
+                                    {"slug": "y", "artifact_commit": tip})
+    assert not result["ok"]
+    assert "generated files" in result["reason"]
+    # Refusing must leave the branch exactly as it was.
+    assert git(repo, "rev-parse", "agent/y") == tip
+
+
+def test_conflict_recovery_can_be_switched_off(monkeypatch):
+    calls = []
+    monkeypatch.setattr(minimal_commit, "extract",
+                        lambda *a, **k: calls.append(a) or {"ok": True})
+    monkeypatch.setenv("ORCH_MINIMAL_COMMIT_ON_CONFLICT", "0")
+    source = __import__("inspect").getsource(merge_train._integrate_card)
+    assert 'os.environ.get("ORCH_MINIMAL_COMMIT_ON_CONFLICT", "1")' in source, \
+        "the recovery step must stay opt-out-able"
+    assert calls == []
+
+
+def test_minimal_extraction_works_when_the_branch_is_the_one_checked_out(tmp_path):
+    """merge_train reaches extract() with the branch checked out, and used to lose there.
+
+    `git rebase <base> <branch>` checks <branch> out; `git rebase --abort` leaves it
+    checked out. `git branch -f` refuses to move a checked-out branch, so extraction
+    did all its work and then reported "could not update branch".
+    """
+    repo, base, artifact = _repo_with_scratch_commit_after_the_task(tmp_path)
+
+    failed = subprocess.run(["git", "rebase", base, "agent/x"],
+                            cwd=repo, capture_output=True, text=True)
+    assert failed.returncode != 0
+    subprocess.run(["git", "rebase", "--abort"], cwd=repo, capture_output=True)
+    assert git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "agent/x", \
+        "the aborted rebase must leave the branch checked out for this to be the real case"
+
+    result = minimal_commit.extract(str(repo), "agent/x", base,
+                                    {"slug": "x", "artifact_commit": artifact})
+    assert result["ok"], result
+    assert git(repo, "rev-parse", "agent/x") == result["commit"]
+    # working tree moved with the ref, not left describing the old commit
+    assert git(repo, "status", "--porcelain") == ""
+    assert (repo / "feature.py").read_text().startswith("def feature()")
