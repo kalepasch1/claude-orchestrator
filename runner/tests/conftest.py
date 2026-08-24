@@ -235,6 +235,40 @@ class UnboundedSubprocessInTest(UserWarning):
 _DEFAULT_SUBPROCESS_TIMEOUT = 30
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "localhost.localdomain", "ip6-localhost",
+                             "::1", "::ffff:127.0.0.1", "0:0:0:0:0:0:0:1"})
+
+
+def _is_loopback(address):
+    """True when `address` names this machine and the packets never leave it.
+
+    Accepts the (host, port[, flowinfo, scope_id]) tuples socket.connect is given.
+    Deliberately conservative: anything it cannot positively identify as loopback is
+    treated as remote and blocked, so a widened guard can never silently let real
+    egress through. It does NOT resolve names — a DNS lookup here would be exactly
+    the remote dependency the guard exists to prevent — so only the literal loopback
+    spellings above and the 127.0.0.0/8 block are recognised.
+    """
+    try:
+        host = address[0] if isinstance(address, (tuple, list)) else address
+    except Exception:
+        return False
+    if not isinstance(host, (str, bytes, bytearray)):
+        return False
+    if isinstance(host, (bytes, bytearray)):
+        try:
+            host = host.decode("ascii")
+        except Exception:
+            return False
+    host = host.strip().strip("[]").lower()
+    if host in _LOOPBACK_HOSTS:
+        return True
+    parts = host.split(".")
+    if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        return parts[0] == "127"
+    return False
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -253,7 +287,18 @@ def _hermetic(request, monkeypatch):
     def _blocked_connect(self, address, *a, **kw):
         # AF_UNIX has no address family risk and is how local tooling talks to
         # itself; only IP sockets leave the machine.
-        if self.family in (_socket.AF_INET, _socket.AF_INET6):
+        #
+        # LOOPBACK IS NOT THE NETWORK. The guard's own rationale is "the suite's
+        # runtime and its pass/fail become someone else's uptime" — nobody else's
+        # uptime is involved in 127.0.0.1. Blocking it anyway broke tests that talk
+        # to a server THIS PROCESS started: runner/tests/test_canary_metrics_server.py
+        # binds the canary /metrics endpoint on localhost and then scrapes it, which
+        # is exactly the behaviour under test, and five of its cases failed with
+        # "Connection refused by the test suite's hermetic guard". Marking them
+        # @allow_network would have been the wrong fix: it would also re-open real
+        # egress for those tests, to work around a rule that should never have
+        # applied to them.
+        if self.family in (_socket.AF_INET, _socket.AF_INET6) and not _is_loopback(address):
             raise NetworkAccessInTest(
                 111,  # ECONNREFUSED, so errno-inspecting callers behave normally
                 f"Connection refused by the test suite's hermetic guard: {address!r}. "
@@ -279,8 +324,14 @@ def _hermetic(request, monkeypatch):
     # when stdin is captured.
     for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
         monkeypatch.setenv(var, "http://127.0.0.1:9")
-    monkeypatch.setenv("no_proxy", "")
-    monkeypatch.setenv("NO_PROXY", "")
+    # ...but loopback must bypass that proxy. Emptying no_proxy sent even
+    # http://127.0.0.1:<port>/metrics through the dead discard-port proxy, so a test
+    # scraping its OWN in-process server was refused by the guard's plumbing rather
+    # than by the guard's rule. Exempting loopback keeps every remote destination
+    # proxied into the void exactly as before.
+    _LOOPBACK_NO_PROXY = "localhost,127.0.0.1,::1"
+    monkeypatch.setenv("no_proxy", _LOOPBACK_NO_PROXY)
+    monkeypatch.setenv("NO_PROXY", _LOOPBACK_NO_PROXY)
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     monkeypatch.setenv("GIT_ASKPASS", "/usr/bin/false")
     monkeypatch.setenv("SSH_ASKPASS", "/usr/bin/false")
