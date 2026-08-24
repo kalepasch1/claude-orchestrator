@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 preflight_filter.py — Pre-dispatch quality gate for the orchestrator.
 
@@ -13,7 +12,17 @@ Categories detected:
 4. Non-actionable prompts (too short, empty)
 5. Blocker-quarantine candidates (legal/security with no code target)
 6. Metadata-only prompts (orchestration boilerplate with no implementation spec)
+
+POSITION MATTERS. This text sat one line lower, below `from __future__ import
+annotations`, where Python does not treat it as the module docstring at all: it is
+just an expression statement that is evaluated and discarded. `__doc__` was None,
+`help(preflight_filter)` showed nothing, `pydoc` produced an empty page, and any
+tooling that reads module docs saw an undocumented module — while a reader opening
+the file saw documentation and had no reason to suspect otherwise. The docstring
+must be the FIRST statement; the only thing allowed above it is the shebang.
 """
+from __future__ import annotations
+
 import re, os, logging
 
 log = logging.getLogger(__name__)
