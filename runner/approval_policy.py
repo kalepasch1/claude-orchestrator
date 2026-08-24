@@ -131,6 +131,12 @@ def _enrich_gated(card):
     return patch
 
 
+#: Ids per `in.(...)` lookup. PostgREST puts the filter in the query string, so a
+#: long list becomes a URL the server rejects with HTTP 400. Matches the chunk size
+#: batch_completion already uses for the same reason.
+_CARD_LOOKUP_CHUNK = 50
+
+
 def gate_owner_emails(limit=400):
     """CENTRAL OWNER-EMAIL GUARDRAIL (owner policy 2026-07-03).
 
@@ -145,20 +151,46 @@ def gate_owner_emails(limit=400):
     emailed). Rows with no approval_id are system alerts (account exhaustion, cost circuit, weekly
     report) and are left alone — those are the few things the owner does want to hear about.
     """
+    # A chokepoint has to see everything, or it is not one.
+    #
+    # This was a capped `select(..., order=id.desc, limit=400)`, and db's own
+    # truncated-scan detector was reporting it more than any other call site in the
+    # fleet: 8391 times. Descending order means the cap always falls on the OLDEST
+    # unsent rows, so once more than `limit` notifications were pending, the ones
+    # past the cap were never inspected and therefore never demoted — they stayed
+    # channel='email' and remained eligible to reach the owner's inbox. That is the
+    # precise thing this function exists to prevent, and it failed silently and
+    # preferentially for the rows that had been waiting longest.
+    #
+    # select_all pages to exhaustion and reports if it ever hits max_rows rather
+    # than returning a short list. `limit` becomes the paging budget, floored so a
+    # small caller value cannot reintroduce a narrow horizon.
     try:
-        pend = db.select("notifications",
-                         {"select": "id,approval_id,channel", "channel": "in.(email,digest)",
-                          "sent": "eq.false", "order": "id.desc", "limit": str(limit)}) or []
+        pend = db.select_all("notifications",
+                             {"select": "id,approval_id,channel",
+                              "channel": "in.(email,digest)", "sent": "eq.false"},
+                             order="id.desc",
+                             max_rows=max(int(limit or 0), 5000)) or []
     except Exception:
         return 0
     ids = sorted({str(n["approval_id"]) for n in pend if n.get("approval_id")})
     cards = {}
-    if ids:
+    # Chunked because the id list is now unbounded. PostgREST takes this filter in
+    # the QUERY STRING, so one `in.(...)` of thousands of ids builds a URL long
+    # enough for the server to reject with HTTP 400 — the same failure
+    # batch_completion documents and chunks around. Un-chunked, paging to
+    # exhaustion above would have traded a silent miss for a hard failure.
+    for start in range(0, len(ids), _CARD_LOOKUP_CHUNK):
+        chunk = ids[start:start + _CARD_LOOKUP_CHUNK]
         try:
-            for r in (db.select("approvals", {"select": "*", "id": f"in.({','.join(ids)})"}) or []):
+            for r in (db.select("approvals",
+                                {"select": "*", "id": f"in.({','.join(chunk)})"}) or []):
                 cards[r["id"]] = r
         except Exception:
-            cards = {}
+            # A chunk that fails leaves its cards unknown. is_legal_gated() is then
+            # False for them, so they are DEMOTED rather than emailed: the failure
+            # direction is the safe one for an owner-email guard.
+            continue
     demoted = 0
     for n in pend:
         aid = n.get("approval_id")
