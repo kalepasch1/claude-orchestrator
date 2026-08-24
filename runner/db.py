@@ -6,7 +6,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 The .env file in runner/ is auto-loaded at import time by the _load_env() helper below.
 """
-import os, re, sys, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
+import os, re, sys, json, random, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
 
 # ── DB failover detection ────────────────────────────────────────────────────
@@ -309,6 +309,43 @@ HTTP_RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 52
 # 500/503 are deliberately NOT here: PostgREST and Postgres themselves return those, and
 # failing over on them would relabel a real server-side error as a connectivity problem.
 GATEWAY_STATUSES = {502, 504, 520, 521, 522, 523, 524, 525}
+
+# --- retry backoff -----------------------------------------------------------------------
+#
+# The backoff used to be exactly `min(12, 2 ** attempt) + 0.1 * attempt` — deterministic, so
+# every client that failed at the same moment retried at the same moment. That is the failure
+# mode already recorded above: on 2026-08-03 "the arbitrage, batchmech and forecast jobs all
+# crash-looped on 521/525 WITHIN THE SAME MINUTE". They were not merely failing together, they
+# were re-attacking together, in lockstep, because nothing separated them. With sixteen cowork
+# executors plus the runner fleet against one endpoint, a single 429 or 5xx blip re-synchronises
+# the whole herd onto a 2s/4s/8s/12s drumbeat aimed at an origin that is already struggling.
+#
+# Equal jitter: sample uniformly in [base/2, base]. Full jitter (uniform in [0, base]) can draw
+# a delay of ~0 and hammer the origin immediately, which loses the property the retry curve was
+# widened for in the first place — riding out an outage that "lasted longer than one second of
+# backoff". Half the curve is still a floor that grows; the other half is what decorrelates.
+ORCH_DB_RETRY_JITTER = (os.environ.get("ORCH_DB_RETRY_JITTER", "1").strip().lower()
+                        not in ("0", "false", "no", "off"))
+
+
+def _retry_delay(attempt, _rand=None):
+    """Seconds to wait before retry `attempt`. Never raises, never negative.
+
+    Fail-soft: if anything about the jitter draw goes wrong, fall back to the
+    deterministic curve. A backoff helper that can throw would convert a
+    retryable blip into a crash, which is strictly worse than a synchronised retry.
+    """
+    try:
+        base = min(12, 2 ** int(attempt)) + (0.1 * int(attempt))
+    except Exception:
+        return 1.0
+    if not ORCH_DB_RETRY_JITTER:
+        return base
+    try:
+        draw = _rand() if _rand is not None else random.random()
+        return base * (0.5 + 0.5 * float(draw))
+    except Exception:
+        return base
 
 # --- control-plane circuit breaker -------------------------------------------------------
 #
@@ -819,11 +856,11 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
                 raise _rejected(e, method, path) from e
             if not retryable_status or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
-            time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
+            time.sleep(_retry_delay(attempt))
         except (urllib.error.URLError, TimeoutError, socket.timeout):
             if not retryable_transport or attempt >= attempts - 1:
                 raise
-            time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
+            time.sleep(_retry_delay(attempt))
 
 
 # TRUNCATED-SCAN DETECTOR (2026-08-06)
