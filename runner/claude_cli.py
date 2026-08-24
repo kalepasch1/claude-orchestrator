@@ -125,6 +125,62 @@ def _paused(project=None):
 
 
 # ---------------------------------------------------------------------------
+# Terminal-reason detection
+#
+# The CLI/SDK signal a turn-budget exhaustion as
+#   {"type":"result","subtype":"error_max_turns","is_error":true,...}
+# which carries no "result" key. Before this, run() fell through to the raw-stdout
+# fallback and returned a normal-looking payload, so callers (approval digest
+# batching among them) could not distinguish "agent finished" from "agent ran out
+# of turns mid-edit" and retried forever. Every run() result now carries an
+# explicit `terminal_reason` plus a human-readable `error`.
+# ---------------------------------------------------------------------------
+
+TERMINAL_MAX_TURNS = "max_turns"
+
+_MAX_TURNS_TEXT_MARKERS = (
+    "reached maximum number of turns",
+    "error_max_turns",
+    "max turns exceeded",
+)
+
+
+def detect_terminal_reason(raw=None, text="", stderr=""):
+    """Classify how a Claude run ended. Pure — no I/O, safe to call anywhere.
+
+    Returns (terminal_reason, error_detail). `terminal_reason` is None for a normal
+    completion. Fail-soft: any unexpected shape yields (None, None) rather than raising.
+    """
+    try:
+        detail = None
+        subtype = stop = None
+        if isinstance(raw, dict):
+            subtype = str(raw.get("subtype") or "")
+            stop = str(raw.get("stop_reason") or "")
+            for key in ("error", "error_message", "message"):
+                val = raw.get(key)
+                if isinstance(val, str) and val:
+                    detail = val
+                    break
+        blob = " ".join(
+            str(p) for p in (subtype, stop, detail, text, stderr) if p
+        ).lower()
+        if subtype == "error_max_turns" or stop == TERMINAL_MAX_TURNS or any(
+            m in blob for m in _MAX_TURNS_TEXT_MARKERS
+        ):
+            turns = raw.get("num_turns") if isinstance(raw, dict) else None
+            suffix = f" after {turns} turn(s)" if turns else ""
+            return TERMINAL_MAX_TURNS, detail or (
+                f"Reached maximum number of turns{suffix}"
+            )
+        if isinstance(raw, dict) and raw.get("is_error"):
+            return "error", detail or "run reported is_error"
+        return None, None
+    except Exception:
+        return None, None
+
+
+# ---------------------------------------------------------------------------
 # Agent SDK path — uses subscription tokens via the CLI's OAuth auth.
 # Same billing as the CLI subprocess path, but with structured output,
 # rate limit events, and per-task budget caps.
@@ -167,6 +223,7 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
     num_turns = 0
     returncode = 0
     rate_limit_type = None
+    result_subtype = ""
 
     async for message in _sdk_query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -179,6 +236,7 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
             itok = usage.get("input_tokens", 0)
             otok = usage.get("output_tokens", 0)
             num_turns = message.num_turns or 0
+            result_subtype = str(getattr(message, "subtype", "") or "")
             if message.result:
                 collected_text = [message.result]
             if message.is_error:
@@ -192,17 +250,26 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
 
     text = "\n".join(collected_text) if collected_text else ""
 
+    raw = {"result": text, "total_cost_usd": cost,
+           "usage": {"input_tokens": itok, "output_tokens": otok},
+           "agent_sdk": True, "turns": num_turns,
+           "num_turns": num_turns, "subtype": result_subtype,
+           "is_error": bool(returncode)}
+    terminal_reason, error_detail = detect_terminal_reason(raw, text, "")
+    if terminal_reason == TERMINAL_MAX_TURNS:
+        returncode = returncode or 1
+
     return {
         "text": text,
         "cost_usd": cost,
         "input_tokens": itok,
         "output_tokens": otok,
         "returncode": returncode,
-        "raw": {"result": text, "total_cost_usd": cost,
-                "usage": {"input_tokens": itok, "output_tokens": otok},
-                "agent_sdk": True, "turns": num_turns},
+        "raw": raw,
         "stderr": "",
         "rate_limit_type": rate_limit_type,
+        "terminal_reason": terminal_reason,
+        "error": error_detail,
     }
 
 
@@ -369,8 +436,16 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         subscription_tracker.record_call("claude-max", _cli_outcome, model)
     except Exception:
         pass
+    # Turn-budget exhaustion is a FAILURE, not a completion — surface it by name so
+    # callers stop treating a half-finished edit as a delivered result.
+    terminal_reason, error_detail = detect_terminal_reason(raw, text, proc.stderr or "")
+    returncode = proc.returncode
+    if terminal_reason == TERMINAL_MAX_TURNS:
+        log.warning("claude run hit max_turns: %s", error_detail)
+        returncode = returncode or 1
     return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
-            "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or ""}
+            "returncode": returncode, "raw": raw, "stderr": proc.stderr or "",
+            "terminal_reason": terminal_reason, "error": error_detail}
 
 
 def status():
