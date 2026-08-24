@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Two functions named `validate_canary` exist, and they do NOT agree.
+"""Two functions named `validate_canary` exist. They now agree on the VERDICT and
+still differ on LOG SEVERITY.
 
-    canary.validate_canary            substring match, WARNING on a miss
+    canary.validate_canary            word-boundary match, WARNING on a miss
     canary_validation.validate_canary word-boundary match, INFO on a miss
 
-Both contracts are deliberate and separately tested, so this file does not try to pick a
-winner. It pins the DIFFERENCE, so a future "remove the duplicate" pass has to confront a
-failing test rather than silently changing what a caller gets — the imports look
-interchangeable at the call site and are not.
+HISTORY (2026-08-13 unification): canary.py used to match on a bare SUBSTRING, so
+"precanary" validated there and failed at the other entry point — the same hop could be
+reported as both intact and broken depending on the import path. canary.py now delegates
+to canary_validation, and this file pins that convergence: an affixed marker must be
+rejected by BOTH. The severity difference is deliberate and is still pinned below,
+because an operator grepping for warnings depends on it.
 """
 import logging
 import os
@@ -16,8 +19,11 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner"))
 
-from canary import validate_canary as substring_match  # noqa: E402
+from canary import validate_canary as canary_py_match  # noqa: E402
 from canary_validation import validate_canary as word_boundary_match  # noqa: E402
+
+# Kept so the historical name in this file still reads: both are word-boundary now.
+substring_match = canary_py_match
 
 
 class AgreementTests(unittest.TestCase):
@@ -46,14 +52,26 @@ class AgreementTests(unittest.TestCase):
 
 
 class DivergenceTests(unittest.TestCase):
-    """The cases that make the two NOT interchangeable."""
+    """What used to diverge, and what still does."""
 
-    AFFIXED = ["precanary build", "xcanary", "canaryish", "my-canary-token"]
+    # No word boundary around the marker — rejected by BOTH since the unification.
+    AFFIXED = ["precanary build", "xcanary", "canaryish"]
+    # A hyphen IS a word boundary, so this one is a match for both.
+    DELIMITED = ["my-canary-token"]
 
-    def test_an_affixed_marker_is_a_match_only_for_the_substring_implementation(self):
+    def test_an_affixed_marker_is_now_rejected_by_both_implementations(self):
+        """Regression pin for the 2026-08-13 unification: canary.py no longer
+        substring-matches, so the two entry points cannot disagree about a hop."""
         for text in self.AFFIXED:
-            self.assertTrue(substring_match(text),
-                            f"canary.py must accept the affixed form {text!r}")
+            self.assertFalse(canary_py_match(text),
+                             f"canary.py must reject the affixed form {text!r}")
+            self.assertFalse(word_boundary_match(text),
+                             f"canary_validation.py must reject {text!r}")
+
+    def test_a_delimited_marker_is_accepted_by_both(self):
+        for text in self.DELIMITED:
+            self.assertTrue(canary_py_match(text), f"canary.py: {text!r}")
+            self.assertTrue(word_boundary_match(text), f"canary_validation.py: {text!r}")
 
     def test_an_affixed_marker_without_a_word_boundary_is_rejected_by_the_other(self):
         for text in ("precanary build", "xcanary", "canaryish"):
