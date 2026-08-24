@@ -93,7 +93,19 @@ class TestRepoLock(unittest.TestCase):
             self.assertGreaterEqual(elapsed, 0.3, "blocking hold() should wait for the holder to release")
         holder.join(timeout=5)
 
-    def test_falls_back_to_unlocked_when_dir_uncreatable(self):
+    def test_refuses_the_lock_when_dir_uncreatable(self):
+        """REVERSED 2026-08-24. This asserted the opposite — that broken lock infra
+        should yield True and let the caller proceed unlocked — while
+        test_worktree_isolation.py::test_repo_lock_fails_closed_when_lock_directory_is_unavailable
+        asserted False for the same branch. Two tests, one branch, contradictory
+        invariants; the implementation satisfied this one, so that one had been red.
+
+        False is the correct answer. An uncreatable LOCK_DIR stops every process on
+        the host equally, so yielding True does not preserve exclusion for anyone —
+        it just lets all of them rebase the same refs at once, which is the 32-hour
+        merge stall in this module's own docstring. Every caller treats False as
+        transient and retries, so refusing defers work; it does not wedge the fleet.
+        """
         # point at a path that cannot be created as a directory (a file, not a dir)
         bad = os.path.join(self.lock_dir, "not_a_dir")
         with open(bad, "w") as f:
@@ -102,7 +114,8 @@ class TestRepoLock(unittest.TestCase):
         import importlib
         importlib.reload(repo_lock)
         with repo_lock.hold("/some/repo") as got:
-            self.assertTrue(got, "fail-soft: unavailable lock infra should still yield True and proceed")
+            self.assertFalse(got, "unavailable lock infra must refuse the lock, not "
+                                  "hand out an unprotected True")
         # restore
         os.environ["ORCH_REPO_LOCK_DIR"] = self.lock_dir
         importlib.reload(repo_lock)

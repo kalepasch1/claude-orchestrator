@@ -18,16 +18,32 @@ pass -- an infinite loop that grew QUARANTINED/QUEUED counts while MERGED stayed
 
 Fix: every git-mutating integration step for a given repo acquires this lock first. Concurrent
 callers now queue up and run one at a time per repo (matching what the train's docstring always
-claimed), instead of racing. Fail-soft: if the lock file itself can't be opened/locked, proceed
-unlocked rather than wedge the runner -- a missed lock is a lot cheaper than a stuck fleet.
+claimed), instead of racing.
+
+FAILS CLOSED (changed 2026-08-24). hold() used to yield True when the lock directory or lock
+file could not be opened -- "a missed lock is a lot cheaper than a stuck fleet". The incident
+described above is what a missed lock costs: 32 hours of zero merges and a rework loop that
+regenerated itself. It is not cheaper. And the fail-open case is never safe in the way it was
+meant to be: if LOCK_DIR is uncreatable, EVERY process on the host hits the same wall, so
+nobody is holding a lock and nobody is protected -- proceeding just means all of them mutate
+the same refs at once, silently.
+
+Yielding False instead is not an outage either, because every caller already treats False as
+transient: runner.integrate() returns CONFLICT (redo-able), merge_train skips the cycle,
+continuous_merger defers to the backlog sweep, worktree_isolation raises a retryable
+WorktreeIsolationError, dirty_checkout_recovery publishes a "will retry" card. The failure is
+logged at ERROR with the offending path so it is attributable rather than silent.
 """
 import contextlib
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import socket
 import time
+
+log = logging.getLogger(__name__)
 
 LOCK_DIR = os.environ.get(
     "ORCH_REPO_LOCK_DIR",
@@ -92,17 +108,24 @@ def describe_holder(repo):
 
 @contextlib.contextmanager
 def hold(repo, timeout=None, purpose=None):
-    """Exclusive lock scoped to `repo`. Yields True if the lock was acquired, False if the
-    lock could not be obtained within `timeout` -- callers should skip their git-mutating
-    work on False rather than proceed unprotected. If the locking infrastructure itself is
-    unavailable (no repo, disk full, etc.), fail-soft to unlocked so a lock bug never becomes
-    a full fleet outage."""
+    """Exclusive lock scoped to `repo`. Yields True if the lock was acquired, False otherwise
+    -- callers must skip their git-mutating work on False rather than proceed unprotected.
+
+    False covers both reasons the lock is unavailable: another holder did not release within
+    `timeout`, and the locking infrastructure itself is broken (uncreatable LOCK_DIR, disk
+    full, permissions). The second used to yield True; see the module docstring for why that
+    was the more expensive answer, not the cheaper one."""
     f = None
     try:
         os.makedirs(LOCK_DIR, exist_ok=True)
         f = open(_lock_path(repo), "a+")
-    except Exception:
-        yield True  # fail-soft: locking infra unavailable, proceed unlocked
+    except Exception as e:
+        # Loud, because the caller's retry will otherwise look like ordinary contention
+        # forever and nothing will say the lock directory is the problem.
+        log.error("repo_lock: cannot open lock file under %s (%s: %s) — refusing the lock "
+                  "for %s; git-mutating work will be deferred, not run unprotected",
+                  LOCK_DIR, type(e).__name__, e, repo)
+        yield False
         return
     acquired = False
     try:
