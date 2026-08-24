@@ -1,23 +1,3 @@
-<<<<<<< HEAD
-"""Re-export shim: the canonical family contracts live at hisanta/contracts/family.py.
-
-This file used to be a second, independently-maintained copy of the same domain.
-The two drifted: the nested copy grew the quest/grandma/gifting/school types
-while the top-level one grew the approval/kindness types, and because every
-consumer imports `hisanta.contracts.family` (absolute), the nested definitions
-were unreachable dead code that still had to be kept in sync by hand.
-
-The canonical module was already written to be the *union* — every symbol either
-file ever exported is defined there, with a shape that satisfies both sets of
-callers. So this module is now a pure re-export. Behaviour is preserved exactly:
-`hisanta.hisanta.contracts.family.X is hisanta.contracts.family.X` for every X,
-which means an isinstance check or an enum identity comparison cannot fail just
-because a caller reached the domain by the nested path.
-
-Same convention as the root `merged_diff_library.py` shim over
-`runner/merged_diff_library.py`. Do not add definitions here — add them to
-hisanta/contracts/family.py and extend the re-export list below.
-=======
 """Shared interfaces/types for the hisanta family domain — the ONE definition.
 
 This module is the single source of truth for the mastery + gifting stack.
@@ -31,40 +11,17 @@ ParentApproval, ParentVerificationReceipt, CoppaConsent and constitution_check.
 Which one you got depended on which directory happened to be on sys.path, so
 hisanta/tests/* could not even be collected (ImportError: cannot import name
 'Quest') while tests/* imported the other shape. Both sets of names now live
-HERE, and hisanta/contracts/family.py is a re-export shim of this file, so
+in THIS file, and hisanta/contracts/family.py is a re-export shim of it, so
 every consumer sees the same objects no matter how it is imported.
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
+
+The file is the canonical SOURCE but is not itself the canonical MODULE. Both
+spellings re-export one singleton, loaded from this path exactly once under the
+private name `hisanta._canonical_contracts_family`; see the rebind at the foot
+of the file for why that indirection is what makes identity hold.
 """
 
 from __future__ import annotations
 
-<<<<<<< HEAD
-from hisanta.contracts.family import (  # noqa: F401  (re-export)
-    ApprovalStatus,
-    ClassroomCohort,
-    ConstitutionAction,
-    ConstitutionVerdict,
-    CoppaConsent,
-    DENY_ACTIONS,
-    ESCALATE_ACTIONS,
-    GiftLane,
-    GrandmaStorySlot,
-    MasteryEfficacyMetric,
-    MatchJar,
-    MilestoneReaction,
-    PII_FREE_FIELDS,
-    ParentApproval,
-    ParentVerificationReceipt,
-    Quest,
-    QuestKind,
-    RewardCoin,
-    RewardCoins,
-    RewardSchedule,
-    SchoolQuest,
-    constitution_check,
-)
-
-=======
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -264,7 +221,6 @@ class CoppaConsent:
     timestamp: float = field(default_factory=time.time)
 
 
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
 __all__ = [
     "ApprovalStatus",
     "ClassroomCohort",
@@ -289,3 +245,48 @@ __all__ = [
     "SchoolQuest",
     "constitution_check",
 ]
+
+# ── One module object, whichever spelling got here first ─────────────────────
+# This file is reachable as BOTH `hisanta.contracts.family` (via the shim) and
+# `hisanta.hisanta.contracts.family` (directly, because hisanta/__init__.py adds
+# the nested tree to __path__). Python executes a file once PER MODULE NAME, so
+# without this block the two spellings would hold two sets of classes with equal
+# shapes and no identity — the exact failure the shim exists to prevent, just
+# moved one level down: `isinstance(nested.Quest(...), canonical.Quest)` False,
+# and an enum comparison across the seam silently wrong.
+#
+# So the definitions above are loaded once under a private singleton name, and
+# any other spelling rebinds its globals to that singleton's objects. The copies
+# this module just built are dropped. Fail-soft: if the singleton cannot be
+# loaded we keep our own definitions rather than leaving the module half-bound —
+# a degraded import is still better than an unimportable contracts module.
+_SINGLETON = "hisanta._canonical_contracts_family"
+
+if __name__ != _SINGLETON:
+    import importlib.util as _importlib_util
+    import sys as _sys
+
+    _canonical = _sys.modules.get(_SINGLETON)
+    if _canonical is None:
+        try:
+            _spec = _importlib_util.spec_from_file_location(_SINGLETON, __file__)
+            _canonical = _importlib_util.module_from_spec(_spec)
+            # Registered before exec so a re-entrant import gets the same object.
+            _sys.modules[_SINGLETON] = _canonical
+            _spec.loader.exec_module(_canonical)
+        except Exception as _exc:  # noqa: BLE001 - fail-soft, diagnostic printed
+            print(f"hisanta.contracts.family: singleton load failed ({_exc}); "
+                  "keeping locally-defined contracts")
+            _sys.modules.pop(_SINGLETON, None)
+            _canonical = None
+
+    if _canonical is not None:
+        for _name in __all__:
+            globals()[_name] = getattr(_canonical, _name)
+        del _name
+
+    #: The module the names actually came from, and the file it was read from.
+    #: Tests assert both import paths land here — that is the check that keeps
+    #: the duplicate from growing back.
+    CANONICAL_MODULE = _canonical
+    CANONICAL_PATH = __file__
