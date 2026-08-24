@@ -3,8 +3,22 @@ import unittest
 from unittest.mock import patch, MagicMock
 import urllib.error
 
+from runner import db
+
 
 class TestTransientDBError(unittest.TestCase):
+    """db reads SUPABASE_URL/KEY into module constants at IMPORT time, so a test
+    process without them set never reaches urlopen at all: every case died on
+    RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY") before the 409
+    behaviour under test. Patching the constants the module actually uses is what
+    lets these exercise the retry contract instead of the config check."""
+
+    def setUp(self):
+        for attr, value in (("URL", "https://example.supabase.co"),
+                            ("KEY", "test-service-key-placeholder")):
+            p = patch.object(db, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
 
     def test_409_raises_transient_db_error(self):
         """db._req() must raise TransientDBError (not urllib.error.HTTPError) on HTTP 409."""
@@ -67,7 +81,9 @@ class TestTransientDBError(unittest.TestCase):
             fp=None,
         )
         with patch("urllib.request.urlopen", side_effect=err):
-            result = update("tasks", {"state": "DONE"}, id="abc-123")
+            # update() is (table, match, patch); the id= kwarg it was called with
+            # has never existed on it and raised TypeError before reaching db.
+            result = update("tasks", {"id": "abc-123"}, {"state": "DONE"})
             self.assertIsNone(result)
 
 
