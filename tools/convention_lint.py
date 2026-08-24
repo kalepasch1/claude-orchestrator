@@ -515,6 +515,12 @@ def main() -> int:
                         help='Output as JSON')
     parser.add_argument('--fail-on', choices=['error', 'warn'], default='error',
                         help='Severity level that causes non-zero exit (default: error)')
+    parser.add_argument('--baseline', metavar='FILE',
+                        help='Ratchet against FILE: exit 0 while the error count is at or '
+                             'below the recorded baseline, non-zero only when it grows. '
+                             'This is how the repo already gates tsc (.tsc-error-baseline).')
+    parser.add_argument('--write-baseline', metavar='FILE',
+                        help='Record the current error count to FILE and exit 0.')
 
     args = parser.parse_args()
 
@@ -539,9 +545,44 @@ def main() -> int:
         for violation in sorted(all_violations, key=lambda v: (v.filepath, v.lineno)):
             print(str(violation))
 
+    error_violations = [v for v in all_violations if v.severity == 'error']
+
+    # Ratchet mode. The repo carries accumulated convention debt, so a plain
+    # non-zero exit means CI can never gate on this tool: it is red on day one
+    # and stays red, which is the same as having no gate. Baselining the count
+    # makes the useful half enforceable now — existing debt is tolerated, a NEW
+    # violation fails the build — and is the pattern preflight.yml already uses
+    # for tsc via .tsc-error-baseline. Fail-soft on a missing/garbage baseline
+    # file: treat it as 0 rather than crashing the gate.
+    if args.write_baseline:
+        try:
+            Path(args.write_baseline).write_text(f"{len(error_violations)}\n")
+            print(f"convention_lint: baseline written: {len(error_violations)} error(s)")
+            return 0
+        except OSError as exc:
+            print(f"convention_lint: could not write baseline: {exc}")
+            return 1
+
+    if args.baseline:
+        baseline = 0
+        try:
+            baseline = int(Path(args.baseline).read_text().strip() or 0)
+        except (OSError, ValueError):
+            print(f"convention_lint: no readable baseline at {args.baseline}; treating as 0")
+        found = len(error_violations)
+        if found > baseline:
+            print(f"convention_lint: {found} error(s) exceeds baseline {baseline} "
+                  f"— {found - baseline} new violation(s)")
+            return 1
+        if found < baseline:
+            print(f"convention_lint: {found} error(s), below baseline {baseline} — "
+                  f"lower the baseline to lock the improvement in")
+        else:
+            print(f"convention_lint: {found} error(s), at baseline")
+        return 0
+
     # Determine exit code
     if all_violations:
-        error_violations = [v for v in all_violations if v.severity == 'error']
         if error_violations and args.fail_on == 'error':
             return 1
         if all_violations and args.fail_on == 'warn':
