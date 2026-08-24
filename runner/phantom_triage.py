@@ -146,6 +146,12 @@ def main():
     ap.add_argument("--project", required=True)
     ap.add_argument("--limit", type=int, default=0, help="0 = all")
     ap.add_argument("--json", dest="json_out", default="")
+    ap.add_argument("--state", default="PHANTOM_UNVERIFIED",
+                    help="which state to classify (default PHANTOM_UNVERIFIED). "
+                         "Any other state is DIAGNOSTIC AND EVIDENCE-RECORDING ONLY: "
+                         "the class (b) close refuses to run outside "
+                         "PHANTOM_UNVERIFIED, because closing a MERGED row is "
+                         "reclassification and belongs to phantom_reclassify.")
     ap.add_argument("--apply", action="store_true",
                     help="close class (b) NO_TRACE rows. Never promotes anything.")
     args = ap.parse_args()
@@ -165,12 +171,12 @@ def main():
 
     rows = db.select_all("tasks", {
         "project_id": "eq.%s" % project_id,
-        "state": "eq.PHANTOM_UNVERIFIED",
+        "state": "eq.%s" % args.state,
         "select": "id,slug,note,artifact_commit,artifact_branch",
     }, max_rows=args.limit or None)
 
-    print("phantom triage: %d PHANTOM_UNVERIFIED row(s) in %s (repo %s)."
-          % (len(rows), args.project, repo))
+    print("phantom triage: %d %s row(s) in %s (repo %s)."
+          % (len(rows), args.state, args.project, repo))
     print("  Indexing refs and commit messages...")
     refs = all_ref_names(repo)
     body_blob = commit_body_index(repo)
@@ -238,7 +244,11 @@ def main():
             continue
         current = db.select("tasks", {"id": "eq.%s" % item["id"],
                                       "select": "id,state,artifact_commit"})
-        if not current or current[0].get("state") != "PHANTOM_UNVERIFIED":
+        # The re-check asks "has this row moved since the scan?", so it compares
+        # against the state that was SCANNED. Hardcoding PHANTOM_UNVERIFIED here
+        # made --state MERGED skip every row and report nothing recorded, which
+        # reads as "no evidence found" rather than "the guard ate it".
+        if not current or current[0].get("state") != args.state:
             continue
         if (current[0].get("artifact_commit") or "").strip():
             continue                      # never clobber evidence already recorded
@@ -261,6 +271,15 @@ def main():
         print("\nRecorded artifact_commit on %d landed row(s). None promoted - "
               "run phantom_recovery.py to reconcile them." % recorded)
 
+    if args.state != "PHANTOM_UNVERIFIED":
+        print("\nEvidence recording only: --state %s. The class (b) close is refused "
+              "outside PHANTOM_UNVERIFIED." % args.state)
+        print("Closing a %s row is RECLASSIFICATION, not triage -- it changes what the "
+              "fleet claims it shipped, and belongs to phantom_reclassify.py, which is "
+              "the job that created this backlog in the first place and knows how to "
+              "record that it did." % args.state)
+        return 0
+
     closable = buckets[NO_TRACE]
     if not closable:
         print("\nNothing safely closable.")
@@ -270,6 +289,9 @@ def main():
     for item in closable:
         # Re-check at write time: this cannot clobber a row that has progressed
         # since the scan, the same guard phantom_reclassify uses.
+        # Pinned to PHANTOM_UNVERIFIED rather than args.state, and deliberately:
+        # the guard above already refused any other state before reaching here, so
+        # this is the second lock on the only write that ends a task.
         current = db.select("tasks", {"id": "eq.%s" % item["id"], "select": "id,state"})
         if not current or current[0].get("state") != "PHANTOM_UNVERIFIED":
             continue
