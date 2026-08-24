@@ -13,10 +13,40 @@ Enforces conventions from CLAUDE.md:
 """
 
 import ast
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Set, Optional
+
+# Single source of truth for the CapWords predicate, shared with tools/convention_lint.py.
+# Fail-soft: a linter that cannot import a helper must still lint, so it falls back to an
+# equivalent inline definition rather than failing to import.
+_REPO_TOOLS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "tools")
+try:
+    # APPEND, never insert(0): repo-root tools/ contains modules whose names collide
+    # with ones other test modules import, and putting it first shadowed them.
+    if _REPO_TOOLS not in sys.path:
+        sys.path.append(_REPO_TOOLS)
+    from naming_conventions import (  # noqa: F401
+        class_naming_message as _class_naming_message,
+        is_pascal_case as _is_pascal_case,
+    )
+except Exception:  # pragma: no cover - only when repo-root tools/ is unavailable
+    import re as _re
+
+    _PASCAL_CASE_RE = _re.compile(r"^_?[A-Z][A-Za-z0-9]*$")
+
+    def _is_pascal_case(name) -> bool:
+        try:
+            return bool(_PASCAL_CASE_RE.match(str(name or "")))
+        except Exception:
+            return False
+
+    def _class_naming_message(name) -> str:
+        return ("Class '{0}' is not PascalCase "
+                "(CLAUDE.md: PascalCase for types/classes/components)".format(name))
 
 
 @dataclass
@@ -568,14 +598,13 @@ class ConventionChecker(ast.NodeVisitor):
     def _is_pascal_case(name: str) -> bool:
         """Check if identifier is in PascalCase.
 
-        Deliberately permissive so the rule reports real style breaks and not merely
-        unfamiliar shapes: acronym runs (`HTTPClient`), digits (`Rule2Compiler`) and
-        single-word names (`Runner`) all pass. What fails is a leading lowercase letter
-        (`taskRunner`) or an underscore inside the name (`Task_Runner`).
+        Delegates to tools/naming_conventions.py so this linter and
+        tools/convention_lint.py answer identically. They used to disagree: this copy
+        rejected `_PrivateCache` outright and the call site patched around it with a
+        separate ``startswith("_")`` test, while the other linter accepted it directly.
+        Two linters giving two answers for one class name is worse than one linter.
         """
-        if not name or not name[0].isupper():
-            return False
-        return "_" not in name and name.isidentifier()
+        return _is_pascal_case(name)
 
     @staticmethod
     def _is_valid_identifier(name: str) -> bool:

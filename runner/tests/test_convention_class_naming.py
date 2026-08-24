@@ -12,9 +12,27 @@ import tempfile
 import unittest
 from typing import List
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tools'))
+# Load runner/tools/lint_conventions.py BY PATH, under an alias.
+#
+# `lint_conventions` names two different files here — tools/lint_conventions.py (the
+# pre-commit ratchet) and runner/tools/lint_conventions.py (this one). A plain import
+# resolves to whichever directory reached sys.path first and then serves that from
+# sys.modules to every later importer in the same pytest process, so this module and
+# test_convention_lint_ratchet.py silently fought over the name: running them together
+# failed 10 tests that each passed alone, in whichever order lost. Importing by path
+# makes each test say which file it means.
+import importlib.util  # noqa: E402
 
-from lint_conventions import ConventionViolation, check_file
+_LINT_CONVENTIONS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'tools', 'lint_conventions.py')
+_spec = importlib.util.spec_from_file_location(
+    '_runner_lint_conventions', os.path.normpath(_LINT_CONVENTIONS_PATH))
+_runner_lint_conventions = importlib.util.module_from_spec(_spec)
+sys.modules['_runner_lint_conventions'] = _runner_lint_conventions
+_spec.loader.exec_module(_runner_lint_conventions)
+
+ConventionViolation = _runner_lint_conventions.ConventionViolation
+check_file = _runner_lint_conventions.check_file
 
 
 class ClassNamingLintTest(unittest.TestCase):

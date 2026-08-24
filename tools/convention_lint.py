@@ -16,6 +16,7 @@ Output:
 """
 import ast
 import json
+import os
 import re
 import sys
 from argparse import ArgumentParser
@@ -147,20 +148,32 @@ def is_test_file(filepath: str) -> bool:
             or "/tests/" in p or p.startswith("tests/"))
 
 
-#: PascalCase, with one optional leading underscore for a private type. Each remaining
-#: word starts with a capital; digits are allowed after the first character; a run of
-#: capitals is allowed so acronym-led names (HTTPClient, DBPool) pass unchanged. An
-#: underscore anywhere after the first character makes it snake_case, which fails.
-_PASCAL_CASE_RE = re.compile(r'^_?[A-Z][A-Za-z0-9]*$')
+# The PascalCase predicate lives in tools/naming_conventions.py so this linter and
+# runner/tools/lint_conventions.py cannot drift apart on what CapWords means (they had:
+# one accepted `_PrivateCache`, the other did not). Import is fail-soft — a linter that
+# cannot import a helper must still lint, so it degrades to the same regex inline.
+try:
+    # APPEND, never insert(0): this directory holds modules whose names collide with
+    # ones other modules import, and putting it first shadowed them.
+    if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from naming_conventions import (  # noqa: F401
+        PASCAL_CASE_RE as _PASCAL_CASE_RE,
+        class_naming_message as _class_naming_message,
+        is_pascal_case as _is_pascal_case,
+    )
+except Exception:  # pragma: no cover - only when tools/ is off sys.path
+    _PASCAL_CASE_RE = re.compile(r'^_?[A-Z][A-Za-z0-9]*$')
 
+    def _is_pascal_case(name) -> bool:
+        try:
+            return bool(_PASCAL_CASE_RE.match(str(name or '')))
+        except Exception:
+            return False
 
-def _is_pascal_case(name: str) -> bool:
-    """True when `name` is a valid PascalCase class name. Never raises on bad input."""
-    # SCREAMING_CASE is rejected by the underscore clause of the pattern. An all-caps
-    # name with no underscore (HTTP, API) is deliberately ACCEPTED: those are real class
-    # spellings here, and a naming rule that fires on correct code is the thing that
-    # teaches people to run --no-verify.
-    return bool(_PASCAL_CASE_RE.match(str(name or '')))
+    def _class_naming_message(name) -> str:
+        return ("Class '{0}' is not PascalCase "
+                "(CLAUDE.md: PascalCase for types/classes/components)".format(name))
 
 
 class ConventionChecker(ast.NodeVisitor):
@@ -212,8 +225,7 @@ class ConventionChecker(ast.NodeVisitor):
         if not _is_pascal_case(node.name):
             self._record(ConventionViolation(
                 self.filepath, node.lineno, 'CLASS_NAMING',
-                f"Class '{node.name}' is not PascalCase "
-                f"(CLAUDE.md: PascalCase for types/classes/components)",
+                _class_naming_message(node.name),
                 severity='warning',
             ))
 
