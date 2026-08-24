@@ -432,6 +432,30 @@ def _stub_gate(repo, proj, base, branch):
     return False, detail
 
 
+#: The marker _quarantine_regression_failure writes into a task note on each repair pass.
+#: Reading it back is what makes the regression budget per-cause without a schema change.
+_REGRESSION_MARKER_RE = re.compile(
+    r"\[regression-quarantine\s+(\d+)\s*/\s*(\d+)\s*\]")
+
+
+def _regression_attempts(task):
+    """How many times THIS task has been sent back specifically for a regression finding.
+
+    Reads the highest `[regression-quarantine N/cap]` marker in the note. Fail-soft: an
+    unreadable or absent note means 0, i.e. the task gets its full repair budget. Erring
+    toward 0 is deliberate — an extra repair pass costs one train cycle, while a wrong
+    quarantine strands real committed work and needs a human to notice.
+    """
+    try:
+        note = task.get("note") if isinstance(task, dict) else None
+        if not isinstance(note, str) or not note:
+            return 0
+        found = [int(m.group(1)) for m in _REGRESSION_MARKER_RE.finditer(note)]
+        return max(found) if found else 0
+    except Exception:
+        return 0
+
+
 def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, detail, t0=None):
     """Park ONE candidate that would DESTROY code in base; the train continues.
 
@@ -444,8 +468,22 @@ def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, 
             f"{base}; restore the named symbols before merging. branch={branch} base={base} "
             "(merge-train regression guard; NOT merged, NOT pushed)")
     tail = (detail or "")[-1200:]
-    tr = int(task.get("transient_retries") or 0)
     cap = int(os.environ.get("MERGE_REGRESSION_REDO_CAP", "2"))
+    # PER-CAUSE BUDGET (2026-08-24). This used to gate on `transient_retries`, which is a
+    # SINGLE column shared by every transient cause — conflict, testfail, buildfail,
+    # missing-branch, approval_merge and dag_optimizer all increment the same counter.
+    # (agentic_repair's comment calls it "per-cause"; the code says otherwise.) So a task
+    # that had already burned the budget on two CONFLICTS arrived here with tr=2 and was
+    # quarantined on its FIRST regression finding, having been given zero chances to
+    # restore the deleted symbols — while the note it wrote claimed "after 2 repair
+    # attempts". That is the reported quarantine cause, and it is both premature and a
+    # false statement in the audit trail.
+    #
+    # The regression-specific count is read back from the marker this function ALREADY
+    # writes into the note, so no schema change is needed and no other call site's use of
+    # transient_retries changes. transient_retries is still incremented, because the
+    # GLOBAL non-convergence ceiling in agentic_repair legitimately counts every repair.
+    tr = _regression_attempts(task)
     state = "QUARANTINED"
     if tr < cap:
         try:
@@ -457,13 +495,16 @@ def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, 
                            "full original body, keep your own new code, then run the tests."))
         except Exception:
             patch = {"state": "QUEUED", "account": None, "updated_at": "now()"}
-        patch["transient_retries"] = tr + 1
+        # The GLOBAL counter still advances from its own current value — the per-cause
+        # count gates this branch, it does not reset the fleet-wide non-convergence budget.
+        patch["transient_retries"] = int(task.get("transient_retries") or 0) + 1
         patch["note"] = f"{head} [regression-quarantine {tr + 1}/{cap}] {tail}"[:1800]
         state = f"repair {tr + 1}/{cap}"
     else:
         patch = {"state": "QUARANTINED", "account": None, "updated_at": "now()",
-                 "note": (f"merge-train-regression-guard: quarantined as regressfail after {cap} "
-                          f"repair attempts. {head} Findings: {tail}")[:900]}
+                 "note": (f"merge-train-regression-guard: quarantined as regressfail after {tr} "
+                          f"regression repair attempts (cap {cap}). {head} "
+                          f"Findings: {tail}")[:900]}
     try:
         _task_patch(task, patch)
     except Exception:
