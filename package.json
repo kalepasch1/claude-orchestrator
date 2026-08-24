@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "python3 -m pytest runner/tests/ -x --tb=short -q 2>&1 || true",
+    "test": "python3 -m pytest runner/tests/ -x --tb=short -q",
+    "test:soft": "python3 -m pytest runner/tests/ --tb=line -q 2>&1 || true",
+    "check:npm-scripts": "python3 -m pytest runner/tests/test_npm_scripts_exit_honestly.py -q",
     "rls-gate-check": "python3 runner/rls_guard.py"
   }
 }
