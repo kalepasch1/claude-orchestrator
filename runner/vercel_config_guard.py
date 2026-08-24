@@ -363,7 +363,7 @@ def check_deploy_skip(repo, root, cfg, default_branch):
     # and is the shape that silently stops production.
     git_cfg = cfg.get("git") or {}
     enabled_cfg = git_cfg.get("deploymentEnabled")
-    intentional = _declares_intentional_no_deploy(cfg)
+    intentional = _declares_intentional_no_deploy(cfg, root)
     if isinstance(enabled_cfg, bool) and enabled_cfg is False and not intentional:
         out.append(_violation(
             "deployment_disabled_everywhere", rel_root,
@@ -372,9 +372,11 @@ def check_deploy_skip(repo, root, cfg, default_branch):
             "is correct, and deploy_silence_detector honours it. Confirm it is intended."
             % default_branch,
             "If this project SHOULD deploy, set git.deploymentEnabled to true for '%s'. "
-            "If it deliberately does not deploy, record that with "
-            "`\"_deploymentDisabledIntentionally\": true` (or say so in `_comment`) and this "
-            "advisory will stop re-filing." % default_branch))
+            "If it deliberately does not deploy, record that in a `.vercel-no-deploy.json` "
+            "beside vercel.json containing `{\"intentional\": true, \"why\": \"...\"}` and this "
+            "advisory will stop re-filing. Put it THERE, not in vercel.json: that file is "
+            "schema-validated and an unknown top-level key makes `vercel deploy` fail "
+            "outright with \"should NOT have additional property\"." % default_branch))
     elif isinstance(enabled_cfg, dict):
         # PRECEDENCE MATTERS. `{"*": false, "master": true}` is a correct, common config:
         # the exact branch key overrides the catch-all glob, so master DOES deploy. Reading
@@ -459,8 +461,39 @@ _INTENT_PHRASES = (
 )
 
 
-def _declares_intentional_no_deploy(cfg):
-    """True when this vercel.json says, in itself, that not deploying is the point.
+#: Sidecar recording the same decision OUTSIDE the schema-validated file.
+NO_DEPLOY_SIDECAR = ".vercel-no-deploy.json"
+
+
+def _sidecar_declares_intent(root):
+    """True when <root>/.vercel-no-deploy.json records a deliberate no-deploy.
+
+    WHY A SIDECAR. The intent used to be recorded inside vercel.json, as
+    `_deploymentDisabledIntentionally: true` and a `_comment`. That file is
+    schema-validated and rejects unknown top-level keys, so both made the CLI
+    refuse to deploy from the repo root before uploading anything:
+
+        Error: Invalid vercel.json - should NOT have additional property `_comment`.
+
+    A guard that documents itself by breaking the deploy tool is not a guard, so
+    the declaration moved to a file the schema does not police. `_load_json` is
+    fail-soft, so a missing or malformed sidecar reads as "no declaration" and
+    the advisory simply keeps firing — the safe direction.
+    """
+    if not root:
+        return False
+    data = _load_json(os.path.join(root, NO_DEPLOY_SIDECAR))
+    return isinstance(data, dict) and data.get("intentional") is True
+
+
+def _declares_intentional_no_deploy(cfg, root=None):
+    """True when this project says, in itself, that not deploying is the point.
+
+    Reads the sidecar when a root is supplied, and still honours the in-config
+    keys. Both paths are kept deliberately: this guard sweeps EVERY project, and
+    another repo's vercel.json may carry `_comment` prose recording the same
+    decision. Dropping that path would resume re-filing an advisory those repos
+    had already answered.
 
     WHY. `deployment_disabled_everywhere` is advisory precisely because it cannot tell a
     broken config from a correct one — its own text asks a human to "confirm it is
@@ -475,12 +508,17 @@ def _declares_intentional_no_deploy(cfg):
     repo ROOT; this file disables git deployments so a duplicate can never silently
     build. "Do not remove." Acting on the advisory would delete a safety guard.
 
-    So the answer is recorded IN the config, where it travels with the thing it describes:
-    an explicit `_deploymentDisabledIntentionally: true`, or a `_comment` that says so.
+    So the answer is recorded beside the thing it describes: `.vercel-no-deploy.json`
+    with `"intentional": true`, or — for projects that recorded it before the sidecar
+    existed — an explicit `_deploymentDisabledIntentionally: true` or a `_comment` saying
+    so in vercel.json itself.
+
     Deliberately narrow — it suppresses only the never-deploys-anywhere advisories, never
     the BLOCKING inconsistent case (some branches enabled, default branch not), which is
     the shape that actually stops production by accident.
     """
+    if _sidecar_declares_intent(root):
+        return True
     if not isinstance(cfg, dict):
         return False
     flag = cfg.get("_deploymentDisabledIntentionally")

@@ -20,6 +20,9 @@ by accident.
 import os
 import sys
 import unittest
+import json
+import shutil
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
@@ -40,7 +43,11 @@ class TestIntentDetection(unittest.TestCase):
         cfg = guard._load_json(os.path.join(repo, "vercel.json"))
         if not cfg:
             self.skipTest("root vercel.json not present")
-        self.assertTrue(guard._declares_intentional_no_deploy(cfg),
+        # Now declared in the sidecar rather than in vercel.json, so the root has
+        # to be passed. The declaration moved because vercel.json is
+        # schema-validated and the `_comment` carrying it made `vercel deploy`
+        # fail outright — see test_vercel_json_stays_schema_valid below.
+        self.assertTrue(guard._declares_intentional_no_deploy(cfg, repo),
                         "the documented 'Do not remove' guard must read as intentional")
 
     def test_absent_or_unrelated_comment_is_not_intent(self):
@@ -123,3 +130,128 @@ class TestRepoIsQuietNow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSchemaValidity(unittest.TestCase):
+    """vercel.json is schema-validated; an unknown top-level key is a deploy blocker.
+
+    Every `vercel deploy` from the repo root failed before uploading anything:
+
+        Error: Invalid vercel.json - should NOT have additional property `_comment`.
+        Please remove it.
+
+    The keys were there for a good reason — they recorded that this repo's
+    no-deploy state is deliberate, which is what stopped
+    `deployment_disabled_everywhere` re-filing itself as a backlog task on every
+    sweep. But documenting a guard by breaking the deploy tool is not a trade
+    worth making, so the declaration moved to `.vercel-no-deploy.json`, which
+    nothing validates against a schema.
+
+    Scope, established while fixing it: this was a LOCAL TOOLING BLOCKER, not an
+    outage. Production deploys through the `web` project, whose `web/vercel.json`
+    carries only schema keys; the root config exists solely to disable git
+    deployments for anything pointed at the repo root, and those are disabled by
+    design — so the invalid key never blocked a deploy that would otherwise have
+    happened. It blocked `vercel deploy` run by a human from the repo root.
+    """
+
+    REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _configs(self):
+        for rel in ("vercel.json", os.path.join("web", "vercel.json")):
+            path = os.path.join(self.REPO, rel)
+            if os.path.isfile(path):
+                yield rel, guard._load_json(path)
+
+    def test_no_vercel_json_carries_a_non_schema_key(self):
+        found = []
+        for rel, cfg in self._configs():
+            found += ["%s: %s" % (rel, k) for k in cfg if k.startswith("_")]
+        self.assertEqual(found, [], "underscore-prefixed keys make `vercel deploy` refuse: %s" % found)
+
+    def test_the_root_config_still_disables_git_deployments(self):
+        # The whole point of the file. Removing the comment must not remove the guard.
+        cfg = guard._load_json(os.path.join(self.REPO, "vercel.json"))
+        self.assertIs(cfg.get("git", {}).get("deploymentEnabled"), False)
+
+    def test_the_sidecar_records_the_intent_and_the_reason(self):
+        data = guard._load_json(os.path.join(self.REPO, guard.NO_DEPLOY_SIDECAR))
+        self.assertIs(data.get("intentional"), True)
+        why = data.get("why")
+        text = " ".join(why) if isinstance(why, list) else str(why or "")
+        self.assertIn("web", text, "the sidecar must say WHICH project deploys instead")
+        self.assertGreater(len(text), 80, "a bare flag loses the reason the guard exists")
+
+
+class TestSidecarDetection(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, payload):
+        with open(os.path.join(self.dir, guard.NO_DEPLOY_SIDECAR), "w") as fh:
+            fh.write(payload if isinstance(payload, str) else json.dumps(payload))
+
+    def test_sidecar_alone_declares_intent(self):
+        self._write({"intentional": True})
+        self.assertTrue(guard._declares_intentional_no_deploy({}, self.dir))
+
+    def test_missing_sidecar_is_not_intent(self):
+        # Fail in the safe direction: no declaration means the advisory keeps
+        # firing, which is noisy. The reverse would silence a real misconfiguration.
+        self.assertFalse(guard._declares_intentional_no_deploy({}, self.dir))
+
+    def test_malformed_sidecar_is_not_intent_and_does_not_raise(self):
+        self._write("{not json")
+        self.assertFalse(guard._declares_intentional_no_deploy({}, self.dir))
+
+    def test_only_a_true_boolean_counts(self):
+        for value in ("true", 1, "yes", None, False, {}):
+            with self.subTest(value=value):
+                self._write({"intentional": value})
+                self.assertFalse(guard._declares_intentional_no_deploy({}, self.dir))
+
+    def test_in_config_declarations_still_work_for_other_repos(self):
+        # This guard sweeps EVERY project. Another repo may still record the
+        # decision in its vercel.json; dropping that path would resume re-filing
+        # an advisory those repos had already answered.
+        self.assertTrue(guard._declares_intentional_no_deploy(
+            {"_deploymentDisabledIntentionally": True}, self.dir))
+        self.assertTrue(guard._declares_intentional_no_deploy(
+            {"_comment": "this repo does not deploy"}, self.dir))
+
+    def test_root_is_optional_so_existing_callers_keep_working(self):
+        self.assertTrue(guard._declares_intentional_no_deploy(
+            {"_deploymentDisabledIntentionally": True}))
+        self.assertFalse(guard._declares_intentional_no_deploy({}))
+
+    def test_the_advisory_is_silenced_by_the_sidecar_alone(self):
+        # End to end: a vercel.json with no underscore keys at all, plus the
+        # sidecar, must produce no deployment_disabled_everywhere violation.
+        with open(os.path.join(self.dir, "vercel.json"), "w") as fh:
+            json.dump({"git": {"deploymentEnabled": False}}, fh)
+        self._write({"intentional": True})
+        codes = [v["code"] for v in guard.check_deploy_skip(
+            self.dir, self.dir, guard._load_json(os.path.join(self.dir, "vercel.json")), "master")]
+        self.assertNotIn("deployment_disabled_everywhere", codes)
+
+    def test_without_the_sidecar_the_advisory_still_fires(self):
+        with open(os.path.join(self.dir, "vercel.json"), "w") as fh:
+            json.dump({"git": {"deploymentEnabled": False}}, fh)
+        codes = [v["code"] for v in guard.check_deploy_skip(
+            self.dir, self.dir, guard._load_json(os.path.join(self.dir, "vercel.json")), "master")]
+        self.assertIn("deployment_disabled_everywhere", codes)
+
+    def test_the_advice_no_longer_recommends_the_key_that_breaks_the_cli(self):
+        # The guard used to tell operators to add `_deploymentDisabledIntentionally`
+        # to vercel.json — the exact key that makes `vercel deploy` refuse. Advice
+        # that creates the next bug is worse than no advice.
+        with open(os.path.join(self.dir, "vercel.json"), "w") as fh:
+            json.dump({"git": {"deploymentEnabled": False}}, fh)
+        [violation] = [v for v in guard.check_deploy_skip(
+            self.dir, self.dir, guard._load_json(os.path.join(self.dir, "vercel.json")), "master")
+            if v["code"] == "deployment_disabled_everywhere"]
+        self.assertIn(".vercel-no-deploy.json", violation["fix"])
+        self.assertNotIn('"_deploymentDisabledIntentionally": true` (or', violation["fix"])

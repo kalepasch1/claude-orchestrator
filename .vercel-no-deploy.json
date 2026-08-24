@@ -1,0 +1,20 @@
+{
+  "intentional": true,
+  "since": "2026-07-30",
+  "why": [
+    "GUARD: the ONLY Vercel project for this repo is 'web' (root directory: web/).",
+    "A duplicate project ('claude-orchestrator') was once auto-created by importing the",
+    "repo ROOT. vercel.json's git.deploymentEnabled:false disables git deployments for any",
+    "project ever pointed at the repo root again, so a duplicate can exist but can never",
+    "silently build or deploy. Do not re-enable it.",
+    "",
+    "This note used to live in vercel.json as a `_comment` key, alongside a",
+    "`_deploymentDisabledIntentionally: true` flag. vercel.json is schema-validated and",
+    "rejects unknown top-level keys, so both made `vercel deploy` fail from the repo root",
+    "before uploading anything:",
+    "    Error: Invalid vercel.json - should NOT have additional property `_comment`.",
+    "They live here instead. runner/vercel_config_guard.py reads this file to know the",
+    "no-deploy state is deliberate, which is what stops its `deployment_disabled_everywhere`",
+    "advisory re-filing itself as a backlog task on every sweep."
+  ]
+}
