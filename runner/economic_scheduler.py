@@ -245,9 +245,12 @@ def predict_revenue(task, ctx):
     if not isinstance(task, dict):
         return _estimate(0.0, 0.0, 0.0)
 
+    # str() before .lower(): these come straight off a task row, and a non-string `kind`
+    # or `prompt` raised AttributeError out of a fail-soft module — same silent-drop
+    # consequence as the numeric coercions below.
     project = task.get("project") or ""
-    kind = (task.get("kind") or "").lower()
-    prompt = (task.get("prompt") or "").lower()
+    kind = str(task.get("kind") or "").lower()
+    prompt = str(task.get("prompt") or "").lower()
 
     # Base: historical avg_delta for this kind. Two spellings are honoured because two existed:
     # the implementation read kind_roi/error_rates, the test suite supplied
@@ -313,7 +316,13 @@ def cost_benefit(task, ctx):
                 "roi": 0.0, "worthwhile": False}
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    # _as_float, not float(): `usd` arrives from the tasks table and has been seen as a
+    # string. A bare float() raised ValueError out of the one module whose stated contract
+    # is that every read is fail-soft, and because ev_scheduler.load_ctx() calls this
+    # inside a bare `except Exception: pass`, the raise did not surface as an error — it
+    # silently dropped revenue from scheduling, exactly as the _as_float docstring
+    # describes for the context signals.
+    estimated_cost = _as_float(task.get("usd"), 0.0)
 
     # Avoid division by zero
     if estimated_cost <= 0:
@@ -343,7 +352,7 @@ def score(task, ctx):
         return 0.0
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    estimated_cost = _as_float(task.get("usd"), 0.0)  # see cost_benefit: never bare float()
 
     if estimated_cost <= 0:
         estimated_cost = 1.0
@@ -352,7 +361,7 @@ def score(task, ctx):
     s = (predicted_revenue / estimated_cost) if estimated_cost > 0 else predicted_revenue
 
     # Success rate boost (assume 0.7 baseline if not specified)
-    success_rate = float(task.get("success_rate") or 0.7)
+    success_rate = _as_float(task.get("success_rate"), 0.7)
     s *= (1.0 + success_rate)
 
     # Kind outcome weight (future: integrate with outcome_stats from ev_scheduler context)
