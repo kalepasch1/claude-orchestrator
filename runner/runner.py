@@ -3527,13 +3527,22 @@ def _reap_zombie_tasks():
                                  and account not in live_runner_ids
                                  and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
             if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
-                patch = agentic_repair.repair_patch(
-                    t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
-                        else "zombie-reaper: stale RUNNING >30min"),
-                    category="orphaned-running",
-                    directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
-                db.update("tasks", {"id": t["id"]}, patch)
-                reclaimed += 1
+                # Per-task guard. Without it a single failing repair_patch/update aborted
+                # the whole sweep through the outer except, so ONE bad row left every
+                # other zombie in the batch claimed by a runner that is already gone —
+                # and the only trace was one line of stdout. Fail-soft per the CLAUDE.md
+                # convention: log the row and keep reclaiming.
+                try:
+                    patch = agentic_repair.repair_patch(
+                        t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
+                            else "zombie-reaper: stale RUNNING >30min"),
+                        category="orphaned-running",
+                        directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
+                    db.update("tasks", {"id": t["id"]}, patch)
+                    reclaimed += 1
+                except Exception as exc:
+                    print(f"[zombie-reaper] could not reclaim {t.get('slug') or t.get('id')}: "
+                          f"{type(exc).__name__}: {exc}")
         if reclaimed:
             print(f"[zombie-reaper] reclaimed {reclaimed} stale RUNNING tasks")
         retry_cutoff = (datetime.datetime.now(datetime.timezone.utc)
@@ -3550,7 +3559,9 @@ def _reap_zombie_tasks():
         if retries:
             print(f"[retry-promoter] returned {len(retries)} elapsed RETRY tasks to QUEUED")
     except Exception as e:
-        print(f"[zombie-reaper] error: {e}")
+        # Type included: several exception classes here stringify to "" (StopIteration is
+        # the common one), so the log line read "[zombie-reaper] error: " and named nothing.
+        print(f"[zombie-reaper] error: {type(e).__name__}: {e}")
 
 
 # Scheduler keys (or job names) that must not fire, comma-separated.
