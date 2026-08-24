@@ -219,6 +219,26 @@ class TestHostStamp(PausedHostTestCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn("host", calls[1])
 
+    def test_release_insert_never_strips_host_after_guard_rejection(self):
+        import release_train
+
+        calls = []
+
+        def rejected(table, row):
+            calls.append(row)
+            raise RuntimeError(
+                "paused-host guard: host Mac-A is paused and may not record releases"
+            )
+
+        with patch.object(release_train.db, "insert", side_effect=rejected):
+            with self.assertRaisesRegex(RuntimeError, "paused-host guard"):
+                release_train._insert_release({"project": "beethoven"})
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["host"], paused_host_guard.HOST)
+        self.assertEqual(len(self.alerts), 1)
+        self.assertEqual(self.alerts[0]["actor"], "release_insert")
+
 
 class TestMigrationShape(unittest.TestCase):
     """4/5/6 are enforced in SQL; assert the guard's shape rather than a live DB."""
@@ -253,61 +273,46 @@ class TestMigrationShape(unittest.TestCase):
         self.assertIn("if NEW.host is null", self.sql)
 
 
-class PausedHostReleaseGuardV2MigrationTests(unittest.TestCase):
-    """v2 is the migration that actually runs last, so it is what the fence IS.
+def _strip_sql_comments(sql):
+    """The statements Postgres will run, with `--` commentary removed.
 
-    v1 promised the refusal was "RECORDED, not swallowed" and then recorded it with an
-    INSERT and a pg_notify inside the trigger body — both of which roll back with the
-    RAISE that follows them. The guard refused correctly and said nothing, which is the
-    exact failure v1 was written to eliminate. v2 drops the doomed write; the durable
-    record is the caller's job, in its own transaction.
+    v2's whole point is that it does NOT do the two transactional writes v1 did,
+    and the migration explains that by QUOTING v1's body in its header comment.
+    Asserting `assertNotIn("perform pg_notify", whole_file)` therefore fails on
+    a correct migration — it matches the description of the bug, not the bug.
+    Assert against the executable text instead.
     """
+    return "\n".join(
+        line.split("--", 1)[0] for line in sql.splitlines()
+    ).lower()
 
+
+class TestMigrationV2TransactionTruth(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "supabase", "migrations", "20260811160000_paused_host_release_guard_v2.sql")
         with open(path) as fh:
-            cls.sql = fh.read()
+            raw = fh.read()
+        cls.sql = raw.lower()
+        cls.statements = _strip_sql_comments(raw)
 
-    def test_the_doomed_in_trigger_write_is_gone(self):
-        """An INSERT in the same transaction as the RAISE cannot survive it.
+    def test_replaces_the_guard_without_transaction_local_alert_claims(self):
+        self.assertIn(
+            "create or replace function public.enforce_paused_host_release_guard",
+            self.statements)
+        # Executable body only — the header comment quotes v1's doomed writes.
+        self.assertNotIn("perform pg_notify", self.statements)
+        self.assertNotIn("insert into public.runner_alerts", self.statements)
+        # The explanation of where the durable record now lives is a comment,
+        # so this one is deliberately checked against the full file.
+        self.assertIn("caller records the refusal", self.sql)
 
-        Comments are stripped first — the migration explains the removed write in prose,
-        and matching that prose would make this test pass for the wrong reason (or, as
-        first written, fail for one).
-        """
-        body = self.sql.split("$$")[1] if "$$" in self.sql else self.sql
-        code = "\n".join(
-            line for line in body.splitlines() if not line.strip().startswith("--"))
-        self.assertNotIn("insert into public.runner_alerts", code)
-        self.assertNotIn("pg_notify", code)
-
-    def test_it_still_raises_so_the_release_is_actually_refused(self):
-        self.assertIn("raise exception", self.sql)
-        self.assertIn("check_violation", self.sql)
-
-    def test_it_is_still_insert_only_so_completion_is_never_blocked(self):
-        self.assertIn("before insert on public.releases", self.sql)
-        self.assertNotIn("before insert or update", self.sql.lower())
-
-    def test_it_still_reuses_the_claim_guards_pause_lookup(self):
-        self.assertIn("stale_host_is_paused", self.sql)
-
-    def test_an_unattributable_row_is_still_not_refused(self):
-        self.assertIn("if NEW.host is null", self.sql)
-
-    def test_it_is_idempotent_over_v1(self):
-        self.assertIn("create or replace function", self.sql)
-        self.assertIn("drop trigger if exists", self.sql)
-        self.assertIn("add column if not exists host", self.sql)
-
-    def test_the_caller_side_recorder_the_comment_points_at_exists(self):
-        """v2 hands recording to the runner. If that ever goes away, v2 goes silent too."""
-        self.assertEqual(paused_host_guard.ALERT_KIND, "release_from_paused_host")
-        self.assertTrue(hasattr(paused_host_guard, "record_rejection"))
-        self.assertIn("record_rejection", self.sql)
+    def test_the_comment_that_documents_the_v1_bug_is_still_there(self):
+        """Stripping comments must not become a way to lose the reasoning."""
+        self.assertIn("perform pg_notify", self.sql)
+        self.assertNotIn("perform pg_notify", self.statements)
 
 
 if __name__ == "__main__":

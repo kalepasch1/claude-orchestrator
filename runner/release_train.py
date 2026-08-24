@@ -439,7 +439,23 @@ def _insert_release(row):
         f"record releases row for {row.get('project')}")
     try:
         return db.insert("releases", dict(row, host=paused_host_guard.HOST))
-    except Exception:
+    except Exception as exc:
+        # Compatibility is intentionally narrow. The previous blanket retry
+        # stripped host attribution after *any* failure, so a paused-host trigger
+        # rejection was immediately retried anonymously and accepted.
+        message = str(exc).lower()
+        missing_host_column = (
+            'column "host"' in message
+            and ('does not exist' in message or 'schema cache' in message)
+        ) or (
+            "could not find the 'host' column" in message
+            and 'releases' in message
+        )
+        if 'paused-host guard' in message:
+            paused_host_guard.record_rejection(
+                'release_insert', str(exc), project=row.get('project'))
+        if not missing_host_column:
+            raise
         return db.insert("releases", row)
 
 

@@ -4,6 +4,9 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [vue() as any],
+  // Keep tests hermetic. Vite otherwise walks above the repository looking for
+  // PostCSS/package configuration, which makes the result depend on the host Mac.
+  css: { postcss: { plugins: [] } },
   esbuild: {
     // Prevent Vite from resolving web/tsconfig.json which extends
     // .nuxt/tsconfig.json — that file only exists after `nuxt prepare`.

@@ -30,7 +30,7 @@ describe('operator-visible release surfaces', () => {
     const dashboard = await readFile(resolve(root, 'pages/index.vue'), 'utf8')
 
     expect(app).toContain('<NuxtPage')
-    expect(dashboard).toContain('<FleetHealthBadge :db-up="dbUp" />')
+    expect(dashboard).toContain('<FleetHealthBadge :health="fleetHealth" />')
     expect(dashboard).toContain('refreshFleetHealth()')
   })
 })
