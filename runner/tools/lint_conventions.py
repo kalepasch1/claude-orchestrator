@@ -449,13 +449,29 @@ class ConventionChecker(ast.NodeVisitor):
             and isinstance(node.value.value, str)
             and isinstance(node.target, ast.Name)
         ):
+            # ADDING A TYPE ANNOTATION MUST NOT DISABLE THE SECRET LINTER.
+            #
+            # visit_Assign was corrected so a vendor-prefixed literal is a credential
+            # "whatever it is called" (its own comment says so, and so does the
+            # _SECRET_VALUE_PREFIXES docstring: "a secret no matter what it is assigned
+            # to"). This branch was left behind still requiring a secret-ish NAME, so
+            # the two paths disagreed on the same literal:
+            #
+            #     endpoint      = "sk-live-abcdef"   ->  flagged
+            #     endpoint: str = "sk-live-abcdef"   ->  NOT flagged
+            #
+            # i.e. annotating a variable silently switched the rule off — the one edit a
+            # developer makes for type-safety reasons, with no hint it weakened a
+            # security check. Mirror visit_Assign: a vendor prefix fires on its own; a
+            # secret-shaped NAME still fires for non-vendor literals, unless the value is
+            # env indirection or an empty placeholder.
             value_str = node.value.value
-            if any(
-                value_str.lower().startswith(prefix)
-                for prefix in _SECRET_VALUE_PREFIXES
-            ):
-                var_name = node.target.id.lower()
-                if any(pattern in var_name for pattern in _SECRET_PATTERNS):
+            var_name = node.target.id
+            vendor_literal = value_str.lower().startswith(_SECRET_VALUE_PREFIXES)
+            secret_name = _looks_like_secret_name(var_name)
+            indirected = _is_indirected_secret_value(value_str)
+            if vendor_literal or (secret_name and not indirected):
+                if not (secret_name and indirected and not vendor_literal):
                     msg = f"Hardcoded secret detected in annotated assignment to '{node.target.id}'"
                     self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
                     self._v2_violations.append(ConventionViolation(
