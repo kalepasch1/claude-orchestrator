@@ -27,6 +27,16 @@ def _setup_test_repo(tmp_dir: str) -> str:
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo, check=True, capture_output=True)
 
+    # Whatever `git init` actually named the first branch. Hardcoding "master"
+    # made every test using this helper die with CalledProcessError on any
+    # machine whose init.defaultBranch is "main" — 27 failures across this file
+    # and test_merged_diff_memory_comprehensive.py, none of them a defect in the
+    # module under test. Ask git rather than assume.
+    default_branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
     # Create and merge an agent branch
     subprocess.run(["git", "checkout", "-b", "agent/test-feature-123"], cwd=repo, check=True, capture_output=True)
     test_file = os.path.join(repo, "feature.py")
@@ -34,10 +44,14 @@ def _setup_test_repo(tmp_dir: str) -> str:
     subprocess.run(["git", "add", "feature.py"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "agent: test-feature-123"], cwd=repo, check=True, capture_output=True)
 
-    # Merge back to main/master
-    subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
+    # Merge back to the default branch
+    subprocess.run(["git", "checkout", default_branch], cwd=repo, check=True, capture_output=True)
     subprocess.run(
-        ["git", "merge", "--no-ff", "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
+        # The branch to merge was missing from this argv, so `git merge` exited
+        # 128. It was invisible while the hardcoded `checkout master` above
+        # failed first — fixing that only moved the error down a line.
+        ["git", "merge", "--no-ff", "agent/test-feature-123",
+         "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -249,14 +263,20 @@ class TestGetRecentMergedAgentBranches:
             subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
 
+            default_branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
             subprocess.run(["git", "checkout", "-b", "feature/something"], cwd=repo, check=True, capture_output=True)
             Path(os.path.join(repo, "other.txt")).write_text("content")
             subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "feat"], cwd=repo, check=True, capture_output=True)
 
-            subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", default_branch], cwd=repo, check=True, capture_output=True)
             subprocess.run(
-                ["git", "merge", "--no-ff", "-m", "Merge branch 'feature/something'"],
+                ["git", "merge", "--no-ff", "feature/something",
+                 "-m", "Merge branch 'feature/something'"],
                 cwd=repo,
                 check=True,
                 capture_output=True,

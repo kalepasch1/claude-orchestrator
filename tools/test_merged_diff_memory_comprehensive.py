@@ -26,14 +26,29 @@ def _setup_test_repo(tmp_dir: str) -> str:
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo, check=True, capture_output=True)
 
+    # Whatever `git init` actually named the first branch. Hardcoding "master"
+    # made every test using this helper die with CalledProcessError on any
+    # machine whose init.defaultBranch is "main" — 18 failures in this file and
+    # 9 in test_merged_diff_memory.py, none of them a defect in the module
+    # under test. Ask git rather than assume.
+    default_branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
     subprocess.run(["git", "checkout", "-b", "agent/test-feature-123"], cwd=repo, check=True, capture_output=True)
     Path(os.path.join(repo, "feature.py")).write_text("def hello():\n    return 'world'\n")
     subprocess.run(["git", "add", "feature.py"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "agent: test-feature-123"], cwd=repo, check=True, capture_output=True)
 
-    subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "checkout", default_branch], cwd=repo, check=True, capture_output=True)
     subprocess.run(
-        ["git", "merge", "--no-ff", "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
+        # The branch to merge was missing from this argv, so `git merge` exited
+        # 128 with "No commit specified and merge.defaultToUpstream not set".
+        # It was invisible while the hardcoded `checkout master` above failed
+        # first — fixing that one only moved the CalledProcessError down a line.
+        ["git", "merge", "--no-ff", "agent/test-feature-123",
+         "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
         cwd=repo,
         check=True,
         capture_output=True,
