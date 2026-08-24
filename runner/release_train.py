@@ -480,6 +480,64 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+#: Seconds allowed for one framework-type generation. The old value was a hard-coded 180,
+#: which is fine for a warm prepare and far too tight for a cold one — and a timeout here
+#: fails the whole staging QA gate, which blocks the release. Configurable so the fleet
+#: can widen it without a code change.
+PREPARE_TIMEOUT_S = int(os.environ.get("ORCH_PREPARE_TIMEOUT_S", "600"))
+
+
+def _local_bin(start, name, stop_at=None):
+    """Path of an executable `node_modules/.bin/<name>` at or above `start`. None if absent.
+
+    WHY WALK UP. QA runs in an ephemeral overlay — a clean checkout of a git ref — and
+    node_modules is gitignored, so _link_shared_runtime symlinks it at the worktree ROOT
+    only. _prepare_generated_types then runs once per PACKAGE root, so a monorepo
+    sub-package has no node_modules of its own; looking only in the package directory
+    finds nothing and the caller falls through to fetching the tool from the registry.
+    That download is what consumed the 180 seconds and failed the gate.
+
+    WHY IT STOPS. `stop_at` bounds the walk at the worktree root, so a binary from the
+    developer's machine outside the checkout is never silently used to validate a release.
+
+    Fail-soft: any bad input returns None rather than raising, because a missing binary is
+    a normal, expected state — the caller has a fallback.
+    """
+    try:
+        if not isinstance(start, str) or not start:
+            return None
+        cur = os.path.abspath(start)
+        stop = os.path.abspath(stop_at) if isinstance(stop_at, str) and stop_at else cur
+        while True:
+            candidate = os.path.join(cur, "node_modules", ".bin", name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+            if cur == stop:
+                return None
+            parent = os.path.dirname(cur)
+            if parent == cur or not cur.startswith(stop):
+                return None
+            cur = parent
+    except Exception:
+        return None
+
+
+def _prepare_cmd(root, worktree):
+    """(argv, how) for generating framework types in `root`.
+
+    Prefers the linked toolchain — the binary is right there, so no login shell and no
+    registry round-trip. `nuxt` is accepted when `nuxi` is absent because both expose
+    `prepare`. The fallback is `npx --no-install`, which FAILS FAST when the toolchain is
+    genuinely missing instead of quietly downloading for minutes: a missing toolchain is a
+    real problem and should be reported as one, not absorbed as latency.
+    """
+    for name in ("nuxi", "nuxt"):
+        binary = _local_bin(root, name, stop_at=worktree)
+        if binary:
+            return [binary, "prepare"], "linked %s" % name
+    return ["npx", "--no-install", "nuxi", "prepare"], "npx --no-install (no linked toolchain)"
+
+
 def _prepare_generated_types(worktree):
     """Generate checkout-local framework types for every typed Nuxt package root."""
     roots = [worktree]
@@ -504,10 +562,16 @@ def _prepare_generated_types(worktree):
             return False, str(e)
         if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
             continue
-        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
-                              capture_output=True, text=True, timeout=180)
+        cmd, how = _prepare_cmd(root, worktree)
+        try:
+            proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                                  timeout=PREPARE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            logs.append(f"[{os.path.relpath(root, worktree)}] {how}: timed out after "
+                        f"{PREPARE_TIMEOUT_S}s")
+            return False, "\n".join(logs)
         log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
+        logs.append(f"[{os.path.relpath(root, worktree)}] via {how}\n{log}")
         generated = os.path.join(root, ".nuxt", "tsconfig.json")
         if proc.returncode != 0 or not os.path.exists(generated):
             return False, "\n".join(logs)
