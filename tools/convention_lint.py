@@ -341,8 +341,15 @@ class ConventionChecker(ast.NodeVisitor):
         """
         Rule 1: Fail-soft error handling
 
-        Public module-level functions should not raise on bad input.
-        Flag functions that have raise statements but no try/except handlers.
+        Public module-level functions should not raise on bad input, and they
+        should not swallow it silently either. Both halves fail the rule:
+
+        - a `raise` with no handler that returns a default, and
+        - an `except:` whose body is only `pass`, which hides the error and
+          leaves the caller with an implicit None it never asked for.
+
+        A handler is fail-soft when it returns a default, re-raises
+        deliberately, or at minimum records the error.
         """
         # Only check public module-level functions. function_context already holds
         # this function, so depth > 1 means it is nested inside another function.
@@ -350,6 +357,8 @@ class ConventionChecker(ast.NodeVisitor):
             return
         if len(self.function_context) > 1:
             return
+
+        self._check_silently_swallowed_errors(node)
 
         has_raise = False
         for child in self._own_nodes(node):
@@ -375,21 +384,31 @@ class ConventionChecker(ast.NodeVisitor):
                     f'Public function "{node.name}" raises on bad input; use try/except with sensible defaults instead'
                 ))
 
-        # A bare `except: pass` silently swallows every error including
-        # KeyboardInterrupt/SystemExit — that is silent failure, not fail-soft
-        # (fail-soft returns a sensible default). Flag it in public functions.
+    def _check_silently_swallowed_errors(self, node: ast.FunctionDef) -> None:
+        """Flag public functions whose except handlers do nothing at all.
+
+        CLAUDE.md is explicit that the silence — not the broad catch — is the
+        defect: "A silent `except Exception: pass` is the defect; a logged one
+        is the convention." So this cannot be limited to BARE `except:`; a
+        typed `except Exception: pass` swallows exactly as much. It stays on
+        `_own_nodes`, so a passing handler inside a nested closure is not
+        blamed on the enclosing public function, and it reports EVERY silent
+        handler rather than stopping at the first.
+        """
         for child in self._own_nodes(node):
             if not isinstance(child, ast.Try):
                 continue
             for handler in child.handlers:
-                bare = handler.type is None
-                only_pass = all(isinstance(stmt, ast.Pass) for stmt in handler.body)
-                if bare and only_pass:
-                    self._record(ConventionViolation(
-                        self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
-                        f'Public function "{node.name}" has a bare "except: pass"; '
-                        'catch specific exceptions and return a sensible default instead'
-                    ))
+                if not _handler_is_silent(handler):
+                    continue
+                shape = 'a bare "except: pass"' if handler.type is None \
+                    else 'an except handler that only passes'
+                self._record(ConventionViolation(
+                    self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
+                    f'Public function "{node.name}" has {shape}; '
+                    'catch specific exceptions and return a sensible default, '
+                    'or write a diagnostic before swallowing'
+                ))
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
         """
@@ -425,6 +444,25 @@ class ConventionChecker(ast.NodeVisitor):
                             f'Config key "{key_name}" is assigned a literal that looks like '
                             'a credential; read it from the environment instead'
                         ))
+
+
+def _handler_is_silent(handler: ast.ExceptHandler) -> bool:
+    """True when an except body does nothing at all.
+
+    `pass` and a lone docstring are both empty bodies — a docstring explaining
+    why the error is ignored is still not a diagnostic anyone will ever read at
+    runtime. Anything else (a log line, a return, a re-raise) is a real body and
+    is not flagged.
+    """
+    body = [
+        stmt for stmt in handler.body
+        if not (isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str))
+    ]
+    if not body:
+        return True
+    return all(isinstance(stmt, ast.Pass) for stmt in body)
 
 
 _NOQA_RE = re.compile(r'#\s*noqa(?::\s*(?P<rules>[A-Za-z0-9_,\s]+))?', re.IGNORECASE)
