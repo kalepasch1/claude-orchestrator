@@ -3009,7 +3009,10 @@ _SCHEDULE = [
     ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
     # Independent, contract-based pipeline smoke test: catches false pressure signals,
     # stale boot code, and recovery-mode settings that otherwise survive indefinitely.
-    ("pipelineselftest-3600", "pipeline_selftest.py", "interval", 3600),
+    # Key must stay distinct from the periodic-wrapper entry below ("pipelineselftest-job-3600").
+    # Both were keyed "pipelineselftest-3600", so they shared one _sched_last slot and each
+    # actually ran every TWO hours while claiming hourly.
+    ("pipelineselftest-script-3600", "pipeline_selftest.py", "interval", 3600),
     # Drain already-written agent branches into canonical integration cards without paying an
     # agent to rewrite them. The CLI's bounded default prevents a first-run card flood.
     ("bulkshelf-600", "bulk_integrate_shelf.py", "interval", 600),
@@ -3041,7 +3044,7 @@ _SCHEDULE = [
     # Per-initiative progress rollup: strategy-round parts/subparts -> % progress, blockers,
     # deploy-readiness. Persists to coordination KV + .runtime artifact; every surface reads it.
     ("progressroll-300","progress_rollup.py","interval", 300),
-    ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
+    ("cadeextras-dy-0430", "cadeextras",      "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
     ("committeedig-wk","committeedigest",    "daily",    (6, 5)), # owner brief of sharpest dissents/reversals
@@ -3051,7 +3054,7 @@ _SCHEDULE = [
     ("committeemins-dy","committeeminutes",  "daily",    (7, 0)), # plain-English board minutes for the owner
     ("committeekg-2am","committeekg",        "daily",    (2, 40)),# build the cross-committee knowledge graph
     ("committeemeta-wk","committeemeta",     "daily",    (2, 55)),# meta-review of the expert-assembly system
-    ("cadeextras-dy","cadeextras",           "daily",    (3, 15)),# auto-run all cx_* CADE extras modules
+    ("cadeextras-dy-0315","cadeextras",      "daily",    (3, 15)),# auto-run all cx_* CADE extras modules
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
     ("errrem-30",     "error_remediation_periodic", "interval", 30),  # AI-powered error detection + config rollback
     ("quarantine-180","quarantine",         "interval", 180),   # rewrite terminal blockers into safe claimable work
@@ -3085,7 +3088,7 @@ _SCHEDULE = [
     ("worktreeguard-300","worktreeguard",   "interval", 300),   # pin uncommitted work to rescue refs (destroyed 3x on 2026-08-02)
     ("deploysilence-3600","deploysilence",  "interval", 3600),  # ZERO prod deploys in N days — absence of deploys alerts nothing
     ("rescuedur-6h", "rescuedurability",   "interval", 21600), # rescue branches must not be local-only (34 were)
-    ("pipelineselftest-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
+    ("pipelineselftest-job-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
     ("cleanclone-6h","cleanclone",          "interval", 21600), # pristine clone install+build (expensive)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
@@ -3362,6 +3365,41 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # stale-reap threshold scales with how often a job is actually supposed to run, instead of a
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
+
+
+def duplicate_schedule_keys(schedule=None):
+    """Schedule keys that appear more than once, with the entries that share them.
+
+    `_scheduler_tick` stores every job's last-fire time in `_sched_last[key]`, so
+    two entries sharing a key share ONE timestamp: whichever fires first stamps
+    it and starves the other for a full interval. Nothing raised, nothing logged
+    — the second job simply ran at half its configured cadence forever. The same
+    key is also what `_DISABLED_JOBS` matches on, so disabling one silently
+    disables the other.
+
+    Fail-soft: returns {} rather than raising if the schedule is malformed. The
+    scheduler must boot even when this diagnostic cannot.
+    """
+    try:
+        entries = _SCHEDULE if schedule is None else schedule
+        seen = {}
+        for entry in entries:
+            seen.setdefault(entry[0], []).append(entry)
+        return {k: v for k, v in seen.items() if len(v) > 1}
+    except Exception as e:  # pragma: no cover - diagnostic must never wedge boot
+        print(f"[sched] duplicate-key check skipped: {e}")
+        return {}
+
+
+def _warn_on_duplicate_schedule_keys():
+    """Make the collision loud at boot. Two entries kept the same key for weeks."""
+    for key, entries in duplicate_schedule_keys().items():
+        jobs = ", ".join(str(e[1]) for e in entries)
+        print(f"[ALARM] duplicate_schedule_key key={key} jobs=({jobs}) — these share "
+              f"one _sched_last slot and will starve each other; give each a unique key")
+
+
+_warn_on_duplicate_schedule_keys()
 
 # Launch cadence is not an execution timeout. Integration and release jobs can
 # legitimately spend tens of minutes in isolated typecheck/build worktrees. A
