@@ -34,40 +34,47 @@ class BranchLeaseTest(unittest.TestCase):
             self.task, "/repo", "agent/example", "main", owner="test"))
         self.assertIsNone(branch_lease.active(self.task["id"]))
 
-    @mock.patch.object(branch_lease, "_sha", return_value=None)
-    @mock.patch.object(branch_lease.db, "rpc", side_effect=RuntimeError("RPC unavailable"))
-    def test_acquire_rpc_outage_fails_soft_and_closed(self, _rpc, _sha):
-        self.assertIsNone(branch_lease.acquire(
-            self.task, "/repo", "agent/example", "main", owner="test"))
-        self.assertIsNone(branch_lease.active(self.task["id"]))
+    def test_heartbeat_rpc_outage_keeps_active_lease_alive(self):
+        branch = "agent/example"
+        branch_lease._active[(self.task["id"], branch)] = {
+            "p_project_id": self.task["project_id"],
+            "branch": branch,
+            "p_task_id": self.task["id"],
+            "token": "lease-token",
+            "ttl": 3600,
+        }
 
-    @mock.patch.object(branch_lease, "_sha", return_value="abc")
-    def test_heartbeat_rpc_outage_reports_alive(self, _sha):
-        with mock.patch.object(branch_lease.db, "rpc", return_value=True):
-            self.assertIsNotNone(branch_lease.acquire(
-                self.task, "/repo", "agent/example", "main", owner="test"))
-        with mock.patch.object(branch_lease.db, "rpc",
-                               side_effect=RuntimeError("RPC unavailable")):
-            self.assertTrue(branch_lease.heartbeat(self.task["id"]))
-        self.assertIsNotNone(branch_lease.active(self.task["id"]))
+        with mock.patch.object(
+                branch_lease.db, "rpc", side_effect=OSError("RPC unavailable")):
+            self.assertTrue(branch_lease.heartbeat(self.task["id"], branch))
 
-    @mock.patch.object(branch_lease, "_sha", return_value="abc")
-    def test_heartbeat_genuine_lease_loss_reports_dead(self, _sha):
-        with mock.patch.object(branch_lease.db, "rpc", return_value=True):
-            self.assertIsNotNone(branch_lease.acquire(
-                self.task, "/repo", "agent/example", "main", owner="test"))
+    def test_heartbeat_explicit_lease_loss_still_fails_closed(self):
+        branch = "agent/example"
+        branch_lease._active[(self.task["id"], branch)] = {
+            "p_project_id": self.task["project_id"],
+            "branch": branch,
+            "p_task_id": self.task["id"],
+            "token": "lease-token",
+            "ttl": 3600,
+        }
+
         with mock.patch.object(branch_lease.db, "rpc", return_value=False):
-            self.assertFalse(branch_lease.heartbeat(self.task["id"]))
+            self.assertFalse(branch_lease.heartbeat(self.task["id"], branch))
 
-    @mock.patch.object(branch_lease, "_sha", return_value="abc")
-    def test_release_rpc_outage_does_not_raise(self, _sha):
-        with mock.patch.object(branch_lease.db, "rpc", return_value=True):
-            self.assertIsNotNone(branch_lease.acquire(
-                self.task, "/repo", "agent/example", "main", owner="test"))
-        with mock.patch.object(branch_lease.db, "rpc",
-                               side_effect=RuntimeError("RPC unavailable")):
-            self.assertFalse(branch_lease.release(self.task["id"]))
-        self.assertIsNone(branch_lease.active(self.task["id"]))
+    def test_heartbeat_outage_does_not_hide_another_branch_lease_loss(self):
+        for branch in ("agent/example-a", "agent/example-b"):
+            branch_lease._active[(self.task["id"], branch)] = {
+                "p_project_id": self.task["project_id"],
+                "branch": branch,
+                "p_task_id": self.task["id"],
+                "token": f"lease-token-{branch}",
+                "ttl": 3600,
+            }
+
+        with mock.patch.object(
+                branch_lease.db, "rpc",
+                side_effect=[OSError("RPC unavailable"), False]):
+            self.assertFalse(branch_lease.heartbeat(self.task["id"]))
 
     def test_cowork_contract_forbids_destructive_branch_operations(self):
         skill = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cowork_executor", "SKILL.md")

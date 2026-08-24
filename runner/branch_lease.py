@@ -28,14 +28,6 @@ def _sha(repo: str, ref: str) -> Optional[str]:
         return None
 
 
-def _lease_token(lease: dict) -> str:
-    """Normalize token access across current ("token") and legacy ("p_token")
-    lease shapes, so a legacy record can never present an empty token to the
-    lease RPCs (which would mask genuine lease loss behind the fail-soft
-    heartbeat path)."""
-    return str(lease.get("token") or lease.get("p_token") or "")
-
-
 def acquire(task: dict, repo: str, branch: str, base: str, *, owner: Optional[str] = None,
             ttl: int = DEFAULT_TTL) -> Optional[dict]:
     """Acquire and register the sole writer lease, or return ``None`` on contention."""
@@ -51,17 +43,7 @@ def acquire(task: dict, repo: str, branch: str, base: str, *, owner: Optional[st
         "p_remote_sha": _sha(repo, f"origin/{branch}"),
         "p_ttl_seconds": max(60, int(ttl)),
     }
-    try:
-        acquired = db.rpc("acquire_branch_execution_lease", args)
-    except Exception as e:
-        # An unavailable lease control plane is not proof of contention. Fail closed
-        # and let the runner requeue instead of turning an RPC outage into a task error.
-        import sys
-        sys.stderr.write(
-            f"[branch_lease] acquire RPC infra error ({e}); fail-soft NOT ACQUIRED\n"
-        )
-        return None
-    if acquired is not True:
+    if db.rpc("acquire_branch_execution_lease", args) is not True:
         return None
     lease = {**args, "branch": branch, "token": token, "ttl": max(60, int(ttl))}
     with _lock:
@@ -81,18 +63,22 @@ def heartbeat(task_id: str, branch: Optional[str] = None) -> bool:
     # evening). Mirrors repo_lock's documented fail-soft philosophy; local per-repo flocks
     # still serialize mutations on this machine. A genuine `False` from the RPC (lease lost
     # to another holder) is still honored and returns False.
-    try:
-        return all(db.rpc("heartbeat_branch_execution_lease", {
-            "p_project_id": lease["p_project_id"],
-            "p_branch": lease["branch"],
-            "p_task_id": lease["p_task_id"],
-            "p_token": _lease_token(lease),
-            "p_ttl_seconds": lease["ttl"],
-        }) is True for lease in leases)
-    except Exception as e:
-        import sys
-        sys.stderr.write(f"[branch_lease] heartbeat RPC infra error ({e}); fail-soft ALIVE\n")
-        return True
+    alive = True
+    for lease in leases:
+        try:
+            if db.rpc("heartbeat_branch_execution_lease", {
+                "p_project_id": lease["p_project_id"],
+                "p_branch": lease["branch"],
+                "p_task_id": lease["p_task_id"],
+                "p_token": lease["token"],
+                "p_ttl_seconds": lease["ttl"],
+            }) is not True:
+                alive = False
+        except Exception as e:
+            import sys
+            sys.stderr.write(
+                f"[branch_lease] heartbeat RPC infra error ({e}); fail-soft ALIVE\n")
+    return alive
 
 
 def release(task_id: str, branch: Optional[str] = None) -> bool:
@@ -109,7 +95,7 @@ def release(task_id: str, branch: Optional[str] = None) -> bool:
                 "p_project_id": lease["p_project_id"],
                 "p_branch": lease["branch"],
                 "p_task_id": lease["p_task_id"],
-                "p_token": _lease_token(lease),
+                "p_token": lease["token"],
             }) is True) and released
         except Exception:
             # The finite TTL remains the fail-safe if the control plane is unavailable.
