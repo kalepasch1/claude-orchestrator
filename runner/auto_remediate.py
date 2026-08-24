@@ -52,6 +52,40 @@ _ENV_BUILDFAIL = re.compile(r"integrate BUILDFAIL|production build red|build err
 _MISSING_BUILD_TOOL = re.compile(r"\b(yarn|pnpm|nuxt|nuxi|next|vite|prisma|vue-tsc):?\s*(command not found|not found)|cannot find module ['\"](@nuxt/|nuxt|nuxi|next|vite|prisma)", re.I)
 _QUOTED_SLUG = re.compile(r"'([^']+)'")
 
+#: Notes are stored in a bounded column; both shelve sites truncated at 500 by hand.
+SHELVE_NOTE_MAX_CHARS = 500
+
+#: Appended when the failure that exhausted the cap was a conflict or a missing branch.
+#: "needs human re-scope" is the right instruction for a mis-scoped task and the WRONG
+#: one for a branch that simply will not rebase — the human re-reads the prompt, finds
+#: nothing wrong with it, and puts it back. runner/config_consumer.py went round that
+#: loop six times. Say what to actually do instead.
+CONFLICT_GUIDANCE = ("Conflict/missing-branch path: rebase the branch by hand "
+                     "(git -C <repo> rebase <base> agent/<slug>) or delete it and let the "
+                     "task rebuild on a fresh base — re-scoping the prompt will not help.")
+
+
+def _shelve_note(rc, reason, signal=""):
+    """Terminal SHELVED note. One builder so both shelve sites stay consistent.
+
+    Keeps the ``shelved after N remediations`` prefix verbatim: rootcause_cluster.py
+    keys its "remediation-cap" signature off that exact phrasing, so this adds detail
+    without renaming the event. Never raises.
+    """
+    try:
+        count = int(rc)
+    except Exception:
+        count = 0
+    text = str(signal or "")
+    parts = [f"shelved after {count} remediations ({reason}) — needs human re-scope. "]
+    try:
+        if _CONFLICT.search(text) or _MISSING_BRANCH.search(text):
+            parts.append(CONFLICT_GUIDANCE + " ")
+    except Exception:
+        pass
+    parts.append(text)
+    return "".join(parts)[:SHELVE_NOTE_MAX_CHARS]
+
 
 def run(limit=120):
     """Anti-burn remediation. NEVER blindly re-run the same failing task into a credit loop:
@@ -120,8 +154,7 @@ def run(limit=120):
                         continue
             db.update("tasks", {"id": t["id"]},
                       {"state": "SHELVED", "account": None, "updated_at": "now()",
-                       "note": (f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
-                                + note)[:500]})
+                       "note": _shelve_note(rc, "atomic + unbuildable", note)})
             shelved += 1
             continue
 
@@ -402,8 +435,7 @@ def recover_auto_closed_noops(limit=500):
         if rc >= HARD_CAP:
             db.update("tasks", {"id": task["id"]},
                       {"state": "SHELVED", "account": None, "updated_at": "now()",
-                       "note": (f"shelved after {rc} remediations (repeat no-op) — needs human re-scope. "
-                                + note)[:500]})
+                       "note": _shelve_note(rc, "repeat no-op", note)})
             continue
         # Preserve (increment) the counter across restores so repeat no-ops converge to the hard cap.
         db.update("tasks", {"id": task["id"]},
