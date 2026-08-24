@@ -427,8 +427,26 @@ def _load_bearing(repo, rel_pkg, manifest):
 
 
 def _deps_ready_local(repo):
+    """True when the install at `repo` is usable. See _deps_ready_reason for why not."""
+    return _deps_ready_reason(repo) is None
+
+
+def _deps_ready_reason(repo):
+    """None when ready, else a short string naming the check that failed.
+
+    Readiness has six distinct failure modes and used to collapse into one bare
+    False, so `prove_build` could block a release with the single line
+    "installed snapshot failed dependency readiness validation" — which names
+    neither the repo nor the missing thing. An operator could not act on it, and
+    the comments through this function record three separate occasions where the
+    gate was refusing installs that were in fact correct. A gate that can stop a
+    deploy has to be able to say what it wants.
+
+    Fail-soft: any unexpected error here reports ready rather than manufacturing
+    a reinstall, which is the failure mode this module exists to avoid.
+    """
     if not os.path.isfile(os.path.join(repo, "package.json")):
-        return True
+        return None
     manifest = {}
     try:
         with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
@@ -456,7 +474,7 @@ def _deps_ready_local(repo):
     # `npm ci` legitimately creates no node_modules directory for a zero-dependency
     # package. Treating that as broken caused infinite repair work for leaf packages.
     if not os.path.isdir(nm) and declared_deps:
-        return False
+        return "node_modules/ is missing while package.json declares dependencies"
     scripts = _load_scripts(repo)
     joined = " ".join(str(v).lower() for v in scripts.values())
     required_bins = []
@@ -480,11 +498,15 @@ def _deps_ready_local(repo):
     if "tsc" in joined or "typescript" in joined or _declares_ts:
         required_bins.append(("tsc", "vue-tsc"))
     if not os.path.isdir(nm):
-        return not required_bins
+        if required_bins:
+            return ("node_modules/ is missing and this project needs "
+                    + ", ".join("/".join(c) for c in required_bins))
+        return None
     bin_dir = os.path.join(nm, ".bin")
     for choices in required_bins:
         if not any(os.path.exists(os.path.join(bin_dir, c)) for c in choices):
-            return False
+            wanted = " or ".join("node_modules/.bin/" + c for c in choices)
+            return "required toolchain binary missing: " + wanted
     # A launcher can survive a partial/pruned install while the module it imports
     # has disappeared. Nuxt then fails at startup with a misleading
     # ERR_MODULE_NOT_FOUND for @nuxt/cli/dist/index.mjs; the old check accepted
@@ -496,8 +518,10 @@ def _deps_ready_local(repo):
             ("@nuxt", "cli", "dist", "index.mjs"),
             ("@vue", "compiler-sfc", "dist", "compiler-sfc.cjs.js"),
         )
-        if not all(os.path.isfile(os.path.join(nm, *parts)) for parts in required_files):
-            return False
+        absent = [os.path.join(*parts) for parts in required_files
+                  if not os.path.isfile(os.path.join(nm, *parts))]
+        if absent:
+            return "Nuxt runtime entrypoint(s) missing under node_modules/: " + ", ".join(absent)
     # Catch the general case the two hardcoded probes above only sample: any package left
     # entrypoint-less by a concurrent install. Reporting not-ready sends this checkout back
     # through a reinstall instead of into a build that dies on ERR_MODULE_NOT_FOUND.
@@ -506,8 +530,9 @@ def _deps_ready_local(repo):
         if damaged:
             print(f"dependency_prewarm: {repo} has {len(damaged)} load-bearing package(s) with "
                   f"missing entrypoints ({', '.join(damaged[:5])}); treating install as not ready")
-            return False
-    return True
+            return (f"{len(damaged)} load-bearing package(s) have missing entrypoints: "
+                    + ", ".join(damaged[:5]))
+    return None
 
 
 def _ready_snapshot(repo):
@@ -645,8 +670,10 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
         # A failed install leaves the snapshot unready; label it with the standard
         # readiness-validation failure class so repair routing sees one error family.
         try:
-            if not _deps_ready_local(build_root):
-                err = "installed snapshot failed dependency readiness validation: " + err
+            reason = _deps_ready_reason(build_root)
+            if reason is not None:
+                err = ("installed snapshot failed dependency readiness validation ("
+                       + reason + "): " + err)
         except Exception:
             pass
         shutil.rmtree(build_root, ignore_errors=True)
@@ -665,11 +692,16 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
                            text=True, timeout=300)
     except Exception:
         pass
-    if not _deps_ready_local(build_root):
+    ready_reason = _deps_ready_reason(build_root)
+    if ready_reason is not None:
+        # Name the failing check. This branch fires when the install SUCCEEDED but
+        # the tree is still unusable, so there is no install log to read — the
+        # bare sentence on its own told an operator nothing about what was wrong.
         shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
         return {"ok": False, "manager": manager,
-                "error": "installed snapshot failed dependency readiness validation"}
+                "error": "installed snapshot failed dependency readiness validation: "
+                         + ready_reason}
     final_root = _snapshot_path(repo)
     try:
         with open(os.path.join(build_root, ".ready.json"), "w", encoding="utf-8") as f:
