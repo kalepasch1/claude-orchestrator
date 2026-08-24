@@ -91,19 +91,21 @@ export async function recordPolicyMatch(policyId: string, success: boolean): Pro
   const now = new Date().toISOString()
 
   // Increment match count atomically
-  try {
-    await sb.rpc('increment_policy_match', { policy_id: policyId, was_success: success })
-  } catch {
-    // Fallback: non-atomic update if RPC doesn't exist
-    const { data } = await sb.from('fleet_policies').select('match_count, success_count').eq('id', policyId).single()
-    if (data) {
-      await sb.from('fleet_policies').update({
-        match_count: (data.match_count || 0) + 1,
-        success_count: (data.success_count || 0) + (success ? 1 : 0),
-        last_matched_at: now,
-      }).eq('id', policyId)
-    }
-  }
+  // Promise.resolve() first: the builder's own .then() returns PromiseLike<void>, which has
+  // no .catch, so the fallback below was unreachable as written (TS2339).
+  await Promise.resolve(sb.rpc('increment_policy_match', { policy_id: policyId, was_success: success }))
+    .then(() => {})
+    .catch(async () => {
+      // Fallback: non-atomic update if RPC doesn't exist
+      const { data } = await sb.from('fleet_policies').select('match_count, success_count').eq('id', policyId).single()
+      if (data) {
+        await sb.from('fleet_policies').update({
+          match_count: (data.match_count || 0) + 1,
+          success_count: (data.success_count || 0) + (success ? 1 : 0),
+          last_matched_at: now,
+        }).eq('id', policyId)
+      }
+    })
 }
 
 // ── Policy suggestion from approver patterns ─────────────────────────────

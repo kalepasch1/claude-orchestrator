@@ -38,6 +38,7 @@ export default defineEventHandler(async (event) => {
   })
   const rate = consumeProofLookup(client)
   if (!rate.allowed) {
+    // h3 types 'retry-after' as a number, so String() was the type error (TS2345).
     setHeader(event, 'retry-after', rate.retryAfterSeconds)
     throw createError({
       statusCode: 429,
