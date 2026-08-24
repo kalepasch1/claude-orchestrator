@@ -1,513 +1,466 @@
+#!/usr/bin/env python3
 """
-test_template_security_validation.py — Comprehensive test suite for template data security.
+test_template_security_validation.py — access control on stored patch templates.
 
-Validates:
-A) Template ID access is gated by auth/allowlist checks
-B) Sensitive data in template files cannot be accessed without authorization
-C) Adding new template files does not bypass existing security controls
-D) Existing behavior is preserved after security hardening
-E) Error handling: no wedging on missing/unauthorized access, fail-soft returns
-F) No plaintext template IDs leaked in logs, errors, or debug output
-G) Thread-safe concurrent template access (no race conditions in auth checks)
-H) Template allowlist isolation (no access to unlisted templates)
-I) Edge cases: null inputs, empty strings, bad paths, missing files
-J) 20+ test cases covering normal paths, edge cases, concurrency, and security boundaries
+WHAT THIS FILE TESTS, AND WHAT IT USED TO
+-----------------------------------------
+There is no `template_security` module in this repo, and no role/allowlist auth
+layer for templates anywhere in it: no `check_template_authorization`, no
+`get_user_role`, no per-role template allowlist. The generated suite that used to
+live here invented that API, patched it by bare name — `patch("get_template")`,
+which unittest.mock rejects because it is not an importable target — and defined
+its own stub `get_template()` (returning None unconditionally) at the bottom of
+the file. All 38 failures were `Need a valid target to patch` / "not enough
+values to unpack"; the five that passed asserted things about local dicts. The
+file tested itself and never imported product code at all.
+
+The real owner of "resolve stored template data from a template id" is
+`runner/patch_templates.py`:
+
+  * `lookup(template_id)` — the only id-gated read. The gate is the id itself and
+    the effective allowlist is the set of ids actually stored (local JSONL store,
+    then the knowledge table); anything else resolves to `{}`.
+  * `find_template(slug)` — the same resolution keyed by task slug, used by
+    dependency recovery, which additionally decides whether a hit is APPLICABLE
+    (carries a `diff`).
+
+So the original themes map onto real behaviour: (A/H) id gating and isolation
+from unlisted templates, (C) a growing store not widening access, (D) preserved
+resolution behaviour, (E) fail-soft on missing/corrupt/unreadable stores and DB
+outages, (F) a denied lookup disclosing nothing, (G) concurrent resolution, and
+(I) null/empty/traversal inputs. The role/authorization framing has no product
+behind it and could not survive; each substitution is named on the test.
+
+This complements `runner/test_patch_templates_security.py`, which covers id
+generation, build(), _store(), inject_prompt() and pre_claim_hook() but never
+exercises the resolution path tested here.
+
+No test here touches the network: `db.select`/`db.insert` are patched in setUp to
+raise, and the JSONL store is redirected to a temp directory.
 """
+import json
 import os
 import sys
-import unittest
 import tempfile
 import threading
-import time
-import json
-from unittest.mock import MagicMock, patch, call, mock_open
-from pathlib import Path
-from io import StringIO
+import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Disable DB/network access during tests
-os.environ["ORCH_DB_ENABLED"] = "false"
-os.environ["ORCH_DB_URL"] = ""
-os.environ["ORCH_TEMPLATE_AUTH_ENABLED"] = "true"
+import patch_templates
 
 
-class TestTemplateAccessControl(unittest.TestCase):
-    """Test template access control and authorization."""
+def _body_for(tid, note="scaffold"):
+    """A stored template body in the real format build() writes."""
+    return f"PATCH TEMPLATE {tid}\nIntent: {note}\nAcceptance: preserve existing behavior."
+
+
+class TemplateStoreCase(unittest.TestCase):
+    """Base case: hermetic JSONL store, no DB, no network."""
 
     def setUp(self):
-        """Initialize test fixtures."""
-        self.auth_allowlist = {
-            "admin": ["template_1", "template_2", "template_3"],
-            "user": ["template_1"],
-            "guest": [],
-        }
-        self.mock_get_user_role = patch("get_user_role")
-        self.mock_check_auth = patch("check_template_authorization")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store_path = os.path.join(self._tmp.name, "patch_templates.jsonl")
 
-    def test_authorized_user_can_read_template(self):
-        """User with proper authorization can read template data."""
-        with patch("get_template") as mock_get:
-            mock_get.return_value = {"id": "template_1", "name": "Test Template"}
-            with patch("check_template_authorization", return_value=True) as mock_auth:
-                result = get_template("template_1", user_role="admin")
-                mock_auth.assert_called_once_with("template_1", "admin")
-                self.assertIsNotNone(result)
-                self.assertEqual(result["id"], "template_1")
+        self._start(patch.object(patch_templates, "_fallback_path", lambda: self.store_path))
 
-    def test_unauthorized_user_denied_template_access(self):
-        """User without authorization cannot access template."""
-        with patch("check_template_authorization", return_value=False) as mock_auth:
-            result = get_template("template_2", user_role="guest")
-            mock_auth.assert_called_once_with("template_2", "guest")
-            self.assertIsNone(result)
+        # Offline by default; individual tests opt into a fake DB response.
+        self.select = self._start(
+            patch.object(patch_templates.db, "select",
+                         side_effect=RuntimeError("db unavailable in tests"))
+        )
+        self.insert = self._start(
+            patch.object(patch_templates.db, "insert",
+                         side_effect=RuntimeError("db unavailable in tests"))
+        )
 
-    def test_template_id_not_exposed_on_unauthorized_access(self):
-        """Error messages do not leak template IDs on unauthorized access."""
-        with patch("check_template_authorization", return_value=False):
-            result = get_template("sensitive_template_id_12345", user_role="guest")
-            self.assertIsNone(result)
+    def _start(self, patcher):
+        """Start a patcher and guarantee its own removal (never patch.stopall,
+        which would also tear down patchers this case did not start)."""
+        mocked = patcher.start()
+        self.addCleanup(patcher.stop)
+        return mocked
 
-    def test_guest_role_has_empty_allowlist(self):
-        """Guest role cannot access any templates."""
-        for template_id in ["template_1", "template_2", "template_3"]:
-            with patch("check_template_authorization", return_value=False):
-                result = get_template(template_id, user_role="guest")
-                self.assertIsNone(result)
+    def store(self, *rows):
+        """Append rows to the JSONL template store, oldest first."""
+        with open(self.store_path, "a") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
 
-    def test_user_role_limited_to_allowed_templates(self):
-        """User role can only access specific allowed templates."""
-        allowed = ["template_1"]
-        restricted = ["template_2", "template_3"]
-
-        for template_id in allowed:
-            with patch("check_template_authorization", return_value=True):
-                result = get_template(template_id, user_role="user")
-                self.assertIsNotNone(result)
-
-        for template_id in restricted:
-            with patch("check_template_authorization", return_value=False):
-                result = get_template(template_id, user_role="user")
-                self.assertIsNone(result)
-
-    def test_admin_role_access_to_all_templates(self):
-        """Admin role has access to all templates in allowlist."""
-        templates = ["template_1", "template_2", "template_3"]
-        for template_id in templates:
-            with patch("check_template_authorization", return_value=True):
-                result = get_template(template_id, user_role="admin")
-                self.assertIsNotNone(result)
-
-    def test_null_user_role_denied_access(self):
-        """Null user role is denied access to all templates."""
-        with patch("check_template_authorization", return_value=False):
-            result = get_template("template_1", user_role=None)
-            self.assertIsNone(result)
-
-    def test_empty_string_user_role_denied_access(self):
-        """Empty string user role is denied access."""
-        with patch("check_template_authorization", return_value=False):
-            result = get_template("template_1", user_role="")
-            self.assertIsNone(result)
-
-    def test_null_template_id_handled_gracefully(self):
-        """Null template ID returns None without raising exception."""
-        result = get_template(None, user_role="admin")
-        self.assertIsNone(result)
-
-    def test_empty_string_template_id_handled_gracefully(self):
-        """Empty string template ID returns None without raising exception."""
-        result = get_template("", user_role="admin")
-        self.assertIsNone(result)
-
-    def test_malformed_template_id_denied_access(self):
-        """Malformed template ID (with special chars) is denied."""
-        with patch("check_template_authorization", return_value=False):
-            result = get_template("../../../sensitive", user_role="admin")
-            self.assertIsNone(result)
+    def store_template(self, tid, task=None, body=None):
+        self.store({"ts": 1.0, "task": task or f"task-{tid}", "template_id": tid,
+                    "body": body if body is not None else _body_for(tid)})
 
 
-class TestNewTemplateFileIntegration(unittest.TestCase):
-    """Test that adding new template files maintains security constraints."""
+class TestTemplateIdGatesResolution(TemplateStoreCase):
+    """A) The template id is the gate; H) unlisted ids get nothing."""
 
-    def test_new_template_file_requires_auth_check(self):
-        """Adding a new template file does not bypass auth checks."""
-        with patch("check_template_authorization", return_value=False):
-            result = get_template("new_template_file", user_role="user")
-            self.assertIsNone(result)
+    def test_stored_id_resolves_to_its_own_template(self):
+        self.store_template("aaaaaaaaaaaa")
+        result = patch_templates.lookup("aaaaaaaaaaaa")
+        self.assertEqual(result["template_id"], "aaaaaaaaaaaa")
+        self.assertIn("PATCH TEMPLATE aaaaaaaaaaaa", result["body"])
 
-    def test_new_template_file_with_admin_access_allowed(self):
-        """New template file is accessible to authorized admin."""
-        with patch("check_template_authorization", return_value=True):
-            with patch("get_template", return_value={"id": "new_template_file"}):
-                result = get_template("new_template_file", user_role="admin")
-                self.assertIsNotNone(result)
+    def test_id_that_was_never_stored_resolves_to_nothing(self):
+        """Substitution for the removed 'guest role has empty allowlist': the
+        stored id set IS the allowlist, so an unlisted id is the denial case."""
+        self.store_template("aaaaaaaaaaaa")
+        self.assertEqual(patch_templates.lookup("bbbbbbbbbbbb"), {})
 
-    def test_template_sensitive_data_not_in_error_logs(self):
-        """Template sensitive data (IDs, paths) not included in error messages."""
-        with patch("check_template_authorization", return_value=False):
-            result = get_template("sensitive_template_12345", user_role="guest")
-            # Verify error handling doesn't leak the template ID
-            self.assertIsNone(result)
+    def test_none_id_is_denied(self):
+        self.assertEqual(patch_templates.lookup(None), {})
 
-    def test_template_file_creation_preserves_allowlist(self):
-        """Creating a new template file preserves existing allowlist."""
-        allowlist_before = {"admin": ["template_1"], "user": []}
-        # After creating new template, allowlist should be updated properly
-        with patch("add_template_to_allowlist") as mock_add:
-            add_template_to_allowlist("new_template", "admin")
-            mock_add.assert_called_once()
+    def test_empty_and_whitespace_ids_are_denied_without_reading_the_store(self):
+        with patch("builtins.open", side_effect=AssertionError("store must not be opened")):
+            for value in ("", "   ", "\t\n"):
+                self.assertEqual(patch_templates.lookup(value), {}, repr(value))
 
-    def test_template_deletion_removes_from_allowlist(self):
-        """Deleting a template removes it from all allowlists."""
-        with patch("remove_template_from_allowlist") as mock_remove:
-            remove_template_from_allowlist("template_1")
-            mock_remove.assert_called_once_with("template_1")
+    def test_non_string_ids_are_denied(self):
+        self.store_template("aaaaaaaaaaaa")
+        for value in (0, [], {}, False):
+            self.assertEqual(patch_templates.lookup(value), {}, repr(value))
 
-    def test_allowlist_update_atomicity(self):
-        """Allowlist updates are atomic (no partial updates on error)."""
-        with patch("update_allowlist", side_effect=Exception("DB error")):
-            with self.assertRaises(Exception):
-                update_allowlist({"admin": ["template_1"]})
+    def test_traversal_id_reads_only_the_fixed_store_path(self):
+        """A hostile id must not steer the read: the store path is fixed."""
+        self.store_template("aaaaaaaaaaaa")
+        opened = []
+        real_open = open
 
+        def recording_open(path, *args, **kwargs):
+            opened.append(path)
+            return real_open(path, *args, **kwargs)
 
-class TestTemplateSensitiveDataProtection(unittest.TestCase):
-    """Test protection of sensitive data within templates."""
+        with patch("builtins.open", recording_open):
+            result = patch_templates.lookup("../../../etc/passwd")
 
-    def test_template_id_not_exposed_in_response(self):
-        """Sensitive template IDs are not exposed in API responses."""
-        with patch("check_template_authorization", return_value=True):
-            with patch("get_template", return_value={"id": "template_1"}):
-                result = get_template("template_1", user_role="admin")
-                # Ensure response structure doesn't leak more than needed
-                self.assertIn("id", result)
+        self.assertEqual(result, {})
+        self.assertEqual(opened, [self.store_path])
 
-    def test_api_key_not_stored_in_template_metadata(self):
-        """API keys and secrets not stored in template metadata."""
-        template_data = {"id": "template_1", "name": "Test"}
-        self.assertNotIn("api_key", template_data)
-        self.assertNotIn("secret", template_data)
-        self.assertNotIn("password", template_data)
-
-    def test_database_connection_string_not_in_template(self):
-        """Database connection strings not stored in template data."""
-        with patch("check_template_authorization", return_value=True):
-            with patch("get_template", return_value={"id": "template_1"}):
-                result = get_template("template_1", user_role="admin")
-                # Verify no database credentials in template
-                if result:
-                    for key in result:
-                        self.assertFalse(any(s in str(result[key]) for s in ["postgres://", "mysql://", "mongodb://"]))
-
-    def test_template_audit_log_doesnt_include_sensitive_content(self):
-        """Audit logs record access but not sensitive template content."""
-        with patch("log_template_access") as mock_log:
-            with patch("check_template_authorization", return_value=True):
-                get_template("template_1", user_role="admin")
-                # Verify log call doesn't include full template data
-                mock_log.assert_called()
+    def test_lookup_strips_surrounding_whitespace_from_the_id(self):
+        self.store_template("aaaaaaaaaaaa")
+        self.assertEqual(patch_templates.lookup("  aaaaaaaaaaaa  ")["template_id"], "aaaaaaaaaaaa")
 
 
-class TestBehaviorPreservation(unittest.TestCase):
-    """Test that security hardening preserves existing behavior."""
+class TestNoCrossTemplateLeak(TemplateStoreCase):
+    """H) Resolving id A must never hand back template B."""
 
-    def test_authorized_template_retrieval_unchanged(self):
-        """Authorized template retrieval behavior is unchanged."""
-        expected_data = {"id": "template_1", "content": "test content"}
-        with patch("check_template_authorization", return_value=True):
-            with patch("get_template", return_value=expected_data):
-                result = get_template("template_1", user_role="admin")
-                self.assertEqual(result, expected_data)
+    def test_jsonl_store_matches_ids_exactly_not_by_prefix(self):
+        self.store_template("aaaaaaaaaaaabbbb")
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
 
-    def test_template_list_operation_unchanged(self):
-        """List templates behavior is unchanged for authorized users."""
-        expected_list = ["template_1", "template_2"]
-        with patch("check_template_authorization", return_value=True):
-            with patch("list_templates_for_role", return_value=expected_list):
-                result = list_templates_for_role("admin")
-                self.assertEqual(result, expected_list)
+    def test_db_row_for_another_template_is_not_returned_for_a_prefix_id(self):
+        """Regression: `lookup` confirmed the DB hit with `tid in body`, and the
+        query itself is a prefix filter, so a truncated id came back carrying a
+        different task's template body relabelled with the id that was asked for.
+        """
+        self.select.side_effect = None
+        self.select.return_value = [{"title": "patch template other",
+                                     "body": _body_for("aaaaaaaaaaaabbbb", note="other task")}]
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
 
-    def test_template_caching_behavior_unchanged(self):
-        """Template caching behavior is preserved with auth checks."""
-        with patch("get_cached_template") as mock_cache:
-            mock_cache.return_value = {"id": "template_1"}
-            with patch("check_template_authorization", return_value=True):
-                result = get_cached_template("template_1", "admin")
-                self.assertIsNotNone(result)
+    def test_db_row_whose_header_names_the_requested_id_is_returned(self):
+        self.select.side_effect = None
+        self.select.return_value = [{"title": "patch template demo",
+                                     "body": _body_for("aaaaaaaaaaaa")}]
+        result = patch_templates.lookup("aaaaaaaaaaaa")
+        self.assertEqual(result["template_id"], "aaaaaaaaaaaa")
+        self.assertEqual(result["source"], "db")
 
-    def test_batch_template_retrieval_unchanged(self):
-        """Batch template retrieval preserves behavior for authorized templates."""
-        with patch("check_template_authorization", return_value=True):
-            with patch("get_templates_batch", return_value={"template_1": {}, "template_2": {}}):
-                result = get_templates_batch(["template_1", "template_2"], "admin")
-                self.assertEqual(len(result), 2)
+    def test_id_mentioned_only_in_the_body_text_does_not_match(self):
+        """The id must be declared in the header line, not merely mentioned."""
+        self.select.side_effect = None
+        self.select.return_value = [{
+            "title": "patch template other",
+            "body": _body_for("cccccccccccc", note="supersedes aaaaaaaaaaaa"),
+        }]
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
 
-    def test_template_update_behavior_unchanged(self):
-        """Template update preserves behavior for authorized users."""
-        with patch("check_template_authorization", return_value=True):
-            with patch("update_template", return_value=True) as mock_update:
-                result = update_template("template_1", {"name": "Updated"}, "admin")
-                mock_update.assert_called_once()
+    def test_newest_stored_entry_wins_for_a_repeated_id(self):
+        self.store_template("aaaaaaaaaaaa", body=_body_for("aaaaaaaaaaaa", note="first"))
+        self.store_template("aaaaaaaaaaaa", body=_body_for("aaaaaaaaaaaa", note="second"))
+        self.assertIn("second", patch_templates.lookup("aaaaaaaaaaaa")["body"])
 
-
-class TestErrorHandlingAndFailSoft(unittest.TestCase):
-    """Test error handling and fail-soft behavior."""
-
-    def test_database_error_returns_none_not_exception(self):
-        """Database errors return None instead of raising exceptions."""
-        with patch("check_template_authorization", side_effect=Exception("DB error")):
-            result = get_template("template_1", user_role="admin")
-            self.assertIsNone(result)
-
-    def test_authorization_check_failure_returns_none(self):
-        """Authorization check failures return None gracefully."""
-        with patch("check_template_authorization", return_value=False):
-            result = get_template("template_1", user_role="user")
-            self.assertIsNone(result)
-
-    def test_missing_allowlist_entry_returns_none(self):
-        """Missing allowlist entry returns None without crashing."""
-        with patch("get_template_allowlist", return_value={}):
-            with patch("check_template_authorization", return_value=False):
-                result = get_template("unknown_template", user_role="admin")
-                self.assertIsNone(result)
-
-    def test_corrupted_allowlist_file_handled_gracefully(self):
-        """Corrupted allowlist file is handled without wedging."""
-        with patch("load_allowlist", side_effect=json.JSONDecodeError("msg", "doc", 0)):
-            with patch("check_template_authorization", return_value=False):
-                result = get_template("template_1", user_role="admin")
-                self.assertIsNone(result)
-
-    def test_missing_template_file_returns_none(self):
-        """Missing template file returns None instead of raising FileNotFoundError."""
-        with patch("get_template", side_effect=FileNotFoundError()):
-            result = get_template("missing_template", user_role="admin")
-            self.assertIsNone(result)
-
-    def test_permission_error_on_file_read_returns_none(self):
-        """Permission errors on file read return None gracefully."""
-        with patch("get_template", side_effect=PermissionError()):
-            result = get_template("template_1", user_role="user")
-            self.assertIsNone(result)
+    def test_local_store_is_preferred_over_the_database(self):
+        self.store_template("aaaaaaaaaaaa", body=_body_for("aaaaaaaaaaaa", note="local"))
+        self.select.side_effect = None
+        self.select.return_value = [{"title": "db", "body": _body_for("aaaaaaaaaaaa", note="remote")}]
+        result = patch_templates.lookup("aaaaaaaaaaaa")
+        self.assertIn("local", result["body"])
+        self.assertNotIn("source", result)  # JSONL rows are returned verbatim
 
 
-class TestConcurrencyAndThreadSafety(unittest.TestCase):
-    """Test concurrent template access and thread safety."""
+class TestStoreGrowthPreservesIsolation(TemplateStoreCase):
+    """C) Adding template files must not widen what any other id can reach."""
 
-    def test_concurrent_authorized_reads_succeed(self):
-        """Multiple threads can simultaneously read authorized templates."""
-        results = []
+    def test_appending_a_template_exposes_only_that_id(self):
+        self.store_template("aaaaaaaaaaaa")
+        before = {tid: patch_templates.lookup(tid) for tid in ("bbbbbbbbbbbb", "cccccccccccc")}
+        self.assertEqual(before, {"bbbbbbbbbbbb": {}, "cccccccccccc": {}})
 
-        def read_template(template_id):
-            with patch("check_template_authorization", return_value=True):
-                with patch("get_template", return_value={"id": template_id}):
-                    result = get_template(template_id, user_role="admin")
-                    results.append(result)
+        self.store_template("bbbbbbbbbbbb")
 
-        threads = [threading.Thread(target=read_template, args=(f"template_{i}",)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        self.assertEqual(patch_templates.lookup("bbbbbbbbbbbb")["template_id"], "bbbbbbbbbbbb")
+        self.assertEqual(patch_templates.lookup("cccccccccccc"), {})
 
-        self.assertEqual(len(results), 5)
-        for result in results:
-            self.assertIsNotNone(result)
+    def test_existing_templates_still_resolve_after_the_store_grows(self):
+        self.store_template("aaaaaaaaaaaa")
+        first = patch_templates.lookup("aaaaaaaaaaaa")
+        for tid in ("bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd"):
+            self.store_template(tid)
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), first)
 
-    def test_concurrent_auth_checks_dont_race(self):
-        """Auth checks in concurrent access don't create race conditions."""
-        call_count = [0]
+    def test_a_stored_row_without_an_id_is_never_reachable(self):
+        self.store({"ts": 1.0, "task": "orphan", "body": _body_for("aaaaaaaaaaaa")})
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
+        self.assertEqual(patch_templates.lookup(None), {})
+
+
+class TestFailSoftOnMissingOrCorruptStore(TemplateStoreCase):
+    """E) Missing/corrupt/unreadable stores and DB outages must not wedge."""
+
+    def test_missing_store_file_resolves_to_nothing(self):
+        self.assertFalse(os.path.exists(self.store_path))
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
+
+    def test_corrupt_lines_are_skipped_and_valid_rows_still_resolve(self):
+        with open(self.store_path, "w") as handle:
+            handle.write("{not json at all\n")
+            handle.write(json.dumps({"template_id": "aaaaaaaaaaaa",
+                                     "body": _body_for("aaaaaaaaaaaa")}) + "\n")
+            handle.write("]]truncated\n")
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa")["template_id"], "aaaaaaaaaaaa")
+
+    def test_non_object_rows_are_ignored(self):
+        self.store([1, 2, 3], "aaaaaaaaaaaa", 42)
+        self.store_template("aaaaaaaaaaaa")
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa")["template_id"], "aaaaaaaaaaaa")
+
+    def test_unreadable_store_resolves_to_nothing(self):
+        self.store_template("aaaaaaaaaaaa")
+        with patch("builtins.open", side_effect=PermissionError("denied")):
+            self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
+
+    def test_database_outage_resolves_to_nothing(self):
+        self.select.side_effect = RuntimeError("control plane down")
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
+        self.assertTrue(self.select.called)
+
+    def test_malformed_database_rows_resolve_to_nothing(self):
+        self.select.side_effect = None
+        self.select.return_value = [None, {}, {"body": None}, {"body": 12345}]
+        self.assertEqual(patch_templates.lookup("aaaaaaaaaaaa"), {})
+
+    def test_hostile_ids_always_resolve_to_an_empty_mapping(self):
+        self.store_template("aaaaaaaaaaaa")
+        hostile = [
+            "../../../etc/passwd",
+            "aaaaaaaaaaaa\x00bbbb",
+            "%2e%2e%2f",
+            "*",
+            "a" * 10000,
+            "'; DROP TABLE knowledge; --",
+            "aaaaaaaaaaaa,bbbbbbbbbbbb",
+        ]
+        for value in hostile:
+            self.assertEqual(patch_templates.lookup(value), {}, repr(value[:40]))
+
+
+class TestDeniedLookupDisclosesNothing(TemplateStoreCase):
+    """F) A miss must return no content and must not narrate the store."""
+
+    def test_denied_lookup_returns_no_body_and_logs_nothing(self):
+        self.store_template("aaaaaaaaaaaa", body=_body_for("aaaaaaaaaaaa", note="secret intent"))
+        with self.assertNoLogs(patch_templates.log.name, level="DEBUG"):
+            result = patch_templates.lookup("bbbbbbbbbbbb")
+        self.assertEqual(result, {})
+
+    def test_find_template_db_failure_logs_the_slug_but_no_template_content(self):
+        """The one log line on this path names the slug (already in the task row)
+        and must not carry the stored diff or body."""
+        self.store({"ts": 1.0, "task": "widget-slug", "template_id": "aaaaaaaaaaaa",
+                    "body": _body_for("aaaaaaaaaaaa", note="secret intent")})
+        self.select.side_effect = RuntimeError("control plane down")
+
+        with self.assertLogs(patch_templates.log.name, level="DEBUG") as captured:
+            result = patch_templates.find_template("widget-slug")
+
+        emitted = "\n".join(captured.output)
+        self.assertIn("widget-slug", emitted)
+        self.assertNotIn("secret intent", emitted)
+        self.assertNotIn("PATCH TEMPLATE", emitted)
+        # The JSONL fallback still answers the caller.
+        self.assertEqual(result["template_id"], "aaaaaaaaaaaa")
+
+
+class TestFindTemplateBySlug(TemplateStoreCase):
+    """D) Slug-keyed resolution keeps its documented applicability contract."""
+
+    def test_merged_diff_hit_is_applicable_and_carries_the_diff(self):
+        self.select.side_effect = None
+        self.select.return_value = [{"slug": "widget-slug", "project": "proj",
+                                     "diff": "--- a\n+++ b\n", "files": ["a.py"]}]
+        result = patch_templates.find_template("widget-slug")
+        self.assertEqual(result["source"], "merged_diffs")
+        self.assertEqual(result["diff"], "--- a\n+++ b\n")
+        self.assertEqual(result["files"], ["a.py"])
+
+    def test_merged_diff_row_with_an_empty_diff_is_not_applicable(self):
+        """A row with no diff must fall through rather than hand callers a
+        template whose `template.get("diff")` would `git apply` nothing."""
+        self.select.side_effect = None
+        self.select.return_value = [{"slug": "widget-slug", "diff": "   "}]
+        self.assertEqual(patch_templates.find_template("widget-slug"), {})
+
+    def test_jsonl_hit_carries_no_diff_key_so_callers_no_op(self):
+        self.store({"ts": 1.0, "task": "widget-slug", "template_id": "aaaaaaaaaaaa",
+                    "body": _body_for("aaaaaaaaaaaa")})
+        result = patch_templates.find_template("widget-slug")
+        self.assertEqual(result["source"], "jsonl")
+        self.assertNotIn("diff", result)
+        self.assertEqual(result["template_id"], "aaaaaaaaaaaa")
+
+    def test_unknown_slug_resolves_to_nothing(self):
+        self.store({"ts": 1.0, "task": "widget-slug", "template_id": "aaaaaaaaaaaa",
+                    "body": _body_for("aaaaaaaaaaaa")})
+        self.assertEqual(patch_templates.find_template("other-slug"), {})
+
+    def test_empty_slug_is_denied_without_querying_anything(self):
+        for value in (None, "", "   "):
+            self.assertEqual(patch_templates.find_template(value), {}, repr(value))
+        self.assertFalse(self.select.called)
+
+    def test_slug_lookup_does_not_expose_another_slugs_template(self):
+        self.store({"ts": 1.0, "task": "widget-slug", "template_id": "aaaaaaaaaaaa",
+                    "body": _body_for("aaaaaaaaaaaa", note="widget intent")})
+        self.store({"ts": 2.0, "task": "gadget-slug", "template_id": "bbbbbbbbbbbb",
+                    "body": _body_for("bbbbbbbbbbbb", note="gadget intent")})
+        self.assertIn("gadget intent", patch_templates.find_template("gadget-slug")["body"])
+        self.assertIn("widget intent", patch_templates.find_template("widget-slug")["body"])
+
+
+class TestConcurrentResolution(TemplateStoreCase):
+    """G) Concurrent reads stay isolated and consistent."""
+
+    def test_concurrent_lookups_each_get_their_own_template(self):
+        ids = [f"{i:012d}" for i in range(10)]
+        for tid in ids:
+            self.store_template(tid, body=_body_for(tid, note=f"intent-{tid}"))
+
+        results = {}
         lock = threading.Lock()
 
-        def mock_auth(*args, **kwargs):
+        def resolve(tid):
+            row = patch_templates.lookup(tid)
             with lock:
-                call_count[0] += 1
-            return True
+                results[tid] = row
 
-        with patch("check_template_authorization", side_effect=mock_auth):
-            threads = [
-                threading.Thread(target=lambda: get_template(f"template_{i}", "admin"))
-                for i in range(10)
-            ]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        threads = [threading.Thread(target=resolve, args=(tid,)) for tid in ids]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
 
-        self.assertEqual(call_count[0], 10)
+        self.assertEqual(len(results), len(ids))
+        for tid in ids:
+            self.assertEqual(results[tid]["template_id"], tid)
+            self.assertIn(f"intent-{tid}", results[tid]["body"])
 
-    def test_concurrent_unauthorized_reads_all_denied(self):
-        """Concurrent unauthorized reads are all consistently denied."""
+    def test_concurrent_unknown_ids_are_all_denied(self):
+        self.store_template("aaaaaaaaaaaa")
         results = []
         lock = threading.Lock()
 
-        def read_template(template_id):
-            with patch("check_template_authorization", return_value=False):
-                result = get_template(template_id, user_role="guest")
+        def resolve(tid):
+            row = patch_templates.lookup(tid)
+            with lock:
+                results.append(row)
+
+        threads = [threading.Thread(target=resolve, args=(f"missing-{i}",)) for i in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(results, [{}] * 10)
+
+    def test_readers_never_observe_a_partially_written_row(self):
+        """Appends happen while readers scan; a torn last line must be skipped,
+        never returned as a half-parsed template."""
+        self.store_template("aaaaaaaaaaaa")
+        stop = threading.Event()
+        seen = []
+        lock = threading.Lock()
+
+        def writer():
+            for i in range(50):
+                if stop.is_set():
+                    return
+                with open(self.store_path, "a") as handle:
+                    handle.write(json.dumps({"template_id": f"{i:012d}",
+                                             "body": _body_for(f"{i:012d}")}))
+                    handle.flush()
+                    handle.write("\n")
+
+        def reader():
+            for _ in range(50):
+                row = patch_templates.lookup("aaaaaaaaaaaa")
                 with lock:
-                    results.append(result)
+                    seen.append(row)
 
-        threads = [threading.Thread(target=read_template, args=(f"template_{i}",)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        writer_thread = threading.Thread(target=writer)
+        reader_threads = [threading.Thread(target=reader) for _ in range(3)]
+        writer_thread.start()
+        for thread in reader_threads:
+            thread.start()
+        for thread in reader_threads:
+            thread.join()
+        stop.set()
+        writer_thread.join()
 
-        self.assertEqual(len(results), 5)
-        for result in results:
-            self.assertIsNone(result)
-
-
-class TestAllowlistManagement(unittest.TestCase):
-    """Test allowlist creation, updates, and validation."""
-
-    def test_allowlist_creation_with_valid_structure(self):
-        """Valid allowlist structure is accepted."""
-        allowlist = {"admin": ["t1", "t2"], "user": ["t1"]}
-        self.assertIsNotNone(allowlist)
-        self.assertIn("admin", allowlist)
-        self.assertIn("user", allowlist)
-
-    def test_allowlist_update_preserves_existing_roles(self):
-        """Allowlist updates preserve existing role definitions."""
-        allowlist = {"admin": ["t1"], "user": ["t1"], "guest": []}
-        # Update admin allowlist
-        allowlist["admin"].append("t2")
-        self.assertEqual(allowlist["admin"], ["t1", "t2"])
-        # Other roles unchanged
-        self.assertEqual(allowlist["user"], ["t1"])
-        self.assertEqual(allowlist["guest"], [])
-
-    def test_allowlist_validation_rejects_invalid_template_ids(self):
-        """Invalid template IDs are rejected from allowlist."""
-        with patch("validate_template_id", return_value=False):
-            result = validate_template_id("../../../etc/passwd")
-            self.assertFalse(result)
-
-    def test_allowlist_prevents_duplicate_entries(self):
-        """Allowlist prevents duplicate template entries per role."""
-        allowlist = {"admin": ["t1"]}
-        allowlist["admin"].append("t1")  # Try to add duplicate
-        # Verify no duplicates
-        self.assertEqual(len(allowlist["admin"]), 2)  # Will be [t1, t1], but app should dedupe
-        unique = list(set(allowlist["admin"]))
-        self.assertEqual(len(unique), 1)
-
-    def test_role_not_in_allowlist_has_no_access(self):
-        """Roles not in allowlist have no access to any templates."""
-        allowlist = {"admin": ["t1"], "user": ["t1"]}
-        unknown_role = "hacker"
-        self.assertNotIn(unknown_role, allowlist)
-        templates = allowlist.get(unknown_role, [])
-        self.assertEqual(templates, [])
+        self.assertTrue(seen)
+        for row in seen:
+            self.assertEqual(row["template_id"], "aaaaaaaaaaaa")
+            self.assertIn("PATCH TEMPLATE aaaaaaaaaaaa", row["body"])
 
 
-class TestBackwardCompatibility(unittest.TestCase):
-    """Test backward compatibility with existing systems."""
+class TestStoredTemplateRoundTrip(TemplateStoreCase):
+    """D) What build()/_store() writes is exactly what lookup() gives back."""
 
-    def test_legacy_template_names_still_work(self):
-        """Legacy template naming conventions still work."""
-        legacy_names = ["template.v1", "template_old", "template-dash"]
-        for name in legacy_names:
-            with patch("check_template_authorization", return_value=True):
-                with patch("get_template", return_value={"id": name}):
-                    result = get_template(name, user_role="admin")
-                    self.assertIsNotNone(result)
+    def test_stored_template_is_returned_unchanged(self):
+        task = {"slug": "fix-auth-timeout", "project_id": "proj",
+                "prompt": "Fix the authentication timeout in the session broker"}
+        tid, body = patch_templates.build(task)
+        patch_templates._store(task, tid, body)  # db.insert raises -> JSONL fallback
 
-    def test_template_without_explicit_role_uses_default(self):
-        """Templates accessed without explicit role use sensible default."""
-        with patch("get_default_user_role", return_value="user"):
-            with patch("check_template_authorization", return_value=True):
-                with patch("get_template", return_value={"id": "t1"}):
-                    result = get_template("t1")
-                    self.assertIsNotNone(result)
+        result = patch_templates.lookup(tid)
+        self.assertEqual(result["template_id"], tid)
+        self.assertEqual(result["body"], body)
+        self.assertEqual(result["task"], "fix-auth-timeout")
 
-    def test_authorization_defaults_to_deny_on_missing_config(self):
-        """Authorization defaults to deny if config is missing."""
-        with patch("load_allowlist", return_value=None):
-            with patch("check_template_authorization", return_value=False):
-                result = get_template("t1", user_role="admin")
-                self.assertIsNone(result)
+    def test_marker_id_in_the_injected_prompt_resolves_to_that_template(self):
+        task = {"slug": "fix-auth-timeout",
+                "prompt": "Fix the authentication timeout in the session broker"}
+        tid, body = patch_templates.build(task)
+        patch_templates._store(task, tid, body)
 
+        prompt = patch_templates.inject_prompt(task)["prompt"]
+        marked = prompt.split(patch_templates.MARK, 1)[1].split("]", 1)[0]
+        self.assertEqual(marked, tid)
+        self.assertEqual(patch_templates.lookup(marked)["body"], body)
 
-# Helper mock functions for tests
-def get_template(template_id, user_role=None):
-    """Mock function to get a template with auth check."""
-    if not template_id or not user_role:
-        return None
-    # In real implementation, this would check auth
-    return None
+    def test_a_different_task_does_not_resolve_to_the_stored_template(self):
+        task = {"slug": "fix-auth-timeout",
+                "prompt": "Fix the authentication timeout in the session broker"}
+        tid, body = patch_templates.build(task)
+        patch_templates._store(task, tid, body)
 
-
-def list_templates_for_role(role):
-    """Mock function to list templates for a role."""
-    return []
-
-
-def get_cached_template(template_id, user_role):
-    """Mock function to get cached template."""
-    return None
-
-
-def get_templates_batch(template_ids, user_role):
-    """Mock function to get multiple templates."""
-    return {}
-
-
-def update_template(template_id, data, user_role):
-    """Mock function to update a template."""
-    return None
-
-
-def add_template_to_allowlist(template_id, role):
-    """Mock function to add template to allowlist."""
-    pass
-
-
-def remove_template_from_allowlist(template_id):
-    """Mock function to remove template from allowlist."""
-    pass
-
-
-def update_allowlist(allowlist):
-    """Mock function to update allowlist."""
-    pass
-
-
-def check_template_authorization(template_id, user_role):
-    """Mock function to check authorization."""
-    return False
-
-
-def validate_template_id(template_id):
-    """Mock function to validate template ID."""
-    return True
-
-
-def get_default_user_role():
-    """Mock function to get default user role."""
-    return "user"
-
-
-def load_allowlist():
-    """Mock function to load allowlist."""
-    return {}
-
-
-def get_user_role():
-    """Mock function to get user role."""
-    return None
-
-
-def log_template_access(template_id, user_role):
-    """Mock function to log template access."""
-    pass
-
-
-def get_template_allowlist():
-    """Mock function to get template allowlist."""
-    return {}
+        other_tid, _ = patch_templates.build(
+            {"slug": "unrelated-slug", "prompt": "Rewrite the billing export job"}
+        )
+        self.assertNotEqual(other_tid, tid)
+        self.assertEqual(patch_templates.lookup(other_tid), {})
 
 
 if __name__ == "__main__":

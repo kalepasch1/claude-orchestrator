@@ -15,15 +15,51 @@ Key behaviors tested:
    (visit_AnnAssign) assignments
 """
 import ast
+import importlib.util
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-
-from lint_conventions import (
-    RULE_HARDCODED_SECRET,
-    ConventionChecker,
+_LINTER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "lint_conventions.py"
 )
+
+
+def _load_linter(module_path, module_name):
+    """Load a linter module from an explicit path, WITHOUT touching sys.path/sys.modules.
+
+    The repo has two files named `lint_conventions.py` — `tools/` (the pre-commit hook)
+    and `runner/tools/` (this one). Every test file for either of them used to do
+    `sys.path.insert(...)` + `import lint_conventions`, so the first one imported in a
+    session won the name and every later file silently got the OTHER module: running
+    this file together with runner/tests/test_convention_lint_ratchet.py made 12 of that
+    file's tests fail with AttributeError, and running it alone made them pass. Loading
+    by path under a unique name makes the target unambiguous and order-independent.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_lint = _load_linter(_LINTER_PATH, "runner_tools_lint_conventions_rework")
+
+RULE_HARDCODED_SECRET = _lint.RULE_HARDCODED_SECRET
+ConventionChecker = _lint.ConventionChecker
+_SECRET_VALUE_PREFIXES = _lint._SECRET_VALUE_PREFIXES
+
+# One annotated-assignment case per vendor prefix the linter knows about. Hoisted to
+# module level so test_every_vendor_prefix_has_a_case can check the list against the
+# linter's own constant.
+_VENDOR_PREFIX_CASES = [
+    ("sk-", 'key: str = "sk-abc"'),
+    ("sk_", 'key: str = "sk_abc"'),
+    ("api-", 'key: str = "api-abc"'),
+    ("pk_", 'key: str = "pk_abc"'),
+    ("secret_", 'key: str = "secret_abc"'),
+    ("token_", 'key: str = "token_abc"'),
+    ("ghp_", 'key: str = "ghp_abc"'),
+    ("xoxb-", 'key: str = "xoxb-abc"'),
+]
 
 
 def _violations_for_code(code: str):
@@ -92,17 +128,7 @@ class TestVendorPrefixAlwaysFlagged:
 
     def test_all_prefixes_detected(self):
         """All prefixes in _SECRET_VALUE_PREFIXES are detected."""
-        prefixes = [
-            ("sk-", 'key: str = "sk-abc"'),
-            ("sk_", 'key: str = "sk_abc"'),
-            ("api-", 'key: str = "api-abc"'),
-            ("pk_", 'key: str = "pk_abc"'),
-            ("secret_", 'key: str = "secret_abc"'),
-            ("token_", 'key: str = "token_abc"'),
-            ("ghp_", 'key: str = "ghp_abc"'),
-            ("xoxb-", 'key: str = "xoxb-abc"'),
-        ]
-        for prefix, code in prefixes:
+        for prefix, code in _VENDOR_PREFIX_CASES:
             violations = _violations_for_code(code)
             assert len(violations) > 0, f"Prefix {prefix} should be detected"
 
@@ -206,10 +232,12 @@ class TestIndirectionNotFlagged:
 
     def test_none_value(self):
         """None value is not a secret."""
+        # WAS: computed `violations` and then asserted nothing at all, so it passed
+        # even if `api_key: str | None = None` were flagged. Now asserts the property
+        # the name claims: a None default is absence of a credential, not one.
         code = 'api_key: str | None = None'
         violations = _violations_for_code(code)
-        # None is not a Constant with a string value
-        # This should pass (no violation)
+        assert violations == []
 
 
 class TestFalsePositivesExempted:
@@ -333,11 +361,15 @@ class TestEdgeCases:
 
     def test_multiline_string_with_vendor_prefix(self):
         """Multiline strings starting with vendor prefix are flagged."""
+        # WAS: no assertion — the "Multiline constants are ast.Constant too" comment
+        # was the whole test, so it could not fail. A triple-quoted literal is the
+        # usual shape for a pasted-in credential, so the claim in the name is worth
+        # pinning: the prefix test looks at the value's start, quoting style aside.
         code = '''key: str = """sk-multi
     line
     string"""'''
         violations = _violations_for_code(code)
-        # Multiline constants are ast.Constant too
+        assert len(violations) == 1
 
     def test_bytes_value_not_checked(self):
         """Bytes literals are not checked (not string values)."""
@@ -359,10 +391,14 @@ class TestEdgeCases:
 
     def test_whitespace_leading(self):
         """Leading/trailing whitespace does not mask vendor prefix."""
+        # WAS: no assertion, plus a comment ("Leading space should fail the startswith
+        # check") that contradicted the test's own name. It described an accident of
+        # the implementation — an un-stripped startswith — and treated it as the spec.
+        # A stray space is not a reason to let a credential through, so the name won.
+        # `_is_hardcoded_secret` now strips before the prefix test.
         code = 'key: str = " sk-123456"'
         violations = _violations_for_code(code)
-        # Implementation lowercases and checks startswith
-        # Leading space should fail the startswith check
+        assert len(violations) == 1
 
     def test_union_type_with_vendor_prefix(self):
         """Union type annotation with vendor-prefixed secret."""
@@ -378,14 +414,19 @@ class TestEdgeCases:
 
     def test_generic_list_annotation(self):
         """List[str] annotation with secret (type mismatch but valid AST)."""
+        # WAS: no assertion. The point of these two cases is that the annotation is
+        # not consulted at all — a credential is a credential whatever the (here
+        # nonsensical) type hint says — so they now assert the detection.
         code = 'tokens: list[str] = "sk-123456"'
         violations = _violations_for_code(code)
-        # This is a type error but syntactically valid
+        assert len(violations) == 1
 
     def test_dict_annotation_with_literal(self):
         """Dict annotation with literal assignment (type error but valid)."""
+        # WAS: no assertion (see test_generic_list_annotation).
         code = 'config: dict[str, str] = "sk-123456"'
         violations = _violations_for_code(code)
+        assert len(violations) == 1
 
 
 class TestComplexSecretNames:
@@ -465,17 +506,15 @@ MIIEowIBAAKCAQEA...
         assert len(violations) == 1
 
 
-def test_summary():
-    """Summary of test coverage."""
-    print("\nTest Categories Covered:")
-    print("1. Vendor prefixes always flagged (8 prefixes, case-insensitive)")
-    print("2. Secret-named variables (9 variants)")
-    print("3. Indirection handling (5 patterns)")
-    print("4. False positives exempted (5 categories)")
-    print("5. Plain vs annotated consistency (4 scenarios)")
-    print("6. Edge cases (8 patterns)")
-    print("7. Complex secret names (4 combinations)")
-    print("8. Real-world scenarios (6 examples)")
+def test_every_vendor_prefix_has_a_case():
+    """Adding a prefix to the linter without a case here must fail.
+
+    WAS: `test_summary`, which printed a prose inventory of the categories this file
+    covers ("8 prefixes", "9 variants", …) and asserted nothing — a test that could
+    never fail, and a count that goes stale the moment a prefix is added. This makes
+    the same claim enforceable.
+    """
+    assert {prefix for prefix, _code in _VENDOR_PREFIX_CASES} == set(_SECRET_VALUE_PREFIXES)
 
 
 if __name__ == "__main__":

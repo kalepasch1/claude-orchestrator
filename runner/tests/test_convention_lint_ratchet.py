@@ -2,18 +2,26 @@
 """The convention lint must be a ratchet, not a cliff.
 
 `tools/lint_conventions.py` is the linter the pre-commit hook actually runs
-(.pre-commit-config.yaml). It exited 1 on ANY violation, and the tree carries 9,749 of
-them — so the hook failed on every commit and the only way to work was `--no-verify`,
+(.pre-commit-config.yaml). It exited 1 on ANY violation, and the tree carries thousands
+of them — so the hook failed on every commit and the only way to work was `--no-verify`,
 which disables every other hook too. A gate that is always red is not a gate; it is a
 thing people learn to skip.
 
 The ratchet makes it enforceable today: a rule's count may not RISE above the recorded
-baseline. New violations are blocked from the first commit, existing ones are counted and
-can only go down. Same shape as the repo's .tsc-error-baseline.
+baseline. Existing violations are counted and can only go down. Same shape as the repo's
+.tsc-error-baseline.
 
 These pin the properties that make that safe — above all that a corrupt or missing
 baseline fails STRICT rather than silently disabling the gate.
+
+Note on the end-to-end cases below: `.convention-lint-baseline.json` is a snapshot of a
+whole-tree scan of `runner tools scripts`, so it has to be regenerated
+(`--update-baseline` over those same three directories) whenever the tree's counts move
+for a legitimate reason. If test_the_committed_tree_passes goes red, read the per-rule
+"rose to" lines first: they say whether someone added violations or the snapshot is
+merely stale.
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -22,9 +30,27 @@ import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(REPO, "tools"))
 
-import lint_conventions as lint
+
+def _load_linter(module_path, module_name):
+    """Load the hook's linter from its path, WITHOUT touching sys.path/sys.modules.
+
+    This file used to do `sys.path.insert(REPO/tools)` + `import lint_conventions`. The
+    repo has a SECOND module of that name, runner/tools/lint_conventions.py, and its own
+    test files import it the same way — so whichever ran first owned the name for the
+    session. Run alone, this file got the hook's linter and passed; run in the same
+    session as the runner/tools secret tests, `lint` was the other module and all 12
+    unit-level tests here died on AttributeError (no load_baseline/regressions), which
+    reads like a broken ratchet rather than a broken import.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+lint = _load_linter(os.path.join(REPO, "tools", "lint_conventions.py"),
+                    "tools_lint_conventions_ratchet")
 
 
 class TestRegressionArithmetic(unittest.TestCase):
@@ -105,7 +131,8 @@ class TestTheRealGate(unittest.TestCase):
         self.assertIn("rose to", result.stderr)
 
     def test_failure_output_names_only_the_offending_rule(self):
-        # A 9,749-line dump buries the handful of lines the author must actually fix.
+        # A dump of every grandfathered violation buries the handful of lines the
+        # author must actually fix.
         path = os.path.join(REPO, "runner", "_ratchet_probe_tmp2.py")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")

@@ -146,6 +146,39 @@ def _looks_like_secret_name(name: str) -> bool:
     return any(token in lowered for token in _SECRET_NAME_TOKENS)
 
 
+def _is_pem_private_key(value: str) -> bool:
+    """True for a PEM *private key* block, whatever the target is called.
+
+    `key = "-----BEGIN RSA PRIVATE KEY-----"` is a credential under any name, and the
+    name test cannot see it: bare "key" is deliberately excluded from
+    _SECRET_NAME_TOKENS because it matches every KV-namespace constant in the runner.
+    A PEM private-key header is unambiguous, so this costs no false positives —
+    `-----BEGIN CERTIFICATE-----` and `-----BEGIN PUBLIC KEY-----` are public material
+    and are NOT matched.
+    """
+    first_line = value.lstrip().split("\n", 1)[0].strip()
+    return first_line.startswith("-----BEGIN ") and first_line.endswith("PRIVATE KEY-----")
+
+
+def _is_hardcoded_secret(name: str, value: str) -> bool:
+    """Single decision procedure for a `name = "value"` pair.
+
+    Shared by visit_Assign and visit_AnnAssign so that `api_key: str = "sk-live-..."`
+    is judged exactly like `api_key = "sk-live-..."`. Two independent signals:
+
+    * the VALUE is self-evidently a credential (vendor-issued prefix, PEM private key)
+      — flagged whatever the target is called;
+    * the NAME denotes a credential and the VALUE is a real literal rather than env
+      indirection or a placeholder.
+    """
+    # Strip first: a stray leading space must not hide `" sk-live-..."`. The other
+    # value tests (_is_indirected_secret_value, _is_pem_private_key) already strip, so
+    # this also keeps the three value signals consistent with each other.
+    if value.strip().lower().startswith(_SECRET_VALUE_PREFIXES) or _is_pem_private_key(value):
+        return True
+    return _looks_like_secret_name(name) and not _is_indirected_secret_value(value)
+
+
 class ConventionChecker(ast.NodeVisitor):
     """AST visitor to check convention compliance."""
 
@@ -394,28 +427,12 @@ class ConventionChecker(ast.NodeVisitor):
         # now drives detection; the value only decides whether it is real or indirected.
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             value_str = node.value.value
-            indirected = _is_indirected_secret_value(value_str)
-            vendor_literal = value_str.lower().startswith(_SECRET_VALUE_PREFIXES)
             for target in node.targets:
                 name = _secret_target_name(target)
-                if name is None:
-                    continue
-                secret_name = _looks_like_secret_name(name)
-                # A vendor-prefixed literal is a credential whatever it is called.
-                if not (vendor_literal or (secret_name and not indirected)):
-                    continue
-                if secret_name and indirected and not vendor_literal:
+                if name is None or not _is_hardcoded_secret(name, value_str):
                     continue
                 kind = "subscript assignment" if isinstance(target, ast.Subscript) else "assignment"
-                msg = f"Hardcoded secret detected in {kind} to '{name}'"
-                self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
-                self._v2_violations.append(ConventionViolation(
-                    filepath=self.filepath,
-                    lineno=node.lineno,
-                    rule=RULE_HARDCODED_SECRET,
-                    severity="error",
-                    message=msg
-                ))
+                self._record_hardcoded_secret(name, kind, node.lineno)
 
         # Check for magic numbers
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, (int, float)):
@@ -440,33 +457,47 @@ class ConventionChecker(ast.NodeVisitor):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         """Check annotated assignments for hardcoded secrets (Rule 2).
 
-        Annotated assignments (e.g. ``api_key: str = "sk-..."``) previously
-        bypassed the hardcoded-secret detection that plain assignments get.
+        Annotated assignments (``api_key: str = "sk-..."``) are now judged by the same
+        `_is_hardcoded_secret` decision as plain ones. The previous version required a
+        vendor prefix AND a `_SECRET_PATTERNS` name hit, which is both too strict and
+        too loose in the same breath:
+
+        * too strict — the AND meant `db_password: str = "hunter2"` and
+          `endpoint: str = "sk-live-..."` were both invisible, i.e. the two shapes the
+          rule exists to stop. An annotation is a type hint; it cannot change whether
+          a literal is a credential.
+        * too loose — `_SECRET_PATTERNS` carries the bare tokens "key" and "pat", which
+          match every KV-namespace constant and every `*_PATH`. It is kept for the
+          config-key rule (_check_config_key) and is not a name test for credentials;
+          `_looks_like_secret_name` is.
         """
         if (
             node.value is not None
             and isinstance(node.value, ast.Constant)
             and isinstance(node.value.value, str)
-            and isinstance(node.target, ast.Name)
         ):
-            value_str = node.value.value
-            if any(
-                value_str.lower().startswith(prefix)
-                for prefix in _SECRET_VALUE_PREFIXES
-            ):
-                var_name = node.target.id.lower()
-                if any(pattern in var_name for pattern in _SECRET_PATTERNS):
-                    msg = f"Hardcoded secret detected in annotated assignment to '{node.target.id}'"
-                    self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
-                    self._v2_violations.append(ConventionViolation(
-                        filepath=self.filepath,
-                        lineno=node.lineno,
-                        rule=RULE_HARDCODED_SECRET,
-                        severity="error",
-                        message=msg
-                    ))
+            name = _secret_target_name(node.target)
+            if name is not None and _is_hardcoded_secret(name, node.value.value):
+                kind = (
+                    "subscript annotated assignment"
+                    if isinstance(node.target, ast.Subscript)
+                    else "annotated assignment"
+                )
+                self._record_hardcoded_secret(name, kind, node.lineno)
 
         self.generic_visit(node)
+
+    def _record_hardcoded_secret(self, name: str, kind: str, lineno: int) -> None:
+        """File one HARDCODED_SECRET finding in both the legacy and v2 sinks."""
+        msg = f"Hardcoded secret detected in {kind} to '{name}'"
+        self.violations.append((lineno, "no-hardcoded-secrets", msg))
+        self._v2_violations.append(ConventionViolation(
+            filepath=self.filepath,
+            lineno=lineno,
+            rule=RULE_HARDCODED_SECRET,
+            severity="error",
+            message=msg
+        ))
 
     def visit_Call(self, node: ast.Call) -> None:
         """Check for raise statements and function calls that might violate conventions."""

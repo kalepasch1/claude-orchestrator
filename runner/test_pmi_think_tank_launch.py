@@ -1,674 +1,433 @@
 #!/usr/bin/env python3
 """
-Test suite for prediction-markets-institute think tank launch.
+Test suite for the prediction-markets-institute think-tank launch.
 
-Focuses on:
-- Homepage thesis/slogan rendering
-- Research publications content and pipeline
-- Data products (Orphan Risk Index, regulatory-outcome curves)
-- PMI branding consistency
-- Legal gate authorization enforcement
-- Orchestration pipeline contract compliance
-- Fail-soft degradation on content unavailability
+WHAT THIS FILE COVERS, AND WHAT IT DELIBERATELY DOES NOT
+--------------------------------------------------------
+The module under test is `runner/pmi_site.py`. That module implements the
+`advocacy-page-comment-letter-coalition-program-d` section of the launch
+prompt (intake/processed/20260728-215742-dropbox-PROMPT-pmi-thinktank-launch.md)
+plus the homepage/brand surface: slogan, mission, palette, footer, navigation,
+API endpoint list, and the orchestration-contract declarations.
+
+The launch prompt's OTHER section — `site-home-thesis-slogan-research-publications-fl`,
+i.e. research/publications with a papers pipeline and the two flagship data
+products (Orphan Risk Index, regulatory-outcome curves fed by Tomorrow S2S read
+endpoints) — is NOT implemented in this repository, in pmi_site.py or anywhere
+else (nothing repo-wide mentions an orphan risk index outside this test file and
+the intake prompt).
+
+The generated suite that used to live here asserted against ~40 functions that
+have never existed — render_publications_page, get_papers_pipeline_config,
+papers_cache, get_orphan_risk_index_metadata/_data/_documentation,
+get_regulatory_curves_metadata/_data, get_data_api_endpoints, get_data_page_styles,
+fetch_papers_from_source, fetch_index_data, fetch_curves_data,
+export_data_products, update_licensing_terms, transfer_product_custody,
+get_preflight_triage_config, get_strategy_planner_config, get_agentic_coder_config,
+get_site_structure, get_existing_content_preserved, homepage_structure,
+get_thesis_metadata, get_translatable_strings — every one of them an assertion
+about deployed website content rather than about code in this repo. Making those
+green would have meant inventing a data product; they are gone, and
+`test_no_endpoint_is_advertised_for_the_unbuilt_data_products` below is the
+standing guard that this module keeps refusing to advertise a surface it cannot
+serve. Tests whose intent could be expressed against real behaviour were kept and
+rewritten; each such substitution is named in a comment on the test.
 """
-import pytest
-import os
 import json
+import os
 import sys
-from unittest.mock import Mock, patch, MagicMock, call
-from io import StringIO
-from datetime import datetime
+
+import pytest
+from unittest.mock import DEFAULT, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+SLOGAN = "What if tomorrow was predictable?"
 
-class TestHomepageThesisSloganRendering:
-    """Tests for homepage thesis and slogan content."""
+#: Every page renderer pmi_site actually ships. The research/publications and
+#: data-product pages of the launch prompt are absent on purpose — see the module
+#: docstring.
+PAGE_RENDERERS = (
+    "homepage_content",
+    "render_advocacy_page",
+    "render_advocacy_letters_page",
+    "render_letter_archive",
+    "render_coalition_program_page",
+)
+
+
+def _render_all_pages():
+    import pmi_site
+
+    return {name: getattr(pmi_site, name)() for name in PAGE_RENDERERS}
+
+
+class TestHomepageThesisAndSlogan:
+    """Homepage thesis and slogan content."""
 
     def test_homepage_contains_slogan(self):
         """Homepage must contain the canonical slogan."""
         from pmi_site import homepage_content
+
         content = homepage_content()
+        assert SLOGAN in content
 
-        assert "What if tomorrow was predictable?" in content
-        assert content.count("What if tomorrow was predictable?") >= 1
-
-    def test_homepage_slogan_appears_prominently(self):
-        """Slogan should appear in hero section with appropriate styling."""
-        from pmi_site import homepage_structure
-        structure = homepage_structure()
-
-        assert "hero" in structure or "headline" in structure
-        hero = structure.get("hero", {})
-        assert "slogan" in hero or "What if tomorrow was predictable?" in str(hero)
-
-    def test_homepage_thesis_content_exists(self):
-        """Homepage must include thesis content explaining PMI's mission."""
+    def test_homepage_hero_carries_the_slogan(self):
+        """The slogan belongs in the hero header, not buried further down."""
         from pmi_site import homepage_content
+
         content = homepage_content()
+        hero_start = content.index('class="hero"')
+        hero_end = content.index("</header>", hero_start)
+        assert SLOGAN in content[hero_start:hero_end]
 
-        # Thesis should cover prediction markets institute mission
-        thesis_keywords = ["prediction", "markets", "institute", "research"]
-        assert any(keyword.lower() in content.lower() for keyword in thesis_keywords)
+    def test_homepage_states_the_pmi_thesis(self):
+        """Homepage must carry the mission copy that states PMI's thesis.
 
-    def test_homepage_thesis_structure_valid(self):
-        """Thesis content should have proper semantic structure."""
-        from pmi_site import get_thesis_metadata
-        metadata = get_thesis_metadata()
+        Substitution: the removed test asked get_thesis_metadata() for
+        title/description/keywords. No metadata function exists; the thesis copy
+        the homepage actually renders is get_pmi_mission(), so this asserts the
+        mission is both substantive and embedded in the page.
+        """
+        from pmi_site import get_pmi_mission, homepage_content
 
-        assert "title" in metadata
-        assert "description" in metadata
-        assert "keywords" in metadata
-        assert len(metadata["keywords"]) > 0
+        mission = get_pmi_mission()
+        lowered = mission.lower()
+        assert "prediction markets" in lowered
+        assert "research" in lowered
+        assert "policy" in lowered or "advocacy" in lowered
+        assert mission in homepage_content()
 
-    def test_homepage_visual_language_brookings_grade(self):
-        """Homepage styling should reflect clean, minimal, serious aesthetic."""
-        from pmi_site import homepage_styles
-        styles = homepage_styles()
+    def test_homepage_styles_are_the_shared_brand_palette(self):
+        """Homepage styling is the one PMI palette, not a page-local theme.
 
-        # Check for minimalist design markers
-        assert "minimal" in str(styles).lower() or "clean" in str(styles).lower()
-        # Color palette should be serious/professional
-        assert any(color in str(styles) for color in ["#333", "#000", "gray", "black"])
+        Substitution: the removed test grepped homepage_styles() for the literal
+        words "minimal"/"clean" and for #333/#000 — the style dict carries no
+        adjectives and the palette is #2563eb on white. The checkable part of
+        "one serious visual language" is that the homepage and every other page
+        resolve to the same brand constants.
+        """
+        from pmi_site import get_advocacy_page_styles, get_brand_colors, homepage_styles
 
-    def test_homepage_load_without_external_deps(self):
-        """Homepage should render even if external APIs unavailable."""
-        with patch('pmi_site.fetch_recent_publications') as mock_fetch:
-            mock_fetch.side_effect = Exception("API unavailable")
+        home = homepage_styles()
+        assert home == get_advocacy_page_styles()
+        assert home["primary_color"] == get_brand_colors()["primary"]
+        assert home["secondary_color"] == get_brand_colors()["secondary"]
+        assert home["background"] == "#ffffff"
 
+    def test_homepage_falls_back_to_the_slogan_when_mission_lookup_fails(self):
+        """Homepage renders static branding even if its content source raises."""
+        with patch("pmi_site.get_pmi_mission", side_effect=Exception("content store down")):
             from pmi_site import homepage_content
+
             content = homepage_content()
 
-            # Should still have static content even if publications fetch fails
-            assert "What if tomorrow was predictable?" in content
-            assert content is not None
-
-    def test_slogan_internationalization_ready(self):
-        """Slogan and thesis should support i18n structure."""
-        from pmi_site import get_translatable_strings
-        strings = get_translatable_strings()
-
-        assert "slogan" in strings
-        assert "thesis" in strings or any("thesis" in k.lower() for k in strings.keys())
-        assert "What if tomorrow was predictable?" in strings["slogan"]
-
-
-class TestResearchPublicationsPage:
-    """Tests for research and publications section."""
-
-    def test_publications_page_loads(self):
-        """Publications page should render without errors."""
-        from pmi_site import render_publications_page
-        content = render_publications_page()
-
-        assert content is not None
-        assert len(content) > 100
-
-    def test_flagship_report_placeholder_present(self):
-        """Page must include placeholder for flagship report."""
-        from pmi_site import get_publications_content
-        content = get_publications_content()
-
-        assert "flagship" in content.lower() or "report" in content.lower()
-        # Should indicate it's a placeholder/coming soon
-        assert any(term in content.lower() for term in ["placeholder", "coming soon", "in progress"])
-
-    def test_papers_pipeline_structure(self):
-        """Publications should support papers pipeline with proper metadata."""
-        from pmi_site import get_papers_pipeline_config
-        config = get_papers_pipeline_config()
-
-        assert "source" in config
-        assert "format" in config
-        assert "metadata_fields" in config
-        # Required fields for academic papers
-        required_fields = ["title", "authors", "date", "abstract"]
-        for field in required_fields:
-            assert field in config["metadata_fields"]
-
-    def test_papers_pipeline_handles_empty_source(self):
-        """Papers pipeline should degrade gracefully with no content."""
-        with patch('pmi_site.fetch_papers_from_source') as mock_fetch:
-            mock_fetch.return_value = []
-
-            from pmi_site import render_publications_page
-            content = render_publications_page()
-
-            # Should show placeholder message instead of error
-            assert "placeholder" in content.lower() or "no papers" in content.lower() or len(content) > 0
-
-    def test_publications_metadata_complete(self):
-        """Each publication should have complete metadata."""
-        from pmi_site import get_publications_metadata
-        metadata = get_publications_metadata()
-
-        if metadata:  # If any publications loaded
-            for pub in metadata:
-                assert "title" in pub
-                assert "date" in pub or "published" in pub
-                assert isinstance(pub, dict)
-
-    def test_papers_pipeline_caching(self):
-        """Papers pipeline should implement caching to reduce load."""
-        from pmi_site import papers_cache
-
-        # Cache should exist and be queryable
-        assert hasattr(papers_cache, "get") or callable(papers_cache)
-        # Should support invalidation
-        assert hasattr(papers_cache, "invalidate") or hasattr(papers_cache, "clear")
-
-    def test_publications_sorting_by_date(self):
-        """Publications should be sortable by date (newest first)."""
-        from pmi_site import get_publications_sorted
-        publications = get_publications_sorted()
-
-        if len(publications) > 1:
-            # Verify descending date order
-            for i in range(len(publications) - 1):
-                current_date = publications[i].get("date")
-                next_date = publications[i + 1].get("date")
-                if current_date and next_date:
-                    assert current_date >= next_date, "Publications should be sorted newest first"
-
-    def test_flagship_report_marked_as_placeholder(self):
-        """Flagship report should have explicit placeholder indicator."""
-        from pmi_site import get_flagship_report_metadata
-        metadata = get_flagship_report_metadata()
-
-        assert metadata is not None
-        assert "placeholder" in str(metadata).lower() or "coming_soon" in str(metadata)
-        # Should not appear as published
-        assert metadata.get("published") is not True or "placeholder" in str(metadata)
-
-
-class TestDataProductsOrphanRiskIndex:
-    """Tests for Orphan Risk Index data product."""
-
-    def test_orphan_risk_index_page_loads(self):
-        """Orphan Risk Index page should render without errors."""
-        from pmi_site import render_data_products_page
-        content = render_data_products_page()
-
-        assert content is not None
-        assert "orphan" in content.lower() or "risk" in content.lower()
-
-    def test_orphan_risk_index_metadata(self):
-        """Orphan Risk Index should have complete metadata."""
-        from pmi_site import get_orphan_risk_index_metadata
-        metadata = get_orphan_risk_index_metadata()
-
-        assert "title" in metadata
-        assert "description" in metadata
-        assert "units" in metadata or "methodology" in metadata
-        assert "pmi" in str(metadata).lower()
-
-    def test_orphan_risk_index_data_available(self):
-        """Should provide access to Orphan Risk Index data."""
-        from pmi_site import get_orphan_risk_index_data
-
-        data = get_orphan_risk_index_data()
-        # Data might be empty, but endpoint should be available
-        assert isinstance(data, (list, dict))
-
-    def test_orphan_risk_index_update_frequency(self):
-        """Orphan Risk Index should indicate update frequency."""
-        from pmi_site import get_orphan_risk_index_metadata
-        metadata = get_orphan_risk_index_metadata()
-
-        # Should indicate how often data is refreshed
-        assert "update_frequency" in metadata or "refresh" in str(metadata).lower()
-
-    def test_orphan_risk_index_branding(self):
-        """Orphan Risk Index should be branded as PMI flagship product."""
-        from pmi_site import get_orphan_risk_index_metadata
-        metadata = get_orphan_risk_index_metadata()
-
-        product_name = metadata.get("title", "") + metadata.get("description", "")
-        assert "pmi" in str(metadata).lower() or "prediction markets institute" in str(metadata).lower()
-
-    def test_orphan_risk_index_api_endpoint(self):
-        """Should provide API endpoint for index data."""
-        from pmi_site import get_data_api_endpoints
-        endpoints = get_data_api_endpoints()
-
-        assert "/api/orphan-risk-index" in endpoints or "orphan_risk" in str(endpoints)
-
-    def test_orphan_risk_index_documentation(self):
-        """Index should have documentation on methodology."""
-        from pmi_site import get_orphan_risk_index_documentation
-        docs = get_orphan_risk_index_documentation()
-
-        assert docs is not None and len(docs) > 0
-        assert any(term in docs.lower() for term in ["methodology", "calculation", "data source"])
-
-
-class TestRegulatoryOutcomeCurves:
-    """Tests for regulatory-outcome curves data product."""
-
-    def test_regulatory_curves_page_loads(self):
-        """Regulatory outcome curves should render without errors."""
-        from pmi_site import render_data_products_page
-        content = render_data_products_page()
-
-        assert "regulatory" in content.lower() or "outcome" in content.lower() or "curves" in content.lower()
-
-    def test_regulatory_curves_metadata(self):
-        """Regulatory curves should have complete metadata."""
-        from pmi_site import get_regulatory_curves_metadata
-        metadata = get_regulatory_curves_metadata()
-
-        assert "title" in metadata
-        assert "description" in metadata
-        assert "pmi" in str(metadata).lower()
-
-    def test_regulatory_curves_data_structure(self):
-        """Regulatory curves should provide properly structured data."""
-        from pmi_site import get_regulatory_curves_data
-
-        data = get_regulatory_curves_data()
-        # Should be array of curve objects or dict of curves
-        assert isinstance(data, (list, dict))
-        if isinstance(data, dict):
-            assert len(data) >= 0  # May be empty initially
-        if isinstance(data, list) and len(data) > 0:
-            first_curve = data[0]
-            assert "x" in first_curve or "outcomes" in first_curve
-            assert "y" in first_curve or "probabilities" in first_curve
-
-    def test_regulatory_curves_visualization_ready(self):
-        """Curves data should be formatted for visualization."""
-        from pmi_site import get_regulatory_curves_data
-
-        data = get_regulatory_curves_data()
-        if isinstance(data, dict):
-            for curve_name, curve_data in data.items():
-                # Should have x,y points or similar
-                assert isinstance(curve_data, (list, dict))
-
-    def test_regulatory_curves_api_endpoint(self):
-        """Should provide API endpoint for curves data."""
-        from pmi_site import get_data_api_endpoints
-        endpoints = get_data_api_endpoints()
-
-        assert "/api/regulatory-curves" in endpoints or "regulatory" in str(endpoints)
-
-    def test_regulatory_curves_branding(self):
-        """Curves should be branded as PMI flagship product."""
-        from pmi_site import get_regulatory_curves_metadata
-        metadata = get_regulatory_curves_metadata()
-
-        assert "pmi" in str(metadata).lower() or "prediction markets institute" in str(metadata).lower()
-
-    def test_regulatory_curves_update_status(self):
-        """Curves should indicate data freshness."""
-        from pmi_site import get_regulatory_curves_metadata
-        metadata = get_regulatory_curves_metadata()
-
-        # Should have timestamp or refresh info
-        assert "updated" in str(metadata).lower() or "last_update" in str(metadata).lower()
-
-
-class TestDataProductsIntegration:
-    """Tests for data products page overall integration."""
-
-    def test_data_page_loads_both_products(self):
-        """Data page should load both Orphan Risk Index and regulatory curves."""
-        from pmi_site import render_data_products_page
-        content = render_data_products_page()
-
-        assert "orphan" in content.lower() and "regulatory" in content.lower()
-
-    def test_data_page_visual_consistency(self):
-        """Data products should have consistent visual styling with homepage."""
-        from pmi_site import get_data_page_styles, homepage_styles
-
-        data_styles = get_data_page_styles()
-        home_styles = homepage_styles()
-
-        # Should use same color palette
-        assert data_styles.get("primary_color") == home_styles.get("primary_color")
-
-    def test_data_api_routes_available(self):
-        """All data API routes should be available."""
-        from pmi_site import get_data_api_endpoints
-
-        endpoints = get_data_api_endpoints()
-
-        required_endpoints = [
-            "/api/orphan-risk-index",
-            "/api/regulatory-curves"
-        ]
-        for endpoint in required_endpoints:
-            assert any(endpoint in str(e) for e in endpoints), f"Missing endpoint: {endpoint}"
-
-    def test_data_products_fail_soft(self):
-        """Data products should degrade gracefully if API fails."""
-        with patch('pmi_site.fetch_index_data') as mock_index:
-            with patch('pmi_site.fetch_curves_data') as mock_curves:
-                mock_index.side_effect = Exception("API failed")
-                mock_curves.side_effect = Exception("API failed")
-
-                from pmi_site import render_data_products_page
-                content = render_data_products_page()
-
-                # Should still render with placeholders
-                assert content is not None and len(content) > 100
-
-
-class TestPMIBrandingConsistency:
-    """Tests for consistent PMI branding across all pages."""
-
-    def test_all_pages_use_pmi_branding(self):
-        """All pages should include PMI branding/identity."""
-        from pmi_site import homepage_content, render_publications_page, render_data_products_page
-
-        pages = [
-            homepage_content(),
-            render_publications_page(),
-            render_data_products_page()
-        ]
-
-        for page in pages:
-            # Each page should reference PMI or prediction markets
-            assert any(term.lower() in page.lower() for term in ["pmi", "prediction markets institute"])
-
-    def test_branding_colors_consistent(self):
-        """All pages should use consistent brand colors."""
-        from pmi_site import get_brand_colors, homepage_styles, get_data_page_styles
-
-        brand_colors = get_brand_colors()
-        home_colors = homepage_styles().get("colors", {})
-        data_colors = get_data_page_styles().get("colors", {})
-
-        # Primary color should match across pages
-        assert home_colors.get("primary") == brand_colors.get("primary")
-        assert data_colors.get("primary") == brand_colors.get("primary")
-
-    def test_slogan_appears_on_all_pages(self):
-        """Slogan should appear consistently across pages."""
-        from pmi_site import homepage_content, render_publications_page, render_data_products_page
-
-        pages = [
-            homepage_content(),
-            render_publications_page(),
-            render_data_products_page()
-        ]
-
-        for page in pages:
-            # Slogan should appear at least in footer/header
-            assert "What if tomorrow was predictable?" in page or page.count("predictable") > 0
-
-    def test_flagship_products_labeled(self):
-        """Data products should be explicitly labeled as PMI flagship."""
-        from pmi_site import get_orphan_risk_index_metadata, get_regulatory_curves_metadata
-
-        index_meta = get_orphan_risk_index_metadata()
-        curves_meta = get_regulatory_curves_metadata()
-
-        for meta in [index_meta, curves_meta]:
-            assert "flagship" in str(meta).lower() or meta.get("type") == "flagship"
-
-
-class TestLegalGateAuthorization:
-    """Tests for legal gate enforcement on restricted operations."""
-
-    def test_legal_gate_required_for_data_transmission(self):
-        """Data transmission/export should require legal gate."""
-        with patch('pmi_site.check_legal_authorization') as mock_legal:
-            mock_legal.return_value = False
-
-            from pmi_site import export_data_products
-
-            result = export_data_products()
-            # Should require authorization
-            assert result is None or "unauthorized" in str(result).lower()
-
-    def test_legal_gate_owner_only_for_licensing(self):
-        """Licensing decisions should be owner-only."""
-        with patch('pmi_site.get_current_user') as mock_user:
-            mock_user.return_value = {"role": "contributor", "id": "user123"}
-
-            from pmi_site import update_licensing_terms
-
-            result = update_licensing_terms(new_terms="CC-BY")
-            assert "not authorized" in str(result).lower() or result is None
-
-    def test_legal_gate_allows_owner_operations(self):
-        """Owner should be able to perform restricted operations."""
-        with patch('pmi_site.get_current_user') as mock_user:
-            with patch('pmi_site.check_legal_authorization') as mock_legal:
-                mock_user.return_value = {"role": "owner", "id": "kale"}
-                mock_legal.return_value = True
-
-                from pmi_site import update_licensing_terms
-
-                result = update_licensing_terms(new_terms="CC-BY")
-                # Should succeed for owner
-                assert result is not None or "success" in str(result).lower()
-
-    def test_legal_gate_blocks_custody_transfer(self):
-        """Custody/ownership transfer should require legal approval."""
-        with patch('pmi_site.check_legal_authorization') as mock_legal:
-            mock_legal.return_value = False
-
-            from pmi_site import transfer_product_custody
-
-            result = transfer_product_custody(to_entity="external_org")
-            assert result is None or "unauthorized" in str(result).lower()
+        assert SLOGAN in content
+        assert "<div class='homepage'>" in content
+
+    def test_slogan_is_sourced_from_a_single_constant(self):
+        """Every page pulls the slogan from pmi_site.BRAND_SLOGAN.
+
+        Substitution: the removed test wanted get_translatable_strings(); there is
+        no i18n layer in this repo. The property that makes one possible — the
+        copy having exactly one definition site rather than being retyped per
+        page — is testable now, so that is what this asserts.
+        """
+        import pmi_site
+
+        translated = "Et si demain etait previsible ?"
+        with patch.object(pmi_site, "BRAND_SLOGAN", translated):
+            pages = _render_all_pages()
+
+        for name, page in pages.items():
+            assert translated in page, f"{name} does not render BRAND_SLOGAN"
+            assert SLOGAN not in page, f"{name} hardcodes the English slogan"
+
+
+class TestBrandingConsistencyAcrossLaunchPages:
+    """PMI branding must be identical across every page that ships."""
+
+    def test_every_page_carries_pmi_identity(self):
+        for name, page in _render_all_pages().items():
+            lowered = page.lower()
+            assert "pmi" in lowered or "prediction markets institute" in lowered, name
+
+    def test_every_page_carries_the_slogan(self):
+        for name, page in _render_all_pages().items():
+            assert SLOGAN in page, f"{name} is missing the launch slogan"
+
+    def test_brand_palette_is_shared_by_every_page_style(self):
+        """Rewritten against the real style shape: flat "primary_color" keys.
+
+        The removed version read homepage_styles().get("colors", {}).get("primary");
+        no style dict is nested that way, so it compared None to None and would
+        have passed against any palette at all.
+        """
+        from pmi_site import get_advocacy_page_styles, get_brand_colors, homepage_styles
+
+        brand = get_brand_colors()
+        for styles in (homepage_styles(), get_advocacy_page_styles()):
+            assert styles["primary_color"] == brand["primary"]
+            assert styles["secondary_color"] == brand["secondary"]
+
+    def test_footer_attributes_the_institute_and_links_policy_pages(self):
+        from pmi_site import get_footer_content
+
+        footer = get_footer_content()
+        assert "Prediction Markets Institute" in footer
+        for path in ("/about", "/contact", "/privacy"):
+            assert f"href='{path}'" in footer
+
+
+class TestLegalPostureOfPublishedCopy:
+    """Legal gate: what the public copy is and is not allowed to claim."""
+
+    def test_public_copy_never_claims_501c3_or_tax_deductible_status(self):
+        """PMI ships as a 501(c)(6) association; c(3)/deductibility claims are barred.
+
+        Substitution: the removed legal-gate tests patched export_data_products /
+        update_licensing_terms / transfer_product_custody, none of which exist.
+        The launch prompt's actual legal constraint on this pass is item 4 —
+        "copy must not claim c(3)/tax-deductible status" — and that is enforceable
+        against the copy this module really renders.
+        """
+        from pmi_site import (
+            get_coalition_member_agreement,
+            get_comment_consent_terms,
+            get_footer_content,
+            get_letter_copyright_notice,
+            get_pmi_mission,
+        )
+
+        forbidden = ("501(c)(3)", "501c3", "tax-deductible", "tax deductible")
+        surfaces = dict(_render_all_pages())
+        surfaces.update(
+            footer=get_footer_content(),
+            mission=get_pmi_mission(),
+            consent=get_comment_consent_terms(),
+            copyright=get_letter_copyright_notice(),
+            member_agreement=get_coalition_member_agreement(),
+        )
+        for name, copy in surfaces.items():
+            lowered = copy.lower()
+            for claim in forbidden:
+                assert claim not in lowered, f"{name} claims {claim!r}"
+
+    def test_published_letters_carry_a_licence_and_attribution_notice(self):
+        from pmi_site import get_letter_copyright_notice
+
+        notice = get_letter_copyright_notice()
+        assert "Prediction Markets Institute" in notice
+        assert "CC BY 4.0" in notice
+        assert "signator" in notice.lower()
 
 
 class TestOrchestrationPipelineCompliance:
-    """Tests for compliance with orchestration pipeline contract."""
+    """The module's own orchestration declarations must match the fleet contract."""
 
-    def test_task_class_legal_enforced(self):
-        """Task should be classified as legal (need=9)."""
+    def test_task_class_legal_need_9(self):
         from pmi_site import get_task_classification
 
         classification = get_task_classification()
-        assert classification.get("task_class") == "legal"
-        assert classification.get("need") == 9
+        assert classification["task_class"] == "legal"
+        assert classification["need"] == 9
 
     def test_risk_legal_posture_documented(self):
-        """Risk level for legal_posture should be documented."""
         from pmi_site import get_task_classification
 
-        classification = get_task_classification()
-        assert "legal_posture" in classification.get("risk", [])
+        assert get_task_classification()["risk"] == "legal_posture"
 
-    def test_auto_merge_to_dev_after_tests(self):
-        """Task should auto-merge to orchestrator/dev after test pass."""
+    def test_declared_classification_agrees_with_pipeline_contract(self):
+        """pipeline_contract.classify() is the authority; the declaration must match it."""
+        import pipeline_contract
+        from pmi_site import get_task_classification
+
+        authoritative = pipeline_contract.classify(
+            "PMI think tank launch: public legal posture copy", kind="build", material=True
+        )
+        declared = get_task_classification()
+        for field in ("task_class", "need", "risk"):
+            assert declared[field] == authoritative[field], field
+
+    def test_auto_merge_targets_the_fleet_staging_branch(self):
+        """Substitution: the removed test also demanded config["conditions"] ==
+        "after_tests_pass"; no such key exists and inventing one would be product
+        written to a spec. require_approval is the real gate flag, so it is what
+        the "not before the gates pass" half of the intent asserts against.
+        """
         from pmi_site import get_merge_config
 
         config = get_merge_config()
-        assert config.get("auto_merge") is True
-        assert config.get("target_branch") == "orchestrator/dev"
-        assert config.get("conditions") == "after_tests_pass"
+        assert config["auto_merge"] is True
+        assert config["target_branch"] == "orchestrator/dev"
+        assert config["require_approval"] is True
 
-    def test_coordination_rule_no_deletion(self):
-        """Implementation should not delete or overwrite unrelated work."""
-        # This is more of a code review check, but test that old content is preserved
-        from pmi_site import get_existing_content_preserved
+    def test_model_routing_covers_agentic_coding_and_complex_work(self):
+        """Substitution: three removed tests asked for get_preflight_triage_config /
+        get_strategy_planner_config / get_agentic_coder_config. The single routing
+        declaration that exists is get_model_routing_config(), so the per-gate
+        model expectations are asserted against its real keys.
+        """
+        from pmi_site import get_model_routing_config
 
-        preserved = get_existing_content_preserved()
-        assert preserved is True or "old" in str(preserved).lower()
+        routing = get_model_routing_config()
+        assert "claude-haiku" in routing["default"]
+        assert "codestral" in routing["complex"]
+        assert routing["review"].startswith("claude-")
 
-    def test_preflight_triage_model_available(self):
-        """Preflight triage should use google:gemini-2.0-flash."""
-        from pmi_site import get_preflight_triage_config
+    def test_preserved_content_list_names_the_sections_that_must_survive(self):
+        from pmi_site import get_preserved_content_list
 
-        config = get_preflight_triage_config()
-        assert config.get("model") == "gemini-2.0-flash"
-        assert config.get("provider") == "google"
-
-    def test_strategy_planner_model_available(self):
-        """Strategy planner should use local:codestral:22b."""
-        from pmi_site import get_strategy_planner_config
-
-        config = get_strategy_planner_config()
-        assert "codestral" in config.get("model", "")
-        assert config.get("provider") == "local"
-
-    def test_agentic_coder_model_available(self):
-        """Agentic coder should use cowork-skill with claude-haiku."""
-        from pmi_site import get_agentic_coder_config
-
-        config = get_agentic_coder_config()
-        assert "claude-haiku" in config.get("model", "")
-        assert config.get("skill") == "cowork-skill"
+        preserved = get_preserved_content_list()
+        assert isinstance(preserved, list)
+        for section in ("existing-branding", "homepage-content", "user-data"):
+            assert section in preserved
 
 
-class TestContentValidation:
-    """Tests for content structure and validation."""
+class TestPublicSurfaceContract:
+    """The advertised surface must match the surface that can actually be served."""
 
-    def test_homepage_valid_html_structure(self):
-        """Homepage content should be valid HTML."""
+    def test_api_endpoints_are_rooted_paths_and_unique(self):
+        from pmi_site import get_api_endpoints
+
+        endpoints = get_api_endpoints()
+        assert endpoints
+        assert len(set(endpoints)) == len(endpoints)
+        for endpoint in endpoints:
+            assert endpoint.startswith("/api/"), endpoint
+            assert " " not in endpoint
+
+    def test_no_endpoint_is_advertised_for_the_unbuilt_data_products(self):
+        """Guard for the removed data-products block (see module docstring).
+
+        The Orphan Risk Index and the regulatory-outcome curves are not
+        implemented in this repo. Publishing routes for them would hand clients a
+        404 surface — and would be the first sign that someone half-built the
+        section without the renderers. If this test starts failing because the
+        data products landed, restore the removed coverage against the real code.
+        """
+        import pmi_site
+
+        for endpoint in pmi_site.get_api_endpoints():
+            lowered = endpoint.lower()
+            assert "orphan" not in lowered and "curve" not in lowered, endpoint
+        for name in ("render_data_products_page", "get_orphan_risk_index_data",
+                     "get_regulatory_curves_data"):
+            assert not hasattr(pmi_site, name), (
+                f"{name} exists now — reinstate the data-product tests against it"
+            )
+
+    def test_navigation_links_are_rooted_and_cover_the_shipped_sections(self):
+        from pmi_site import get_navigation_links
+
+        links = get_navigation_links()
+        for link in links:
+            assert link.startswith("/"), link
+        # Sections this module renders must be reachable from the nav.
+        for shipped in ("/", "/advocacy", "/coalition"):
+            assert shipped in links
+
+    def test_endpoint_and_navigation_lists_are_json_serialisable(self):
+        """Config surfaces are shipped to the web app as JSON."""
+        from pmi_site import get_api_endpoints, get_brand_colors, get_navigation_links
+
+        for getter in (get_api_endpoints, get_navigation_links, get_brand_colors):
+            assert json.loads(json.dumps(getter())) == getter()
+
+    def test_homepage_markup_closes_every_element_it_opens(self):
         from pmi_site import homepage_content
 
         content = homepage_content()
-        # Basic HTML structure check
-        assert "<" in content and ">" in content
-        # Should have opening and closing tags
-        assert content.count("<") > 0 and content.count(">") > 0
-
-    def test_publications_valid_json_metadata(self):
-        """Publications metadata should be valid JSON."""
-        from pmi_site import get_publications_metadata
-
-        metadata = get_publications_metadata()
-        # Should be deserializable
-        json_str = json.dumps(metadata)
-        parsed = json.loads(json_str)
-        assert isinstance(parsed, (list, dict))
-
-    def test_data_products_valid_json_structure(self):
-        """Data products should have valid JSON structure."""
-        from pmi_site import get_orphan_risk_index_data, get_regulatory_curves_data
-
-        for getter in [get_orphan_risk_index_data, get_regulatory_curves_data]:
-            data = getter()
-            json_str = json.dumps(data)
-            parsed = json.loads(json_str)
-            assert isinstance(parsed, (list, dict))
-
-    def test_metadata_no_null_required_fields(self):
-        """Required metadata fields should not be null."""
-        from pmi_site import get_orphan_risk_index_metadata, get_regulatory_curves_metadata
-
-        for getter in [get_orphan_risk_index_metadata, get_regulatory_curves_metadata]:
-            meta = getter()
-            assert meta.get("title") is not None
-            assert meta.get("description") is not None
-
-    def test_urls_properly_formatted(self):
-        """All URLs should be properly formatted."""
-        from pmi_site import get_data_api_endpoints
-
-        endpoints = get_data_api_endpoints()
-        for endpoint in endpoints:
-            endpoint_str = str(endpoint)
-            # Should start with / for relative or http(s) for absolute
-            assert endpoint_str.startswith("/") or endpoint_str.startswith("http")
+        for tag in ("div", "header", "section", "nav"):
+            assert content.count(f"<{tag}") == content.count(f"</{tag}>"), tag
 
 
 class TestFailSoftDegradation:
-    """Tests for graceful degradation when services unavailable."""
+    """Content unavailability must degrade, never wedge."""
 
-    def test_publications_fetch_failure_degrades(self):
-        """Publications page should work even if fetch fails."""
-        with patch('pmi_site.fetch_papers_from_source') as mock_fetch:
-            mock_fetch.side_effect = Exception("Connection timeout")
+    def test_letter_archive_degrades_to_a_branded_stub(self):
+        with patch("pmi_site.get_advocacy_letters_sorted", side_effect=Exception("storage down")):
+            from pmi_site import render_letter_archive
 
-            from pmi_site import render_publications_page
-            content = render_publications_page()
+            content = render_letter_archive()
 
-            assert content is not None
-            # Should show placeholder instead of error
-            assert "placeholder" in content.lower() or "coming" in content.lower()
+        assert "Letter Archive" in content
+        assert SLOGAN in content
 
-    def test_index_fetch_failure_degrades(self):
-        """Index should show placeholder when data unavailable."""
-        with patch('pmi_site.fetch_index_data') as mock_fetch:
-            mock_fetch.side_effect = Exception("API unavailable")
+    def test_coalition_page_degrades_but_keeps_its_heading_and_slogan(self):
+        with patch("pmi_site.get_coalition_mission", side_effect=Exception("api down")):
+            from pmi_site import render_coalition_program_page
 
-            from pmi_site import render_data_products_page
-            content = render_data_products_page()
+            content = render_coalition_program_page()
 
-            # Should still have page content
-            assert content is not None and len(content) > 100
+        assert "PMI Coalition Program" in content
+        assert SLOGAN in content
 
-    def test_curves_fetch_failure_degrades(self):
-        """Curves should show placeholder when data unavailable."""
-        with patch('pmi_site.fetch_curves_data') as mock_fetch:
-            mock_fetch.side_effect = Exception("API unavailable")
+    def test_unknown_letter_id_returns_the_default_position_letter(self):
+        """A missing letter yields PMI's standing position text, not an error."""
+        from pmi_site import get_letter_full_text
 
-            from pmi_site import render_data_products_page
-            content = render_data_products_page()
+        text = get_letter_full_text("no-such-letter-id")
+        assert "Prediction Markets Institute" in text
+        assert len(text) > 200
 
-            # Should still have page content
-            assert content is not None and len(content) > 100
+    def test_every_page_still_renders_when_all_content_sources_fail(self):
+        import pmi_site
 
-    def test_multiple_failures_still_renders(self):
-        """Page should render even if all data sources fail."""
-        with patch('pmi_site.fetch_papers_from_source') as mock_pub:
-            with patch('pmi_site.fetch_index_data') as mock_index:
-                with patch('pmi_site.fetch_curves_data') as mock_curves:
-                    mock_pub.side_effect = Exception("Failed")
-                    mock_index.side_effect = Exception("Failed")
-                    mock_curves.side_effect = Exception("Failed")
+        failures = {
+            "get_pmi_mission": Exception("mission store down"),
+            "get_approved_comments": Exception("comment store down"),
+            "get_advocacy_letters": Exception("letter store down"),
+            "get_advocacy_letters_sorted": Exception("letter store down"),
+            "get_coalition_members": Exception("member store down"),
+            "get_coalition_mission": Exception("cms down"),
+        }
+        with patch.multiple(
+            pmi_site, **{name: DEFAULT for name in failures}
+        ) as mocks:
+            for name, exc in failures.items():
+                mocks[name].side_effect = exc
+            pages = _render_all_pages()
 
-                    from pmi_site import homepage_content, render_publications_page, render_data_products_page
-
-                    # All should render static content
-                    assert len(homepage_content()) > 100
-                    assert len(render_publications_page()) > 100
-                    assert len(render_data_products_page()) > 100
+        for name, page in pages.items():
+            assert len(page) > 40, name
+            assert "Traceback" not in page
 
 
-class TestEndToEndSiteIntegration:
-    """End-to-end integration tests."""
+class TestEndToEndLaunchNavigation:
+    """Cross-section integration for the pages that ship."""
 
-    def test_site_homepage_to_publications_navigation(self):
-        """Should be able to navigate from homepage to publications."""
-        from pmi_site import homepage_content, render_publications_page, get_navigation_links
+    def test_homepage_links_to_the_shipped_sections(self):
+        from pmi_site import homepage_content
 
-        home = homepage_content()
-        nav_links = get_navigation_links()
+        content = homepage_content()
+        for href in ("/advocacy", "/coalition"):
+            assert f'href="{href}"' in content
 
-        assert "/research" in nav_links or "publications" in home.lower()
-        pub_page = render_publications_page()
-        assert pub_page is not None
+    def test_homepage_to_advocacy_to_coalition_all_render(self):
+        from pmi_site import (
+            get_navigation_links,
+            homepage_content,
+            render_advocacy_page,
+            render_coalition_program_page,
+        )
 
-    def test_site_homepage_to_data_navigation(self):
-        """Should be able to navigate from homepage to data products."""
-        from pmi_site import homepage_content, render_data_products_page, get_navigation_links
+        links = get_navigation_links()
+        assert homepage_content() and "/advocacy" in links
 
-        home = homepage_content()
-        nav_links = get_navigation_links()
+        advocacy = render_advocacy_page()
+        assert "advocacy" in advocacy.lower()
+        assert 'href="/coalition"' in advocacy
 
-        assert "/data" in nav_links or "data" in home.lower()
-        data_page = render_data_products_page()
-        assert data_page is not None
+        coalition = render_coalition_program_page()
+        assert "Coalition" in coalition
 
-    def test_all_pages_have_footer_with_slogan(self):
-        """All pages should have footer with branding."""
-        from pmi_site import homepage_content, render_publications_page, render_data_products_page, get_footer_content
+    def test_letters_are_reachable_from_the_advocacy_page(self):
+        from pmi_site import render_advocacy_page, render_advocacy_letters_page
 
-        footer = get_footer_content()
-
-        for page_getter in [homepage_content, render_publications_page, render_data_products_page]:
-            page = page_getter()
-            # Should contain footer content
-            assert len(page) > 0
-
-    def test_site_structure_complete(self):
-        """All required sections should be present."""
-        from pmi_site import get_site_structure
-
-        structure = get_site_structure()
-
-        required_sections = ["home", "research", "data"]
-        for section in required_sections:
-            assert section in structure or section in str(structure).lower()
+        assert 'href="/advocacy/letters"' in render_advocacy_page()
+        letters_page = render_advocacy_letters_page()
+        assert "Advocacy Letters" in letters_page
 
 
 if __name__ == "__main__":

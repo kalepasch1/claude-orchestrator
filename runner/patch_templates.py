@@ -92,6 +92,21 @@ def _fallback_path():
                         ".runtime", "patch_templates.jsonl")
 
 
+def _body_declares(body, tid):
+    """True only when `body`'s header names EXACTLY this template id.
+
+    The knowledge query is a PREFIX filter (`like.PATCH TEMPLATE <tid>*`) and the
+    old confirmation was `tid in body`, so both halves were prefix matches: asking
+    for a partial id — or for an id that happens to be a prefix of another —
+    returned a DIFFERENT task's template body, relabelled with the id that was
+    asked for. Ids are 12-hex digests today, which hid it; a caller holding a
+    truncated id is all it takes. The stored body's first line is
+    "PATCH TEMPLATE <tid>" (see build()), so compare that line exactly.
+    """
+    first_line = str(body or "").split("\n", 1)[0].strip()
+    return first_line == f"PATCH TEMPLATE {tid}"
+
+
 def lookup(template_id):
     """Resolve a stored patch template by id. Fail-soft: returns {} on any miss/error.
 
@@ -120,7 +135,7 @@ def lookup(template_id):
                                        "body": f"like.PATCH TEMPLATE {tid}*"})
         for row in rows or []:
             body = str((row or {}).get("body") or "")
-            if tid in body:
+            if _body_declares(body, tid):
                 return {"template_id": tid, "body": body,
                         "title": (row or {}).get("title"), "source": "db"}
     except Exception:
