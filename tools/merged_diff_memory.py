@@ -26,6 +26,10 @@ SECRET_PATTERNS = [
     re.compile(r"(algorithm|credential):", re.IGNORECASE),
 ]
 
+#: PEM/OpenSSH armour. Matched on its own because an armour line has no ':' or '='
+#: and would otherwise be exempted by the punctuation heuristic in _has_secrets.
+PEM_ARMOUR_PATTERN = re.compile(r"-{3,}\s*(BEGIN|END)\b", re.IGNORECASE)
+
 
 def _has_secrets(text: str) -> bool:
     """Check if text contains likely secrets/credentials."""
@@ -33,6 +37,12 @@ def _has_secrets(text: str) -> bool:
         return False
     lines = str(text)[:10000].split("\n")
     for line in lines:
+        # A PEM armour line IS the secret marker; it carries no ':' or '=', so the
+        # punctuation heuristic below used to wave `-----BEGIN PRIVATE KEY-----`
+        # straight through and an armoured key survived sanitisation into the
+        # memory file. Armour is unambiguous — never require punctuation for it.
+        if PEM_ARMOUR_PATTERN.search(line):
+            return True
         if any(pat.search(line) for pat in SECRET_PATTERNS):
             # Heuristic: if the suspicious line has a value after ':' or '=', it's suspicious
             if ":" in line or "=" in line:
@@ -132,12 +142,21 @@ def get_changed_files(repo: str, merge_commit: str) -> list[str]:
 
 
 def _normalize_project_path(repo: str) -> str:
-    """Extract project identifier from repo path."""
-    # E.g., /Users/kpasch/Documents/beethoven/claude-orchestrator -> beethoven
+    """Extract project identifier from repo path.
+
+    E.g. /Users/kpasch/Documents/beethoven/claude-orchestrator        -> claude-orchestrator
+         /Users/kpasch/Documents/beethoven/claude-orchestrator/runner -> claude-orchestrator
+         /Users/kpasch/Documents/apparently                           -> apparently
+
+    `beethoven` is checked BEFORE `Documents`. Scanning left-to-right matched
+    `Documents` first and returned "beethoven" — the workspace directory, not the
+    repository — so every repo under it wrote to the same memory file and the diffs
+    of unrelated projects piled up together.
+    """
     parts = Path(repo).parts
-    for i, part in enumerate(parts):
-        if part in ("Documents", "beethoven"):
-            if i + 1 < len(parts):
+    for marker in ("beethoven", "Documents"):
+        for i, part in enumerate(parts):
+            if part == marker and i + 1 < len(parts):
                 return parts[i + 1]
     return "orchestrator"
 
@@ -188,7 +207,14 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
     # Compute project memory path
     home = Path.home()
     memory_dir = home / ".claude" / "projects" / f"-{os.path.expanduser('~').lstrip('/')}-{project.replace('/', '-')}" / "memory"
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        memory_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        # A read-only or permission-denied memory directory must degrade to "no
+        # memory written", never propagate: this is called from the merge train,
+        # where an OSError here would fail the merge over a logging side effect.
+        print(f"failed to create memory dir {memory_dir}: {exc}", file=sys.stderr)
+        return None
 
     memory_file = memory_dir / "merged_changes.md"
 
@@ -197,8 +223,12 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
     if memory_file.exists():
         try:
             content = memory_file.read_text(errors="replace")
-            # Extract all commit hashes already recorded
-            for match in re.finditer(r"commit_hash: ([a-f0-9]+)", content):
+            # Extract all commit hashes already recorded.
+            # The entries are written as `- **commit_hash**: <sha>`, so a pattern
+            # anchored on the bare `commit_hash: ` never matched its own output and
+            # the "idempotent by commit hash" promise in this module's docstring was
+            # false — every re-run appended the whole log again.
+            for match in re.finditer(r"commit_hash\**:\s*([a-f0-9]+)", content):
                 existing_hashes.add(match.group(1))
         except Exception:
             pass

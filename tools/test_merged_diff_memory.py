@@ -18,6 +18,12 @@ def _setup_test_repo(tmp_dir: str) -> str:
 
     # Initialize repo
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    # Pin the initial branch. `git init` names it from init.defaultBranch, which is
+    # "main" on any modern install, so every later `git checkout master` in these
+    # fixtures died with exit 1 and took ~20 tests with it. symbolic-ref works on
+    # every git version and needs no commit to exist yet, unlike `git init -b`.
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/master"],
+                   cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True)
 
@@ -37,7 +43,8 @@ def _setup_test_repo(tmp_dir: str) -> str:
     # Merge back to main/master
     subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
     subprocess.run(
-        ["git", "merge", "--no-ff", "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
+        ["git", "merge", "--no-ff", "agent/test-feature-123",
+         "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -241,6 +248,12 @@ class TestGetRecentMergedAgentBranches:
             repo = os.path.join(tmp_dir, "empty_repo")
             os.makedirs(repo)
             subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            # Pin the initial branch. `git init` names it from init.defaultBranch, which is
+            # "main" on any modern install, so every later `git checkout master` in these
+            # fixtures died with exit 1 and took ~20 tests with it. symbolic-ref works on
+            # every git version and needs no commit to exist yet, unlike `git init -b`.
+            subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/master"],
+                           cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True)
 
@@ -256,7 +269,8 @@ class TestGetRecentMergedAgentBranches:
 
             subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
             subprocess.run(
-                ["git", "merge", "--no-ff", "-m", "Merge branch 'feature/something'"],
+                ["git", "merge", "--no-ff", "feature/something",
+                 "-m", "Merge branch 'feature/something'"],
                 cwd=repo,
                 check=True,
                 capture_output=True,

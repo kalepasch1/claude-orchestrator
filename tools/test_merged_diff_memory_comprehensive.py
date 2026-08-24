@@ -19,6 +19,12 @@ def _setup_test_repo(tmp_dir: str) -> str:
     os.makedirs(repo)
 
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    # Pin the initial branch. `git init` names it from init.defaultBranch, which is
+    # "main" on any modern install, so every later `git checkout master` in these
+    # fixtures died with exit 1 and took ~20 tests with it. symbolic-ref works on
+    # every git version and needs no commit to exist yet, unlike `git init -b`.
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/master"],
+                   cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True)
 
@@ -33,7 +39,8 @@ def _setup_test_repo(tmp_dir: str) -> str:
 
     subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
     subprocess.run(
-        ["git", "merge", "--no-ff", "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
+        ["git", "merge", "--no-ff", "agent/test-feature-123",
+         "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -239,6 +246,12 @@ class TestErrorHandling:
             repo = os.path.join(tmp_dir, "empty_repo")
             os.makedirs(repo)
             subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            # Pin the initial branch. `git init` names it from init.defaultBranch, which is
+            # "main" on any modern install, so every later `git checkout master` in these
+            # fixtures died with exit 1 and took ~20 tests with it. symbolic-ref works on
+            # every git version and needs no commit to exist yet, unlike `git init -b`.
+            subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/master"],
+                           cwd=repo, check=True, capture_output=True)
 
             diffs = mdm.extract_merged_diffs(repo)
             assert diffs == []
@@ -249,6 +262,12 @@ class TestErrorHandling:
             repo = os.path.join(tmp_dir, "empty_repo")
             os.makedirs(repo)
             subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            # Pin the initial branch. `git init` names it from init.defaultBranch, which is
+            # "main" on any modern install, so every later `git checkout master` in these
+            # fixtures died with exit 1 and took ~20 tests with it. symbolic-ref works on
+            # every git version and needs no commit to exist yet, unlike `git init -b`.
+            subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/master"],
+                           cwd=repo, check=True, capture_output=True)
 
             result = mdm.sync_project_memory(repo, project="test")
             assert result is False
@@ -385,7 +404,10 @@ class TestMemoryFileComprehensive:
 
                 assert "test-feature-xyz" in content
                 assert "abc123de" in content  # commit hash prefix
-                assert "files_changed: 2" in content
+                # Entries are markdown: `- **files_changed**: 2`. The old assertion
+                # spelled it without the bold markers, i.e. it asserted a format the
+                # writer has never produced.
+                assert "**files_changed**: 2" in content
                 assert "```diff" in content
 
     def test_write_memory_file_append_new_entries(self):
@@ -540,8 +562,9 @@ class TestResourceLimits:
     def test_large_diff_truncation(self):
         """Handle very large diffs gracefully."""
         large_diff = "+" + "x" * 100000
-        result = mdm.get_merge_diff.__wrapped__
-        # Just verify sanitization doesn't crash on huge inputs
+        # (A stray `mdm.get_merge_diff.__wrapped__` lookup used to sit here. It was
+        # never used and get_merge_diff carries no decorator, so it only ever raised
+        # AttributeError before the assertion below could run.)
         sanitized = mdm._sanitize_diff(large_diff, max_chars=60000)
         assert len(sanitized) <= 60000
 
