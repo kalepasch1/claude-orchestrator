@@ -182,6 +182,91 @@ def check_and_enforce():
     return state
 
 
+#: Successful calls a demoted provider must produce, after its cooldown, before it is
+#: promoted on probe evidence. One success is noise; a short run is a signal.
+PROBE_PROMOTE_AFTER = int(os.environ.get("ORCH_PROVIDER_SLA_PROBE_PROMOTE", "3"))
+
+
+def record_probe_success(provider):
+    """Record a successful live call against a provider. Returns True if it was promoted.
+
+    THE BUG THIS FIXES. model_gateway.py already calls this after every successful
+    provider call — and the function DID NOT EXIST. The call sits inside a bare
+    `except Exception: pass`, so instead of crashing it silently did nothing, every time,
+    on every successful call in the fleet. The recovery half of failover was dead code
+    reached thousands of times.
+
+    Why it matters: check_and_enforce() can only promote from _recent_ops(), the recorded
+    operation history. But a DEMOTED provider is filtered out of routing by
+    _provider_allowed/is_demoted, so it stops receiving traffic, so it stops generating
+    operations, so its availability never recovers in the window. Demotion was very close
+    to permanent unless the credential fingerprint changed. Live probe successes are the
+    one signal that arrives while a provider is demoted, and they were being discarded.
+
+    Bounded on purpose: PROBE_PROMOTE_AFTER consecutive successes AND the cooldown already
+    elapsed, matching what check_and_enforce() requires before promoting on metrics. A
+    single lucky call must not undo a demotion.
+
+    Fail-soft: any error returns False. Recording health must never break a call that just
+    succeeded.
+    """
+    try:
+        if not provider:
+            return False
+        state = _load()
+        dem = state.get("demoted") or {}
+        record = dem.get(provider)
+        if not record:
+            return False  # healthy already; nothing to record
+
+        try:
+            elapsed_min = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(
+                record["since"])).total_seconds() / 60
+        except Exception:
+            elapsed_min = COOLDOWN + 1
+
+        successes = int(record.get("probe_successes") or 0) + 1
+        record["probe_successes"] = successes
+        record["last_probe_ok"] = datetime.datetime.utcnow().isoformat()
+
+        if successes >= PROBE_PROMOTE_AFTER and elapsed_min >= COOLDOWN:
+            del dem[provider]
+            state["demoted"] = dem
+            _save(state)
+            try:
+                db.upsert("fleet_config", {
+                    "key": f"ORCH_PROVIDER_DEMOTED_{provider.upper()}", "value": "false"})
+            except Exception:
+                pass
+            _notify_bandit_promote(provider)
+            return True
+
+        dem[provider] = record
+        state["demoted"] = dem
+        _save(state)
+        return False
+    except Exception:
+        return False
+
+
+def record_probe_failure(provider):
+    """A failed call resets the promotion streak. Fail-soft; returns nothing."""
+    try:
+        if not provider:
+            return
+        state = _load()
+        dem = state.get("demoted") or {}
+        record = dem.get(provider)
+        if not record:
+            return
+        record["probe_successes"] = 0
+        dem[provider] = record
+        state["demoted"] = dem
+        _save(state)
+    except Exception:
+        return
+
+
 def is_demoted(provider):
     state = _load()
     demoted = state.get("demoted") or {}
