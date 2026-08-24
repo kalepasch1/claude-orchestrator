@@ -326,27 +326,73 @@ class TestPinnedExpressLane(unittest.TestCase):
         self.assertEqual(self._claim(tasks), "pinned-task")
 
     def test_paused_project_filtering_happens_before_express_lane(self):
-        """Pinned tasks in paused projects are filtered out before sorting.
+        """A pin must not rescue a task whose project is PAUSED.
 
-        Previously asserted against the DEFAULT projects fixture, which only
-        defines `p1` — so BOTH tasks referenced unknown projects, both were
-        filtered, claim_task returned None, and the test failed for a reason
-        unrelated to what it claims to check. The fixture now actually models
-        the scenario: `p-active` is present (claimable), `p-paused` is absent
-        from the project list, which is how a paused/unavailable project
-        presents to claim_task.
+        This assertion used to prove nothing about pausing. It left the pinned
+        task's project ABSENT from the projects fixture, which exercises the
+        UNKNOWN-PROJECT filter — already covered by
+        TestEmptyQueueEdges.test_all_tasks_in_unknown_projects_returns_none — so
+        `paused_pids` stayed empty and the pause gate was never expressed. The
+        hole was measurable: with the pause filter deleted from db.claim_task
+        outright, the suite still went fully green, i.e. the gate could be
+        removed from the scheduler and nothing here would notice.
+
+        The paused project is now PRESENT in the projects fixture and marked
+        paused through the `controls` table, which is the only input
+        db.claim_task reads to build `paused_pids`. Delete the pause filter and
+        this test fails.
+        """
+        projects = [
+            {"id": "p-active", "name": "active", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-paused", "name": "paused-proj", "priority": 9,
+             "concurrency_weight": 1, "repo_path": None},
+        ]
+        controls = [{"project": "paused-proj", "paused": True, "updated_by": "operator"}]
+        tasks = [
+            _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
+            _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
+        ]
+        # Project eligibility is a gate; the express lane only reorders what
+        # survives it. The paused project also carries the HIGHER priority, so
+        # nothing but the pause filter can explain the unpinned task winning.
+        self.assertEqual(
+            self._claim(tasks, projects=projects, controls=controls), "unpinned-active")
+
+    def test_unknown_project_filtering_also_beats_a_pin(self):
+        """The case the previous fixture actually tested, kept as its own test.
+
+        A pinned task whose project is not in the projects list is filtered too.
+        Separating it from the pause case is what stops one assertion from
+        appearing to cover both while covering only this one.
         """
         projects = [
             {"id": "p-active", "name": "active", "priority": 5,
              "concurrency_weight": 1, "repo_path": None},
         ]
         tasks = [
-            _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
+            _task("pinned-unknown-proj", project_id="p-missing", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
-        # The pin must NOT rescue a task whose project was filtered out: project
-        # eligibility is a gate, the express lane only reorders what survives it.
         self.assertEqual(self._claim(tasks, projects=projects), "unpinned-active")
+
+    def test_a_pin_still_wins_inside_a_project_that_is_not_paused(self):
+        """Control for the two filters above: with no pause, the pin decides.
+
+        Without this, making the pause assertion strict could be satisfied by a
+        change that simply stopped honouring pins at all.
+        """
+        projects = [
+            {"id": "p-active", "name": "active", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+        ]
+        controls = [{"project": "some-other-proj", "paused": True, "updated_by": "operator"}]
+        tasks = [
+            _task("pinned-active", project_id="p-active", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
+            _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
+        ]
+        self.assertEqual(
+            self._claim(tasks, projects=projects, controls=controls), "pinned-active")
 
 
 class TestSetPinIntegration(unittest.TestCase):
