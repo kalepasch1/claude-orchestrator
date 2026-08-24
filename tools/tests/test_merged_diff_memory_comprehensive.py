@@ -30,15 +30,24 @@ def _setup_test_repo(tmp_dir: str) -> str:
     Path(os.path.join(repo, "README.md")).write_text("# Test Repo\n")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo, check=True, capture_output=True)
+    default_branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
     subprocess.run(["git", "checkout", "-b", "agent/test-feature-123"], cwd=repo, check=True, capture_output=True)
     Path(os.path.join(repo, "feature.py")).write_text("def hello():\n    return 'world'\n")
     subprocess.run(["git", "add", "feature.py"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "agent: test-feature-123"], cwd=repo, check=True, capture_output=True)
 
-    subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
+    # Merge back onto whatever `git init` called the default branch. Hardcoding
+    # "master" breaks wherever init.defaultBranch is "main", and `git merge` with
+    # no branch argument merges nothing at all and exits 128 — both of which this
+    # fixture did, so every test that built a repo through it errored in setup.
+    subprocess.run(["git", "checkout", default_branch], cwd=repo, check=True, capture_output=True)
     subprocess.run(
-        ["git", "merge", "--no-ff", "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
+        ["git", "merge", "--no-ff", "-m",
+         "Merge branch 'agent/test-feature-123' (auto-resolved)",
+         "agent/test-feature-123"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -545,8 +554,9 @@ class TestResourceLimits:
     def test_large_diff_truncation(self):
         """Handle very large diffs gracefully."""
         large_diff = "+" + "x" * 100000
-        result = mdm.get_merge_diff.__wrapped__
-        # Just verify sanitization doesn't crash on huge inputs
+        # (An earlier revision reached for get_merge_diff.__wrapped__ here. Nothing
+        # decorates get_merge_diff, so that line only raised AttributeError before
+        # the assertion below could run — and it was never used.)
         sanitized = mdm._sanitize_diff(large_diff, max_chars=60000)
         assert len(sanitized) <= 60000
 

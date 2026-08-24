@@ -20,24 +20,42 @@ from typing import Optional
 
 AGENT_BRANCH_PATTERN = re.compile(r"^agent/")
 MERGE_COMMIT_PATTERN = re.compile(r"^Merge branch ['\"]agent/([^'\"]+)['\"]")
-SECRET_PATTERNS = [
+#: Patterns that are conclusive on their own. A PEM armour line IS the secret —
+#: it carries no ':' or '=' and never will, so gating it on "looks like
+#: key=value" (as the shared heuristic below does) let private keys through
+#: unredacted into the auto-memory file.
+CONCLUSIVE_SECRET_PATTERNS = [
+    re.compile(r"-----(?:BEGIN|END)[ A-Z]*(?:PRIVATE KEY|CERTIFICATE|RSA|"
+               r"OPENSSH|PGP|DSA|EC|ENCRYPTED)", re.IGNORECASE),
+]
+
+#: Keyword patterns. A line mentioning "token" is only interesting when it also
+#: assigns something — otherwise every sentence about tokens redacts itself.
+KEYWORD_SECRET_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|secret|token|password|credential|aws_|private_key|oauth)", re.IGNORECASE),
-    re.compile(r"(-----BEGIN|-----END)", re.IGNORECASE),
     re.compile(r"(algorithm|credential):", re.IGNORECASE),
 ]
+
+#: Everything that marks a line as redactable, for callers that do not care which
+#: kind matched (e.g. _sanitize_diff, which redacts on any hit).
+SECRET_PATTERNS = CONCLUSIVE_SECRET_PATTERNS + KEYWORD_SECRET_PATTERNS
+
+
+def _line_has_secret(line: str) -> bool:
+    """True when this one line should be treated as carrying a secret."""
+    if any(pat.search(line) for pat in CONCLUSIVE_SECRET_PATTERNS):
+        return True
+    if any(pat.search(line) for pat in KEYWORD_SECRET_PATTERNS):
+        # A value has to actually be assigned for a keyword hit to mean anything.
+        return ":" in line or "=" in line
+    return False
 
 
 def _has_secrets(text: str) -> bool:
     """Check if text contains likely secrets/credentials."""
     if not text:
         return False
-    lines = str(text)[:10000].split("\n")
-    for line in lines:
-        if any(pat.search(line) for pat in SECRET_PATTERNS):
-            # Heuristic: if the suspicious line has a value after ':' or '=', it's suspicious
-            if ":" in line or "=" in line:
-                return True
-    return False
+    return any(_line_has_secret(line) for line in str(text)[:10000].split("\n"))
 
 
 def _sanitize_diff(diff_text: str, max_chars: int = 50000) -> str:
@@ -131,15 +149,31 @@ def get_changed_files(repo: str, merge_commit: str) -> list[str]:
         return []
 
 
+#: Directories that hold projects rather than being one. The project is the
+#: segment that follows the LAST of these on the path.
+_WORKSPACE_ANCHORS = ("Documents", "beethoven")
+
+
 def _normalize_project_path(repo: str) -> str:
-    """Extract project identifier from repo path."""
-    # E.g., /Users/kpasch/Documents/beethoven/claude-orchestrator -> beethoven
+    """Extract the project identifier from a repo path.
+
+    /Users/kpasch/Documents/beethoven/claude-orchestrator       -> claude-orchestrator
+    /Users/kpasch/Documents/beethoven/claude-orchestrator/runner -> claude-orchestrator
+    /Users/kpasch/Documents/apparently                          -> apparently
+    /tmp/repo                                                   -> orchestrator
+
+    This value keys the memory file (see write_memory_file), so returning the
+    wrong segment does not just mislabel — it merges unrelated repos into one
+    memory. Returning on the FIRST anchor did exactly that: every project under
+    ~/Documents/beethoven/ resolved to "beethoven" and shared one file, so
+    patterns learned from one repo were served as precedent for another.
+    """
     parts = Path(repo).parts
+    project = None
     for i, part in enumerate(parts):
-        if part in ("Documents", "beethoven"):
-            if i + 1 < len(parts):
-                return parts[i + 1]
-    return "orchestrator"
+        if part in _WORKSPACE_ANCHORS and i + 1 < len(parts):
+            project = parts[i + 1]
+    return project or "orchestrator"
 
 
 def extract_merged_diffs(repo: str, limit: int = 50) -> list[dict]:
@@ -188,7 +222,14 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
     # Compute project memory path
     home = Path.home()
     memory_dir = home / ".claude" / "projects" / f"-{os.path.expanduser('~').lstrip('/')}-{project.replace('/', '-')}" / "memory"
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        memory_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        # Documented contract: None on failure. This call was the one unguarded
+        # step in the function, so a read-only or permission-denied memory dir
+        # raised out of a fail-soft helper and into the caller.
+        print(f"failed to create memory dir {memory_dir}: {e}", file=sys.stderr)
+        return None
 
     memory_file = memory_dir / "merged_changes.md"
 
@@ -198,7 +239,12 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
         try:
             content = memory_file.read_text(errors="replace")
             # Extract all commit hashes already recorded
-            for match in re.finditer(r"commit_hash: ([a-f0-9]+)", content):
+            # Tolerate the older `- **commit_hash**: <sha>` form as well as the
+            # plain one written below. The writer used to emit markdown bold and
+            # this pattern did not allow for it, so NO hash was ever recognised as
+            # already present: every run re-appended every entry and the memory
+            # file doubled in size each time.
+            for match in re.finditer(r"commit_hash\**:\s*([a-f0-9]+)", content):
                 existing_hashes.add(match.group(1))
         except Exception:
             pass
@@ -224,11 +270,11 @@ metadata:
     for diff_info in new_diffs:
         entry = f"""## {diff_info['branch_name']} ({diff_info['commit_hash'][:8]})
 
-- **author_date**: {diff_info['author_date']}
-- **commit_hash**: {diff_info['commit_hash']}
-- **merge_message**: {diff_info['merge_message']}
-- **files_changed**: {len(diff_info['files'])}
-- **extracted_at**: {diff_info['extracted_at']}
+- author_date: {diff_info['author_date']}
+- commit_hash: {diff_info['commit_hash']}
+- merge_message: {diff_info['merge_message']}
+- files_changed: {len(diff_info['files'])}
+- extracted_at: {diff_info['extracted_at']}
 
 ### Changed files
 {chr(10).join(f"- {f}" for f in diff_info['files'][:50])}
@@ -242,16 +288,18 @@ metadata:
 """
         entries.append(entry)
 
-    new_content = frontmatter + "\n".join(entries)
+    body = "\n".join(entries)
 
     # Write file (append if exists, create if not)
     try:
         if memory_file.exists():
-            # Append to existing file
+            # Append entries only. Re-emitting the frontmatter here planted a
+            # second `---` block halfway down the document on every append, which
+            # any frontmatter parser reads as the end of the file.
             existing = memory_file.read_text(errors="replace")
-            memory_file.write_text(existing + "\n" + new_content, encoding="utf-8")
+            memory_file.write_text(existing + "\n" + body, encoding="utf-8")
         else:
-            memory_file.write_text(new_content, encoding="utf-8")
+            memory_file.write_text(frontmatter + body, encoding="utf-8")
         return str(memory_file)
     except Exception as e:
         print(f"failed to write memory file {memory_file}: {e}", file=sys.stderr)

@@ -31,6 +31,9 @@ def _setup_test_repo(tmp_dir: str) -> str:
     Path(initial_file).write_text("# Test Repo\n")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo, check=True, capture_output=True)
+    default_branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
     # Create and merge an agent branch
     subprocess.run(["git", "checkout", "-b", "agent/test-feature-123"], cwd=repo, check=True, capture_output=True)
@@ -39,10 +42,15 @@ def _setup_test_repo(tmp_dir: str) -> str:
     subprocess.run(["git", "add", "feature.py"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "agent: test-feature-123"], cwd=repo, check=True, capture_output=True)
 
-    # Merge back to main/master
-    subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
+    # Merge back onto whatever `git init` called the default branch. Hardcoding
+    # "master" breaks wherever init.defaultBranch is "main", and `git merge` with
+    # no branch argument merges nothing at all and exits 128 — both of which this
+    # fixture did, so every test that built a repo through it errored in setup.
+    subprocess.run(["git", "checkout", default_branch], cwd=repo, check=True, capture_output=True)
     subprocess.run(
-        ["git", "merge", "--no-ff", "-m", "Merge branch 'agent/test-feature-123' (auto-resolved)"],
+        ["git", "merge", "--no-ff", "-m",
+         "Merge branch 'agent/test-feature-123' (auto-resolved)",
+         "agent/test-feature-123"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -253,15 +261,19 @@ class TestGetRecentMergedAgentBranches:
             Path(os.path.join(repo, "file.txt")).write_text("initial")
             subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+            default_branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
             subprocess.run(["git", "checkout", "-b", "feature/something"], cwd=repo, check=True, capture_output=True)
             Path(os.path.join(repo, "other.txt")).write_text("content")
             subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "feat"], cwd=repo, check=True, capture_output=True)
 
-            subprocess.run(["git", "checkout", "master"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", default_branch], cwd=repo, check=True, capture_output=True)
             subprocess.run(
-                ["git", "merge", "--no-ff", "-m", "Merge branch 'feature/something'"],
+                ["git", "merge", "--no-ff", "-m", "Merge branch 'feature/something'",
+                 "feature/something"],
                 cwd=repo,
                 check=True,
                 capture_output=True,
