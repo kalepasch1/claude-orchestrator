@@ -160,10 +160,13 @@ def _seen_fingerprints(fingerprints) -> set:
 def blocked_keys() -> set:
     """Keys whose latest config assessment is still pending — load_config() must skip these."""
     try:
-        rows = db.select("approvals", {
-            "select": "title", "kind": "eq.config",
-            "status": "eq.pending", "limit": "500",
-        }) or []
+        # CONFIGURATION SAFETY — this set is a DENY LIST. Missing an entry means
+        # load_config() applies a key whose assessment is still pending, which is the
+        # failure the gate exists to prevent, so it must be complete rather than merely
+        # bounded. A capped read fails OPEN, which is the wrong direction for a guard.
+        rows = db.select_all("approvals", {
+            "select": "title", "kind": "eq.config", "status": "eq.pending",
+        }, order="id.asc") or []
         keys = set()
         for r in rows:
             title = str(r.get("title") or "")

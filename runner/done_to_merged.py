@@ -202,8 +202,12 @@ def conversion_stats(within_hours=24):
     stats = {"window_hours": within_hours, "done": 0, "merged": 0,
              "conversion_pct": 0.0, "done_without_card": 0, "no_card_pct": 0.0}
     try:
-        done = db.select("tasks", {"select": "slug", "state": "eq.DONE",
-                                   "limit": "2000"}) or []
+        # MERGE TRUTH — the conversion percentage is meaningless if the numerator is
+        # capped. limit=2000 never returned more than 1000 rows (PostgREST caps the
+        # response), so once DONE passed 1000 this health probe reported a conversion
+        # rate against a frozen denominator and looked healthier the worse things got.
+        done = db.select_all("tasks", {"select": "slug", "state": "eq.DONE"},
+                             order="slug.asc") or []
         merged = db.count("tasks", {"state": "eq.MERGED"})
     except Exception:
         return stats

@@ -32,8 +32,11 @@ def _branch_exists(repo, branch):
 
 def main():
     projects = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
-    done_tasks = db.select("tasks", {"select": "id,slug,project_id,state", "state": "eq.DONE",
-                                      "limit": "2000"}) or []
+    # AUDIT — the whole point is "which DONE tasks have no branch". A capped read
+    # audits an arbitrary thousand and reports the rest as fine. limit=2000 never
+    # returned more than 1000 rows anyway; PostgREST caps the response.
+    done_tasks = db.select_all("tasks", {"select": "id,slug,project_id,state",
+                                         "state": "eq.DONE"}, order="slug.asc") or []
 
     genuinely_missing = []
     false_positives = []
@@ -84,11 +87,12 @@ def auto_recover_missing_branches(dry_run=True, max_recover=10):
         print(f"auto_recover: DB error fetching projects: {e}")
         return {"recovered": 0, "missing": 0}
     try:
-        done_tasks = db.select("tasks", {
+        # Same identity set as main(), same reason: a recovery pass that only looks at
+        # the first thousand leaves the rest permanently unrecovered, and reports success.
+        done_tasks = db.select_all("tasks", {
             "select": "id,slug,project_id,state,prompt,kind,base_branch",
             "state": "eq.DONE",
-            "limit": "2000",
-        }) or []
+        }, order="slug.asc") or []
     except Exception as e:
         print(f"auto_recover: DB error fetching tasks: {e}")
         return {"recovered": 0, "missing": 0}

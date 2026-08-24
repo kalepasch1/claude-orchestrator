@@ -142,10 +142,17 @@ def reconcile(window_hours=None):
     since_iso = since.isoformat()
 
     projects = db.select("projects", {"select": "id,name,repo_path"}) or []
+    # RECENT WINDOW, now EXPLICITLY ORDERED. This is a legitimate time-bounded read —
+    # everything MERGED since `since_iso` — but with no order the window was whatever
+    # Postgres happened to return, and the 5000 was fiction (PostgREST caps at 1000).
+    # Newest-first is the semantic we actually want: if the window ever does exceed the
+    # cap, reconciliation should have looked at the most recent merges, not an
+    # arbitrary thousand.
     rows = db.select("tasks", {
         "select": "id,slug,project_id,artifact_commit,updated_at",
         "state": "eq.MERGED",
         "updated_at": f"gte.{since_iso}",
+        "order": "updated_at.desc",
         "limit": "5000",
     }) or []
 

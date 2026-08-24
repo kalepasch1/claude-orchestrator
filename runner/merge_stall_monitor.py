@@ -61,11 +61,17 @@ def _last_merge_age_hours():
 def _backlog_size():
     """Work that is ready or trying to merge right now: approved merge-kind cards not yet
     handled by any integration path, plus DONE tasks (tests passed, waiting to integrate)."""
-    cards = db.select("approvals", {"select": "id", "status": "eq.approved",
-                                    "kind": "in.(verify,material,integrate)",
-                                    "limit": "500"}) or []
-    done = db.select("tasks", {"select": "id", "state": "eq.DONE", "limit": "500"}) or []
-    return len(cards) + len(done)
+    # These are COUNTS, and were being computed by fetching rows and taking len() —
+    # so the "backlog size" saturated at the page cap and a stall looked identical to
+    # a healthy queue once either set passed 500. db.count asks the server for the
+    # exact number and transfers no rows at all.
+    try:
+        cards = db.count("approvals", {"status": "eq.approved",
+                                       "kind": "in.(verify,material,integrate)"})
+        done = db.count("tasks", {"state": "eq.DONE"})
+    except Exception:
+        return 0
+    return int(cards or 0) + int(done or 0)
 
 
 def _existing_open_alert():

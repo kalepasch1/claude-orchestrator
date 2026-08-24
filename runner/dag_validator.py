@@ -105,8 +105,14 @@ def validate_before_admission(tasks, project_id=None):
     if project_id:
         try:
             import db
-            rows = db.select("tasks", {"select": "slug", "project_id": f"eq.{project_id}", "limit": "5000"}) or []
-            existing_slugs = {r["slug"] for r in rows}
+            # IDENTITY SET — must be COMPLETE. limit=5000 was a lie: PostgREST caps a
+            # response at 1000 rows regardless, so on any project past 1000 tasks this
+            # set was silently partial and dependency resolution declared existing
+            # slugs missing. select_all pages to exhaustion with a deterministic order.
+            rows = db.select_all("tasks", {"select": "slug",
+                                           "project_id": f"eq.{project_id}"},
+                                 order="slug.asc") or []
+            existing_slugs = {r["slug"] for r in rows if r.get("slug")}
         except Exception as e:
             _log.warning("slug fetch failed: %s", e)
     result = validate(tasks, existing_slugs)
