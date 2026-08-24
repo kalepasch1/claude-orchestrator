@@ -29,6 +29,59 @@ def _words(text):
     return sorted({w.lower() for w in WORD.findall(str(text or "")) if len(w) > 4})[:80]
 
 
+#: Tokens that are never intent: pure numbers, hex blobs (commit shas, template ids,
+#: timestamps) and the boilerplate the orchestration contract staples onto every prompt.
+_NOISE_RE = re.compile(r"^(?:[0-9]+|[0-9a-f]{6,})$", re.I)
+
+_INTENT_STOPWORDS = frozenset("""
+about above acceptance accept actionable actual actually adapt after again against agent
+agentic algo allow already also alter always analysis appears artifacts because been before
+behavior behaviour below blocked blocker blocks branch broad budget bugfix build canary cannot
+category cause changes claude coder commit consider contract could coordination cross current
+directive does done during each either else etc even every exact example existing explicit
+first from further gemini given google have here hint however implementation improvement intent
+into just learned legal level like made make merge merged merges might minimal model models
+more most must native never next none note only openai option order original other output
+outcome over pattern patterns pipeline plan planner please preflight preserve prior probably
+project prompt provide qafix quality queue rating reconcile release relfix require reuse review
+route router rule rules runner same scope should signal similarity since slice slug small
+smallest solution source still strategy submitted such tasks template templates than that the
+their them then there these they this those through time triage under until update using
+value very want what when where which while will with within work would your
+""".split())
+
+
+def _salient_words(text, limit=24):
+    """The words that actually carry the request, most frequent first.
+
+    WHY THIS EXISTS. `_words` is `sorted(set(...))` — ALPHABETICAL — and the Intent line
+    took the first 24 of it. Digits and hex sort before letters, so every generated
+    template opened with "Intent: 07062319 07071626 1a3f... acceptance adapt agentic
+    already alter analysis appears" and the semantic content of the prompt was discarded
+    by construction. Whole families of PATCH TEMPLATE tasks are therefore unimplementable
+    on their face: the field that exists to convey intent conveys none.
+
+    `_words` is deliberately left alone — `_id()` hashes it, and changing it would change
+    every existing template id and orphan the registry. This is a separate, additive
+    extraction used only for the human-readable line.
+
+    Fail-soft: returns [] on anything unusable.
+    """
+    try:
+        counts = {}
+        for match in WORD.findall(str(text or "")):
+            word = match.lower()
+            if len(word) < 5 or _NOISE_RE.match(word) or word in _INTENT_STOPWORDS:
+                continue
+            counts[word] = counts.get(word, 0) + 1
+        # Frequency first, then first-appearance order via the insertion-ordered dict, so
+        # the line is stable for the same prompt without falling back to the alphabet.
+        order = {w: i for i, w in enumerate(counts)}
+        return sorted(counts, key=lambda w: (-counts[w], order[w]))[:max(0, int(limit))]
+    except Exception:
+        return []
+
+
 def _intent(task):
     prompt = str((task or {}).get("prompt") or "")
     return {"words": _words(prompt), "hints": sorted(set(m.group(0).lower() for m in SYMBOL_HINT.finditer(prompt)))}
@@ -50,7 +103,10 @@ def build(task):
         hits = []
     lines = [
         f"PATCH TEMPLATE {tid}",
-        "Intent: " + " ".join(_intent(task)["words"][:24]),
+        # Salient, not alphabetical. The template id below still hashes _words(), so this
+        # line becomes readable without changing a single existing template id.
+        "Intent: " + (" ".join(_salient_words(prompt))
+                      or " ".join(_intent(task)["words"][:24])),
         "Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.",
         "Implementation slots:",
         "1. Locate the existing owner module/function before adding new files.",
