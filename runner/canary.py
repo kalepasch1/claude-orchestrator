@@ -229,6 +229,19 @@ def validate_canary(response_text):
     import canary_validation
     if canary_validation.validate_canary(response_text):
         _log.info("canary marker found in response text")
+        # VALIDATION SUCCESS PATH. Only the promote verdict in main() ever stamped this
+        # gauge, so a canary that validated successfully — the marker demonstrably
+        # survived the pipeline hop — left it reading whatever it read before. A live
+        # success was invisible to the heartbeat.
+        #
+        # The task asked for `canary_last_success.set(1)`. Deliberately NOT a literal 1:
+        # this gauge holds a UNIX TIMESTAMP (record_success stamps time.time(),
+        # heartbeat_age computes now - last, and 0 is the documented "not currently
+        # succeeding" sentinel). Writing 1 would make heartbeat_age report ~56 years of
+        # staleness and the heartbeat permanently expired — a successful validation
+        # would read as a dead canary, the exact inversion of the intent. record_success()
+        # is this module's own idiom for "mark a success" and keeps the contract intact.
+        record_success()
         return True
     _log.warning("canary marker NOT found in response text")
     return False
