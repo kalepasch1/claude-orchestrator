@@ -10,13 +10,17 @@ alone, because the exit code and the log would disagree about what happened.
 `caplog` is used rather than capturing stderr: the module logs through a named logger, so
 whichever handler happens to own the stream is irrelevant to what was actually recorded.
 
-Run: pytest test_validation.py
+Run: pytest runner/tests/test_validation.py
 """
 import logging
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Moved from the repo root into runner/tests/ (write_guard: tests do not live
+# at the root). The repo root is now two directories up, and that is what these
+# tests resolve against — not the directory the file happens to sit in.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 
 import canary
 

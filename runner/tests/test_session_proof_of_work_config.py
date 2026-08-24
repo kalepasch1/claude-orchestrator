@@ -4,7 +4,7 @@
 Validates that the session timeout is correctly configured to 3600 seconds (1 hour)
 to handle sessions that extend past 11:10pm America/New_York deadline.
 
-Run: pytest test_session_proof_of_work.py -v
+Run: pytest runner/tests/test_session_proof_of_work_config.py -v
 """
 import os
 import sys
@@ -16,7 +16,11 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock, call
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Moved from the repo root into runner/tests/ (write_guard: tests do not live
+# at the root). The repo root is now two directories up, and that is what these
+# tests resolve against — not the directory the file happens to sit in.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 
 
 class TestSessionTimeoutConfiguration:

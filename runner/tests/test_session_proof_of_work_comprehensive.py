@@ -12,7 +12,7 @@ Scope:
 - Error handling and state transitions
 - Configuration file updates
 
-Run: pytest test_session_proof_of_work_comprehensive.py -v
+Run: pytest runner/tests/test_session_proof_of_work_comprehensive.py -v
 """
 import os
 import sys
@@ -25,7 +25,11 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock, call, ANY
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Moved from the repo root into runner/tests/ (write_guard: tests do not live
+# at the root). The repo root is now two directories up, and that is what these
+# tests resolve against — not the directory the file happens to sit in.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 
 
 class TestTimeoutConfigurationDefaults:

@@ -14,7 +14,7 @@ These tests validate that such improvements:
   - Pass all linting and formatting checks
   - Maintain code clarity and correctness
 
-Run: pytest test_canary_improvements.py -v
+Run: pytest runner/tests/test_canary_improvements.py -v
 """
 import ast
 import json
@@ -25,10 +25,14 @@ import sys
 from pathlib import Path
 from typing import List, Set
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Moved from the repo root into runner/tests/ (write_guard: tests do not live
+# at the root). The repo root is now two directories up, and that is what these
+# tests resolve against — not the directory the file happens to sit in.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER_DIR = REPO_ROOT / "runner"
 TOOLS_DIR = REPO_ROOT / "tools"
 TEST_ALLOWLIST = {

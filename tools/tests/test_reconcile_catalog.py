@@ -11,7 +11,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The module under test lives one directory up, beside the rest of tools/.
+# This file moved into tools/tests/ so it satisfies write_guard's rule that
+# test files live in a `tests` directory; the import target did not move.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from reconcile_catalog import (  # noqa: E402
     candidate_weight,

@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""
-Test case to reproduce missing branch scenarios.
-This test simulates what happens when a branch is missing from git but expected in the database.
+"""Reproduce the missing-branch condition against the LIVE control-plane database.
+
+NOT A TEST. It was named `test_missing_branch_scenario.py` and sat at the repo
+root, so pytest collected the module on every run — it defines no `test_*`
+functions, so nothing executed, which is the only reason this was harmless.
+
+It is a manual probe: run directly, it INSERTS rows into the real `tasks` and
+`approvals` tables to create a task whose branch does not exist in git. Renamed
+out of pytest's namespace and moved beside the other tools so that a future
+collection change cannot turn a write against production into a "test run".
+
+Run deliberately, never in CI:  python3 tools/missing_branch_scenario_probe.py
 """
 import os, sys, json, subprocess
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# `db` lives in runner/, one level up from tools/.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner"))
 import db
 
 def create_test_missing_branch_scenario():

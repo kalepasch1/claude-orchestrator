@@ -1,6 +1,6 @@
 """Unit tests for the local-branch-tip reconciler.
 
-Run: python3 -m unittest discover -s tools -p 'test_*.py'
+Run: python3 -m pytest tools/tests/test_reconcile_local_branch_tips.py
 
 Builds a throwaway git repo per test so the assertions exercise real git
 plumbing rather than mocks — the classifier's whole job is reading git state
@@ -12,7 +12,13 @@ import subprocess
 import tempfile
 import unittest
 
-import reconcile_local_branch_tips as r
+import sys
+# The module under test lives one directory up, beside the rest of tools/.
+# This file moved into tools/tests/ so it satisfies write_guard's rule that
+# test files live in a `tests` directory; the import target did not move.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import reconcile_local_branch_tips as r  # noqa: E402
 
 
 def run(repo, *args):

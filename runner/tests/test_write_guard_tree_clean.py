@@ -42,13 +42,16 @@ _SKIP_PREFIXES = (".git/", "node_modules/", ".venv/", "venv/", "__pycache__/",
 #: The list may SHRINK, never grow. A new entry means an agent wrote a test
 #: somewhere the guard would have refused, which is the thing this file exists to
 #: catch. Nothing may be added to it without moving the file instead.
-_LOCATION_RATCHET = frozenset({
-    "pareto/2080/contracts/test_contracts_smoke.py",
-    "pareto/2080/household_legal/test_household_legal.py",
-    "test_missing_branch_scenario.py",
-    "tools/test_merged_diff_memory.py",
-    "tools/test_merged_diff_memory_comprehensive.py",
-})
+#: EMPTIED 2026-08-24. Every entry was relocated rather than tolerated:
+#:   pareto/2080/contracts/test_contracts_smoke.py     -> .../contracts/tests/
+#:   pareto/2080/household_legal/test_household_legal.py -> .../household_legal/tests/
+#:   tools/test_merged_diff_memory.py                  -> tools/tests/
+#:   tools/test_merged_diff_memory_comprehensive.py    -> tools/tests/
+#: and test_missing_branch_scenario.py was never a test — it is a live-database
+#: probe script, now tools/missing_branch_scenario_probe.py, out of pytest's
+#: namespace entirely. Co-location was preserved: each file sits in a `tests/`
+#: directory beside the code it covers, which check() already allows.
+_LOCATION_RATCHET = frozenset()
 
 
 def _tracked_test_files():

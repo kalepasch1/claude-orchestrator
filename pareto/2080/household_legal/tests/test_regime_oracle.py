@@ -9,7 +9,10 @@ import sys
 
 # '2080' is not a valid Python identifier — same sys.path convention as
 # pareto/2080/contracts/test_contracts_smoke.py.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The modules under test live one directory up. This file moved into a
+# `tests/` directory so write_guard's placement rule holds for the tree;
+# the import targets did not move.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import regime_consumer as rc  # noqa: E402
 
@@ -121,9 +124,8 @@ def test_explicit_none_jurisdiction_is_not_mistaken_for_the_one_arg_shape():
 # ── the dotted import path the acceptance command uses ───────────────────────
 
 def test_pareto_household_legal_is_importable_by_dotted_path():
-    repo_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    )
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     from pareto.household_legal import (  # noqa: PLC0415

@@ -15,7 +15,10 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The module under test lives one directory up, beside the rest of tools/.
+# This file moved into tools/tests/ so it satisfies write_guard's rule that
+# test files live in a `tests` directory; the import target did not move.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from recovery_apply_check import (  # noqa: E402
     VERDICT_CLEAN,
     VERDICT_CONFLICTED,

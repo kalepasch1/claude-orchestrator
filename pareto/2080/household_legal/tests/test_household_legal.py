@@ -10,7 +10,10 @@ import pytest
 
 # '2080' is not a valid Python identifier — same sys.path convention as
 # pareto/2080/contracts/test_contracts_smoke.py.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The modules under test live one directory up. This file moved into a
+# `tests/` directory so write_guard's placement rule holds for the tree;
+# the import targets did not move.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import doc_updater as du  # noqa: E402
 import regime_consumer as rc  # noqa: E402

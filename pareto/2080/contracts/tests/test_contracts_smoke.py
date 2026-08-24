@@ -2,7 +2,7 @@
 import sys, os, importlib
 
 # 2080 is not a valid Python identifier, so use importlib
-_contracts_dir = os.path.dirname(os.path.abspath(__file__))
+_contracts_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _contracts_dir)
 
 import autonomy as a
