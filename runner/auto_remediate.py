@@ -207,6 +207,19 @@ def run(limit=120):
 
         if rc == 0 and (_TRANSIENT.search(signal) or _CONFLICT.search(signal) or _MISSING_BRANCH.search(signal)):
             category = "missing-branch" if _MISSING_BRANCH.search(signal) else ("conflict" if _CONFLICT.search(signal) else "transient")
+            # NARROWEST RECOVERY (missing-branch): the work may not be lost at all. Per the worktree
+            # convention in CLAUDE.md the agent branch is pushed and the worktree removed; when the push
+            # is what failed, the commits still sit on the LOCAL agent/<slug> ref and only origin is
+            # missing the branch. Re-drafting from scratch would fork one change into two. Push the ref
+            # we already have and let the merge train pick it up. Only then fall through to repair.
+            if category == "missing-branch" and restore_unpushed_branch(t):
+                db.update("tasks", {"id": t["id"]}, {
+                    "state": "QUEUED", "account": None,
+                    "note": "auto-remediate: branch was committed locally but never reached origin — pushed "
+                            f"agent/{t.get('slug', '')}; left for the merge train (no re-draft).",
+                })
+                requeued += 1
+                continue
             upd = agentic_repair.repair_patch(
                 t, signal, category=category,
                 directive="Resolve the concrete transient/branch/conflict issue in the same task instead of retrying blindly.")
@@ -253,6 +266,71 @@ def run(limit=120):
             "timing": {"total_s": round(_total_elapsed, 2),
                        "phases": {k: round(v, 2) for k, v in _phase_times.items()},
                        "slowest_tasks": _slowest[:5]}}
+
+
+def _task_repo_path(task):
+    """Repo checkout for *task*'s project, or "" when unknown/absent.
+
+    Fail-soft: any DB or filesystem error answers "" (unknown), never raises — an
+    unanswerable lookup must leave the caller's existing behaviour untouched.
+    """
+    try:
+        rows = db.select("projects", {"select": "repo_path",
+                                      "id": f"eq.{task.get('project_id')}", "limit": "1"}) or []
+        repo = (rows[0].get("repo_path") or "") if rows else ""
+        return repo if repo and os.path.isdir(repo) else ""
+    except Exception as exc:  # noqa: BLE001 - fail-soft, diagnostic printed
+        print(f"auto_remediate: repo lookup failed ({exc}); fail-soft no-repo")
+        return ""
+
+
+def restore_unpushed_branch(task):
+    """Recover a missing-branch task whose commits exist locally but never reached origin.
+
+    Returns True only when this call actually pushed agent/<slug> to origin, i.e. the work
+    is now shared and the merge train can integrate it without anything being re-drafted.
+    Returns False for every other case, so the caller falls through to its existing repair
+    path unchanged:
+
+      * no slug / no repo / not a git checkout          -> False (cannot tell)
+      * no LOCAL agent/<slug> ref                       -> False (genuinely lost; repair it)
+      * a remote-tracking ref already exists            -> False (not missing at all)
+      * this host has no push credential                -> False (another host may have one)
+      * the push itself fails                           -> False (still missing; repair it)
+
+    The remote check is deliberately over refs/remotes/*/agent/<slug> and not the local ref:
+    a local ref proves the commits exist, only a remote ref proves anyone else can see them.
+    """
+    slug = (task.get("slug") or "").strip()
+    if not slug:
+        return False
+    repo = _task_repo_path(task)
+    if not repo:
+        return False
+    try:
+        import branch_creator
+    except Exception as exc:  # noqa: BLE001 - fail-soft, diagnostic printed
+        print(f"auto_remediate: branch_creator unavailable ({exc}); fail-soft no-restore")
+        return False
+
+    branch = f"agent/{slug}"
+    local, ok = branch_creator._git(
+        ["for-each-ref", "--format=%(refname)", f"refs/heads/{branch}"], repo)
+    if not ok or not local.strip():
+        return False
+    remote, ok = branch_creator._git(
+        ["for-each-ref", "--format=%(refname)", f"refs/remotes/*/{branch}"], repo)
+    if not ok or remote.strip():
+        return False
+    if not branch_creator.push_credentials(repo):
+        print(f"auto_remediate: {branch} is local-only but this host has no push credential")
+        return False
+    _out, pushed = branch_creator._git(["push", "origin", f"{branch}:{branch}"], repo)
+    if not pushed:
+        print(f"auto_remediate: push of {branch} failed; leaving to repair")
+        return False
+    print(f"auto_remediate: restored {branch} to origin (was local-only)")
+    return True
 
 
 _NON_CLAUDE_CACHE = {"t": 0.0, "coder": None}

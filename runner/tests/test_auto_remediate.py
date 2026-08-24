@@ -351,5 +351,92 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         self.assertIn("implement focused", task_patch["prompt"].lower())
 
 
+class RestoreUnpushedBranchTest(unittest.TestCase):
+    """The narrowest missing-branch recovery: commits exist locally, origin never got them.
+
+    Exercised against a REAL git repo with a REAL bare origin rather than mocks, because the
+    defect being guarded is which ref namespace git is asked about — a mock would answer
+    whatever the test asserted and prove nothing.
+    """
+
+    def setUp(self):
+        import subprocess, tempfile
+        self._tmp = tempfile.mkdtemp()
+        self.origin = os.path.join(self._tmp, "origin.git")
+        self.repo = os.path.join(self._tmp, "work")
+        subprocess.run(["git", "init", "--bare", "-q", self.origin], check=True, timeout=30)
+        subprocess.run(["git", "clone", "-q", self.origin, self.repo], check=True, timeout=30)
+        for k, v in (("user.name", "t"), ("user.email", "t@t"), ("commit.gpgsign", "false")):
+            subprocess.run(["git", "config", k, v], cwd=self.repo, check=True, timeout=30)
+        open(os.path.join(self.repo, "f.txt"), "w").write("base\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "push", "-q", "origin", "HEAD:master"], cwd=self.repo, check=True, timeout=30)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _commit_local_branch(self, slug):
+        import subprocess
+        subprocess.run(["git", "checkout", "-qb", f"agent/{slug}"], cwd=self.repo, check=True, timeout=30)
+        open(os.path.join(self.repo, "f.txt"), "w").write(slug + "\n")
+        subprocess.run(["git", "commit", "-qam", f"agent: {slug}"], cwd=self.repo, check=True, timeout=30)
+
+    def _task(self, slug):
+        return {"id": "t1", "slug": slug, "project_id": "p1"}
+
+    def _run(self, slug):
+        with patch.object(auto_remediate, "_task_repo_path", return_value=self.repo):
+            return auto_remediate.restore_unpushed_branch(self._task(slug))
+
+    def test_local_only_branch_is_pushed_to_origin(self):
+        import subprocess
+        self._commit_local_branch("local-only")
+        self.assertTrue(self._run("local-only"))
+        out = subprocess.run(["git", "ls-remote", "--heads", self.origin, "agent/local-only"],
+                             capture_output=True, text=True, timeout=30).stdout
+        self.assertIn("agent/local-only", out,
+                      "the work must actually be on origin, not merely reported as restored")
+
+    def test_branch_already_on_origin_is_not_touched(self):
+        # Not missing at all: falling through to repair is correct, re-pushing is not this
+        # function's job and must not be reported as a recovery.
+        import subprocess
+        self._commit_local_branch("already-shared")
+        subprocess.run(["git", "push", "-q", "origin", "HEAD:agent/already-shared"],
+                       cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "fetch", "-q", "origin"], cwd=self.repo, check=True, timeout=30)
+        self.assertFalse(self._run("already-shared"))
+
+    def test_genuinely_absent_branch_falls_through_to_repair(self):
+        # Nothing local to push: this really is lost work and must reach the repair path.
+        self.assertFalse(self._run("never-existed"))
+
+    def test_slug_with_slashes_keeps_its_full_name(self):
+        import subprocess
+        self._commit_local_branch("fix/deep/name")
+        self.assertTrue(self._run("fix/deep/name"))
+        out = subprocess.run(["git", "ls-remote", "--heads", self.origin, "agent/fix/deep/name"],
+                             capture_output=True, text=True, timeout=30).stdout
+        self.assertIn("agent/fix/deep/name", out)
+
+    def test_no_push_credential_leaves_the_task_for_another_host(self):
+        self._commit_local_branch("no-creds")
+        import branch_creator
+        with patch.object(branch_creator, "push_credentials", return_value=""):
+            self.assertFalse(self._run("no-creds"))
+
+    def test_fail_soft_on_missing_slug_and_unknown_repo(self):
+        self.assertFalse(auto_remediate.restore_unpushed_branch({"slug": "", "project_id": "p1"}))
+        with patch.object(auto_remediate, "_task_repo_path", return_value=""):
+            self.assertFalse(auto_remediate.restore_unpushed_branch(self._task("anything")))
+
+    def test_repo_path_lookup_is_fail_soft_on_db_error(self):
+        import db
+        with patch.object(db, "select", side_effect=RuntimeError("db down")):
+            self.assertEqual(auto_remediate._task_repo_path({"project_id": "p1"}), "")
+
+
 if __name__ == "__main__":
     unittest.main()
