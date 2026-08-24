@@ -264,7 +264,7 @@ def load_contracts_smarter_contract() -> OrchestrationContract:
         RouteConfig(
             route_name="qa_panel_gemini",
             provider=ModelProvider.GOOGLE,
-            model_id="gemini-2.0-flash",
+            model_id="gemini-2.5-flash",
             pool_location="cloud",
             quality_score=7.1,
             token_cost=0.01,
@@ -291,7 +291,7 @@ def load_contracts_smarter_contract() -> OrchestrationContract:
         models_used=[
             "claude-fable-5",
             "ollama/qwen2.5-coder:7b",
-            "gemini-2.0-flash",
+            "gemini-2.5-flash",
             "grok-3-mini-fast",
         ],
         timestamp="2026-08-18T00:00:00Z",

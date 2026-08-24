@@ -201,7 +201,7 @@ VENDORS = {
             "code_execution",
         },
         "models": {
-            "gemini-3.1-pro": {
+            "gemini-3.1-pro-preview": {
                 "context_window": 1_000_000,
                 "cost_per_mtok_in": 2.0,
                 "cost_per_mtok_out": 12.0,
@@ -215,14 +215,14 @@ VENDORS = {
                 "strengths": ["speed", "multimodal", "long_context"],
                 "tier": "mid",
             },
-            "gemini-3-flash": {
+            "gemini-3.5-flash": {
                 "context_window": 1_000_000,
                 "cost_per_mtok_in": 0.50,
                 "cost_per_mtok_out": 3.0,
                 "strengths": ["speed", "cost", "long_context"],
                 "tier": "fast",
             },
-            "gemini-2.5-pro": {
+            "gemini-3.1-pro-preview": {
                 "context_window": 1_000_000,
                 "cost_per_mtok_in": 1.25,
                 "cost_per_mtok_out": 10.0,
