@@ -32,6 +32,18 @@ class ConventionViolation:
         return str(self)
 
 
+#: Rule id for the hardcoded-secret check.
+#:
+#: The id existed only as the bare string 'HARDCODED_SECRET', repeated at each
+#: report site. Four test modules import RULE_HARDCODED_SECRET to avoid hardcoding
+#: the id in assertions, and with no such name the import failed — so
+#: test_hardcoded_secret_rule, test_annotated_secret_detection,
+#: test_secret_risk_pool_detection and test_secret_risk_pool_rework could not be
+#: COLLECTED at all. The secret-detection rule had no effective test coverage, and
+#: the failure looked like a collection error rather than a gap.
+RULE_HARDCODED_SECRET = 'HARDCODED_SECRET'
+
+
 class ConventionChecker(ast.NodeVisitor):
     """AST visitor that checks Python files for convention violations."""
 
@@ -230,7 +242,7 @@ class ConventionChecker(ast.NodeVisitor):
                         var_name = target.id.lower()
                         if any(keyword in var_name for keyword in secret_keywords):
                             self.violations.append(ConventionViolation(
-                                self.filepath, node.lineno, 'HARDCODED_SECRET',
+                                self.filepath, node.lineno, RULE_HARDCODED_SECRET,
                                 f'Variable "{target.id}" contains secret keyword; use environment variables instead'
                             ))
                     elif isinstance(target, ast.Subscript):
@@ -238,7 +250,7 @@ class ConventionChecker(ast.NodeVisitor):
                             key_name = target.slice.value.lower()
                             if any(keyword in key_name for keyword in secret_keywords):
                                 self.violations.append(ConventionViolation(
-                                    self.filepath, node.lineno, 'HARDCODED_SECRET',
+                                    self.filepath, node.lineno, RULE_HARDCODED_SECRET,
                                     f'Key "{target.slice.value}" contains secret keyword; use environment variables instead'
                                 ))
 
