@@ -346,11 +346,37 @@ def _xai(model, prompt):
     return d["choices"][0]["message"]["content"], round(cost, 6)
 
 
+_FAILURE_FIELDS = ("terminal_reason", "error", "returncode", "rate_limit_type")
+
+
+def _with_failure_fields(out, source):
+    """Copy structured failure fields from a provider response onto the result.
+
+    Additive only: a key is set when the provider supplied a truthy value, so
+    callers that only read {text, cost_usd, provider, model} see no change and
+    no key ever appears with a misleading None.
+    """
+    if not isinstance(source, dict):
+        return out
+    for key in _FAILURE_FIELDS:
+        value = source.get(key)
+        if value:
+            out[key] = value
+    return out
+
+
 def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "claude":
         import claude_cli
         r = claude_cli.run(prompt, model, project=project, max_turns=1, permission=None, timeout=timeout)
-        return {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+        # Structured failure fields are forwarded, not dropped. This return used to
+        # keep only text and cost, so a run that stopped on max_turns arrived at the
+        # caller indistinguishable from a run that simply produced little text —
+        # which is how repeated turn-limit failures lost their context and restarted
+        # the retry ladder instead of escalating. Keys are only added when present,
+        # so every existing consumer of {text, cost_usd, provider, model} is unaffected.
+        out = {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+        return _with_failure_fields(out, r)
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
     else:

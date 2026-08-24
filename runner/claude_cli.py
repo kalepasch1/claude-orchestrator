@@ -18,7 +18,7 @@ Usage (replace every `subprocess.run([CLAUDE_BIN,'-p',...,'--output-format','tex
     r = run(prompt, model, cwd=..., env=..., project="tomorrow")
     text = r["text"]; cost = r["cost_usd"]; rc = r["returncode"]
 """
-import os, sys, json, time, subprocess, threading, logging, asyncio
+import os, sys, json, re, time, subprocess, threading, logging, asyncio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 log = logging.getLogger(__name__)
@@ -130,6 +130,41 @@ def _paused(project=None):
 # rate limit events, and per-task budget caps.
 # ---------------------------------------------------------------------------
 
+_MAX_TURNS_TEXT = re.compile(
+    r"max[_ -]?turns|maximum number of turns|reached.*turn.*limit", re.I)
+
+
+def detect_terminal_reason(*signals, num_turns=None, max_turns=None):
+    """Normalise however this run stopped into one short reason string, or None.
+
+    The SDK and the CLI disagree on the field name and have changed it across
+    versions (subtype / stop_reason / terminal_reason), and the plain CLI only
+    says it in prose. Reading all of them and normalising once means callers
+    never have to guess which spelling they got.
+
+    `num_turns >= max_turns` is accepted as corroborating evidence because a run
+    that used its whole budget and stopped is a turn-limit stop even when the
+    provider does not label it — that unlabelled case is how the reason went
+    missing in the first place.
+    """
+    for signal in signals:
+        if not signal:
+            continue
+        text = str(signal)
+        if _MAX_TURNS_TEXT.search(text):
+            return "max_turns"
+    try:
+        if max_turns and num_turns and int(num_turns) >= int(max_turns):
+            return "max_turns"
+    except (TypeError, ValueError):
+        pass
+    for signal in signals:
+        if signal and isinstance(signal, str) and signal in (
+                "error_during_execution", "error_max_tokens", "timeout"):
+            return signal
+    return None
+
+
 async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, timeout):
     """Execute a Claude call via the claude-agent-sdk Python package.
 
@@ -167,6 +202,8 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
     num_turns = 0
     returncode = 0
     rate_limit_type = None
+    terminal_reason = None
+    error_text = ""
 
     async for message in _sdk_query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -183,6 +220,19 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
                 collected_text = [message.result]
             if message.is_error:
                 returncode = 1
+                error_text = str(message.result or "") or "agent run reported an error"
+            # The SDK names the stop condition differently across versions
+            # (subtype / stop_reason / terminal_reason), so read whichever is
+            # present rather than pinning one and silently getting None.
+            terminal_reason = detect_terminal_reason(
+                getattr(message, "subtype", None),
+                getattr(message, "stop_reason", None),
+                getattr(message, "terminal_reason", None),
+                message.result,
+                num_turns=num_turns, max_turns=max_turns)
+            if terminal_reason == "max_turns":
+                log.warning("agent stopped on max_turns after %s turn(s); model=%s",
+                            num_turns, model)
         else:
             # Check for rate limit events (for account rotation signaling)
             msg_type = getattr(message, "type", None)
@@ -203,6 +253,13 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
                 "agent_sdk": True, "turns": num_turns},
         "stderr": "",
         "rate_limit_type": rate_limit_type,
+        # Why a hit turn limit is reported as a first-class field rather than left
+        # in the text: auto_remediate decides between "retry" and "escalate to a
+        # focused prompt" by regex-matching a log tail. When the tail was trimmed
+        # the reason vanished and the run looked like a generic no-op, so the
+        # retry ladder restarted from the bottom and the context was lost.
+        "terminal_reason": terminal_reason,
+        "error": error_text or None,
     }
 
 
@@ -369,8 +426,21 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         subscription_tracker.record_call("claude-max", _cli_outcome, model)
     except Exception:
         pass
+    # Same first-class reporting on the plain-CLI path: this one only ever says it
+    # in prose, so without normalising here the two paths disagree about whether a
+    # turn-limit stop is even visible to the caller.
+    _cli_reason = detect_terminal_reason(
+        (raw or {}).get("subtype") if isinstance(raw, dict) else None,
+        (raw or {}).get("stop_reason") if isinstance(raw, dict) else None,
+        proc.stderr, text,
+        num_turns=(raw or {}).get("num_turns") if isinstance(raw, dict) else None,
+        max_turns=max_turns)
+    if _cli_reason == "max_turns":
+        log.warning("claude CLI stopped on max_turns; model=%s", model)
     return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
-            "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or ""}
+            "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or "",
+            "terminal_reason": _cli_reason,
+            "error": (proc.stderr or None) if proc.returncode else None}
 
 
 def status():
