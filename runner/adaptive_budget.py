@@ -20,12 +20,18 @@ Usage:
 import os, sys, json, time, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import config_consumer
 
-DEFAULT_BUDGET = int(os.environ.get("ORCH_DEFAULT_TOKEN_BUDGET", "8192"))
-MIN_BUDGET = int(os.environ.get("ORCH_MIN_TOKEN_BUDGET", "1024"))
+# Read through config_consumer rather than a bare int()/float() on os.environ: these
+# run at import time, so ORCH_DEFAULT_TOKEN_BUDGET=oops used to raise ValueError while
+# this module was being imported and take down every importer with it. The helpers
+# log the bad value and fall back. Minimums are enforced here too — a zero or negative
+# budget is not a budget.
+DEFAULT_BUDGET = config_consumer.env_int("ORCH_DEFAULT_TOKEN_BUDGET", 8192, minimum=1)
+MIN_BUDGET = config_consumer.env_int("ORCH_MIN_TOKEN_BUDGET", 1024, minimum=1)
 # Multiplier applied on top of the predicted output length so the model doesn't get
 # truncated when a task runs slightly longer than its historical average.
-BUDGET_HEADROOM = float(os.environ.get("ORCH_BUDGET_HEADROOM", "1.5"))  # 50% headroom over predicted
+BUDGET_HEADROOM = config_consumer.env_float("ORCH_BUDGET_HEADROOM", 1.5, minimum=1.0)
 
 
 def _history():
