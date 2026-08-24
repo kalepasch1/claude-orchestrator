@@ -102,7 +102,23 @@ EXHAUSTED_RX = _rx((
     r"\bhit your (?:weekly|monthly|daily)\b",
     r"\b\d+[\s-]hour limit\b",                   # "5-hour limit reached"
     r"\blimit\s*[·∙-]\s*(?:resets|raise it)\b",
-    r"\bresets?\s+\S+",                          # "resets Jul 8 at 6am", "resets 3pm"
+    # "resets Jul 8 at 6am", "resets 3pm", "resets tomorrow".
+    #
+    # This was `\bresets?\s+\S+`, which matched the word followed by ANYTHING —
+    # including "ConnectionResetError: [Errno 54] reset by peer" and "password
+    # reset link". A dropped socket is the most ordinary failure there is, and
+    # classifying it as exhaustion evicts a HEALTHY provider from the rotation.
+    # That stayed invisible while only this module read the pattern; wiring
+    # error_taxonomy through it on 2026-08-24 turned a latent over-match into a
+    # demotion, and two existing tests caught it immediately.
+    #
+    # A reset that means "your quota returns then" always names a TIME. Requiring
+    # one costs nothing: both real banners this shape was written for
+    # ("hit your weekly limit · resets Aug 25 at 11pm", "limit reached ∙ resets
+    # 3pm") already match on their limit vocabulary as well.
+    r"\bresets?\s+(?:at\s+|on\s+|in\s+)?"
+    r"(?:\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    r"|mon|tue|wed|thu|fri|sat|sun|today|tomorrow|midnight|noon)",
 ), EXHAUST_SIGNALS)
 
 MODEL_GONE_RX = _rx((r"\bmodels?/[\w.\-]+ is (?:no longer available|not found)\b",),
