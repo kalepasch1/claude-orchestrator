@@ -19,21 +19,53 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 
+#: Per-`git` wall-clock budget. ORCH_-prefixed so a slow or NFS-backed checkout can be
+#: given headroom through fleet_control.py rather than a code change.
+GIT_TIMEOUT = int(os.environ.get("ORCH_MISSING_BRANCH_GIT_TIMEOUT", "15") or 15)
+
+#: Columns the audit needs. Named once so main() and auto_recover_missing_branches()
+#: cannot drift into scanning different row shapes of the same question.
+_AUDIT_COLUMNS = "id,slug,project_id,state"
+_RECOVER_COLUMNS = "id,slug,project_id,state,prompt,kind,base_branch"
+
+
 def _branch_exists(repo, branch):
     if not repo or not os.path.isdir(repo):
         return None  # can't check -- repo not resolvable on this host
     try:
         out = subprocess.run(["git", "rev-parse", "--verify", branch],
-                              cwd=repo, capture_output=True, text=True, timeout=15)
+                              cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
         return out.returncode == 0
-    except Exception:
+    except Exception as e:
+        # Logged, not silent: None means "could not check", and it is routed to the
+        # `unresolvable_repo` bucket where it is reported as a non-answer. Without this
+        # line a git binary that is missing or wedged is indistinguishable from a repo
+        # path that does not exist on this host.
+        sys.stderr.write(f"[missing_branch_audit] rev-parse {branch!r} in {repo!r} failed "
+                         f"({type(e).__name__}: {e}); reporting as unresolvable\n")
         return None
 
 
+def _all_done_tasks(columns):
+    """Every DONE task, paged to exhaustion.
+
+    FULL SCAN, not a window. The previous `db.select(..., "limit": "2000")` could not
+    return 2,000 rows: PostgREST caps a single response at 1,000 regardless of `limit`,
+    so the audit read an arbitrary, unordered 1,000 DONE tasks and then printed
+    "DONE tasks checked: 1000" as though that were the whole set. Every DONE task
+    outside that page was structurally invisible — including, by construction, the
+    missing branches this module exists to find, and the ones
+    auto_recover_missing_branches() would otherwise reconstruct. An audit that silently
+    answers about a subset is worse than no audit, because its clean result is believed.
+    """
+    return db.select_all("tasks", {"select": columns, "state": "eq.DONE"},
+                         order="id.asc") or []
+
+
 def main():
-    projects = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
-    done_tasks = db.select("tasks", {"select": "id,slug,project_id,state", "state": "eq.DONE",
-                                      "limit": "2000"}) or []
+    projects = {p["id"]: p for p in (db.select_all("projects", {"select": "*"},
+                                                   order="id.asc") or [])}
+    done_tasks = _all_done_tasks(_AUDIT_COLUMNS)
 
     genuinely_missing = []
     false_positives = []
@@ -79,16 +111,15 @@ def auto_recover_missing_branches(dry_run=True, max_recover=10):
     """
     import time as _time
     try:
-        projects = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
+        projects = {p["id"]: p for p in (db.select_all("projects", {"select": "*"},
+                                                       order="id.asc") or [])}
     except Exception as e:
         print(f"auto_recover: DB error fetching projects: {e}")
         return {"recovered": 0, "missing": 0}
     try:
-        done_tasks = db.select("tasks", {
-            "select": "id,slug,project_id,state,prompt,kind,base_branch",
-            "state": "eq.DONE",
-            "limit": "2000",
-        }) or []
+        # Same full scan as main(): a recovery pass that only ever sees the first
+        # unordered page can never recover a branch that fell outside it.
+        done_tasks = _all_done_tasks(_RECOVER_COLUMNS)
     except Exception as e:
         print(f"auto_recover: DB error fetching tasks: {e}")
         return {"recovered": 0, "missing": 0}
