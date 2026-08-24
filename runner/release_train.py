@@ -69,6 +69,137 @@ def _release_decision(ahead, due, minimum=None):
     return "hold"
 
 
+# --- RELEASE ON CAPACITY, NOT ON A CLOCK -------------------------------------------
+#
+# Cadence mode answers "has six hours passed, and are ten changes waiting?". That is a
+# proxy for "can we afford another build", and it is a bad one: a single finished change
+# can sit staged for most of a day while the fleet has been idle the whole time.
+#
+# Capacity mode answers the question directly — ship when there is something to ship and
+# no build already running. The cost controls that justified the clock are preserved, just
+# expressed as the thing they were standing in for:
+#
+#   in-flight   at most one release per project at a time. This is the hard bound on
+#               concurrent Vercel builds, and it FAILS CLOSED: if the check cannot be
+#               answered we hold, because a duplicate production build is expensive and a
+#               skipped pass costs nothing but a few seconds.
+#   debounce    a burst of merges coalesces into one release instead of one build per
+#               commit. FAILS OPEN, because an unreadable timestamp must not wedge
+#               releases forever — in-flight is already the hard ceiling.
+#
+# OFF BY DEFAULT. `RELEASE_MODE=cadence` is the shipped behaviour and every helper below
+# is inert until the mode is switched, so this lands as pure addition.
+RELEASE_MODE = (os.environ.get("ORCH_RELEASE_MODE") or "cadence").strip().lower()
+RELEASE_DEBOUNCE_S = max(0.0, float(os.environ.get("ORCH_RELEASE_DEBOUNCE_S", "90")))
+
+#: Deploy states that mean a build is occupying the project's one release slot.
+_IN_FLIGHT_STATES = ("pending", "building")
+
+
+def _capacity_mode():
+    """True when releases are gated on capacity rather than on the clock."""
+    return RELEASE_MODE == "capacity"
+
+
+def _effective_min_batch(project=None):
+    """Batch floor in force. Capacity mode ships a single staged change."""
+    return 1 if _capacity_mode() else MIN_BATCH
+
+
+def _parse_ts(value):
+    """UTC datetime from a DB timestamp, or ``None`` if it cannot be read."""
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _release_in_flight(project):
+    """``(in_flight, note)`` — is a build already occupying this project's slot?
+
+    FAILS CLOSED. An unanswerable check reports in-flight, so a database blip cannot
+    turn into two concurrent production builds.
+    """
+    try:
+        rows = db.select("releases", {
+            "select": "id,project,deploy_status,created_at",
+            "project": f"eq.{project}",
+            "deploy_status": "in.(%s)" % ",".join(_IN_FLIGHT_STATES),
+            "order": "created_at.desc", "limit": "1"}) or []
+    except Exception as exc:
+        return True, f"in-flight check unavailable, holding fail-closed ({exc})"
+    if not rows:
+        return False, "no release in flight"
+    status = str(rows[0].get("deploy_status") or "unknown").lower()
+    return True, f"release already in flight ({status})"
+
+
+def _release_debounced(project):
+    """``(debounced, note)`` — did a release just go out inside the debounce window?
+
+    FAILS OPEN. In-flight is the hard bound; this only coalesces bursts, so an
+    unreadable or missing timestamp must never hold a release back indefinitely.
+    """
+    if RELEASE_DEBOUNCE_S <= 0:
+        return False, "debounce disabled"
+    try:
+        rows = db.select("releases", {
+            "select": "id,project,deploy_status,created_at",
+            "project": f"eq.{project}",
+            "order": "created_at.desc", "limit": "1"}) or []
+    except Exception as exc:
+        return False, f"debounce check unavailable, proceeding fail-open ({exc})"
+    if not rows:
+        return False, "no prior release"
+    last = _parse_ts(rows[0].get("created_at"))
+    if last is None:
+        return False, "release timestamp unreadable, proceeding fail-open"
+    elapsed = (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds()
+    if elapsed < RELEASE_DEBOUNCE_S:
+        return True, f"debounce active ({elapsed:.0f}/{RELEASE_DEBOUNCE_S:.0f}s)"
+    return False, f"debounce elapsed ({elapsed:.0f}s)"
+
+
+def _release_rate_per_hour(project):
+    """Releases in the last hour, or ``None`` if unreadable.
+
+    The cost regression this mode could cause is "a build per commit", so the rate has
+    to stay visible rather than being inferred from a Vercel bill after the fact.
+    """
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    try:
+        rows = db.select("releases", {
+            "select": "id,project,created_at",
+            "project": f"eq.{project}",
+            "created_at": f"gte.{cutoff}",
+            "order": "created_at.desc", "limit": "200"}) or []
+    except Exception:
+        return None
+    return len(rows)
+
+
+def _capacity_release_decision(project, ahead):
+    """``(decision, note)`` for capacity mode: is there work, and is there room?
+
+    Answers only that narrow question. Project back-pressure — RED deploy health, open
+    release fixes, recent failed gates — lives in the caller and is **not overridden**
+    here; a "release" from this function still has to survive every one of those gates.
+    """
+    if int(ahead or 0) <= 0:
+        return "up-to-date", "nothing staged"
+    in_flight, note = _release_in_flight(project)
+    if in_flight:
+        return "hold", note
+    debounced, note = _release_debounced(project)
+    if debounced:
+        return "hold", note
+    return "release", f"{int(ahead)} change(s) staged, no release in flight"
+
+
 def _candidate_state_filter():
     """Keep integration in the canonical merge train unless legacy ingestion is explicitly enabled."""
     return "in.(DONE,MERGED)" if _truthy("ORCH_RELEASE_INGEST_DONE", False) else None
@@ -1566,8 +1697,9 @@ def _next_version():
 
 
 def _release_due(project):
-    if RELEASE_INTERVAL_HOURS <= 0:
-        return True, "release interval disabled"
+    # The `RELEASE_INTERVAL_HOURS <= 0` early return that used to be here was dead:
+    # the constant is built with `max(6.0, ...)`, so it can never be <= 0. Keeping it
+    # advertised a kill switch that did not exist. Do not reintroduce it.
     rows = db.select("releases", {"select": "created_at,project,deploy_status", "project": f"eq.{project}",
                                   "deploy_status": "in.(pending,building,success)",
                                   "order": "created_at.desc", "limit": "1"}) or []
