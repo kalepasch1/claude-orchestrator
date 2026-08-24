@@ -305,9 +305,13 @@ class BatcherErrorHandlingTest(unittest.TestCase):
                 self.fail("append raised an exception on timer error")
 
     def test_get_pending_error_returns_empty_list(self):
-        with patch.object(self.batcher.lock, "acquire", side_effect=Exception("Lock error")):
-            result = self.batcher.get_pending()
-            self.assertEqual(result, [])
+        # Breaks the QUEUE, not the lock. `patch.object(self.batcher.lock, "acquire", ...)`
+        # cannot work: threading.Lock() is the C-level _thread.lock, which has no settable
+        # attributes, so mock raised TypeError before the batcher ran a single line — the
+        # test could never have exercised the fail-soft path it is named for. A non-list
+        # queue makes the real code raise inside the lock, which is the condition under test.
+        with patch.object(self.batcher, "queue", new=None):
+            self.assertEqual(self.batcher.get_pending(), [])
 
     def test_flush_error_does_not_raise(self):
         self.batcher.append([{"id": "a1"}])
@@ -318,9 +322,10 @@ class BatcherErrorHandlingTest(unittest.TestCase):
                 pass
 
     def test_stats_error_returns_empty_dict(self):
-        with patch.object(self.batcher.lock, "acquire", side_effect=Exception("Lock error")):
-            result = self.batcher.stats()
-            self.assertEqual(result, {})
+        # Same correction as get_pending above: a raw threading.Lock is unpatchable, so
+        # the break is applied to the state stats() actually reads.
+        with patch.object(self.batcher, "queue", new=None):
+            self.assertEqual(self.batcher.stats(), {})
 
     def test_send_batch_error_does_not_raise(self):
         with patch("approval_push.build_digest", side_effect=Exception("Digest error")):
@@ -415,7 +420,13 @@ class BatcherThreadSafetyTest(unittest.TestCase):
 
         self.assertEqual(self.errors, [])
         stats = self.batcher.stats()
-        self.assertEqual(stats["items_pending"], 50)
+        # items_QUEUED, not items_pending. This class configures ORCH_APPROVAL_BATCH_SIZE=3
+        # in setUp, so the 50 appends flush 16 times along the way and the queue can only
+        # ever hold 0-2 items at the end — asserting 50 PENDING asserted that batching does
+        # not happen, in the one test whose whole point is that it happens concurrently.
+        # items_queued is the cumulative counter and is what proves no append was lost.
+        self.assertEqual(stats["items_queued"], 50)
+        self.assertLess(stats["items_pending"], self.batcher.size_threshold)
 
     def test_concurrent_get_pending_is_safe(self):
         self.batcher.append([{"id": f"a{i}"} for i in range(10)])

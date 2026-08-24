@@ -63,15 +63,41 @@ class ApprovalBatcher:
         self.window_ms = max(100, self.window_ms)
         self.size_threshold = max(1, self.size_threshold)
 
+    @staticmethod
+    def _as_cards(cards):
+        """Normalise *cards* to a list of card dicts, or [] if it is not cards at all.
+
+        The old shape was `cards if isinstance(cards, list) else [cards]`, which wrapped
+        ANY truthy value into a one-card batch: `append("not a list")` queued the string
+        itself and reported 1 item added. The failure then surfaced far away and much
+        later — inside _send_batch, where build_digest and `cards[0]["id"]` meet a str —
+        by which point the digest for that whole window is lost and the traceback points
+        at the sender rather than at the caller who passed the wrong thing.
+
+        A card is a mapping. One mapping is a batch of one; a list of mappings is a batch;
+        anything else is malformed and is rejected AT THE DOOR, where the caller can still
+        be identified.
+        """
+        if isinstance(cards, dict):
+            return [cards]
+        if isinstance(cards, (list, tuple)):
+            return [c for c in cards if isinstance(c, dict)]
+        return []
+
     def append(self, cards):
-        """Add cards to batch queue. Returns count added; 0 on error."""
+        """Add cards to batch queue. Returns count added; 0 on error or malformed input."""
         if not cards:
             return 0
         try:
             pending_flush = None
+            batch = self._as_cards(cards)
+            if not batch:
+                print(f"approval_batcher append: no valid cards in "
+                      f"{type(cards).__name__}; ignoring")
+                return 0
             with self.lock:
-                card_count = len(cards) if isinstance(cards, list) else 1
-                self.queue.extend(cards if isinstance(cards, list) else [cards])
+                card_count = len(batch)
+                self.queue.extend(batch)
                 self._items_queued += card_count
 
                 if len(self.queue) == card_count:
