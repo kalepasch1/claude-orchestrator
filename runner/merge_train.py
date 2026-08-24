@@ -2432,7 +2432,26 @@ def train_run():
             return _end("lease-not-acquired",
                         {"skipped": "another integration or release train owns the global lease"})
         try:
-            summary = _train_run_unleased(report=report)
+            try:
+                summary = _train_run_unleased(report=report)
+            except db.ControlPlaneDown as _cpd:
+                # CONTROL PLANE DOWN (2026-08-24). The db circuit breaker exists so a
+                # Supabase outage costs one fast failure instead of a full timeout per
+                # call — raising here is it WORKING AS DESIGNED. But nothing caught it,
+                # so every 60s scheduler cycle during an outage exited with an unhandled
+                # traceback into merge-train.err: 127 identical stacks, all of them the
+                # breaker doing its job, with the real signal ("the origin is
+                # unreachable") buried under frames that read like a bug in the train.
+                #
+                # A pass cannot do anything without the project list, so this is a
+                # reported NON-RUN, exactly like a host pause. Caught HERE rather than
+                # pre-empted on breaker state, because the breaker is a process-wide
+                # global and a caller with a working db must not be refused for it.
+                print(f"merge_train: control plane unreachable ({_cpd}); skipping pass",
+                      flush=True)
+                return _end(f"control-plane-down: {_cpd}",
+                            {"skipped": f"control plane unreachable: {_cpd}",
+                             "breaker_open": db.breaker_open()})
             if report is not None:
                 try:
                     report.persist()
@@ -2518,4 +2537,15 @@ if __name__ == "__main__":
             os._exit(3)
         _th.Thread(target=_deadline, name="merge-train-watchdog", daemon=True).start()
 
-    print(json.dumps(train_run(), indent=2, default=str))
+    # Backstop for the same crashloop. The early guard above catches an ALREADY-open
+    # breaker; this catches the pass that is running when the origin goes away mid-flight
+    # and trips it. Either way the outcome is a structured skip on stdout and one line of
+    # explanation on stderr — not a traceback, and not a non-zero exit that makes the
+    # scheduler treat a Supabase outage as a defect in the train.
+    try:
+        print(json.dumps(train_run(), indent=2, default=str))
+    except db.ControlPlaneDown as _cpd:
+        sys.stderr.write(f"merge_train: control plane unreachable ({_cpd}); "
+                         f"skipping this pass\n")
+        print(json.dumps({"skipped": f"control plane unreachable: {_cpd}"}))
+        sys.exit(0)
