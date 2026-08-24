@@ -590,9 +590,39 @@ def _already_decomposed(task, note):
     return "auto-decomposed from" in (note or "") or decomposition_depth >= 2
 
 
+#: Marker written into the note each time a task is pulled off the shelf. It lives in the
+#: note because remediation_count is deliberately reset on recovery, so it cannot carry
+#: this history — see shelf_recoveries().
+_SHELF_RECOVERY_MARK = "shelf-recovery"
+_SHELF_RECOVERY_RE = re.compile(r"shelf-recovery\s*#(\d+)")
+
+#: How many times a task may come off the shelf before it stays there. ORCH_-prefixed so
+#: fleet_control.py can push it without a code change.
+SHELF_RECOVERY_CAP = int(os.environ.get("ORCH_SHELF_RECOVERY_CAP", "3"))
+
+
+def shelf_recoveries(note):
+    """How many times this task has already been recovered from the shelf."""
+    try:
+        found = _SHELF_RECOVERY_RE.findall(str(note or ""))
+        return max((int(n) for n in found), default=0)
+    except Exception:
+        return 0
+
+
 def recover_shelved(limit=200):
     """Auto-process the SHELVED pile so no human ever has to requeue: decompose big ones, requeue small
-    ones. Only genuine legal/secret human-holds are left for the owner."""
+    ones. Only genuine legal/secret human-holds are left for the owner.
+
+    BOUNDED. The requeue path sets `remediation_count = 0`, which is what lets a recovered
+    task be retried at all — and also erased the only evidence that it had been through
+    this loop before. A task could therefore shelve, recover, fail, shelve again forever,
+    with the "shelved after N remediations — needs human re-scope" signal wiped each round;
+    the shelf stopped meaning anything and the human was never actually asked. The recovery
+    COUNT is now recorded in the note, which survives the reset, and after
+    SHELF_RECOVERY_CAP rounds the task stays SHELVED with that fact stated. Genuine
+    legal/secret human-holds are still skipped before any of this, exactly as before.
+    """
     rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,attempt",
                                "state": "eq.SHELVED", "limit": str(limit)}) or []
     decomposed = requeued = 0
@@ -600,6 +630,16 @@ def recover_shelved(limit=200):
         note = t.get("note") or ""
         signal = f"{note}\n{t.get('log_tail') or ''}"
         if _requires_human_hold(t, signal):
+            continue
+        recoveries = shelf_recoveries(note)
+        if recoveries >= SHELF_RECOVERY_CAP:
+            # Leave it shelved and SAY SO once, rather than silently cycling it again.
+            if "shelf-recovery cap reached" not in note:
+                db.update("tasks", {"id": t["id"]}, {
+                    "note": (note + f"\nshelf-recovery cap reached ({recoveries}/"
+                                    f"{SHELF_RECOVERY_CAP}); staying SHELVED for human "
+                                    f"re-scope rather than cycling again")[:2000],
+                    "updated_at": "now()"})
             continue
         if not _already_decomposed(t, note):
             subs = _decompose(t, signal)
@@ -612,7 +652,11 @@ def recover_shelved(limit=200):
         patch = agentic_repair.repair_patch(
             t, note, category="rework",
             directive="Recovered from shelf. Make the smallest complete change through the agentic coder and commit it now.")
+        # remediation_count is reset so the recovered task is retryable — but the recovery
+        # itself must remain visible, or the next shelving looks like the first.
         patch["remediation_count"] = 0
+        patch["note"] = (f"{patch.get('note') or ''}\n"
+                         f"{_SHELF_RECOVERY_MARK} #{recoveries + 1}").strip()[:2000]
         db.update("tasks", {"id": t["id"]}, patch)
         requeued += 1
     return decomposed, requeued
