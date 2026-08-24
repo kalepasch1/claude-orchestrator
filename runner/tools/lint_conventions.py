@@ -136,6 +136,37 @@ _SECRET_NAME_EXEMPT_SUFFIXES = ("_env", "_var", "_name", "_key_name", "_path", "
 _SECRET_NAME_EXEMPT_PREFIXES = ("ignore_", "_ignore_", "reason_", "_reason_")
 
 
+# Value shapes that are a credential on sight, whatever the variable is called.
+#
+# The NAME heuristic deliberately requires a compound token (`private_key`, not a bare
+# `key`), because `key` is overwhelmingly a dict/cache key and flagging it would drown
+# the rule in false positives. The consequence was a real hole:
+#
+#     key = "-----BEGIN PRIVATE KEY-----"      # not flagged: name is just "key"
+#
+# A PEM header is not ambiguous the way a name is — no legitimate non-secret string
+# starts with one. Detecting the VALUE closes the hole without touching the name
+# heuristic, so it adds no false positives on ordinary `key` variables.
+_SECRET_VALUE_MARKERS = (
+    "-----begin rsa private key",
+    "-----begin openssh private key",
+    "-----begin dsa private key",
+    "-----begin ec private key",
+    "-----begin pgp private key",
+    "-----begin encrypted private key",
+    "-----begin private key",
+    "-----begin certificate",
+)
+
+
+def _is_credential_shaped_value(value: str) -> bool:
+    """True when a literal is unmistakably a credential regardless of its name."""
+    lowered = str(value or "").lstrip().lower()
+    if lowered.startswith(_SECRET_VALUE_PREFIXES):
+        return True
+    return lowered.startswith(_SECRET_VALUE_MARKERS)
+
+
 def _looks_like_secret_name(name: str) -> bool:
     """True when an identifier names a credential rather than merely mentioning one."""
     lowered = name.lower()
@@ -395,7 +426,7 @@ class ConventionChecker(ast.NodeVisitor):
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             value_str = node.value.value
             indirected = _is_indirected_secret_value(value_str)
-            vendor_literal = value_str.lower().startswith(_SECRET_VALUE_PREFIXES)
+            vendor_literal = _is_credential_shaped_value(value_str)
             for target in node.targets:
                 name = _secret_target_name(target)
                 if name is None:
