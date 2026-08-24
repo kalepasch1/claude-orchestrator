@@ -250,10 +250,30 @@ def _hermetic(request, monkeypatch):
 
     real_connect = _socket.socket.connect
 
+    def _is_loopback(address):
+        """True for an address that cannot leave this machine.
+
+        A test that starts its own HTTP server on 127.0.0.1 and calls it depends
+        on nothing external, so refusing it produces a false failure rather than
+        the signal this guard exists for — the guard's own wording is "must not
+        depend on a REMOTE host ... someone else's uptime", and loopback is
+        neither. Blocking it is what had every test_web_console_config_routes
+        case red. Anything not provably loopback is still refused.
+        """
+        try:
+            host = address[0] if isinstance(address, (tuple, list)) else address
+        except Exception:
+            return False
+        host = str(host or "").strip().lower()
+        if host.startswith("::ffff:"):  # IPv4-mapped IPv6
+            host = host[len("::ffff:"):]
+        return (host in ("localhost", "::1", "0.0.0.0", "")
+                or host.split(".")[0] == "127")
+
     def _blocked_connect(self, address, *a, **kw):
         # AF_UNIX has no address family risk and is how local tooling talks to
         # itself; only IP sockets leave the machine.
-        if self.family in (_socket.AF_INET, _socket.AF_INET6):
+        if self.family in (_socket.AF_INET, _socket.AF_INET6) and not _is_loopback(address):
             raise NetworkAccessInTest(
                 111,  # ECONNREFUSED, so errno-inspecting callers behave normally
                 f"Connection refused by the test suite's hermetic guard: {address!r}. "
@@ -279,8 +299,24 @@ def _hermetic(request, monkeypatch):
     # when stdin is captured.
     for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
         monkeypatch.setenv(var, "http://127.0.0.1:9")
-    monkeypatch.setenv("no_proxy", "")
-    monkeypatch.setenv("NO_PROXY", "")
+    # Loopback is exempt, and only loopback.
+    #
+    # These were set to "" so nothing could bypass the dead proxy. That also
+    # caught the process's OWN traffic: a test that starts an HTTP server on
+    # 127.0.0.1 and calls it has urllib read these same vars, so the request went
+    # to the proxy on the discard port instead of to the server the test just
+    # started. It failed as "Connection refused ... ('127.0.0.1', 9)" — the guard
+    # refusing a connection to itself. That is what had all seven
+    # test_web_console_config_routes cases red, testing nothing.
+    #
+    # A loopback exemption cannot weaken the guard: its stated purpose is that
+    # "unit tests must not depend on a REMOTE host — the suite's runtime and its
+    # pass/fail both become someone else's uptime", and 127.0.0.1 is neither
+    # remote nor someone else's. Every off-machine address still goes to the dead
+    # proxy and is refused in microseconds, and socket.connect above still blocks
+    # any IP connect a test makes directly.
+    monkeypatch.setenv("no_proxy", "localhost,127.0.0.1,::1")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,::1")
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     monkeypatch.setenv("GIT_ASKPASS", "/usr/bin/false")
     monkeypatch.setenv("SSH_ASKPASS", "/usr/bin/false")
