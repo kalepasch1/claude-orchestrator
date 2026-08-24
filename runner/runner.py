@@ -2458,8 +2458,45 @@ def run_task(t):
                 # cause of local-only branches that later got GC'd → recover-missing-branch churn).
                 # Verify the ref actually landed on origin; if it never does, leave a durable marker
                 # so the branch is NOT eligible for local GC (governor now refuses to delete unshared).
-                _shared = False
-                for _attempt in range(3):
+                # FETCH FIRST. Two Macs share one queue, so origin may already carry this
+                # ref — pushed by the other host, or by an earlier run here whose local
+                # state was since rebuilt. Without a fetch, `git push` is the first thing
+                # that discovers this, and it discovers it as a FAILURE: the retry loop
+                # burns three attempts and 6s of sleep on a branch that was already shared,
+                # then prints a WARNING and marks it unshared. Fetching turns that into a
+                # cheap read, and it is also what makes `--not --remotes` scoping correct
+                # for anything downstream that asks "what is only local?".
+                # Fail-soft: offline just leaves the remote refs stale and we push as before.
+                try:
+                    subprocess.run(["git", "fetch", "--quiet", "origin", f"agent/{slug}"],
+                                   cwd=repo, capture_output=True, text=True, timeout=120)
+                except Exception as _fe:
+                    print(f"[branch-share] fetch agent/{slug} failed (continuing): {_fe}")
+
+                def _already_on_origin():
+                    """True when origin already contains this branch's tip.
+
+                    Ancestor test, not equality: if origin is AHEAD of us the work is
+                    shared and a push would be a non-fast-forward we must not force.
+                    """
+                    try:
+                        _lp = subprocess.run(["git", "rev-parse", "--verify", f"refs/heads/agent/{slug}"],
+                                             cwd=repo, capture_output=True, text=True, timeout=60)
+                        if _lp.returncode != 0:
+                            return False
+                        _local = (_lp.stdout or "").strip()
+                        _anc = subprocess.run(
+                            ["git", "merge-base", "--is-ancestor", _local,
+                             f"refs/remotes/origin/agent/{slug}"],
+                            cwd=repo, capture_output=True, text=True, timeout=60)
+                        return _anc.returncode == 0
+                    except Exception:
+                        return False
+
+                _shared = _already_on_origin()
+                if _shared:
+                    print(f"[branch-share] agent/{slug} already on origin; nothing to push")
+                for _attempt in range(0 if _shared else 3):
                     try:
                         _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
                                              cwd=repo, capture_output=True, text=True, timeout=180)
