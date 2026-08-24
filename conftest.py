@@ -102,7 +102,9 @@ def _rebind_runner_package() -> None:
 
 def pytest_collectstart(collector) -> None:
     _rebind_runner_package()
-    _evict_leaked_doubles()
+    # Module boundary: put back BOTH kinds of stand-in, so a fake installed at import time
+    # by one file is not still standing when the next file is imported.
+    _evict_leaked_doubles(include_module_stubs=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -156,10 +158,25 @@ def _remember_real_modules() -> None:
         _REAL_BY_NAME.setdefault(name, module)
 
 
-def _evict_leaked_doubles() -> None:
+def _is_module_stub(module) -> bool:
+    """A `types.ModuleType` with no source file: the deliberate fake-module convention here.
+
+    Distinguished from a Mock because the two need different timing. A Mock leaked out of a
+    test is always a bug and is repaired immediately. A ModuleType fake installed at import
+    time is a file's intended test double for its OWN tests, so it is only put back at the
+    next module boundary — which is exactly what runner/tests/conftest.py does one directory
+    down, and what the 152 files collected by this conftest never had.
+    """
+    return isinstance(module, _types.ModuleType) and not getattr(module, "__file__", None)
+
+
+def _evict_leaked_doubles(include_module_stubs: bool = False) -> None:
     _remember_real_modules()
     for name, module in list(sys.modules.items()):
-        if "." in name or module is None or not _is_mock_double(module):
+        if "." in name or module is None:
+            continue
+        stand_in = _is_mock_double(module) or (include_module_stubs and _is_module_stub(module))
+        if not stand_in:
             continue
         if not (_RUNNER_DIR / f"{name}.py").is_file():
             continue
