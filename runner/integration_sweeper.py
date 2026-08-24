@@ -45,6 +45,10 @@ def _branch_exists(repo, branch):
 # treat EVERY passed task as a lost branch and file endless recovery churn. Text is taken
 # verbatim from the last pyflakes-clean revision of this file (commit 5ef15641).
 _FETCHED_AGENT_REFS = set()
+#: repo_path -> did the agent-ref fetch actually succeed this process? A repo absent from
+#: this map has not been fetched; False means origin/agent/* cannot be trusted to prove a
+#: branch is GONE. See agent_refs_trustworthy().
+_AGENT_REFS_OK = {}
 
 
 def _fetch_agent_refs(repo):
@@ -56,15 +60,57 @@ def _fetch_agent_refs(repo):
     refs/heads/agent/* into refs/remotes/origin/agent/* makes the check fleet-aware.
     Fail-soft: offline / no remote just means we fall back to local-only visibility.
     """
-    if not repo or repo in _FETCHED_AGENT_REFS or not os.path.isdir(repo):
-        return
+    if not repo or not os.path.isdir(repo):
+        return False
+    if repo in _FETCHED_AGENT_REFS:
+        return _AGENT_REFS_OK.get(repo, False)
     _FETCHED_AGENT_REFS.add(repo)
+    ok = False
     try:
-        subprocess.run(["git", "fetch", "origin",
-                        "+refs/heads/agent/*:refs/remotes/origin/agent/*", "--prune"],
-                       cwd=repo, capture_output=True, timeout=120)
-    except Exception:
-        pass
+        proc = subprocess.run(["git", "fetch", "origin",
+                               "+refs/heads/agent/*:refs/remotes/origin/agent/*", "--prune"],
+                              cwd=repo, capture_output=True, timeout=120)
+        ok = proc.returncode == 0
+        if not ok:
+            print(f"integration_sweeper: agent-ref fetch FAILED in {repo} "
+                  f"(rc={proc.returncode}); origin/agent/* is not trustworthy this run",
+                  flush=True)
+    except Exception as e:  # noqa: BLE001 - logged, then degraded (fail-soft)
+        print(f"integration_sweeper: agent-ref fetch raised in {repo} "
+              f"({type(e).__name__}: {e}); origin/agent/* is not trustworthy this run",
+              flush=True)
+    _AGENT_REFS_OK[repo] = ok
+    return ok
+
+
+def agent_refs_trustworthy(repo):
+    """True when origin/agent/* in *repo* reflects the fleet, so ABSENCE means absent.
+
+    THE 226-TASK BURST (2026-08-23 20:00–23:00 UTC, 9+ projects at once: beethoven 37,
+    smarter 34, pareto-2080 30, darwn 28, racefeed 24, prediction-markets-institute 19,
+    kalepasch-com 19, santas-secret-workshop 17, sustainable-barks 17). Total rows carrying
+    this note across ALL history: 236 — so 96% of it happened in one four-hour window,
+    simultaneously, in every project. Nothing task-shaped is simultaneous across nine
+    unrelated repositories; only something repo- or host-level is.
+
+    The mechanism: _fetch_agent_refs() swallowed EVERY failure and returned nothing, so a
+    network blip, an auth expiry or a timeout was indistinguishable from a clean fetch. The
+    fleet runs on two Macs and agent branches live on whichever machine ran the task, so
+    with origin/agent/* unpopulated `_branch_exists_anywhere` answers False for every task
+    in the sweep. `--prune` makes it worse: a fetch that fails partway can drop the
+    remote-tracking refs that were the only local evidence those branches exist. Then the
+    once-per-process memo pins that verdict for the rest of the run, across every project.
+    The sweep concluded "branch lost and recovery exhausted" 226 times and closed the tasks.
+
+    The module already states the right rule for the sibling predicate: "FAIL CLOSED:
+    unable to prove integration => not integrated." The same rule belongs here — unable to
+    prove a branch is GONE must not mean it is gone. Callers use this before taking any
+    destructive action on missing-branch evidence.
+    """
+    if not repo or not os.path.isdir(repo):
+        return False
+    _fetch_agent_refs(repo)
+    return bool(_AGENT_REFS_OK.get(repo, False))
 
 
 def _branch_exists_anywhere(repo, branch):
@@ -740,6 +786,14 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                                  f"({subject[:80]}); closed (branch GC'd)"},
                         repo=repo)
                 continue
+            if _is_recovery and not agent_refs_trustworthy(repo):
+                # Same fail-closed rule as the branch below: with origin/agent/* unreadable
+                # this run, "gone with no upstream evidence" is unproven, and this path
+                # closes the task outright.
+                skipped += 1
+                print(f"integration_sweeper: not closing recovery task {slug!r} — agent "
+                      f"refs unreadable in {repo}", flush=True)
+                continue
             if _is_recovery:
                 # This IS recovery work and its branch is gone with no upstream evidence.
                 # Filing recovery-for-recovery is the churn the nesting guard exists to stop,
@@ -755,6 +809,14 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                 recovery += 1
             elif _has_live_recovery(t.get("project_id"), slug):
                 missing += 1  # rebuild still in flight — leave the original open
+            elif not agent_refs_trustworthy(repo):
+                # FAIL CLOSED. We cannot see origin/agent/* this run, so "the branch is
+                # gone" is not a finding — it is the absence of one. Closing here is what
+                # produced the 226-task burst of 2026-08-23; leave the task open and let a
+                # later sweep with a working fetch decide.
+                skipped += 1
+                print(f"integration_sweeper: not closing {t.get('slug')!r} — agent refs "
+                      f"unreadable in {repo}, cannot prove the branch is gone", flush=True)
             else:
                 # branch gone, not integrated, and recovery is exhausted (quarantined/dead): stop
                 # re-counting + re-sweeping this forever. Close it so pressure reflects reality.
