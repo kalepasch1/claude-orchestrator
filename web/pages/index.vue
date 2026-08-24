@@ -94,13 +94,13 @@ const capabilityGroups = computed(() => {
 
 function stateTone(state: string) {
   if (state === 'RUNNING') return 'tone-running'
-  if (['DONE', 'MERGED'].includes(state)) return 'tone-success'
-  if (['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(state)) return 'tone-danger'
+  if (state === 'DEPLOYED_AND_VERIFIED') return 'tone-success'
+  if (['BLOCKED', 'CONFLICT', 'TESTFAIL', 'PHANTOM_UNVERIFIED'].includes(state)) return 'tone-danger'
   if (state === 'RETRY') return 'tone-warning'
   return 'tone-neutral'
 }
 function readableState(state: string) {
-  return ({ QUEUED: 'Queued', RUNNING: 'In progress', MERGED: 'Shipped', DONE: 'Complete', TESTFAIL: 'Tests failed', BLOCKED: 'Needs input', CONFLICT: 'Merge conflict', RETRY: 'Retrying', WAITING: 'Waiting' } as any)[state] || state
+  return ({ QUEUED: 'Queued', RUNNING: 'In progress', DONE: 'Artifact ready', MERGED: 'Merged', DEPLOYED_AND_VERIFIED: 'Deployed & verified', PHANTOM_UNVERIFIED: 'Merge proof missing', TESTFAIL: 'Tests failed', BLOCKED: 'Needs input', CONFLICT: 'Merge conflict', RETRY: 'Retrying', WAITING: 'Waiting' } as any)[state] || state
 }
 
 async function loadAll() {
