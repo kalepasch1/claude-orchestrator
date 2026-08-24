@@ -78,6 +78,14 @@ class Item:
     disposition: str = ""
     files: list = field(default_factory=list)
     evidence: str = ""
+    # Owning task slug and HOW it was obtained ("recorded" | "dirname" | "").
+    # The source is carried separately because the two are not interchangeable:
+    # "recorded" is proof written by setup-worktrees.sh, "dirname" is a convention
+    # with a documented counterexample (madeus-group-3 serves a slug that shares no
+    # prefix, suffix or token boundary with its directory name). A destructive
+    # decision may only be justified by "recorded".
+    owner_slug: str = ""
+    owner_slug_source: str = ""
 
 
 # --------------------------------------------------------------------------
@@ -163,12 +171,39 @@ def is_generated(path: str) -> bool:
     return any(h in p for h in GENERATED_HINTS)
 
 
+def _resolve_owner_slug(path: str) -> "tuple[str, str]":
+    """(slug, source) for a worktree. Fail-soft: ("", "") when nothing is knowable.
+
+    Prefers the identity `setup-worktrees.sh` writes into the worktree over the
+    `{repo}-wt/{slug}` directory-name convention, because that convention is not
+    always true and a guessed owner is worse than no owner: a false positive here
+    silently discards real recoverable work.
+    """
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "runner"))
+        import worktree_identity  # noqa: PLC0415
+        return worktree_identity.resolve_slug(path)
+    except Exception:
+        # Never let bookkeeping stop a ledger from being produced.
+        name = os.path.basename(os.path.normpath(path or ""))
+        return (name, "dirname") if name else ("", "")
+
+
 # --------------------------------------------------------------------------
 # classification
 # --------------------------------------------------------------------------
 
 def classify_worktree(item: Item, path: str, head: str, branch: str,
                       base: str, repo: str, known: "set[str]") -> None:
+    # Resolve the owning slug BEFORE any verdict, and record how it was obtained.
+    # Nothing here acts on it yet -- consulting live task state is the join in
+    # `wire-live-task-owner-into-worktree-reconciler`, which needs tools/live_task_owner.py
+    # on master first. Carrying the slug and its provenance into the ledger is the half
+    # that join cannot work without: `madeus-group-3` was misclassified not because the
+    # owner lookup was missing but because the lookup had nothing to key on.
+    item.owner_slug, item.owner_slug_source = _resolve_owner_slug(path)
+
     # A registration whose working directory is gone is broken evidence: the
     # commit may still be reachable, but nothing uncommitted can be recovered.
     if not os.path.isdir(path):

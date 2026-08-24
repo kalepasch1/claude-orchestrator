@@ -69,3 +69,7 @@ GC_ORGANIZER_LIABILITY_MEMO.json
 # Ignoring them stops the accidental sweep-in. patch_recovery still commits its own
 # marker deliberately, via `git add -f`, so that path is unaffected.
 .recovery-intent-*.txt
+
+# Worktree identity recorded by runner/setup-worktrees.sh (see runner/worktree_identity.py).
+.orch-worktree.json
+.orch-worktree-*.tmp

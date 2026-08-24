@@ -64,6 +64,15 @@ fi
 
 printf '%s\n%s\n%s\n' "$TASK_ID" "$LEASE_TOKEN" "$BRANCH" > "$OWNER_FILE"
 
+# RECORD THE SLUG INSIDE THE WORKTREE. The `{repo}-wt/{slug}` convention is not always
+# true in practice -- `madeus-group-3` serves the slug
+# `dropbox-beethoven-madeus-web-multi-tenant-claude-preneur-platform-bi-group-3`, which
+# shares no prefix, suffix or token boundary with the directory name. Reconcilers that
+# have to guess the owner from the path get it wrong, and a wrong "nobody owns this"
+# discards real uncommitted work. So the mapping is written down at creation.
+# Best-effort by design: bookkeeping must never fail worktree creation.
+python3 "$(dirname "$0")/worktree_identity.py" record "$DEST" "$SLUG" "$TASK_ID" "$BRANCH" >/dev/null 2>&1 || true
+
 # LOCK the worktree while a task is using it. Concurrent GC/prune loops (worktree_gc,
 # resource_governor) must not delete an in-use worktree; `git worktree remove --force`
 # refuses locked worktrees unless doubly forced. worktree_gc unlocks after its safety
