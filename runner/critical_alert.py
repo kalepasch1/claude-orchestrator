@@ -30,6 +30,7 @@ Usage:
     critical_alert.trigger_critical_alert(dry_run=True)  # evaluate only
     critical_alert.stats()
 """
+import datetime as _dt
 import os
 import shutil
 import sys
@@ -90,24 +91,22 @@ def error_rate(window_minutes: int = 0) -> tuple:
     try:
         import db
 
-        rows = db.query(
-            "SELECT "
-            "  COUNT(*) FILTER (WHERE state IN ('FAILED','BLOCKED','QUARANTINED')) AS bad, "
-            "  COUNT(*) AS total "
-            "FROM tasks "
-            "WHERE updated_at > now() - (%s || ' minutes')::interval "
-            "  AND state IN ('DONE','MERGED','FAILED','BLOCKED','QUARANTINED')",
-            (str(window),),
-        )
-        if not rows:
-            return (0.0, 0)
-        row = rows[0]
-        bad = row["bad"] if isinstance(row, dict) else row[0]
-        total = row["total"] if isinstance(row, dict) else row[1]
-        bad = int(bad or 0)
-        total = int(total or 0)
+        # PostgREST, not raw SQL: this fleet's `db` module speaks to Supabase over
+        # the REST interface, so the counts are two `Prefer: count=exact` HEAD-shaped
+        # requests rather than one aggregate query. `count()` does not download the
+        # matching rows, so this stays cheap enough to run on the monitor's loop.
+        since = (
+            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=window)
+        ).isoformat()
+        terminal = "in.(DONE,MERGED,FAILED,BLOCKED,QUARANTINED)"
+        failed = "in.(FAILED,BLOCKED,QUARANTINED)"
+
+        total = int(db.count("tasks", {"updated_at": f"gt.{since}",
+                                       "state": terminal}) or 0)
         if total <= 0:
             return (0.0, 0)
+        bad = int(db.count("tasks", {"updated_at": f"gt.{since}",
+                                     "state": failed}) or 0)
         return (bad / total, total)
     except Exception:
         return (0.0, 0)

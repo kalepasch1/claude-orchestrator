@@ -47,58 +47,78 @@ def test_error_rate_returns_tuple():
     assert sample >= 0
 
 
+def _fake_db(counts, record=None):
+    """A stub of the PostgREST-shaped db module. `counts` maps state-filter -> count."""
+    class _Fake:
+        @staticmethod
+        def count(table, params=None):
+            params = params or {}
+            if record is not None:
+                record.append((table, dict(params)))
+            return counts[params.get("state")]
+
+    return _Fake
+
+
 def test_error_rate_db_failure_is_fail_soft(monkeypatch):
     class _Boom:
         @staticmethod
-        def query(*_a, **_k):
+        def count(*_a, **_k):
             raise RuntimeError("db down")
 
     monkeypatch.setitem(sys.modules, "db", _Boom)
     assert critical_alert.error_rate() == (0.0, 0)
 
 
-def test_error_rate_empty_result_is_zero(monkeypatch):
-    class _Empty:
-        @staticmethod
-        def query(*_a, **_k):
-            return []
-
-    monkeypatch.setitem(sys.modules, "db", _Empty)
+def test_error_rate_none_count_is_zero(monkeypatch):
+    monkeypatch.setitem(sys.modules, "db", _fake_db(
+        {"in.(DONE,MERGED,FAILED,BLOCKED,QUARANTINED)": None,
+         "in.(FAILED,BLOCKED,QUARANTINED)": None}))
     assert critical_alert.error_rate() == (0.0, 0)
 
 
 def test_error_rate_computes_fraction(monkeypatch):
-    class _Fake:
-        @staticmethod
-        def query(*_a, **_k):
-            return [{"bad": 9, "total": 100}]
-
-    monkeypatch.setitem(sys.modules, "db", _Fake)
+    monkeypatch.setitem(sys.modules, "db", _fake_db(
+        {"in.(DONE,MERGED,FAILED,BLOCKED,QUARANTINED)": 100,
+         "in.(FAILED,BLOCKED,QUARANTINED)": 9}))
     rate, sample = critical_alert.error_rate()
     assert rate == pytest.approx(0.09)
     assert sample == 100
 
 
-def test_error_rate_tuple_row_shape(monkeypatch):
-    class _Fake:
-        @staticmethod
-        def query(*_a, **_k):
-            return [(4, 50)]
-
-    monkeypatch.setitem(sys.modules, "db", _Fake)
-    rate, sample = critical_alert.error_rate()
-    assert rate == pytest.approx(0.08)
-    assert sample == 50
-
-
 def test_error_rate_zero_total_does_not_divide_by_zero(monkeypatch):
-    class _Fake:
-        @staticmethod
-        def query(*_a, **_k):
-            return [{"bad": 0, "total": 0}]
-
-    monkeypatch.setitem(sys.modules, "db", _Fake)
+    monkeypatch.setitem(sys.modules, "db", _fake_db(
+        {"in.(DONE,MERGED,FAILED,BLOCKED,QUARANTINED)": 0,
+         "in.(FAILED,BLOCKED,QUARANTINED)": 0}))
     assert critical_alert.error_rate() == (0.0, 0)
+
+
+def test_error_rate_does_not_query_failures_when_there_is_no_sample(monkeypatch):
+    """The second round trip is skipped when the first says the window is empty."""
+    seen = []
+    monkeypatch.setitem(sys.modules, "db", _fake_db(
+        {"in.(DONE,MERGED,FAILED,BLOCKED,QUARANTINED)": 0,
+         "in.(FAILED,BLOCKED,QUARANTINED)": 0}, record=seen))
+    critical_alert.error_rate()
+    assert len(seen) == 1
+
+
+def test_error_rate_filters_on_the_window(monkeypatch):
+    seen = []
+    monkeypatch.setitem(sys.modules, "db", _fake_db(
+        {"in.(DONE,MERGED,FAILED,BLOCKED,QUARANTINED)": 10,
+         "in.(FAILED,BLOCKED,QUARANTINED)": 1}, record=seen))
+    critical_alert.error_rate(window_minutes=30)
+    assert seen and seen[0][0] == "tasks"
+    assert seen[0][1]["updated_at"].startswith("gt.")
+
+
+def test_error_rate_uses_postgrest_not_raw_sql(monkeypatch):
+    """Regression guard: this fleet's db module has no query()/execute()."""
+    import db as real_db
+
+    assert not hasattr(real_db, "query")
+    assert callable(getattr(real_db, "count", None))
 
 
 # ------------------------------------------------------------------ evaluate
