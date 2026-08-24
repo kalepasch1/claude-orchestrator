@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
-"""Two functions named `validate_canary` exist, and they do NOT agree.
+"""Two functions named `validate_canary` exist, and they must AGREE on the verdict.
 
-    canary.validate_canary            substring match, WARNING on a miss
-    canary_validation.validate_canary word-boundary match, INFO on a miss
+    runner/canary.py            (metrics/canary server)
+    runner/canary_validation.py (owner module)
 
-Both contracts are deliberate and separately tested, so this file does not try to pick a
-winner. It pins the DIFFERENCE, so a future "remove the duplicate" pass has to confront a
-failing test rather than silently changing what a caller gets — the imports look
-interchangeable at the call site and are not.
+THIS FILE ONCE SAID THE OPPOSITE. It was written to pin a deliberate divergence —
+canary.py matched "canary" as a SUBSTRING, canary_validation.py on a WORD BOUNDARY — so
+that a future "remove the duplicate" pass had to confront a failing test instead of
+silently changing what a caller got.
+
+That divergence has since been decided against, by
+`tests/test_canary_validation_agreement.py`: a marker check whose whole job is to prove a
+canary survived a pipeline hop must not depend on which import the caller reached for,
+so all three entry points now match on a word boundary. This file was left behind
+asserting the retired contract and had been failing ever since — a test that fails
+because it describes a decision that was reversed teaches the next reader the wrong
+thing about the system.
+
+So it now pins the decision that was actually made: the two agree everywhere, INCLUDING
+on the affixed forms that used to separate them. What remains genuinely different is
+LOGGING SEVERITY on a miss — WARNING in canary.py, INFO in canary_validation.py — and
+that IS still deliberate, because an operator greps for the warning. Those tests are
+unchanged.
 """
 import logging
 import os
@@ -45,23 +59,36 @@ class AgreementTests(unittest.TestCase):
             self.assertFalse(word_boundary_match(bad))
 
 
-class DivergenceTests(unittest.TestCase):
-    """The cases that make the two NOT interchangeable."""
+class AffixedFormTests(unittest.TestCase):
+    """The cases that used to separate the two. They must now agree on all of them."""
 
     AFFIXED = ["precanary build", "xcanary", "canaryish", "my-canary-token"]
 
-    def test_an_affixed_marker_is_a_match_only_for_the_substring_implementation(self):
+    def test_both_implementations_return_the_same_verdict_for_affixed_forms(self):
         for text in self.AFFIXED:
-            self.assertTrue(substring_match(text),
-                            f"canary.py must accept the affixed form {text!r}")
+            self.assertIs(
+                substring_match(text), word_boundary_match(text),
+                f"the two entry points disagree about {text!r}; a marker check must not "
+                f"depend on which import the caller reached for")
 
-    def test_an_affixed_marker_without_a_word_boundary_is_rejected_by_the_other(self):
+    def test_a_marker_glued_to_other_word_characters_is_rejected_everywhere(self):
         for text in ("precanary build", "xcanary", "canaryish"):
+            self.assertFalse(substring_match(text), f"canary.py must reject {text!r}")
             self.assertFalse(word_boundary_match(text),
                              f"canary_validation.py must reject {text!r}")
 
+    def test_a_hyphen_is_a_word_boundary_so_the_marker_still_counts(self):
+        for text in ("my-canary-token", "canary-build", "build-canary"):
+            self.assertTrue(substring_match(text), text)
+            self.assertTrue(word_boundary_match(text), text)
+
     def test_the_two_functions_are_not_the_same_object(self):
-        """Guards against a 'deduplication' that aliases one to the other."""
+        """Agreeing is not the same as being one function.
+
+        They live in different modules with different logging contracts, so aliasing one
+        to the other would silently change an operator's warning volume. Agreement is
+        asserted by behaviour, never by identity.
+        """
         self.assertIsNot(substring_match, word_boundary_match)
 
 
@@ -85,8 +112,9 @@ class LoggingContractTests(unittest.TestCase):
             self.assertFalse(substring_match(None))
 
     def test_canary_validation_does_not_warn_on_a_miss(self):
-        """Deliberately INFO there — this is the second divergence, pinned so a
-        consolidation cannot change an operator's warning volume by accident."""
+        """Deliberately INFO there — the ONE difference that survived the decision to
+        converge, pinned so a consolidation cannot change an operator's warning volume
+        by accident."""
         with self.assertLogs("canary_validation", level="INFO") as captured:
             self.assertFalse(word_boundary_match("nothing to see"))
         self.assertFalse(any(rec.startswith("WARNING") for rec in captured.output),

@@ -5,12 +5,17 @@
 (case-insensitive, word-boundary match). Used by canary-routing checks to
 confirm a canary marker survived a pipeline hop.
 
-NOT THE SAME FUNCTION as `canary.validate_canary`, despite the identical name. That one
-is a plain SUBSTRING match and logs WARNING on a miss; this one requires a word boundary
-and logs INFO. They disagree on affixed forms — `"precanary build"` is False here and
-True there — so the two imports are not interchangeable. Both behaviours are deliberate
-and separately tested, so neither may be quietly folded into the other;
-`tests/test_validate_canary_divergence.py` pins the difference.
+SAME VERDICT as `canary.validate_canary` and `runner.canary.validate_canary`, different
+logging. All three now match on a word boundary: a marker check whose job is to prove a
+canary survived a pipeline hop must not depend on which import the caller reached for,
+and `"precanary"` used to validate at one entry point and fail at the others.
+`tests/test_canary_validation_agreement.py` pins the agreement across all three.
+
+What still differs is severity on a miss — WARNING in canary.py, INFO here — because an
+operator greps for the warning. That one difference is deliberate and is pinned by
+`tests/test_validate_canary_divergence.py`, so a consolidation cannot change warning
+volume by accident. Do not alias one function to the other: agreement is a property of
+behaviour here, not of identity.
 """
 import logging
 import re
