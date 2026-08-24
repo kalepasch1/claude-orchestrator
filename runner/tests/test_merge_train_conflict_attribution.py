@@ -111,6 +111,71 @@ class ConflictAttributionTestCase(unittest.TestCase):
         self.assertFalse(self.mt._conflict_is_foreign(
             self.repo, "agent/missing-branch", "master", "passport.ts"))
 
+    # ── test-failure attribution ────────────────────────────────────────────
+    # The same hole on the other gate. Tests run against the REBASED candidate,
+    # which carries every commit replayed onto it, so a suite broken by another
+    # branch in the overlay fails here and is reported against whoever is being
+    # integrated.
+
+    REAL_TAIL = (
+        "overlay:e09cb823ef52 }\n\n"
+        "stdout | server/utils/__tests__/tracing.test.ts > tracing.withSpan > "
+        "nests parent → child via parentSpanId\n"
+        '[span] {"traceId":"eedcfbd8ff24ccfbbc640d2a23bc654f","spanId":"198bdb\n'
+    )
+
+    def test_failing_test_files_parses_the_real_train_log(self):
+        self.assertEqual(
+            self.mt._failing_test_files(self.REAL_TAIL),
+            {"server/utils/__tests__/tracing.test.ts"})
+
+    def test_a_source_file_in_a_stack_trace_is_not_a_failing_suite(self):
+        tail = "at buildSpan (server/utils/tracing.ts:41:9)\n  in helpers/format.js\n"
+        self.assertEqual(self.mt._failing_test_files(tail), set())
+
+    def test_python_and_spec_shapes_are_recognised(self):
+        got = self.mt._failing_test_files(
+            "FAILED runner/tests/test_lease_night_config_divergence.py::T::t\n"
+            "FAIL app/foo.spec.ts\n")
+        self.assertIn("runner/tests/test_lease_night_config_divergence.py", got)
+        self.assertIn("app/foo.spec.ts", got)
+
+    def test_a_failure_in_a_suite_the_branch_never_touched_is_foreign(self):
+        """The live case: a triage/tooling branch failed on tracing.test.ts."""
+        run(self.repo, "checkout", "-q", "-b", "agent/triage-only")
+        write(self.repo, "tools/triage.py", "x = 1\n")
+        commit(self.repo, "tooling only")
+        run(self.repo, "checkout", "-q", "master")
+        self.assertTrue(self.mt._testfail_is_foreign(
+            self.repo, "agent/triage-only", "master", self.REAL_TAIL))
+
+    def test_a_failure_in_a_suite_the_branch_owns_is_not_foreign(self):
+        """The guard must never hide a branch breaking its own tests."""
+        run(self.repo, "checkout", "-q", "-b", "agent/owns-tracing")
+        write(self.repo, "server/utils/__tests__/tracing.test.ts", "// edited\n")
+        commit(self.repo, "edits the tracing suite")
+        run(self.repo, "checkout", "-q", "master")
+        self.assertFalse(self.mt._testfail_is_foreign(
+            self.repo, "agent/owns-tracing", "master", self.REAL_TAIL))
+
+    def test_one_owned_failing_suite_among_several_is_not_foreign(self):
+        run(self.repo, "checkout", "-q", "-b", "agent/partly")
+        write(self.repo, "runner/tests/test_mine.py", "def test_x():\n    pass\n")
+        commit(self.repo, "adds one suite")
+        run(self.repo, "checkout", "-q", "master")
+        tail = self.REAL_TAIL + "FAILED runner/tests/test_mine.py::test_x\n"
+        self.assertFalse(self.mt._testfail_is_foreign(
+            self.repo, "agent/partly", "master", tail))
+
+    def test_an_unparseable_log_falls_back_to_the_normal_path(self):
+        run(self.repo, "checkout", "-q", "-b", "agent/whatever")
+        write(self.repo, "src/x.py", "x = 1\n")
+        commit(self.repo, "work")
+        run(self.repo, "checkout", "-q", "master")
+        for tail in ("", "exit status 1", "Killed: 9"):
+            self.assertFalse(self.mt._testfail_is_foreign(
+                self.repo, "agent/whatever", "master", tail), repr(tail))
+
     def test_owners_names_the_branches_that_really_modify_the_file(self):
         for name, path in (("agent/owner-a", "passport.ts"),
                            ("agent/owner-b", "passport.ts"),

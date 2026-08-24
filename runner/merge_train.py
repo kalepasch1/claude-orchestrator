@@ -548,6 +548,65 @@ def _conflict_is_foreign(repo, branch, base, conflict_detail):
     return paths.isdisjoint(own)
 
 
+# A test path looks like `server/utils/__tests__/tracing.test.ts` or
+# `runner/tests/test_thing.py`. Anchored on the extension so prose in the
+# surrounding log ("see also foo.ts") cannot be mistaken for a failure.
+_TEST_PATH_RE = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+"
+    r"(?:\.test|\.spec|_test)?\.(?:ts|tsx|js|mjs|py))(?![\w/.-])"
+)
+
+
+def _failing_test_files(tail):
+    """Test-file paths named in a failure log.
+
+    Only paths that look like tests: a `tests/`/`__tests__/` directory segment,
+    a `.test.`/`.spec.` infix, or a `test_` prefix. A source file merely
+    mentioned in a stack trace is not evidence of which suite failed.
+    """
+    found = set()
+    for raw in _TEST_PATH_RE.findall(tail or ""):
+        path = raw.strip()
+        base = path.rsplit("/", 1)[-1]
+        segs = path.split("/")
+        if ("tests" in segs or "__tests__" in segs
+                or ".test." in base or ".spec." in base
+                or base.startswith("test_") or base.endswith("_test.py")):
+            found.add(path)
+    return found
+
+
+def _testfail_is_foreign(repo, branch, base, tail):
+    """True when the branch touches none of the test files that failed.
+
+    Same hole as _conflict_is_foreign, on the other gate. Tests run against the
+    rebased branch, which carries every commit replayed onto it — so a suite
+    broken by ANOTHER branch in the overlay fails here and is reported against
+    whichever branch is being integrated. On 2026-08-23
+    focused-conflicted-tomorrow-rescue-refs-106 was failed on
+    `server/utils/__tests__/tracing.test.ts` (overlay:e09cb823ef52) while that
+    suite passed 7/7 on clean origin/main and the branch — a triage/tooling
+    change — never touched tracing.
+
+    Conservative on purpose: any failing test file the branch DOES own, or an
+    unparseable log, means this returns False and the normal path runs.
+    """
+    failing = _failing_test_files(tail)
+    if not failing:
+        return False
+    own = _branch_own_paths(repo, branch, base)
+    if not own:
+        return False
+    own_names = {p.rsplit("/", 1)[-1] for p in own}
+    for path in failing:
+        if path in own:
+            return False
+        # Tolerate a log that prints the path relative to a sub-package.
+        if path.rsplit("/", 1)[-1] in own_names:
+            return False
+    return True
+
+
 def _conflict_owners(repo, base, path, limit=8):
     """Unmerged agent branches that actually modify `path`, for the note.
 
@@ -2014,7 +2073,26 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                            gate_reason=tail[:200])
             except Exception:
                 pass
-        # NEVER force-merge red work.
+        # NEVER force-merge red work. But do not blame this branch for a suite
+        # it does not own: the rebased candidate carries every commit replayed
+        # onto it, so a suite broken by another branch in the overlay fails
+        # here and gets reported against whoever is being integrated. Marking
+        # it TESTFAIL sends the task back to an agent that cannot fix it —
+        # the same loop the conflict path used to run (attempts 61/36/134).
+        if _testfail_is_foreign(repo, branch, base, tail):
+            failing = ", ".join(sorted(_failing_test_files(tail))[:4])
+            _task_patch(task, {
+                "state": "BLOCKED",
+                "note": (f"train: tests failed on rebased {branch}, but this branch "
+                         f"does not touch the failing suite ({failing}) — the breakage "
+                         f"comes from another commit in the rebase overlay. Not sent "
+                         f"back for repair: this task cannot fix it. {tail[:120]}")})
+            db.update("approvals", {"id": card["id"]},
+                      {"decided_by": f"{MARK}:testfail-foreign"})
+            _attribute_train_outcome(slug, task, "testfail", integrated=False)
+            _log(pname, slug, "BLOCKED", f"foreign testfail ({failing})")
+            return "testfail-foreign"
+
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:TESTFAIL"})
         _attribute_train_outcome(slug, task, "testfail", integrated=False)
