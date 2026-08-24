@@ -21,6 +21,17 @@ _log = _log_mod.get("conflict_auto_resolve")
 AUTO_RESOLVE_CONFIDENCE = float(os.environ.get("ORCH_CONFLICT_AUTO_RESOLVE_CONF", "0.75"))
 MAX_AUTO_RESOLVES_PER_HOUR = int(os.environ.get("ORCH_CONFLICT_AUTO_MAX_HOUR", "10"))
 
+#: Master switch for attempt_auto_rebase. OFF by default: it runs `git checkout` inside
+#: the PRIMARY checkout, which is the highest-blast-radius thing this module can do.
+ENABLED = os.environ.get("ORCH_CONFLICT_AUTO_REBASE_ENABLED", "false").lower() in (
+    "true", "1", "yes")
+
+#: Seconds any single git invocation may take before it is abandoned.
+GIT_TIMEOUT = int(os.environ.get("ORCH_CONFLICT_GIT_TIMEOUT", "60") or 60)
+
+#: Module logger under the name the tests patch.
+log = _log
+
 _lock = threading.Lock()
 _resolution_log = []  # recent auto-resolutions for rate limiting
 _strategy_scores = collections.defaultdict(lambda: {"attempts": 0, "successes": 0})
@@ -36,6 +47,78 @@ STRATEGIES = [
     {"name": "manual_merge", "risk": 0.8,
      "description": "Queue for human review with conflict diff attached"},
 ]
+
+
+def _git(*args, cwd=None, timeout=GIT_TIMEOUT):
+    """Run one git command. Returns (returncode, stdout-stripped). Never raises on a
+    non-zero exit — a failed git call is an answer, not an exception."""
+    import subprocess
+
+    proc = subprocess.run(("git",) + tuple(args), cwd=cwd, capture_output=True,
+                          text=True, timeout=timeout)
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def attempt_auto_rebase(branch, base, repo):
+    """Rebase *branch* onto *base* inside *repo*, and put the checkout back. Returns bool.
+
+    THE CONTRACT IS THE RESTORATION, not the rebase. This runs against
+    projects.repo_path — the PRIMARY checkout, not a worktree. The earlier behaviour
+    checked out the agent branch and never came back, which left the primary tree parked
+    on an agent branch (1001 checkout-drift events by 2026-07-16). That is load-bearing
+    drift: while parked, the repo runs THAT branch's code and honours THAT branch's
+    .gitignore, so fixes committed to master go inert exactly when they are needed. It is
+    the upstream cause of the intake-drop losses.
+
+    So every exit path restores:
+
+      * success           -> back to the original branch
+      * rebase failure    -> `rebase --abort`, then back
+      * an exception      -> the finally block still issues the restoring checkout, and
+                             the exception propagates (a crash here must be visible, but
+                             it must not stand the tree up on the wrong branch)
+      * detached HEAD     -> refuse entirely. With no branch name to return to, the
+                             restoration cannot be promised, and a promise that cannot be
+                             kept is worse than declining the work. NO git command runs.
+      * checkout failed   -> nothing moved, so there is nothing to restore
+    """
+    if not ENABLED:
+        log.info("auto-rebase disabled (ORCH_CONFLICT_AUTO_REBASE_ENABLED)")
+        return False
+    if not repo or not os.path.isdir(repo):
+        log.warning("auto-rebase: repo path %r is not a directory", repo)
+        return False
+    if not branch or not base:
+        log.warning("auto-rebase: branch and base are both required")
+        return False
+
+    rc, original = _git("branch", "--show-current", cwd=repo)
+    original = (original or "").strip()
+    if rc != 0 or not original:
+        # Detached HEAD (or git could not answer). Decline before touching anything.
+        log.warning("auto-rebase: cannot read current branch in %s; refusing to move it", repo)
+        return False
+
+    rc, _ = _git("checkout", branch, cwd=repo)
+    if rc != 0:
+        log.warning("auto-rebase: could not check out %s; nothing moved", branch)
+        return False
+
+    try:
+        rc, out = _git("rebase", base, cwd=repo)
+        if rc == 0:
+            log.info("auto-rebase: %s rebased onto %s", branch, base)
+            return True
+        log.warning("auto-rebase: %s onto %s failed (%s); aborting", branch, base,
+                    (out or "").splitlines()[0] if out else "no output")
+        _git("rebase", "--abort", cwd=repo)
+        return False
+    finally:
+        # Unconditional. This is the whole point of the function.
+        restore_rc, _ = _git("checkout", original, cwd=repo)
+        if restore_rc != 0:
+            log.error("auto-rebase: FAILED to restore %s to %s — checkout is drifted",
+                      repo, original)
 
 
 def _load_historical_outcomes():
