@@ -3553,6 +3553,31 @@ def _reap_zombie_tasks():
         print(f"[zombie-reaper] error: {e}")
 
 
+def _reap_terminal_zombies():
+    """Dispose of RUNNING tasks that repair has already failed to rescue.
+
+    `_reap_zombie_tasks()` above is the *recovery* half — it requeues stale RUNNING
+    work for another attempt, which is right for the transient majority. Nothing
+    was ever the *terminal* half, so a task whose worker keeps dying got requeued
+    forever, never reached a terminal state, and held a claim slot indefinitely.
+
+    `zombie_reap_cycle` owns its own interval gate (ORCH_ZOMBIE_REAPER_INTERVAL_S,
+    default 30s) and on/off flag (ORCH_ZOMBIE_REAPER_ENABLED), so calling it on
+    every scheduler tick is cheap and it can be turned off fleet-wide with a config
+    push rather than a code change. Fail-soft: a reap error must not wedge the tick.
+    """
+    try:
+        import zombie_reap_cycle
+        result = zombie_reap_cycle.run_once()
+        terminated = result.get("terminated") or []
+        if terminated:
+            print(f"[zombie-reap-cycle] terminated {len(terminated)} expired tasks", flush=True)
+        return result
+    except Exception as e:
+        print(f"[zombie-reap-cycle] error: {e}", flush=True)
+        return None
+
+
 # Scheduler keys (or job names) that must not fire, comma-separated.
 #
 # WHY THIS EXISTS (2026-08-06). Over three months the fleet ran 21,029 tasks and
@@ -3592,6 +3617,7 @@ def _scheduler_tick() -> None:
             except Exception as e:
                 print(f"[sched] {job} error: {e}", flush=True)
     _reap_zombie_tasks()
+    _reap_terminal_zombies()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
