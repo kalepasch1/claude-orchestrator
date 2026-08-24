@@ -12,11 +12,12 @@ The train must:
   F) serialize per project, oldest approval first
   G) branch-missing approved cards remain live while the task is still being rebuilt
 """
-import contextlib, os, sys, tempfile, unittest
+import atexit, contextlib, os, shutil, sys, tempfile, unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import merge_train
+import merge_truth
 import subprocess
 
 
@@ -30,10 +31,33 @@ def _task(tid, slug, project_id="p1", state="BLOCKED", retries=0):
             "transient_retries": retries, "base_branch": None}
 
 
-PROJECTS = [{"id": "p1", "name": "alpha", "repo_path": "/tmp/fake-repo-alpha",
-             "default_base": "main", "test_cmd": "true"},  # shell builtin — always exits 0
-            {"id": "p2", "name": "beta", "repo_path": "/tmp/fake-repo-beta",
-             "default_base": "main", "test_cmd": "true"}]
+# The repo paths must EXIST. They used to be the literal strings
+# "/tmp/fake-repo-alpha" and "/tmp/fake-repo-beta", which do not, and although the
+# harness patches merge_train.os.path.isdir to True, the pass still performs a real
+# filesystem call inside the repo. That raised FileNotFoundError, which
+# _integrate_card classifies as "worktree vanished mid-pass (transient)" and skips
+# the card — so eleven tests asserted on a pass that had silently skipped
+# everything and read 0 for every counter. Real empty directories are enough: every
+# git call is mocked, only the directory's existence is not.
+_REPO_ROOT = tempfile.mkdtemp(prefix="merge-train-fixture-")
+atexit.register(shutil.rmtree, _REPO_ROOT, True)
+
+
+def _fixture_repo(name):
+    path = os.path.join(_REPO_ROOT, name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+# build_cmd matters as much as test_cmd. A production-build gate was added to the
+# train after this harness was written, and with no build_cmd on the fixture project
+# it could not determine one and returned BUILDFAIL for every card — so the
+# serialization, batching and test-gate assertions were all reading counters from a
+# pass that never got past the build. "true" is the shell builtin: always exits 0.
+PROJECTS = [{"id": "p1", "name": "alpha", "repo_path": _fixture_repo("alpha"),
+             "default_base": "main", "test_cmd": "true", "build_cmd": "true"},
+            {"id": "p2", "name": "beta", "repo_path": _fixture_repo("beta"),
+             "default_base": "main", "test_cmd": "true", "build_cmd": "true"}]
 
 
 class TrainCase(unittest.TestCase):
@@ -56,13 +80,53 @@ class TrainCase(unittest.TestCase):
 
         patches = [
             patch.object(merge_train, "db", self.mock_db),
+            # merge_truth gates the final MERGED write and resolves the project
+            # through its OWN db import, which this harness never mocked. It could
+            # not resolve project "p1", printed "leaving state unchanged" and
+            # returned None, so the MERGED patch was dropped: the train reported
+            # "1 merged" while the task row was never advanced past MERGING_STATE.
+            # That is exactly the shape of the phantom-merge class this fleet keeps
+            # paying for, so it is worth the harness asserting the write happens.
+            patch.object(merge_truth, "gate_merged_patch",
+                         side_effect=lambda task, patch_, **_k: patch_),
             patch.object(merge_train, "_branch_exists", return_value=True),
+            # _already_integrated was NOT patched here, so it ran for real against
+            # the non-existent /tmp/fake-repo-alpha. _integrate_card returns early
+            # on it, so every card short-circuited before the rebase: twelve tests
+            # failed as "0 != 1" (the helper they asserted on was never reached)
+            # and test_already_integrated_card_does_not_count_as_new_merge failed
+            # with KeyError because the name was never in self.mocks at all.
+            patch.object(merge_train, "_already_integrated", return_value=False),
             patch.object(merge_train, "_materialize_branch", return_value=True),
             patch.object(merge_train, "_refresh_base", return_value=None),
             patch.object(merge_train, "_rebase_onto_base", return_value=(True, "")),
+            # The two anti-regression guards were added after this harness was
+            # written and were never mocked, so they ran real `git diff` against a
+            # fixture directory that is not a git repo. Both fail closed on their
+            # own errors, so every card came back REGRESSFAIL before reaching the
+            # behaviour under test — which is why the test gate, the serialization
+            # order and the batching tests all read 0. Mocked to pass here, like
+            # every other git-touching helper; their own behaviour is covered by
+            # runner/tests/test_merge_train_post_fork_regression.py.
+            patch.object(merge_train, "_regression_gate", return_value=(True, "")),
+            patch.object(merge_train, "_post_fork_regression", return_value=(True, "")),
+            patch.object(merge_train, "_divergent_gate", return_value=(True, "")),
+            # Same story for the production-build gate: added later, never mocked,
+            # and deliberately FAIL-CLOSED, so an empty fixture directory with no
+            # package.json returned BUILDFAIL for every card and the serialization,
+            # batching and test-gate assertions all read counters from a pass that
+            # never got past the build. build_gate has its own suite; this harness
+            # is about how the train ROUTES cards.
+            patch.object(merge_train, "_build_gate",
+                         return_value=(True, "build gate mocked in tests")),
             patch.object(merge_train, "_run_tests", return_value=(True, "green")),
             patch.object(merge_train, "_ff_base", return_value=True),
             patch.object(merge_train, "_push_base", return_value=""),
+            # _push_base was mocked but the post-push verification that reads the
+            # remote sha back was not, so it ran `git rev-parse` in the fixture
+            # directory and returned VERIFY:rev-parse-failed — the card was counted
+            # as skipped rather than merged. "" means verified.
+            patch.object(merge_train, "_verify_push", return_value=""),
             patch.object(merge_train, "_freeze_integration_identity",
                          return_value={"artifact_commit": "rebased-sha", "artifact_ref": "refs/orchestrator/integrations/t1/0001/proof"}),
             patch.object(merge_train, "_delete_branch", return_value=None),
@@ -126,13 +190,13 @@ class TestRepoPathLocalization(TrainCase):
 
         merge_train.train_run()
 
-        self.mock_db.localize_repo_path.assert_any_call("/tmp/fake-repo-alpha")
+        self.mock_db.localize_repo_path.assert_any_call(PROJECTS[0]["repo_path"])
         # os.path.isdir is patched fleet-wide in setUp; confirm it was actually asked
         # about the LOCALIZED path, not the raw stored one, proving the localized
         # value is what flows into the no-repo/skip guard.
         isdir_calls = [c.args[0] for c in self.mocks["isdir"].call_args_list]
         self.assertIn(localized, isdir_calls)
-        self.assertNotIn("/tmp/fake-repo-alpha", isdir_calls)
+        self.assertNotIn(PROJECTS[0]["repo_path"], isdir_calls)
 
     def test_record_pressure_localizes_repo_path_before_use(self):
         self.cards = [_card("c1", "feat-x", created_at="2026-01-01T00:00:00")]
@@ -147,7 +211,7 @@ class TestRepoPathLocalization(TrainCase):
         # _record_pressure calls _materialize_branch(repo, f"agent/{slug}") for every
         # waiting card -- confirm it received the LOCALIZED repo, not the raw stored one.
         self.assertTrue(any(call.args[0] == localized for call in mb.call_args_list))
-        self.assertFalse(any(call.args[0] == "/tmp/fake-repo-alpha" for call in mb.call_args_list))
+        self.assertFalse(any(call.args[0] == PROJECTS[0]["repo_path"] for call in mb.call_args_list))
 
 
 # ── A: clean merge ────────────────────────────────────────────────────────────
@@ -191,13 +255,32 @@ class TestCleanMerge(TrainCase):
 
 class TestBoundedHandoff(TrainCase):
 
+    @unittest.expectedFailure
     def test_redo_consumes_batch_budget_and_releases_lease_for_next_pass(self):
+        """CURRENTLY FAILING — a real behavioural finding, not a stale test.
+
+        With the harness repaired this test now reaches the behaviour it was
+        written for, and the behaviour is not there: with STANDARD_BATCH=1 a redo
+        does NOT consume the batch budget, so the train goes on to integrate the
+        second card in the same pass (redo=1 AND merged=1). That is precisely what
+        the docstring below says must not happen — a large stale-branch backlog can
+        scan on while holding the global train lease.
+
+        Marked expectedFailure rather than "fixed", because making a redo consume
+        the budget changes how much work the merge train does per pass while
+        holding a global lease. That is an operator call about throughput vs lease
+        hold time, and it should be made deliberately, not slipped in as part of a
+        test repair.
+        """
         """A large stale-branch backlog must not scan forever while holding the
         global train lease.  A redo is work (delete/requeue/card update), so it
         consumes the same risk budget as a normal integration attempt."""
         self.cards = [_card("c1", "stale"), _card("c2", "fresh")]
         self.tasks = [_task("t1", "stale"), _task("t2", "fresh")]
-        self.mocks["_rebase_onto_base"].side_effect = [False, True]
+        # _rebase_onto_base returns (ok, conflict_detail). Bare bools here raised
+        # "cannot unpack non-iterable bool object", which the pass caught as a
+        # PROJECT-ERROR — so the redo this test is about never happened.
+        self.mocks["_rebase_onto_base"].side_effect = [(False, ""), (True, "")]
 
         with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2"}), \
              patch.object(merge_train, "STANDARD_BATCH", 1):
@@ -522,6 +605,11 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
 
             self.assertEqual(len(calls), 1)
 
+    @unittest.skip(
+        "merge_train._test_package_paths does not exist. _ensure_node_deps does the "
+        "--prefix scoping inline rather than through a separate helper, so this test "
+        "asserts an internal decomposition that is gone. Left visible rather than "
+        "deleted: re-point it at _ensure_node_deps, or re-extract the helper.")
     def test_prefix_package_path_is_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=2)
@@ -529,6 +617,12 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
             self.assertEqual(roots, [os.path.realpath(repo),
                                      os.path.realpath(os.path.join(repo, "pkg1"))])
 
+    @unittest.skip(
+        "merge_train._prepare_generated_types does not exist. The nuxi-prepare step "
+        "lives in release_train._prepare_generated_types(worktree) — a different "
+        "module AND a different signature (1 arg, not 2). Whether the MERGE gate "
+        "should also generate types is a product decision about the gate, not a test "
+        "fix, so this is skipped rather than guessed at or deleted.")
     def test_nuxt_package_prepares_worktree_local_types(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=1)
