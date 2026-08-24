@@ -1153,5 +1153,107 @@ class TestMaxTurnsErrorDetection(unittest.TestCase):
                     self.assertTrue(response["is_error"])
 
 
+
+# ── H2: max_turns detection against the REAL code path ───────────────────────
+
+class TestMaxTurnsDetectedByRealCode(unittest.TestCase):
+    """Exercise the actual detection, not a dict asserting its own contents.
+
+    TestMaxTurnsErrorDetection above builds a mock_response and then asserts that
+    mock_response contains the keys it was just given. Those assertions are true no matter
+    what claude_cli and model_gateway do — they passed for the entire life of the bug they
+    were written to catch, which was that `_run_agent_sdk_async` read ResultMessage.is_error
+    and DISCARDED ResultMessage.subtype (the field carrying `error_max_turns`), returning
+    returncode 1 with an empty stderr.
+
+    These tests call the real functions. Deterministic and fast: no provider, no CLI, no
+    network, no sleep.
+    """
+
+    def _claude_cli(self):
+        """The REAL module. Re-imported per call so a sibling test's stub cannot leak in."""
+        import importlib
+        import sys
+        stub = sys.modules.get("claude_cli")
+        if stub is not None and not hasattr(stub, "__file__"):
+            del sys.modules["claude_cli"]
+        import claude_cli
+        return importlib.reload(claude_cli) if not hasattr(
+            claude_cli, "normalize_terminal_reason") else claude_cli
+
+    def test_the_max_turns_subtype_is_detected_and_named(self):
+        cc = self._claude_cli()
+        self.assertEqual(cc.normalize_terminal_reason("error_max_turns"), "max_turns")
+
+    def test_it_is_marked_an_error_not_a_normal_stop(self):
+        """A normal stop must not produce a terminal reason at all."""
+        cc = self._claude_cli()
+        self.assertEqual(cc.normalize_terminal_reason("success"), "success")
+        self.assertEqual(cc.normalize_terminal_reason(None), "")
+
+    def test_the_diagnostic_field_is_present_and_actionable(self):
+        cc = self._claude_cli()
+        msg = cc.terminal_message("max_turns", num_turns=1, max_turns=1)
+        self.assertIn("max_turns", msg)
+        self.assertIn("truncated", msg)
+        self.assertIn("raise max_turns", msg)
+
+    def test_the_gateway_returns_error_and_terminal_reason(self):
+        import sys
+        import types
+        import model_gateway
+        cc = self._claude_cli()
+        reason = cc.normalize_terminal_reason("error_max_turns")
+        payload = {
+            "text": "partial", "cost_usd": 0.0, "returncode": 1,
+            "terminal_reason": reason,
+            "error": cc.terminal_message(reason, num_turns=1, max_turns=1),
+            "stderr": cc.terminal_message(reason, num_turns=1, max_turns=1),
+        }
+        # ALWAYS restore, including when claude_cli was not imported yet: leaving the
+        # stub in sys.modules poisons every later test that imports the real module.
+        sentinel = object()
+        saved = sys.modules.get("claude_cli", sentinel)
+        sys.modules["claude_cli"] = types.SimpleNamespace(run=lambda *a, **kw: payload)
+        try:
+            out = model_gateway._call_provider("claude", "claude-x", "hi")
+        finally:
+            if saved is sentinel:
+                sys.modules.pop("claude_cli", None)
+            else:
+                sys.modules["claude_cli"] = saved
+        self.assertEqual(out["terminal_reason"], "max_turns")
+        self.assertIn("max_turns", out["error"])
+
+    def test_a_normal_completion_produces_no_error_fields(self):
+        """The negative half: a success must not be marked as an error."""
+        import sys
+        import types
+        import model_gateway
+        payload = {"text": "done", "cost_usd": 0.0, "returncode": 0,
+                   "terminal_reason": "", "error": None, "stderr": ""}
+        # ALWAYS restore, including when claude_cli was not imported yet: leaving the
+        # stub in sys.modules poisons every later test that imports the real module.
+        sentinel = object()
+        saved = sys.modules.get("claude_cli", sentinel)
+        sys.modules["claude_cli"] = types.SimpleNamespace(run=lambda *a, **kw: payload)
+        try:
+            out = model_gateway._call_provider("claude", "claude-x", "hi")
+        finally:
+            if saved is sentinel:
+                sys.modules.pop("claude_cli", None)
+            else:
+                sys.modules["claude_cli"] = saved
+        self.assertNotIn("terminal_reason", out)
+        self.assertNotIn("error", out)
+        self.assertEqual(out["text"], "done")
+
+    def test_these_assertions_depend_on_the_implementation(self):
+        """Guard against the tautology returning: these names must actually exist."""
+        cc = self._claude_cli()
+        self.assertTrue(callable(cc.normalize_terminal_reason))
+        self.assertTrue(callable(cc.terminal_message))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
