@@ -16,6 +16,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Optional
 
@@ -84,11 +85,59 @@ def _read_json(path: str, default: Any = None) -> Any:
 
 
 def _write_json(path: str, data: Any) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
-    os.replace(tmp, path)
+    """Atomically replace `path` with `data`. Never raises.
+
+    FIX: the temp file was a fixed "<path>.tmp", so two overlapping writers created the
+    SAME temp name, the first os.replace() consumed it, and the second died on a temp it
+    had just written itself:
+
+        FileNotFoundError: '.runtime/db_health.json.tmp' -> '.runtime/db_health.json'
+
+    Overlap is routine here, not exotic: this module runs every 60s as runner.py's
+    "resmesh-60" job and also standalone. The traceback was the last line of
+    .runtime/resilience-mesh.err and accounted for 100% of this job's tracebacks — it
+    crashed on every cycle for three weeks, and because db_health.json was therefore
+    never written, everything downstream of it saw a missing file rather than a failure.
+
+    The identical race was diagnosed and fixed in db_recovery_sprint._write_json, whose
+    comment even names resilience_mesh as the casualty — but the fix was never applied
+    here. A per-CALL temp from tempfile.mkstemp in the destination directory is used
+    rather than a pid suffix: two threads or two runs inside one process share a pid,
+    so a pid suffix narrows the window without closing it.
+    """
+    directory = os.path.dirname(path) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except Exception as exc:
+        print(f"resilience_mesh: cannot create {directory} ({exc}); skipping write of {path}")
+        return
+
+    fd, tmp = None, None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp",
+                                   dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = None  # ownership passed to the file object; do not close it twice
+            json.dump(data, f, indent=2, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    except Exception as exc:
+        # Fail-soft with a diagnostic: a write failure must not wedge the 60s job, but a
+        # silent swallow is what let this crashloop run unnoticed.
+        print(f"resilience_mesh: atomic write of {path} failed ({type(exc).__name__}: {exc}); fail-soft")
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        if tmp is not None:
+            try:
+                os.unlink(tmp)   # never leave our own temp behind for the next run
+            except Exception:
+                pass
 
 
 def _append_spool(action: dict[str, Any]) -> None:
