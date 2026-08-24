@@ -362,6 +362,21 @@ def _true_counters(task):
     return int(rc or 0), int(attempts or 0)
 
 
+def _is_provider_quota(signal):
+    """Delegate to retry_policy so the phrase list has exactly one home.
+
+    Fail-soft: if retry_policy cannot be imported this returns False, which
+    restores the previous behaviour rather than swallowing the task.
+    """
+    try:
+        import retry_policy
+        return retry_policy.is_provider_quota(signal)
+    except Exception as exc:                             # noqa: BLE001
+        print("agentic_repair: provider-quota check unavailable (%s); "
+              "falling back to normal repair" % exc)
+        return False
+
+
 def repair_patch(task, signal, category="rework", directive=None, prefer_non_claude=False):
     """Return a db.update patch dict that re-queues a task with an agentic repair prompt.
 
@@ -376,6 +391,23 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     # at the chokepoint they all share.
     if is_operator_decision(task):
         return _awaiting_operator_patch(task)
+
+    # The provider refusing on credit or spend is not a defect in this task, and the repair
+    # path must not rewrite the prompt as though it were. `is_operator_decision` cannot catch
+    # it: that matches on the SLUG, and a quota failure lands on ordinary work whose slug says
+    # nothing about billing. Without this, the rewrite turns "xai returned 403, out of credits"
+    # into an engineering brief instructing an agent to "use a different API key, increase the
+    # spending limit, or purchase additional credits" — none of which a coding agent can do,
+    # and all of which it will spend a full run discovering.
+    #
+    # The task stays RETRYABLE (retry_policy still classifies quota as transient, so provider
+    # rotation or the monthly reset can serve it). What it does not get is a fabricated prompt.
+    if _is_provider_quota(signal):
+        patch = _awaiting_operator_patch(task)
+        patch["note"] = ("awaiting operator: provider credit/spend exhausted — not a code "
+                         "defect. Top up or re-point the router; the task is unchanged and "
+                         "will retry. signal: %s" % str(signal or "")[:200])
+        return patch
 
     rc, attempts = _true_counters(task)
     blind = not has_evidence(task, signal)
