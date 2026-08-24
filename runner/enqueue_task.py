@@ -13,6 +13,8 @@ Idempotent: coalesces equivalent open intent while allowing completed intent to 
 """
 import datetime
 import os, sys, json, re
+import time
+import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import pipeline_contract
@@ -448,13 +450,42 @@ def _enqueue_one(spec, proj, pid):
     return result
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit("usage: python runner/enqueue_task.py [--stage-intake] <task.json> [...]")
-    if sys.argv[1] == "--stage-intake":
-        if len(sys.argv) < 3:
-            sys.exit("usage: python runner/enqueue_task.py --stage-intake <task.json> [...]")
-        for task_path in sys.argv[2:]:
+def _run_cli(argv):
+    """CLI body. Every exit path says what happened and why.
+
+    The 2026-08-12 regression was not a crash -- it was silence. enqueue_task
+    blocked inside the prompt wrapper's live provider lookups, was killed by its
+    supervisor before reaching db.insert, and emitted nothing at all, so a task
+    that was never queued looked exactly like a task that was. Any termination
+    of this process must now be legible on stderr and in the exit status.
+    """
+    if len(argv) < 2:
+        raise SystemExit("usage: python runner/enqueue_task.py [--stage-intake] <task.json> [...]")
+    if argv[1] == "--stage-intake":
+        if len(argv) < 3:
+            raise SystemExit("usage: python runner/enqueue_task.py --stage-intake <task.json> [...]")
+        for task_path in argv[2:]:
             print(f"[enqueue] staged intake -> {stage_intake(task_path)}")
-    else:
-        main(sys.argv[1])
+        return 0
+    started = time.monotonic()
+    try:
+        main(argv[1])
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.stderr.write(
+            "[enqueue] interrupted after {0:.1f}s; '{1}' may not have been queued. "
+            "Re-run to confirm -- enqueue is intent-coalesced, so a repeat is safe.\n".format(
+                time.monotonic() - started, argv[1]))
+        return 130
+    except Exception:
+        sys.stderr.write(
+            "[enqueue] FAILED after {0:.1f}s for {1}; nothing was queued.\n".format(
+                time.monotonic() - started, argv[1]))
+        traceback.print_exc()
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_run_cli(sys.argv))
