@@ -179,7 +179,23 @@ def acquire(self):  # ❌ Public function should not have self
 ```
 
 **Note:**
-This rule is in Phase 1 but detection is not fully implemented. The linter identifies the pattern but does not currently flag violations. See Phase 3 for architectural pattern detection.
+Implemented and reporting, at `warning` severity (adding a delegator is a design
+change, so it should not hard-block a commit under the default `--fail-on error`).
+
+Detection is deliberately narrow, because a rule that fires on correct code gets the
+whole hook routed around with `--no-verify`. It reports a module-scope **private**
+name (`_pool`, not `pool`, not `_POOL`) bound to an instantiation of a class
+**defined in the same module**, when no module-level function references that name.
+Local ownership is what makes the rule usable: the looser "any PascalCase call"
+form reported 15 violations across `runner/`, `tools/` and `lib/`, and essentially
+all of them were `ModuleType(...)` fake modules in tests, `threading.Lock()` and
+`logging.StreamHandler()` — imported infrastructure a module is not expected to
+wrap in delegators. Requiring local ownership removes those without a denylist,
+because the convention only binds a module for the singletons it owns. Under that
+form the same three trees report 1.
+
+A `global _pool` rebinding counts as delegation. See Phase 3 for the broader
+architectural pattern detection (singleton *completeness*), which is still open.
 
 ---
 

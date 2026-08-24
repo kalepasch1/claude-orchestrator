@@ -184,6 +184,97 @@ class ConventionChecker(ast.NodeVisitor):
             return
         self.violations.append(violation)
 
+    def visit_Module(self, node: ast.Module) -> None:
+        """Check the module-level singleton convention, then descend."""
+        self._check_module_singletons(node)
+        self.generic_visit(node)
+
+    def _check_module_singletons(self, node: ast.Module) -> None:
+        """Flag a module-level singleton instance with no module-level delegator.
+
+        CLAUDE.md: "Module-level singleton pattern: provide module-level functions
+        that delegate to a thread-safe singleton instance (e.g. `acquire()` ->
+        `_pool.acquire()`); avoids passing state through call chains."
+
+        CONVENTION_LINT.md documented this as Rule 3 and then said, in the file
+        itself, that "detection is not fully implemented ... does not currently
+        flag violations". A rule that is written down, listed in the Phase 1 set
+        and never fires is worse than an absent rule: the docs claim coverage the
+        gate does not provide. This implements it.
+
+        Deliberately narrow, because a rule that fires on correct code gets the
+        whole hook routed around with --no-verify:
+          * only a *private* module-scope name (`_pool`, not `pool`), so public
+            module state is untouched;
+          * only an instantiation of a PascalCase class *defined in this same
+            module* (`_pool = ResourcePool()` next to `class ResourcePool`). That
+            one condition is what makes the rule usable: measured over runner/,
+            tools/ and lib/ the looser "any PascalCase call" form produced 15 hits
+            and essentially all of them were `ModuleType(...)` fake modules in
+            tests, `threading.Lock()` and `logging.StreamHandler()` — imported
+            infrastructure primitives that a module is not expected to wrap in
+            delegators. Requiring local ownership drops those without a denylist,
+            because the convention only binds a module for the singletons it owns.
+            `_log = logging.getLogger(__name__)` and `_cache = {}` are likewise
+            not singletons in this sense and are skipped;
+          * SCREAMING_CASE is a constant, not a singleton, and is skipped;
+          * a module with no module-level functions at all is a pure class/dataclass
+            module — the convention has nothing to say about it, so it is skipped;
+          * a name referenced by ANY module-level function counts as delegated,
+            wherever in the body it appears.
+        Warning, not error: the fix is to add a delegator, which is a design change
+        and should not hard-block a commit.
+        """
+        local_classes = {s.name for s in ast.walk(node) if isinstance(s, ast.ClassDef)}
+        if not local_classes:
+            return
+
+        singletons = {}
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Call):
+                continue
+            func = stmt.value.func
+            # Only a bare Name: `Attribute` calls (mod.Thing()) come from elsewhere.
+            class_name = func.id if isinstance(func, ast.Name) else ""
+            if class_name not in local_classes or not _is_pascal_case(class_name):
+                continue
+            for target in stmt.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                name = target.id
+                if not name.startswith("_") or name.startswith("__"):
+                    continue
+                if name.upper() == name:  # _CONSTANT, not a singleton
+                    continue
+                singletons.setdefault(name, (stmt.lineno, class_name))
+        if not singletons:
+            return
+
+        module_functions = [s for s in node.body
+                            if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        if not module_functions:
+            return
+
+        referenced = set()
+        for func in module_functions:
+            for sub in ast.walk(func):
+                if isinstance(sub, ast.Name):
+                    referenced.add(sub.id)
+                elif isinstance(sub, ast.Global):
+                    referenced.update(sub.names)
+
+        for name, (lineno, class_name) in sorted(singletons.items(), key=lambda kv: kv[1][0]):
+            if name in referenced:
+                continue
+            self._record(ConventionViolation(
+                self.filepath, lineno, 'MODULE_SINGLETON',
+                f"Module-level singleton '{name}' ({class_name}) has no module-level "
+                f"function that delegates to it, so callers must reach into the private "
+                f"name (CLAUDE.md: provide module-level functions that delegate to the "
+                f"singleton)",
+                severity='warning',
+            ))
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Track class context to distinguish methods from module functions."""
         self._check_class_naming(node)
