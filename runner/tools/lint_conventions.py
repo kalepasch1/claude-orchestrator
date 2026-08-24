@@ -69,6 +69,18 @@ _SECRET_PATTERNS = {"secret", "key", "token", "password", "api_key", "pat"}
 # no matter what it is assigned to.
 _SECRET_VALUE_PREFIXES = ("sk-", "sk_", "api-", "pk_", "secret_", "token_", "ghp_", "xoxb-")
 
+# PEM armour. A vendor prefix identifies a credential by issuer; this identifies one by
+# FORMAT, which is what catches the case no name test can: a key material blob assigned
+# to a bare `key` or `data`. There is no non-credential reason for a `-----BEGIN …-----`
+# header to be a literal in this codebase, so the false-positive cost is nil.
+_SECRET_VALUE_MARKERS = ("-----begin ",)
+
+
+def _is_credential_shaped_value(value: str) -> bool:
+    """True when the literal itself is credential material, whatever it is named."""
+    lowered = str(value or "").lower()
+    return lowered.startswith(_SECRET_VALUE_PREFIXES) or lowered.startswith(_SECRET_VALUE_MARKERS)
+
 
 def _is_indirected_secret_value(value: str) -> bool:
     """True when a string literal is env indirection / a placeholder, not a real secret.
@@ -383,6 +395,49 @@ class ConventionChecker(ast.NodeVisitor):
 
         self.generic_visit(node)
 
+    def _check_secret_literal(self, target: ast.expr, value_str: str,
+                              lineno: int, kind: str) -> None:
+        """Report a hardcoded credential for one assignment target. Never raises.
+
+        THE ONE implementation of Rule 2's decision, shared by ``visit_Assign`` and
+        ``visit_AnnAssign``. It used to exist twice with different logic: the annotated
+        path required BOTH a vendor-prefixed value AND a secret-ish name, and it tested
+        the name against the loose ``_SECRET_PATTERNS`` set rather than
+        ``_looks_like_secret_name``. So ``endpoint: str = "sk-live-…"`` — a real leaked
+        key under an innocuous name, and the single most likely spelling of an accident
+        — was reported by the plain path and silently passed by the annotated one, while
+        ``db_password: str = "hunter2"`` was missed entirely. Two copies of a security
+        rule will always drift; one copy cannot.
+
+        The decision itself is unchanged from the plain path:
+          * a vendor-prefixed literal is a credential whatever it is called;
+          * a secret-NAMED target is a credential unless its value is env indirection
+            or a placeholder;
+          * anything else is left alone.
+        """
+        try:
+            name = _secret_target_name(target)
+            if name is None:
+                return
+            indirected = _is_indirected_secret_value(value_str)
+            vendor_literal = _is_credential_shaped_value(value_str)
+            secret_name = _looks_like_secret_name(name)
+            if not (vendor_literal or (secret_name and not indirected)):
+                return
+            msg = f"Hardcoded secret detected in {kind} to '{name}'"
+            self.violations.append((lineno, "no-hardcoded-secrets", msg))
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=lineno,
+                rule=RULE_HARDCODED_SECRET,
+                severity="error",
+                message=msg,
+            ))
+        except Exception:
+            # Fail-soft: a linter that raises on an odd AST shape stops the whole scan,
+            # and a missed finding is cheaper than no findings at all.
+            return
+
     def visit_Assign(self, node: ast.Assign) -> None:
         """Check assignments for hardcoded secrets and magic numbers (Rule 2, 7)."""
         # Rule 2 is a NAME-based rule: "config keys must not contain
@@ -393,29 +448,9 @@ class ConventionChecker(ast.NodeVisitor):
         # passed clean — the exact literals the rule exists to stop. The target name
         # now drives detection; the value only decides whether it is real or indirected.
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            value_str = node.value.value
-            indirected = _is_indirected_secret_value(value_str)
-            vendor_literal = value_str.lower().startswith(_SECRET_VALUE_PREFIXES)
             for target in node.targets:
-                name = _secret_target_name(target)
-                if name is None:
-                    continue
-                secret_name = _looks_like_secret_name(name)
-                # A vendor-prefixed literal is a credential whatever it is called.
-                if not (vendor_literal or (secret_name and not indirected)):
-                    continue
-                if secret_name and indirected and not vendor_literal:
-                    continue
                 kind = "subscript assignment" if isinstance(target, ast.Subscript) else "assignment"
-                msg = f"Hardcoded secret detected in {kind} to '{name}'"
-                self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
-                self._v2_violations.append(ConventionViolation(
-                    filepath=self.filepath,
-                    lineno=node.lineno,
-                    rule=RULE_HARDCODED_SECRET,
-                    severity="error",
-                    message=msg
-                ))
+                self._check_secret_literal(target, node.value.value, node.lineno, kind)
 
         # Check for magic numbers
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, (int, float)):
@@ -440,31 +475,21 @@ class ConventionChecker(ast.NodeVisitor):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         """Check annotated assignments for hardcoded secrets (Rule 2).
 
-        Annotated assignments (e.g. ``api_key: str = "sk-..."``) previously
-        bypassed the hardcoded-secret detection that plain assignments get.
+        Annotated assignments (e.g. ``api_key: str = "sk-..."``) previously bypassed the
+        hardcoded-secret detection that plain assignments get, and then — once a check
+        was added here — got a SECOND, weaker copy of it. Both paths now delegate to
+        ``_check_secret_literal``, so ``x = "sk-…"`` and ``x: str = "sk-…"`` are
+        classified identically and a type annotation can no longer launder a credential
+        past the rule. The annotation itself is irrelevant to the decision, so
+        ``Optional[str]`` and ``Union[str, None]`` behave like ``str``.
         """
         if (
             node.value is not None
             and isinstance(node.value, ast.Constant)
             and isinstance(node.value.value, str)
-            and isinstance(node.target, ast.Name)
         ):
-            value_str = node.value.value
-            if any(
-                value_str.lower().startswith(prefix)
-                for prefix in _SECRET_VALUE_PREFIXES
-            ):
-                var_name = node.target.id.lower()
-                if any(pattern in var_name for pattern in _SECRET_PATTERNS):
-                    msg = f"Hardcoded secret detected in annotated assignment to '{node.target.id}'"
-                    self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
-                    self._v2_violations.append(ConventionViolation(
-                        filepath=self.filepath,
-                        lineno=node.lineno,
-                        rule=RULE_HARDCODED_SECRET,
-                        severity="error",
-                        message=msg
-                    ))
+            self._check_secret_literal(
+                node.target, node.value.value, node.lineno, "annotated assignment")
 
         self.generic_visit(node)
 
