@@ -16,18 +16,33 @@ import hisanta.contracts.family as family
 
 
 def test_the_shim_points_at_the_canonical_file():
-    """hisanta/contracts/family.py must re-export, never re-declare."""
-    assert family.CANONICAL_PATH.replace("\\", "/").endswith(
+    """The nested copy must re-export, never re-declare.
+
+    These two tests used to assert the opposite direction -- that
+    hisanta/contracts/family.py was the shim and CANONICAL_PATH pointed at the
+    nested file. Two branches resolved the duplicate in opposite directions and the
+    merge landed both, leaving committed conflict markers in four files. Resolved in
+    favour of the top-level file being canonical, because the nested shim is then a
+    plain `from hisanta.contracts.family import (...)` rather than an
+    importlib.spec_from_file_location loader against a synthetic module name.
+
+    The invariant these tests exist to protect is direction-agnostic: exactly one
+    definition, and both spellings are the SAME objects. That is what is asserted
+    now, without hardcoding which side happens to hold the definitions.
+    """
+    nested = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert nested.__file__.replace("\\", "/").endswith(
         "hisanta/hisanta/contracts/family.py"
     )
-    assert family.CANONICAL_MODULE is not None
+    assert family.__file__.replace("\\", "/").endswith("hisanta/contracts/family.py")
+    assert nested.__file__ != family.__file__, "two distinct files, one definition"
 
 
 def test_every_public_name_is_the_canonical_object():
-    canonical = family.CANONICAL_MODULE
-    assert family.__all__, "the shim must export something"
-    for name in family.__all__:
-        assert getattr(family, name) is getattr(canonical, name), (
+    nested = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert nested.__all__, "the shim must export something"
+    for name in nested.__all__:
+        assert getattr(nested, name) is getattr(family, name), (
             f"{name} is a SECOND definition, not the canonical one"
         )
 
