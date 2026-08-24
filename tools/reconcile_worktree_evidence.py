@@ -277,6 +277,46 @@ def classify_worktree(item: Item, path: str, head: str, branch: str,
         item.evidence = "untracked-only working tree"
 
 
+def published_bridge_branch(artifact_path: str, repo: str) -> str:
+    """Branch name the ChatGPT bridge published for this artifact, if it exists.
+
+    The bridge writes a sidecar next to every artifact it processes:
+
+        <artifact>.result.txt
+        [chatgpt-bridge] repo=… root=… branch=chatgpt/<slug>-<stamp>
+
+    Without this, a patch whose branch was pushed but never merged looks
+    identical to a patch that was silently lost: both are absent from the
+    default branch and both still apply. Observed live on
+    _applied/20260812-020326--…-operator-output-truth-session-fabric-20260812.patch,
+    whose branch chatgpt/operator-output-truth-session-fabric-20260812-08120203
+    was sitting unmerged on origin with byte-identical content.
+
+    Returns "" when no sidecar, no branch line, or the branch is not on origin.
+    """
+    for suffix in (".result.txt", ".error.txt"):
+        sidecar = artifact_path + suffix
+        if not os.path.isfile(sidecar):
+            continue
+        try:
+            text = open(sidecar, errors="replace").read()
+        except OSError:
+            continue
+        for token in text.split():
+            if not token.startswith("branch="):
+                continue
+            name = token.split("=", 1)[1].strip()
+            if not name:
+                continue
+            listed = subprocess.run(
+                ["git", "ls-remote", "--heads", "origin", name],
+                cwd=repo, capture_output=True, text=True, errors="replace",
+            ).stdout.strip()
+            if listed:
+                return name
+    return ""
+
+
 def classify_artifact(item: Item, path: str, base: str, repo: str,
                       known: "set[str]") -> None:
     parent = os.path.basename(os.path.dirname(path))
@@ -309,6 +349,30 @@ def classify_artifact(item: Item, path: str, base: str, repo: str,
         item.classification = "ALREADY_PRESENT"
         item.disposition = f"patch-id {pid[:12]} already in {base}"
         item.evidence = "patch-id=" + pid
+        return
+
+    # Before deciding anything, ask whether the bridge already PUBLISHED this
+    # work. The bridge records the branch it created in a sidecar
+    # "<artifact>.result.txt"; if that branch is on origin, the patch is not
+    # lost evidence at all -- it is unmerged work the merge train already owns,
+    # and re-applying it would open a duplicate branch for the same change.
+    owner = published_bridge_branch(path, repo)
+    if owner:
+        merged = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "origin/" + owner, base],
+            cwd=repo, capture_output=True, text=True,
+        ).returncode == 0
+        if merged:
+            item.classification = "ALREADY_PRESENT"
+            item.disposition = f"origin/{owner} carries this patch and is merged into {base}"
+        else:
+            item.classification = "ACTIVE_IN_ANOTHER_TASK"
+            item.disposition = (
+                f"origin/{owner} already carries this patch but is NOT merged "
+                f"into {base}. Do not re-apply -- the gap is a merge, not a "
+                "recovery; hand the existing branch to the merge train."
+            )
+        item.evidence = "published bridge branch origin/" + owner
         return
 
     # An artifact the bridge already applied is represented by a commit; if that
