@@ -76,7 +76,13 @@ _SKIP_DIR = re.compile(
     # .runtime holds the orchestrator's own scratch worktrees (integration-worktrees/, agent
     # checkouts). Scanning it re-reports every OTHER project's files through a scratch path,
     # which filed ~400 duplicate remediation tasks on the first live run.
-    r"|\.runtime|\.claude/worktrees)(/|$)")
+    # The fleet's worktree convention is `{repo}-wt/{slug}` (see CLAUDE.md), and
+    # projects keep their own scratch checkouts as `.<name>-wt/`. Both are gitignored
+    # working copies of code that is ALREADY scanned at its real path, so visiting them
+    # re-reports the same symbols through a throwaway path — one such directory
+    # (`.spine-wt/`) produced a remediation task pointing at a file that does not exist
+    # on any branch.
+    r"|\.runtime|\.claude/worktrees|[^/]*-wt)(/|$)")
 
 # A commit whose MESSAGE advertises that it papered over a build break with stubs.
 # These are the exact shapes seen in the fleet.
@@ -173,6 +179,44 @@ _FABRICATED_SCALAR = re.compile(
 def is_critical_name(symbol):
     """True when a constant return from this symbol is a compliance/financial defect."""
     return bool(symbol and _CRITICAL.search(symbol))
+
+
+# The value half of `export const NAME = <literal>`: a number, boolean, null, or a
+# quoted string, and nothing else. Anything containing `(`, `=>` or `function` is a
+# callable and stays in scope for the fabricated-return detectors.
+_CONST_VALUE = (
+    r"(?:-?\d[\d_]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    r"|true|false|null"
+    r"|'[^'\n]*'|\"[^\"\n]*\"|`[^`\n]*`)")
+
+
+def is_value_constant(txt, symbol):
+    """Is `symbol` a named VALUE constant rather than a stubbed function?
+
+    The fabricated-return detectors ask "does this declaration's body reduce to a
+    literal". That is the right question for a function and the wrong one for a
+    constant: a threshold is SUPPOSED to be a literal. Without the distinction the
+    guard reports things like
+
+        /** The margin a challenger must beat the incumbent by. ... */
+        export const REPLACEMENT_MARGIN = 0.01
+
+    as "a regulatory gate that stopped throwing", and the remediation it files —
+    "if it is genuinely unimplemented it MUST throw" — would replace a documented,
+    actively-used tunable with an exception. That is a worse repository than the
+    one the guard started with, and it costs an agent a full run to find out.
+
+    Decided on the DECLARATION, never the name: a stubbed arrow function
+    (`export const getPrice = () => 0`) contains callable syntax and is still
+    reported, as is `= compute()`.
+    """
+    if not symbol or not txt:
+        return False
+    rx = re.compile(
+        r"^[ \t]*export\s+const\s+" + re.escape(symbol) +
+        r"\s*(?::[^=\n]*)?=\s*" + _CONST_VALUE + r"\s*(?:;|$)",
+        re.MULTILINE)
+    return bool(rx.search(txt))
 
 
 def _home():
@@ -463,7 +507,7 @@ def scan_fabricated(repo, files=None):
     def _extra_fabricated(path, txt, rel):
         found = []
         for sym, kind in _structural_stubs(path, txt):
-            if is_critical_name(sym):
+            if is_critical_name(sym) and not is_value_constant(txt, sym):
                 found.append((sym, kind, _line_of(txt, sym)))
         for m in _CLASS_METHOD.finditer(txt):
             sym, body = m.group(1), (m.group(2) or "").strip()
@@ -504,6 +548,8 @@ def scan_fabricated(repo, files=None):
             scalar_stub = bool(_FABRICATED_SCALAR.match(body)) or body == ""
             if not (obj_stub or scalar_stub):
                 continue
+            if is_value_constant(txt, sym):
+                continue          # a named threshold, not a stubbed callable
             critical = is_critical_name(sym)
             if not critical and not (_QUANT.match(sym) and obj_stub):
                 continue
