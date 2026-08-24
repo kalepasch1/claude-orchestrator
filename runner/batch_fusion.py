@@ -24,7 +24,10 @@ Usage:
     for batch in batches:
         fused_prompt = batch_fusion.fuse_prompts(batch)
         # Run single agent call with fused_prompt
-        batch_fusion.distribute_outcome(batch, agent_output, merged)
+        # Pass the merge sha: without it every member lands PHANTOM_UNVERIFIED,
+        # because a batch merge certified by a boolean is not certified.
+        batch_fusion.distribute_outcome(batch, agent_output, merged,
+                                        artifact_commit=merge_sha)
 """
 import os, sys, json, hashlib, re, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -234,12 +237,37 @@ def fuse_prompts(batch):
     return fused
 
 
-def distribute_outcome(batch, agent_output, merged, cost=None):
+def distribute_outcome(batch, agent_output, merged, cost=None, artifact_commit=None):
     """Distribute a fused outcome back to individual tasks.
 
     Each task in the batch gets marked based on the overall outcome.
     Cost is split proportionally by prompt length.
+
+    ARTIFACT_COMMIT, AND WHY ONE COMMIT MAY CERTIFY MANY TASKS HERE.
+
+    Fusion's whole point is that N tasks are delivered by ONE commit. Without a
+    sha this function wrote MERGED certified by a boolean, which merge_truth
+    correctly turned into PHANTOM_UNVERIFIED -- so every fused batch produced
+    phantom rows by construction, and the evidence that would clear them was
+    never recorded anywhere.
+
+    Supplying the sha exposes the second half: merge_truth refuses to let one
+    commit be the artifact_commit of two tasks. That rule exists to stop task A's
+    commit being pasted onto task B to fake completion, and it is right about
+    that. It cannot distinguish that case from a deliberate fusion on its own,
+    which is what JUSTIFIED_MARKER is for.
+
+    So each member carries the justification, and the justification is auditable:
+    it names the batch key and how many tasks it covers, so a reader can check
+    the claim rather than take it. Written ONLY here, only for a batch of more
+    than one, and only alongside a real sha -- an override applied on a hunch
+    would hollow out the rule it is overriding.
+
+    Callers that pass no sha keep the old behaviour: PHANTOM_UNVERIFIED, which is
+    the honest answer when nothing recorded what shipped.
     """
+    sha = str(artifact_commit or "").strip()
+    session = batch_session(batch) if len(batch) > 1 else None
     total_prompt_len = sum(len(t.get("prompt", "")) for t in batch)
     cost_usd = (cost.get("usd", 0) if isinstance(cost, dict) else 0)
 
@@ -249,11 +277,23 @@ def distribute_outcome(batch, agent_output, merged, cost=None):
 
         try:
             state = "MERGED" if merged else "BLOCKED"
+            note = f"[batch-fusion] {len(batch)}-task batch, cost share=${task_cost:.4f}"
             patch = {
                 "state": state,
-                "note": f"[batch-fusion] {len(batch)}-task batch, cost share=${task_cost:.4f}",
+                "note": note,
                 "finished_at": "now()" if merged else None,
             }
+            if state == "MERGED" and sha:
+                patch["artifact_commit"] = sha
+                if session:
+                    import merge_truth as _mt
+                    patch["note"] = (
+                        f"{note} | {_mt.JUSTIFIED_MARKER} fused delivery: "
+                        f"{session['session_key']} merged {len(batch)} tasks in one "
+                        f"commit {sha[:12]}; the siblings are "
+                        f"{', '.join(session['slugs'][:6])}"
+                        f"{' and %d more' % (len(session['slugs']) - 6) if len(session['slugs']) > 6 else ''}"
+                    )[:2000]
             if state == "MERGED":
                 # This path wrote MERGED with NO artifact_commit at all — a merge certified by
                 # nothing but a boolean. merge_truth rejects it (an empty artifact_commit is a
