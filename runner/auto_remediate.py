@@ -32,6 +32,46 @@ CAP = int(os.environ.get("REMEDIATION_CAP", "3"))
 # recycled FOREVER — burning fleet lanes and sinking merge throughput. At the hard cap we SHELVE it
 # (terminal state nothing re-picks) with a clear note, so a human can re-scope it instead.
 HARD_CAP = int(os.environ.get("REMEDIATION_HARD_CAP", "6"))
+
+# SECOND TERMINAL CAP, on raw attempts. HARD_CAP above only counts *remediations*, and not
+# every path that re-queues a task increments remediation_count — agentic_repair.repair_patch
+# in particular re-queues without touching it. A task therefore recycles forever with
+# remediation_count pinned at 0 while attempt climbs without bound: at the time this was added
+# 49 tasks were sitting at attempt >= 6 with remediation_count = 0, one of them
+# (dropbox-pareto-life-goal-autonomy-stack-p5-intergenerational-mesh) at attempt 24, and the
+# highest in the table was 272. Every one of those is a fleet lane burned indefinitely on work
+# that has already failed two dozen times.
+#
+# This is a backstop, not a policy change: it is deliberately far above HARD_CAP, so a task
+# whose remediation_count is being maintained correctly will always hit HARD_CAP first and
+# never reach this. Set to 0 to disable.
+def _attempt_hard_cap():
+    """Raw-attempt ceiling, re-read per call so a fleet push lands without a restart."""
+    raw = os.environ.get("ORCH_ATTEMPT_HARD_CAP")
+    if raw is None or not str(raw).strip():
+        return 25
+    try:
+        value = int(str(raw).strip())
+        return value if value >= 0 else 25
+    except Exception:
+        return 25
+
+
+def over_attempt_cap(task):
+    """True when ``task`` has burned more raw attempts than the backstop allows.
+
+    Never raises: a malformed attempt value means "not over the cap", so a bad row can
+    never cause the remediator to shelve something it should not.
+    """
+    try:
+        cap = _attempt_hard_cap()
+        if cap <= 0:
+            return False
+        return int(task.get("attempt") or 0) >= cap
+    except Exception:
+        return False
+
+
 MAX_REMEDIATION_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_REMEDIATION_PROMPT_CHARS", "16000"))
 RECOVERY_MARK = "auto-remediate:reclaimed-20260703"
 DIRECTIVE_MARKER = "AUTO-REMEDIATION DIRECTIVE"
@@ -99,6 +139,18 @@ def run(limit=120):
         # into smaller, independently-buildable sub-tasks and retire the oversized parent. Only if it's
         # genuinely atomic-and-stuck (or already a decomposition product) do we shelve — which should be
         # rare. Legal/material holds still route to the human path below.
+        # Backstop: raw attempts blew past the ceiling even though remediation_count never
+        # moved. Shelve terminally rather than hand the lane back for a 25th identical run.
+        # Human holds still take precedence, exactly as they do for HARD_CAP below.
+        if over_attempt_cap(t) and rc < HARD_CAP and not _requires_human_hold(t, signal):
+            db.update("tasks", {"id": t["id"]},
+                      {"state": "SHELVED", "account": None, "updated_at": "now()",
+                       "note": (f"shelved after {int(t.get('attempt') or 0)} attempts "
+                                f"(attempt cap {_attempt_hard_cap()}; remediation_count "
+                                f"stalled at {rc}) — needs human re-scope. " + note)[:500]})
+            shelved += 1
+            continue
+
         if rc >= HARD_CAP and not _requires_human_hold(t, signal):
             if not _already_decomposed(t, note) and decomposition_backpressure.gate(task=t):
                 subs = _decompose(t, signal)
