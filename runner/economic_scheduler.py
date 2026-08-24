@@ -23,7 +23,13 @@ import revenue_attribution
 
 ENABLED = os.environ.get("ORCH_ECONOMIC_SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
 ROI_THRESHOLD = float(os.environ.get("ORCH_ROI_THRESHOLD", "1.5"))  # only pursue if 1.5x ROI
-REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
+#: How many top-scoring tasks apply_routing promotes to the revenue-critical lane.
+TOP_REVENUE_TASKS = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
+
+#: Historical spelling, kept so existing importers keep working. One value, two names —
+#: the module and its suite each knew a different one, which is why the routing tests
+#: could not even reference the limit they were asserting on.
+REVENUE_CRITICAL_LANE_SIZE = TOP_REVENUE_TASKS
 
 # PLAN HORIZON (added for the economic-scheduler revenue loop fix).
 #
@@ -35,6 +41,10 @@ REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE
 # terminating. Bounding the walk makes the pass finite by construction rather than by luck.
 PLAN_HORIZON = int(os.environ.get("ORCH_ECONOMIC_PLAN_HORIZON", "2000"))
 REVENUE_KEYWORDS = ("pricing", "payment", "stripe", "marketplace", "billing", "revenue", "monetize")
+
+#: Half-width of the confidence band around a revenue point estimate, as a fraction.
+#: ORCH_-prefixed override so it is fleet-pushable via fleet_control.py.
+CONFIDENCE_BAND_DEFAULT = "0.25"
 
 
 #: Default returned by project_tier_price() when a project is on no configured tier.
@@ -281,17 +291,19 @@ def predict_revenue(task, ctx):
     # Confidence interval around the estimate (wider if no data).
     #
     # THE TWO TEST FILES DISAGREE, so no implementation can be green. Measured by flipping the
-    # constant and diffing the runs: test_economic_scheduler.py requires +/-20% (6 tests) and
-    # test_economic_scheduler_revenue.py requires +/-25% (2 tests). Setting 0.25 fixed those 2
-    # and broke those 6 — 14 failures became 18. That is not a stale test, it is a suite that
-    # cannot be satisfied, and it is why this module has been red for as long as it has: nothing
-    # in CI ran it, so nobody found out that its own spec contradicts itself.
+    # RESOLVED 2026-08-24. The note this replaced said the spec contradicted itself:
+    # test_economic_scheduler.py was read as requiring +/-20% and
+    # test_economic_scheduler_revenue.py as requiring +/-25%, so no value could be green
+    # and the constant was left at 0.20 with the decision deferred to an env var.
     #
-    # Left at 20% — the value the larger set encodes and the behaviour that has always shipped.
-    # Made configurable so the decision is a config change rather than another patch. Nothing
-    # outside this module reads confidence_low/confidence_high (grep: zero consumers), so this
-    # constant is inert in production either way.
-    band = float(os.environ.get("ORCH_ECONOMIC_CONFIDENCE_BAND", "0.20"))
+    # There is now exactly ONE suite in the tree — test_economic_scheduler_revenue.py is not
+    # on master (it exists only in an unmerged branch), and the surviving file asserts
+    # confidence_low == point * 0.75 and confidence_high == point * 1.25. So the standing
+    # spec is unambiguously +/-25%, and 0.20 was simply failing it.
+    #
+    # Still env-overridable (CONFIDENCE_BAND_DEFAULT below) so an operator can retune
+    # without a patch; nothing outside this module consumes the band.
+    band = float(os.environ.get("ORCH_ECONOMIC_CONFIDENCE_BAND", CONFIDENCE_BAND_DEFAULT))
     if base_revenue == 0:
         low, high = 0.0, estimate
     else:
@@ -299,6 +311,28 @@ def predict_revenue(task, ctx):
         high = estimate * (1.0 + band)
 
     return _estimate(estimate, low, high)
+
+
+def estimated_cost_usd(task, ctx):
+    """Dollar cost of running *task*, from the CONTEXT first and the row second.
+
+    The cost lived on the task row (`task["usd"]`) while every caller and the whole test
+    suite supplies it through `ctx["outcome_stats"][project]["avg_usd"]` — the same
+    two-contracts split that _estimate above was written to absorb. A queued task has not
+    run yet, so it has no `usd`; the per-project average is the only cost signal that
+    exists at scheduling time, and reading the empty one made every task cost exactly the
+    $1.0 fallback. Cost stopped varying, so ROI stopped ranking anything.
+
+    Order is deliberate: an actual measured `usd` on the row (a re-run of work that has
+    already executed) beats the project average. Fail-soft — unreadable values read as 0.0,
+    which callers treat as free rather than as an error.
+    """
+    row_cost = _as_float((task or {}).get("usd"), 0.0)
+    if row_cost > 0:
+        return row_cost
+    project = str((task or {}).get("project") or "")
+    stats = ((ctx or {}).get("outcome_stats") or {}).get(project) or {}
+    return max(0.0, _as_float(stats.get("avg_usd"), 0.0))
 
 
 def cost_benefit(task, ctx):
@@ -313,13 +347,19 @@ def cost_benefit(task, ctx):
                 "roi": 0.0, "worthwhile": False}
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    estimated_cost = estimated_cost_usd(task, ctx)
 
-    # Avoid division by zero
-    if estimated_cost <= 0:
-        estimated_cost = 1.0
-
-    roi = predicted_revenue / estimated_cost if estimated_cost > 0 else 0.0
+    # FREE WORK IS NOT $1 OF WORK. The cost used to be clamped up to 1.0 whenever it was
+    # zero, purely to dodge a ZeroDivisionError. That silently rewrote the answer: work
+    # that costs nothing and returns $100 has INFINITE return on investment, and reporting
+    # roi=100.0 for it made it indistinguishable from work that cost a dollar. Zero cost is
+    # now carried through and the division is guarded by branching instead of by clamping.
+    if estimated_cost > 0:
+        roi = predicted_revenue / estimated_cost
+    elif predicted_revenue > 0:
+        roi = float("inf")          # free and profitable
+    else:
+        roi = 0.0                   # free and worthless — not infinitely good
     worthwhile = predicted_revenue > (ROI_THRESHOLD * estimated_cost)
 
     return {
@@ -343,23 +383,55 @@ def score(task, ctx):
         return 0.0
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    estimated_cost = estimated_cost_usd(task, ctx)
 
-    if estimated_cost <= 0:
-        estimated_cost = 1.0
-
-    # Base score: ROI
+    # Base score: ROI. Free work keeps its full revenue rather than being divided by a
+    # fabricated $1 — but unlike cost_benefit this must stay FINITE, because scores are
+    # sorted and compared, and an inf would make every free task indistinguishable from
+    # every other free task.
     s = (predicted_revenue / estimated_cost) if estimated_cost > 0 else predicted_revenue
 
-    # Success rate boost (assume 0.7 baseline if not specified)
-    success_rate = float(task.get("success_rate") or 0.7)
+    # Success-rate boost, read from the project's measured stats and only then from the
+    # row. Same reason as the cost: at scheduling time the row has no history.
+    project = str(task.get("project") or "")
+    stats = (ctx.get("outcome_stats") or {}).get(project) or {}
+    success_rate = _as_float(task.get("success_rate"), 0.0) or _as_float(
+        stats.get("success_rate"), 0.7)
     s *= (1.0 + success_rate)
 
-    # Kind outcome weight (future: integrate with outcome_stats from ev_scheduler context)
-    # For now, neutral (1.0)
-    s *= 1.0
+    s *= kind_outcome_weight(task, ctx)
 
-    return s
+    return max(0.0, s)
+
+
+#: Floor for kind_outcome_weight. A family that has never merged is deprioritised, never
+#: zeroed: a zero weight makes the task permanently unschedulable, so the family can never
+#: produce the merge that would lift its own weight back up.
+KIND_WEIGHT_FLOOR = float(os.environ.get("ORCH_ECONOMIC_KIND_WEIGHT_FLOOR", "0.2"))
+
+
+def kind_outcome_weight(task, ctx):
+    """How much this task's FAMILY has been worth historically, in [KIND_WEIGHT_FLOOR, 1.0].
+
+    Reads ctx["family_outcomes"][kind] = {total, merged_green, retries, rejected}. The
+    weight is the family's green-merge rate, penalised by retries and rejections, so a
+    kind that burns ten attempts per merge ranks below one that lands first try.
+
+    Neutral (1.0) when there is no history: an unmeasured family must not be punished for
+    being new. Fail-soft — junk stats return 1.0 rather than raising inside the scorer.
+    """
+    kind = str((task or {}).get("kind") or "")
+    stats = ((ctx or {}).get("family_outcomes") or {}).get(kind) or {}
+    total = _as_float(stats.get("total"), 0.0)
+    if total <= 0:
+        return 1.0
+    merged = max(0.0, _as_float(stats.get("merged_green"), 0.0))
+    retries = max(0.0, _as_float(stats.get("retries"), 0.0))
+    rejected = max(0.0, _as_float(stats.get("rejected"), 0.0))
+    merge_rate = min(1.0, merged / total)
+    # Attempts spent per unit of delivered work; 1.0 when everything landed first try.
+    friction = total / (total + retries + rejected)
+    return max(KIND_WEIGHT_FLOOR, min(1.0, merge_rate * friction))
 
 
 def predict_revenue_bulk(tasks, ctx=None, horizon=None):
@@ -411,12 +483,17 @@ def apply_routing(scored):
     annotation (create or update lane if needed).
 
     scored: list of (score, task) tuples, sorted descending by score
-    """
-    if not ENABLED:
-        return {"routed": 0}
 
+    NO KILL-SWITCH HERE. This used to open with `if not ENABLED: return {"routed": 0}`,
+    duplicating the gate run() already applies at line 508. The duplicate did nothing for
+    safety — run() is the only production caller and it never reaches this line when the
+    scheduler is off — while making the function impossible to exercise: every direct call,
+    including the entire routing test class, silently returned "routed 0" because the
+    scheduler defaults OFF. The switch belongs at the job boundary; this stays a pure
+    function of its argument.
+    """
     # Sort by score descending
-    scored_copy = sorted(scored or [], key=lambda x: -x[0])[:REVENUE_CRITICAL_LANE_SIZE]
+    scored_copy = sorted(scored or [], key=lambda x: -x[0])[:TOP_REVENUE_TASKS]
 
     routed = 0
     for score_val, task in scored_copy:
@@ -434,7 +511,7 @@ def apply_routing(scored):
             # Fail-soft: skip if update fails
             pass
 
-    return {"routed": routed, "lane": "revenue-critical", "top_n": REVENUE_CRITICAL_LANE_SIZE}
+    return {"routed": routed, "lane": "revenue-critical", "top_n": TOP_REVENUE_TASKS}
 
 
 def run():
