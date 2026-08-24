@@ -167,6 +167,8 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
     num_turns = 0
     returncode = 0
     rate_limit_type = None
+    is_error = False
+    subtype = None
 
     async for message in _sdk_query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -183,6 +185,16 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
                 collected_text = [message.result]
             if message.is_error:
                 returncode = 1
+            # Capture WHY it ended, not just that it did.
+            #
+            # The CLI path below returns `raw = json.loads(proc.stdout)` verbatim, so it
+            # keeps whatever the provider reported — is_error, terminal_reason. This SDK
+            # path builds `raw` fresh from a handful of fields and dropped both, so a run
+            # that died on max_turns arrived downstream as a bare returncode=1,
+            # indistinguishable from any other failure. Nothing could tell "ran out of
+            # turns, give it more" from "genuinely failed, do not retry".
+            is_error = bool(message.is_error)
+            subtype = getattr(message, "subtype", None)
         else:
             # Check for rate limit events (for account rotation signaling)
             msg_type = getattr(message, "type", None)
@@ -192,15 +204,28 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
 
     text = "\n".join(collected_text) if collected_text else ""
 
+    raw = {"result": text, "total_cost_usd": cost,
+           "usage": {"input_tokens": itok, "output_tokens": otok},
+           "agent_sdk": True, "turns": num_turns,
+           "is_error": is_error}
+    if subtype:
+        # Preserved verbatim, and normalised alongside it: the SDK spells this
+        # "error_max_turns" while the CLI path's JSON spells it "max_turns". Callers
+        # should not have to know which transport produced the result, so both paths
+        # now answer to raw["terminal_reason"].
+        raw["subtype"] = subtype
+        if "max_turns" in str(subtype):
+            raw["terminal_reason"] = "max_turns"
+        elif is_error:
+            raw["terminal_reason"] = str(subtype)
+
     return {
         "text": text,
         "cost_usd": cost,
         "input_tokens": itok,
         "output_tokens": otok,
         "returncode": returncode,
-        "raw": {"result": text, "total_cost_usd": cost,
-                "usage": {"input_tokens": itok, "output_tokens": otok},
-                "agent_sdk": True, "turns": num_turns},
+        "raw": raw,
         "stderr": "",
         "rate_limit_type": rate_limit_type,
     }
