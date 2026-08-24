@@ -9,6 +9,7 @@ standard lanes if express capacity is exhausted.
 Configuration (via fleet_config):
   ORCH_EXPRESS_LANE_ENABLED       bool, default: true
   ORCH_EXPRESS_LANE_CAPACITY_PCT  int 0-100, default: 15 (percentage of lanes)
+  ORCH_EXPRESS_LANE_STALE_SECS    int >= 1, default: 1800 (stale-claim prune bound)
 """
 import os
 import sys
@@ -42,6 +43,14 @@ def capacity_percentage():
     """Get express lane capacity as percentage of total lanes (0-100)."""
     pct = _get_config("EXPRESS_LANE_CAPACITY_PCT", 15)
     return max(0, min(100, pct))  # Clamp to [0, 100]
+
+#: Default staleness bound for lane claims/assignments; was a bare 1800 inline
+#: in _prune_stale_lanes(), lifted so it is fleet-pushable via fleet_config.
+_DEFAULT_STALE_CLAIM_SECS = 1800
+
+def stale_claim_seconds():
+    """Seconds after which an unreleased lane claim (and its assignment) is pruned."""
+    return max(1, _get_config("EXPRESS_LANE_STALE_SECS", _DEFAULT_STALE_CLAIM_SECS))
 
 # ── State tracking ───────────────────────────────────────────────────────────
 
@@ -122,8 +131,8 @@ def _entries_of(value):
 
 
 def _prune_stale_lanes():
-    """Remove lane claims with stale task claims (>30 min old)."""
-    cutoff = time.time() - 1800  # 30 minutes
+    """Remove lane claims (and their assignments) past the staleness bound."""
+    cutoff = time.time() - stale_claim_seconds()
     for lane_type in ("express", "standard"):
         for rid in list(_active_lanes[lane_type].keys()):
             fresh = [e for e in _entries_of(_active_lanes[lane_type][rid])
@@ -132,6 +141,12 @@ def _prune_stale_lanes():
                 _active_lanes[lane_type][rid] = fresh
             else:
                 del _active_lanes[lane_type][rid]
+    # Assignments must shrink with the claims they mirror: claims were pruned above
+    # but _lane_assignments entries were never removed (release_lane only knows the
+    # runner id), so a long-lived runner leaked one dict per task claimed since boot.
+    for task_id in list(_lane_assignments.keys()):
+        if _lane_assignments[task_id].get("assigned_ts", 0) < cutoff:
+            del _lane_assignments[task_id]
 
 
 def _lane_count(lane_type):
@@ -234,15 +249,19 @@ def assign_task_lane(task_id, runner_id, use_express=False):
         # thread idents) must not silently drop an active claim.
         existing = _active_lanes[lane_type].get(runner_id)
         claims = _entries_of(existing) if existing is not None else []
+        now = time.time()
         claims.append({
             "task_id": task_id,
-            "claimed_at": time.time(),
+            "claimed_at": now,
         })
         _active_lanes[lane_type][runner_id] = claims
         assignment = {
             "lane": lane_type,
             "fallback": not use_express and use_express is not None,
             "assigned_at": datetime.now(timezone.utc).isoformat(),
+            # numeric twin of assigned_at so _prune_stale_lanes() can compare
+            # without parsing ISO strings
+            "assigned_ts": now,
         }
         _lane_assignments[task_id] = assignment
         return assignment
@@ -290,6 +309,7 @@ def stats():
             "enabled": is_enabled(),
             "capacity_percentage": capacity_percentage(),
             "total_lanes": total_lanes(),
+            "tracked_assignments": len(_lane_assignments),
             "express": {
                 "capacity": express_cap,
                 "active": express_used,

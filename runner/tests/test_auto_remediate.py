@@ -258,6 +258,42 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         self.assertEqual(task_patch["state"], "DECOMPOSED")
         self.assertIn("auto-split", task_patch["note"])
 
+    def test_decomposition_completion_emits_dispatch_event(self):
+        """When auto-decomposition completes, greedy_dispatch.on_decomposition_complete
+        (the decomposition-completion event) fires with the parent and child ids."""
+        task = {
+            "id": "t-evt",
+            "slug": "big-feature-evt",
+            "state": "BLOCKED",
+            "prompt": "Implement a very large feature with many components.",
+            "note": "quality gate: too many failures",
+            "remediation_count": auto_remediate.HARD_CAP,
+            "model": "claude-sonnet-4-6",
+            "material": False,
+            "project_id": "p1",
+            "base_branch": "main",
+        }
+        db_mock = MagicMock()
+        db_mock.select.side_effect = [[], [], [], [task]]
+        dispatch_mock = MagicMock(return_value=2)
+
+        with patch.object(auto_remediate, "db", db_mock), \
+             patch.object(auto_remediate, "_decompose", return_value=[
+                 {"title": "part-one", "prompt": "Implement step one."},
+                 {"title": "part-two", "prompt": "Implement step two."},
+             ]), \
+             patch.object(auto_remediate, "_spawn_subtasks",
+                          return_value=(2, ["c1", "c2"])), \
+             patch.object(auto_remediate.greedy_dispatch,
+                          "on_decomposition_complete", dispatch_mock):
+            result = auto_remediate.run()
+
+        self.assertEqual(result["decomposed"], 1)
+        dispatch_mock.assert_called_once()
+        parent_arg, child_ids = dispatch_mock.call_args[0]
+        self.assertEqual(parent_arg["id"], "t-evt")
+        self.assertEqual(child_ids, ["c1", "c2"])
+
     def test_already_decomposed_task_at_hard_cap_is_shelved(self):
         """BLOCKED task at HARD_CAP that IS already decomposed must be shelved, not re-decomposed."""
         task = {

@@ -65,6 +65,9 @@ def run():
     # the next slice; the report is what an operator needs first.
     checks.update(_check_outcome_slos())
 
+    # SLO 8: Preflight triage health (triage_health, section 3 of the 2026-08-02 directive).
+    checks["triage_health"] = _check_triage_health()
+
     # Record SLO status (UNKNOWN counts as not-passing for status, but doesn't trigger remediation)
     passing = sum(1 for c in checks.values() if c["ok"] is True)
     total = len(checks)
@@ -134,6 +137,67 @@ def _check_outcome_slos():
         print(f"[slo] outcome report not persisted: {e}")
 
     return checks
+
+
+def _check_triage_health():
+    """Is the preflight triage stage running, and do its classes track outcomes?
+
+    Section 3 of the 2026-08-02 operator directive. `outcomes.kind` is the class the task
+    carried into the pipeline and `outcomes.outcome_stage` is the stage it actually
+    realized, so that pair is the directive's "predicted class vs realized failure stage"
+    with the columns that exist today.
+
+    COVERAGE is enforced: a run of outcomes where most rows carry no class at all means the
+    stage is not running, and that reading is unambiguous. ACCURACY is computed and
+    published but its alert threshold is pinned to 0, i.e. report-only — same reasoning the
+    outcome SLOs above are report-only, and more so here, because `kind` and `outcome_stage`
+    do not share a vocabulary yet, so a raw equality score would page on a labelling
+    mismatch rather than a real regression. Publishing the confusion map is what makes the
+    two vocabularies comparable; tightening the threshold is the next slice.
+
+    Fail-soft: any error yields UNKNOWN (`ok: None`), which run() treats as
+    not-passing-but-not-actionable. A reporting failure must never wedge the controller.
+    """
+    try:
+        import triage_health
+    except Exception as e:
+        return {"ok": None, "state": "UNKNOWN", "value": None, "reason": f"import: {e}"}
+
+    try:
+        outcomes = db.select("outcomes", {
+            "select": "kind,outcome_stage",
+            "created_at": "gt." + _hours_ago_iso(24),
+            "limit": "500",
+        }) or []
+    except Exception as e:
+        return {"ok": None, "state": "UNKNOWN", "value": None, "reason": str(e)}
+
+    rows = [{"predicted_class": o.get("kind"), "realized_class": o.get("outcome_stage")}
+            for o in outcomes]
+    verdict = triage_health.classify_triage(rows, min_accuracy=0.0)
+    report = triage_health.report(rows)
+    detail = verdict.get("detail") or {}
+
+    try:
+        db.insert("controls", {
+            "key": "slo_triage_report",
+            "value": json.dumps({
+                "verdict": verdict,
+                "confusion": report.get("confusion"),
+                "report": triage_health.render(report),
+                "window_hours": 24,
+                "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }),
+            "updated_at": "now()",
+        }, upsert=True)
+    except Exception as e:
+        print(f"[slo] triage report not persisted: {e}")
+
+    state = verdict.get("state")
+    ok = None if state == triage_health.UNKNOWN else (state == triage_health.HEALTHY)
+    return {"ok": ok, "state": str(state).upper(), "value": detail.get("coverage"),
+            "threshold": triage_health.TRIAGE_MIN_COVERAGE,
+            "accuracy": detail.get("accuracy"), "reason": verdict.get("reason", "")}
 
 
 def _check_merge_rate():

@@ -110,3 +110,97 @@ def test_get_store_is_a_singleton():
     config_store.invalidate()
     assert config_store.get_store() is config_store.get_store()
     config_store.invalidate()
+
+
+# --- integration: the seam must not need the module it replaces ------------
+#
+# A seam that imports the old owner module at import time is not a seam: the
+# swap it exists to enable is impossible until fleet_config_dao is importable.
+# These tests pin the decoupling and the one wired call site.
+
+def test_importing_config_store_does_not_import_the_old_owner_module():
+    import subprocess
+    runner_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner")
+    code = (
+        "import sys; sys.path.insert(0, %r);"
+        "import config_store;"
+        "print('fleet_config_dao' in sys.modules)" % runner_dir
+    )
+    out = subprocess.run([sys.executable, "-c", code],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "False", (
+        "config_store pulled in fleet_config_dao at import time: " + out.stdout)
+
+
+def test_an_injected_backend_is_used_without_the_old_module_being_touched():
+    dao = FakeDao()
+    store = config_store.FleetConfigStore(dao=dao)
+
+    store.update_config("ORCH_X", "1")
+
+    assert dao.calls == [("set_value", "ORCH_X", "1", None, None)]
+
+
+def test_set_store_installs_the_store_every_caller_receives():
+    config_store.invalidate()
+    injected = config_store.FleetConfigStore(dao=FakeDao())
+    try:
+        config_store.set_store(injected)
+        assert config_store.get_store() is injected
+    finally:
+        config_store.invalidate()
+
+
+def test_set_store_refuses_something_that_is_not_a_config_store():
+    config_store.invalidate()
+    try:
+        with pytest.raises(TypeError):
+            config_store.set_store(object())
+    finally:
+        config_store.invalidate()
+
+
+def test_set_store_none_restores_the_default():
+    config_store.invalidate()
+    try:
+        config_store.set_store(config_store.FleetConfigStore(dao=FakeDao()))
+        config_store.set_store(None)
+        assert isinstance(config_store.get_store(), config_store.FleetConfigStore)
+    finally:
+        config_store.invalidate()
+
+
+def test_fleet_control_writes_config_through_the_seam():
+    """The wired call site: update_fleet_config must go through the store."""
+    import fleet_control
+
+    dao = FakeDao()
+    config_store.invalidate()
+    try:
+        config_store.set_store(config_store.FleetConfigStore(dao=dao))
+        row = fleet_control.update_fleet_config("ORCH_AUTO_PULL", "true")
+    finally:
+        config_store.invalidate()
+
+    assert [c[0] for c in dao.calls] == ["set_value"], (
+        "the separate 'what was it before?' read should be gone — the store "
+        "returns (old, new) from the one write")
+    assert dao.calls[0][1:3] == ("ORCH_AUTO_PULL", "true")
+    assert row["key"] == "ORCH_AUTO_PULL" and row["value"] == "true"
+
+
+def test_fleet_control_still_refuses_an_unsafe_key_before_reaching_the_store():
+    import fleet_control
+
+    dao = FakeDao()
+    config_store.invalidate()
+    try:
+        config_store.set_store(config_store.FleetConfigStore(dao=dao))
+        with pytest.raises(ValueError):
+            fleet_control.update_fleet_config("OPENAI_API_KEY", "sk-abc")
+    finally:
+        config_store.invalidate()
+
+    assert dao.calls == [], "a refused key must never reach the store"

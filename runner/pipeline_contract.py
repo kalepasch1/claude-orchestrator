@@ -19,6 +19,7 @@ import os
 import json
 import re
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -317,26 +318,107 @@ def _recent_context(project: str) -> List[str]:
     return items[:8]
 
 
+#
+# Live-route budget
+#
+# Every lookup below (_author_model, _coder, _safe_route x3, _qa_panel,
+# _recent_context) is individually fail-soft against *exceptions* but not
+# against *latency*. db._req retries GETs HTTP_RETRIES times at HTTP_TIMEOUT
+# seconds each, across every configured base URL, so a single unreachable
+# Supabase edge turns one lookup into minutes of blocking TLS handshakes and a
+# full build_plan into far longer.
+#
+# That is the measured cause of the 2026-08-12 "enqueue terminates silently
+# before insertion" regression: enqueue_task never crashed and never inserted,
+# it sat in urlopen until its supervisor killed it, which prints nothing. A
+# fail-soft module that can still hang forever is not fail-soft.
+#
+# So live resolution now runs against a wall-clock budget. When the budget is
+# spent, the remaining fields degrade to the same deferred values intake
+# already uses (build_deferred_plan) -- routing is revalidated at claim time
+# anyway, so a deferred envelope is correct, merely less specific. Set
+# ORCH_CONTRACT_ROUTE_BUDGET=0 to restore unbounded legacy behaviour.
+ROUTE_BUDGET_S = float(os.environ.get("ORCH_CONTRACT_ROUTE_BUDGET", "25") or 25)
+
+DEFERRED_ROUTE: Dict[str, str] = {
+    "provider": "runtime-policy",
+    "model": "selected-at-claim",
+    "reason": "deferred to execution-time capability and capacity checks",
+}
+
+
+class _Budget:
+    """Wall-clock allowance for the blocking lookups inside build_plan."""
+
+    def __init__(self, seconds: float):
+        self.seconds = float(seconds or 0)
+        self.started = time.monotonic()
+        self.degraded = False
+
+    @property
+    def unlimited(self) -> bool:
+        return self.seconds <= 0
+
+    def spent(self) -> bool:
+        if self.unlimited:
+            return False
+        return (time.monotonic() - self.started) >= self.seconds
+
+    def check(self, what: str) -> bool:
+        """True if `what` may still run. Announces the first degradation."""
+        if not self.spent():
+            return True
+        if not self.degraded:
+            self.degraded = True
+            sys.stderr.write(
+                "[pipeline_contract] live route budget of {0:.0f}s exhausted before {1}; "
+                "remaining routes deferred to claim time. The task envelope is still "
+                "valid -- routing is revalidated when the task is claimed.\n".format(
+                    self.seconds, what))
+        return False
+
+
+def _budgeted(budget: "_Budget", what: str, fn, fallback):
+    """Run a blocking lookup only while the budget allows; never raise."""
+    if not budget.check(what):
+        return fallback() if callable(fallback) else fallback
+    try:
+        return fn()
+    except Exception as exc:
+        sys.stderr.write(
+            "[pipeline_contract] {0} failed ({1}); fail-soft, using deferred value\n".format(what, exc))
+        return fallback() if callable(fallback) else fallback
+
+
 def build_plan(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-               slug: str = "", material: bool = False) -> Dict[str, Any]:
+               slug: str = "", material: bool = False,
+               budget_s: Optional[float] = None) -> Dict[str, Any]:
+    budget = _Budget(ROUTE_BUDGET_S if budget_s is None else budget_s)
     cls = classify(prompt, kind=kind, material=material)
-    author = _author_model(prompt, kind)
-    coder = _coder(slug, prompt, material)
-    try:
-        preflight = _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False)
-    except Exception as e:
-        sys.stderr.write(f"[pipeline_contract] preflight routing failed ({e}); fail-soft, using default\n")
-        preflight = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "preflight routing failed"}
-    try:
-        strategy = _safe_route("orchestrator", "task_strategy", "plan", need=max(7, int(cls["need"])), agentic=False)
-    except Exception as e:
-        sys.stderr.write(f"[pipeline_contract] strategy routing failed ({e}); fail-soft, using default\n")
-        strategy = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "strategy routing failed"}
-    try:
-        qa = _safe_route("orchestrator", "task_qa", "review", need=6 if cls["need"] < 8 else 8, agentic=False)
-    except Exception as e:
-        sys.stderr.write(f"[pipeline_contract] qa routing failed ({e}); fail-soft, using default\n")
-        qa = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "qa routing failed"}
+    author = _budgeted(budget, "author model routing",
+                       lambda: _author_model(prompt, kind), "selected-at-claim")
+    coder = _budgeted(budget, "coder selection",
+                      lambda: _coder(slug, prompt, material), "selected-at-claim")
+    preflight = _budgeted(
+        budget, "preflight routing",
+        lambda: _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False),
+        lambda: dict(DEFERRED_ROUTE))
+    strategy = _budgeted(
+        budget, "strategy routing",
+        lambda: _safe_route("orchestrator", "task_strategy", "plan",
+                            need=max(7, int(cls["need"])), agentic=False),
+        lambda: dict(DEFERRED_ROUTE))
+    qa = _budgeted(
+        budget, "qa routing",
+        lambda: _safe_route("orchestrator", "task_qa", "review",
+                            need=6 if cls["need"] < 8 else 8, agentic=False),
+        lambda: dict(DEFERRED_ROUTE))
+    qa_panel = _budgeted(
+        budget, "qa panel selection",
+        lambda: _qa_panel(author, cls["task_class"]),
+        lambda: ["independent cross-model panel selected at execution time"])
+    collaboration = _budgeted(
+        budget, "cross-learning context", lambda: _recent_context(project), list)
     return {
         "source": source or "unknown",
         "project": project or "selected app",
@@ -350,10 +432,11 @@ def build_plan(prompt: str, project: str = "", kind: str = "build", source: str 
         "coder": coder,
         "author_model": author,
         "qa": qa,
-        "qa_panel": _qa_panel(author, cls["task_class"]),
+        "qa_panel": qa_panel,
         "legal_gate": "owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret",
         "release": f"auto-merge to {os.environ.get('ORCH_STAGING_BRANCH', 'orchestrator/dev')} after tests, verify, judge; production release via batch train",
-        "collaboration": _recent_context(project),
+        "collaboration": collaboration,
+        "degraded": budget.degraded,
     }
 
 
@@ -395,11 +478,7 @@ def build_deferred_plan(prompt: str, project: str = "", kind: str = "build",
     consume the watcher's entire lease before the queue insert happens.
     """
     cls = classify(prompt, kind=kind, material=material)
-    deferred = {
-        "provider": "runtime-policy",
-        "model": "selected-at-claim",
-        "reason": "deferred to execution-time capability and capacity checks",
-    }
+    deferred = dict(DEFERRED_ROUTE)
     return {
         "source": source or "unknown",
         "project": project or "selected app",
@@ -417,18 +496,37 @@ def build_deferred_plan(prompt: str, project: str = "", kind: str = "build",
         "legal_gate": "owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret",
         "release": f"auto-merge to {os.environ.get('ORCH_STAGING_BRANCH', 'orchestrator/dev')} after tests, verify, judge; production release via batch train",
         "collaboration": [],
+        "degraded": True,
     }
 
 
 def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
                 slug: str = "", material: bool = False,
                 resolve_live_routes: bool = True) -> str:
-    """Prepend the shared contract unless the prompt is already wrapped or is a control command."""
+    """Prepend the shared contract unless the prompt is already wrapped or is a control command.
+
+    This is the canonical intent chokepoint: every enqueue path runs through it
+    before the row is inserted. It must therefore always return, and always
+    return promptly. Live routing is budgeted (see ROUTE_BUDGET_S) and any
+    residual failure falls back to the deterministic deferred envelope rather
+    than propagating -- a wrapper that can strand an enqueue is worse than a
+    wrapper that produces a less specific plan.
+    """
     text = prompt or ""
     if not text.strip() or already_wrapped(text) or is_control_prompt(text):
         return text
-    builder = build_plan if resolve_live_routes else build_deferred_plan
-    plan = builder(text, project=project, kind=kind, source=source, slug=slug, material=material)
+    plan = None
+    if resolve_live_routes:
+        try:
+            plan = build_plan(text, project=project, kind=kind, source=source,
+                              slug=slug, material=material)
+        except Exception as exc:
+            sys.stderr.write(
+                "[pipeline_contract] live plan build failed ({0}); "
+                "falling back to the deferred envelope\n".format(exc))
+    if plan is None:
+        plan = build_deferred_plan(text, project=project, kind=kind, source=source,
+                                   slug=slug, material=material)
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
 
 
@@ -456,13 +554,28 @@ def task_fields(prompt: str, project: str = "", kind: str = "build", source: str
     exhaustion or capability drift safely falls through to a fresh choice.
     """
     text = prompt or ""
-    plan = build_plan(text, project=project, kind=kind, source=source,
-                      slug=slug, material=material)
+    try:
+        plan = build_plan(text, project=project, kind=kind, source=source,
+                          slug=slug, material=material)
+    except Exception as exc:
+        sys.stderr.write(
+            "[pipeline_contract] live plan build failed ({0}); "
+            "falling back to the deferred envelope\n".format(exc))
+        plan = build_deferred_plan(text, project=project, kind=kind, source=source,
+                                   slug=slug, material=material)
     wrapped = text if (already_wrapped(text) or is_control_prompt(text) or not text.strip()) else (
         render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
     )
-    chosen_coder = force_coder or plan.get("coder") or None
-    chosen_model = model or plan.get("executor_model") or plan.get("author_model") or None
+    # A degraded plan reports "selected-at-claim" rather than a concrete route.
+    # That sentinel must not be persisted into force_coder/model: those columns
+    # feed native claim-time route validation, and an unknown provider string
+    # there is worse than a NULL, which correctly means "choose at claim time".
+    def _concrete(value):
+        text_value = str(value or "").strip()
+        return None if text_value in ("", "selected-at-claim", "runtime-policy") else text_value
+
+    chosen_coder = force_coder or _concrete(plan.get("coder"))
+    chosen_model = model or _concrete(plan.get("executor_model")) or _concrete(plan.get("author_model"))
     return {
         "prompt": wrapped,
         "note": note(existing_note, source=source),

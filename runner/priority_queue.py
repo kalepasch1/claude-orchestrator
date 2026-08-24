@@ -16,6 +16,13 @@ Key functions:
 Configuration (fleet_config):
   ORCH_PRIORITY_QUEUE_ENABLED (bool, default False)
   ORCH_PINNED_TASK_PREFIXES (str, comma-separated, default "")
+  ORCH_PINNED_MIN_ROI (float, default "" = disabled)
+
+Slug prefixes only express-lane work we can name in advance. High-ROI fixes are
+identified by score at queue time, not by naming convention, so they used to wait
+behind the normal lane no matter how valuable they were. ORCH_PINNED_MIN_ROI pins
+any task whose roi / ev_score / value_per_minute meets the threshold, so the two
+pin paths (name-based and value-based) are ORed together.
 
 Fail-soft: missing/invalid config doesn't wedge queue; falls back to normal behavior.
 Thread-safe: uses explicit lock to protect shared state.
@@ -38,13 +45,19 @@ class _PriorityQueue:
         """Initialize the priority queue state."""
         self._lock = threading.Lock()
         self._total_pinned = 0
+        self._total_pinned_by_roi = 0     # subset of _total_pinned, for rollout telemetry
         self._pinned_wait_times = []      # milliseconds
         self._normal_wait_times = []      # milliseconds
         self._max_samples = 1000          # keep only recent samples
         self._enabled = False
         self._pinned_prefixes = []
+        self._min_roi = None              # None = value-based pinning disabled
         self._last_config_load = 0
         self._config_ttl = 60             # reload config every 60 seconds
+
+    # Score fields are checked in descending order of directness: an explicit roi
+    # wins over a modelled ev_score, which wins over a throughput proxy.
+    ROI_FIELDS = ("roi", "ev_score", "value_per_minute")
 
     def _load_config(self):
         """Load priority queue config from environment (via fleet_config).
@@ -65,17 +78,45 @@ class _PriorityQueue:
 
             prefixes_str = os.environ.get("ORCH_PINNED_TASK_PREFIXES", "").strip()
             self._pinned_prefixes = [p.strip() for p in prefixes_str.split(",") if p.strip()]
+
+            # Value-based pinning. Unset or unparseable leaves it disabled rather than
+            # defaulting to 0.0, which would express-lane the entire queue.
+            min_roi_str = os.environ.get("ORCH_PINNED_MIN_ROI", "").strip()
+            if min_roi_str:
+                try:
+                    self._min_roi = float(min_roi_str)
+                except (TypeError, ValueError):
+                    self._min_roi = None
+            else:
+                self._min_roi = None
         except Exception:
             # Fail-soft: keep previous config
             pass
 
-    def _is_pinned(self, task):
-        """Determine if a task matches pinned prefixes.
+    def _roi_of(self, task):
+        """Best available ROI/EV score for a task, or None if it carries no usable score.
 
-        Returns: bool - True if task slug or branch matches any pinned prefix
+        Fail-soft: a non-numeric or missing score is treated as "no signal" so the task
+        falls through to the normal lane instead of raising.
         """
-        if not self._enabled or not self._pinned_prefixes:
-            return False
+        for field in self.ROI_FIELDS:
+            raw = task.get(field)
+            if raw is None or isinstance(raw, bool):
+                continue
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _pin_reason(self, task):
+        """Why (if at all) a task belongs in the express lane.
+
+        Returns: str - "prefix", "roi", or "" when the task stays in the normal lane.
+        Prefix wins over roi when both apply, so operator-named lanes stay explainable.
+        """
+        if not self._enabled:
+            return ""
 
         # Check slug (e.g., "recovery-fix-001", "breach-remediation-2026-08-04")
         slug = (task.get("slug") or "").lower()
@@ -84,9 +125,22 @@ class _PriorityQueue:
         for prefix in self._pinned_prefixes:
             p = prefix.lower()
             if slug.startswith(p) or branch.startswith(p):
-                return True
+                return "prefix"
 
-        return False
+        # High-ROI fixes go to the front even when nobody named them in advance.
+        if self._min_roi is not None:
+            roi = self._roi_of(task)
+            if roi is not None and roi >= self._min_roi:
+                return "roi"
+
+        return ""
+
+    def _is_pinned(self, task):
+        """Determine if a task should take the express lane.
+
+        Returns: bool - True on a pinned-prefix match or an ROI at/above the threshold.
+        """
+        return bool(self._pin_reason(task))
 
     def classify_task(self, task):
         """Classify a task as pinned or normal.
@@ -99,10 +153,14 @@ class _PriorityQueue:
         """
         with self._lock:
             self._load_config()
-            is_pinned = self._is_pinned(task)
+            pin_reason = self._pin_reason(task)
             return {
-                "is_pinned": is_pinned,
-                "reason": "matches pinned prefix" if is_pinned else "normal queue"
+                "is_pinned": bool(pin_reason),
+                "pin_reason": pin_reason,
+                "reason": {
+                    "prefix": "matches pinned prefix",
+                    "roi": "roi at or above ORCH_PINNED_MIN_ROI",
+                }.get(pin_reason, "normal queue"),
             }
 
     def dispatch(self, task):
@@ -120,15 +178,18 @@ class _PriorityQueue:
         """
         with self._lock:
             self._load_config()
-            is_pinned = self._is_pinned(task)
+            pin_reason = self._pin_reason(task)
 
-            if is_pinned:
+            if pin_reason:
                 # Express-lane: immediate dispatch (0ms wait)
                 self._total_pinned += 1
+                if pin_reason == "roi":
+                    self._total_pinned_by_roi += 1
                 return {
                     "wait_ms": 0,
                     "lane": "express",
                     "pinned": True,
+                    "pin_reason": pin_reason,
                 }
             else:
                 # Normal queue: standard scheduling
@@ -136,6 +197,7 @@ class _PriorityQueue:
                     "wait_ms": None,  # scheduler decides
                     "lane": "normal",
                     "pinned": False,
+                    "pin_reason": "",
                 }
 
     def record_wait_time(self, task, wait_ms):
@@ -187,6 +249,8 @@ class _PriorityQueue:
             return {
                 "enabled": self._enabled,
                 "total_pinned": self._total_pinned,
+                "total_pinned_by_roi": self._total_pinned_by_roi,
+                "min_roi": self._min_roi,
                 "pinned_prefixes": list(self._pinned_prefixes),
                 "avg_pinned_wait_ms": round(avg_pinned, 2) if avg_pinned is not None else None,
                 "avg_normal_wait_ms": round(avg_normal, 2) if avg_normal is not None else None,
@@ -205,7 +269,9 @@ class _PriorityQueue:
             self._last_config_load = 0
             self._enabled = False
             self._pinned_prefixes = []
+            self._min_roi = None
             self._total_pinned = 0
+            self._total_pinned_by_roi = 0
             self._pinned_wait_times = []
             self._normal_wait_times = []
 

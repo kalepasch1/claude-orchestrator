@@ -12,17 +12,69 @@ import { sha256Canonical, contentId, canonicalize } from '../crypto/hash.ts';
 import { signDigest, verifyDigest, type Signature } from '../crypto/signing.ts';
 import type { ProductId } from '../types.ts';
 
-/** What a passport can attest. Additive — new claim kinds are non-breaking. */
-export type ClaimKind =
-  | 'kyc_verified' // identity proofed (galop/jumio, tomorrow ECP intake)
-  | 'ecp_eligible' // eligible contract participant (tomorrow)
-  | 'accredited' // accredited / qualified investor (pareto, tomorrow)
-  | 'geo_allowed' // jurisdiction/geo cleared (galop)
-  | 'credit_quality' // composite credit score 0..1 (tomorrow)
-  | 'financial_profile' // net worth band, liquidity band (pareto)
-  | 'reliability' // counterparty/sender reliability 0..1 (smarter)
-  | 'guardian_verified' // verified parent/guardian (hisanta)
-  | 'sanctions_clear'; // sanctions screen passed
+/**
+ * Every claim kind a passport can attest, grouped by what the claim is ABOUT.
+ *
+ * WHY A GROUPED REGISTRY AND NOT ONE UNION. This was a single `export type ClaimKind =`
+ * union with one member per line. It is the most-edited construct in the kernel — the file
+ * carries 38 commits across 178 lines — because every product that joins the passport wants
+ * to add its own claim kind, and "additive, non-breaking" was true of the TYPE while being
+ * false of the MERGE: a one-line-per-member union means every branch that adds a member
+ * edits the same contiguous hunk, so any two parallel branches conflict textually even
+ * though their changes are semantically independent. Four separate tasks were failed with
+ * `train: still conflicts after 4 redos — Conflicting files:
+ * packages/darwin-kernel/src/passport/passport.ts` and their branches were eventually GC'd.
+ *
+ * Grouping by concern puts independent additions on different lines: a product adding an
+ * identity claim and a product adding a scoring claim now touch disjoint text and git merges
+ * both without a human. That is the whole point of the change — the exported `ClaimKind`
+ * type below still resolves to exactly the same nine string literals as before.
+ *
+ * Additive in both senses now: append to the right group, or add a new group.
+ */
+export const CLAIM_KINDS = {
+  /** who someone is */
+  identity: ['kyc_verified', 'guardian_verified'],
+  /** what they are permitted to do */
+  eligibility: ['ecp_eligible', 'accredited', 'geo_allowed', 'sanctions_clear'],
+  /** how they score on a continuous measure */
+  scoring: ['credit_quality', 'financial_profile', 'reliability'],
+} as const satisfies Record<string, readonly string[]>;
+
+/**
+ * What a passport can attest. Additive — new claim kinds are non-breaking.
+ *
+ * Derived from CLAIM_KINDS, so the type and the runtime list cannot drift apart. Previously
+ * there was no runtime list at all: the union vanished at compile time, so a passport
+ * arriving from another product carrying an unrecognised `kind` could not be detected.
+ *
+ *   'kyc_verified'       identity proofed (galop/jumio, tomorrow ECP intake)
+ *   'guardian_verified'  verified parent/guardian (hisanta)
+ *   'ecp_eligible'       eligible contract participant (tomorrow)
+ *   'accredited'         accredited / qualified investor (pareto, tomorrow)
+ *   'geo_allowed'        jurisdiction/geo cleared (galop)
+ *   'sanctions_clear'    sanctions screen passed
+ *   'credit_quality'     composite credit score 0..1 (tomorrow)
+ *   'financial_profile'  net worth band, liquidity band (pareto)
+ *   'reliability'        counterparty/sender reliability 0..1 (smarter)
+ */
+export type ClaimKind = (typeof CLAIM_KINDS)[keyof typeof CLAIM_KINDS][number];
+
+/** Flat list of every known claim kind. Order is group order, then within-group order. */
+export const ALL_CLAIM_KINDS: readonly ClaimKind[] = Object.values(CLAIM_KINDS).flat();
+
+/**
+ * Runtime check that a value is a claim kind this build knows about.
+ *
+ * A passport crosses product boundaries and is verified OFFLINE by a peer that may be on an
+ * older build. Without this, an unknown `kind` is structurally invisible: it passes the
+ * digest and signature checks (it is part of the signed bytes) and then silently satisfies
+ * nothing, because `hasClaim` compares against a kind the caller names. Callers that care
+ * can now say so explicitly. Never throws.
+ */
+export function isClaimKind(value: unknown): value is ClaimKind {
+  return typeof value === 'string' && (ALL_CLAIM_KINDS as readonly string[]).includes(value);
+}
 
 export interface Claim {
   kind: ClaimKind;
