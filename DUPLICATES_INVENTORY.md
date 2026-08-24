@@ -7,54 +7,60 @@ python3 scripts/find_duplicates.py --topic pricing_grid_reconstruction \
     --out DUPLICATES_INVENTORY.csv
 ```
 
-Result: **17 files** in the topic cluster, **11 duplicated top-level symbols**
+Result: **18 files** in the topic cluster, **11 duplicated top-level symbols**
 across **34 definition sites** — see `DUPLICATES_INVENTORY.csv`.
 
-## The finding that matters
+## Correction — the previous version of this report was wrong
 
-29 of the 34 definition sites sit in files pytest **never collects**
-(`collected_by_pytest = NO`). The merge gate runs
+The earlier revision claimed that "29 of the 34 definition sites sit in files pytest
+never collects", that `runner/test_*.py` was "~4,600 lines of dead test code", and
+suggested deleting seven files.
 
-```
-python3 -m pytest runner/tests tests
-```
+**All 34 sites are collected.** `pytest.ini` declares `testpaths = runner`, which
+collects `runner/test_*.py` as well as `runner/tests/`. The generator did not read
+that file — `is_collected()` compared against a hardcoded `("runner/tests", "tests")`
+that had gone stale — so it reported every top-level runner test as uncollected.
 
-but these copies live at `runner/test_*.py` — one directory above `runner/tests/`.
-So the bulk of this "duplication" is not competing implementations, it is dead
-test code that has been accumulating without ever running:
+That is not a rounding error in the inventory. Canonical selection ranks "is the file
+collected" **first**, so a wrong collection model inverts the verdicts rather than
+skewing them, and the follow-up it produced would have deleted ~4,600 lines of live
+test coverage. `scripts/find_duplicates.py` now reads `testpaths` from `pytest.ini`
+and unions it with the paths CI names explicitly; `runner/tests/test_find_duplicates_collection.py`
+pins the behaviour.
 
-| file | lines | collected |
-| --- | --- | --- |
-| `runner/test_qafix_kalepasch_34bc56c.py` | 790 | no |
-| `runner/test_qafix_kalepasch_com_34bc56c33a4f_final.py` | 757 | no |
-| `runner/test_qafix_comprehensive_final.py` | 753 | no |
-| `runner/test_qafix_merged_diff_patch_transplant.py` | 730 | no |
-| `runner/test_qafix_kalepasch_com_34bc56c33a4f.py` | 677 | no |
-| `runner/test_pricing_grid_reconstruction.py` | 473 | no |
-| `runner/test_qafix_deduplication_validation.py` | 426 | no |
+Two further claims in the old revision do not survive checking either:
 
-That is ~4,600 lines of uncollected test code, five near-identical rewrites of the
-same qafix suite.
+* The seven files were described as "five near-identical rewrites of the same qafix
+  suite". They are not. Pairwise test-name overlap between them is 0–6 tests out of
+  30–50 each; the largest overlap is 6. They are largely distinct suites that happen
+  to reuse class names.
+* `runner/test_pricing_grid_reconstruction.py` (473 lines, 47 function-style tests)
+  and `runner/tests/test_pricing_grid_reconstruction.py` (123 lines, class-style)
+  were called "the one genuine live duplicate pair". They share a class name, not
+  assertions — the first is close to a superset of the second in coverage, and
+  deleting either loses tests.
 
-The one genuine live duplicate pair is
-`TestPricingGridReconstructionUtil` — canonical at
-`runner/tests/test_pricing_grid_reconstruction.py` (collected), duplicated at
-`runner/test_pricing_grid_reconstruction.py` (not collected).
+## What the duplication actually is
 
-The production module itself, `runner/pricing_grid_reconstruction.py`, is **not**
-duplicated — it already consolidates the logic into one
+Eleven **class names** are defined in more than one collected test file — e.g.
+`TestEdgeCases`, `TestBehaviorPreservation`, `TestPricingGridReconstructionUtil`,
+`DuplicateInfo`. Different bodies, same names, all running.
+
+The production module, `runner/pricing_grid_reconstruction.py`, is **not**
+duplicated: it already consolidates the logic into one
 `PricingGridReconstructionUtil` class, as its docstring claims.
 
 ## Canonical selection rule
 
 `verdict = canonical` is assigned by, in order:
 
-1. the file is actually collected by the merge gate,
+1. the file is actually collected by pytest (read from `pytest.ini`, not assumed),
 2. most inbound references from files outside the defining set,
 3. largest definition.
 
-Step 1 leads deliberately. Ranking by size alone would nominate the largest
-uncollected copy as canonical and point any follow-up cleanup at dead code.
+With every file now correctly reported as collected, step 1 no longer discriminates
+here and the verdicts fall through to references and size. For colliding *test class
+names* that ranking is close to arbitrary — see the follow-up below.
 
 ## Verification
 
@@ -63,5 +69,12 @@ recorded line in the recorded file. 34/34 rows verified, 0 mismatches.
 
 ## Suggested follow-up (not performed here — inventory task only)
 
-Delete the seven uncollected `runner/test_*.py` files above, or move the one
-suite worth keeping into `runner/tests/`. No production code change is required.
+Not deletion. Nothing here is dead.
+
+The name collisions are still worth removing, because a class name that appears in
+several collected files makes a failure report ambiguous — `TestEdgeCases failed`
+does not say which file. The cheap fix is to rename the colliding classes after the
+suite they belong to (`TestQafixTransplantEdgeCases`, etc.); the fuller fix is the
+one `pytest.ini` already flags, which is that 152 test files at `runner/*.py` belong
+beside the other tests in `runner/tests/`. Both are renames, and both preserve
+behaviour exactly.
