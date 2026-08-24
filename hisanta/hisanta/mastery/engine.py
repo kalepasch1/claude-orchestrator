@@ -77,7 +77,6 @@ class MasteryEngine:
     def get_all_progress(self) -> Dict[str, Progress]:
         return dict(self._progress)
 
-<<<<<<< HEAD
     # --- H1 spaced repetition / adaptive difficulty -----------------------
     # These operate on hisanta.contracts.family.Quest (the domain contract),
     # which is a different type from the local execution-record Quest above.
@@ -165,78 +164,3 @@ class MasteryEngine:
             )
         except Exception:
             return MasteryEfficacyMetric(subject=subject, score=0.0, attempts=0)
-=======
-    # ── Spaced repetition ────────────────────────────────────────────────────
-
-    def schedule_review(self, quest: Any, last_interval: int, success: bool) -> int:
-        """Days until this quest should come round again.
-
-        Success stretches the interval by REVIEW_GROWTH; a miss resets it to 1.
-        The floor of 1 also absorbs a zero or negative `last_interval`, so a
-        bad caller cannot schedule a review in the past or never.
-        """
-        if not success:
-            return 1
-        return max(1, int(last_interval * REVIEW_GROWTH))
-
-    def adaptive_difficulty(self, current: int, recent_scores: Sequence[float]) -> int:
-        """Nudge difficulty one step from recent performance.
-
-        No scores means no evidence, so difficulty is unchanged — never guess
-        a child up or down from an empty history. Moves one step at a time and
-        clamps to [MIN_DIFFICULTY, MAX_DIFFICULTY].
-        """
-        if not recent_scores:
-            return current
-        average = sum(recent_scores) / len(recent_scores)
-        if average > DIFFICULTY_UP_ABOVE:
-            return min(MAX_DIFFICULTY, current + 1)
-        if average < DIFFICULTY_DOWN_BELOW:
-            return max(MIN_DIFFICULTY, current - 1)
-        return current
-
-    def complete_weekly_quests(self, quests: Sequence[Any]) -> Dict[str, Any]:
-        """Open at most ONE advent door for a fully-completed week.
-
-        Exactly one, however many quests were finished: the door is the weekly
-        reward, and letting a big week open several doors turns a fixed
-        schedule into a variable-ratio one, which is the pattern the
-        constitution forbids. An empty week opens nothing.
-        """
-        all_complete = bool(quests) and all(getattr(q, "completed", False) for q in quests)
-        return {
-            "advent_door_opened": all_complete,
-            "doors_opened": 1 if all_complete else 0,
-            "quests_considered": len(quests),
-        }
-
-    def create_reward_schedule(
-        self, schedule_type: str, coupled_to_purchase: bool = False
-    ) -> Optional[RewardSchedule]:
-        """Build a reward schedule, refusing the loot-box combination.
-
-        A variable-ratio schedule coupled to a purchase is the loot box: it is
-        rejected outright (None) rather than created-and-flagged, so no caller
-        can build one and then decide to use it anyway. The flag is meaningless
-        for any other schedule type and is stored as False there.
-        """
-        is_variable_ratio = schedule_type == "variable_ratio"
-        if is_variable_ratio and coupled_to_purchase:
-            return None
-        return RewardSchedule(
-            schedule_type=schedule_type,
-            variable_ratio_coupled_to_purchase=False,
-        )
-
-    def get_efficacy_metrics(
-        self, subject: str, scores: Sequence[float]
-    ) -> MasteryEfficacyMetric:
-        """Mean score and attempt count for one subject.
-
-        No attempts reports 0.0 rather than raising or reporting a fabricated
-        score — "we have not measured this yet" must be readable as such.
-        """
-        attempts = len(scores)
-        mean = sum(scores) / attempts if attempts else 0.0
-        return MasteryEfficacyMetric(subject=subject, score=mean, attempts=attempts)
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
