@@ -179,7 +179,16 @@ def build_recovery_action(task: Optional[Dict], action_type: str, reason: str = 
 
 
 def detect_lost_data(tasks: Optional[List[Dict]]) -> List[Dict]:
-    """Flag tasks whose artifact record is missing (work may be unrecoverable)."""
+    """Flag tasks whose artifact record is missing (work may be unrecoverable).
+
+    A row is reported only when the `artifact_id` KEY IS PRESENT and falsy. A row
+    that omits the key entirely is deliberately NOT reported: callers pass rows
+    straight from `db.select`, and a narrow column list yields rows with no
+    `artifact_id` key at all, so treating those as lost would mark every task in
+    a partial select as unrecoverable work. Pinned by
+    tests/test_stale_backlog_artifacts.py — do not "simplify" to a plain
+    `not task.get("artifact_id")`.
+    """
     lost = []
     for task in (tasks or []):
         try:
