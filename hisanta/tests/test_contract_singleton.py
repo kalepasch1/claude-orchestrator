@@ -16,18 +16,23 @@ import hisanta.contracts.family as family
 
 
 def test_the_shim_points_at_the_canonical_file():
-    """hisanta/contracts/family.py must re-export, never re-declare."""
-    assert family.CANONICAL_PATH.replace("\\", "/").endswith(
-        "hisanta/hisanta/contracts/family.py"
-    )
-    assert family.CANONICAL_MODULE is not None
+    """The canonical union is hisanta/contracts/family.py; the NESTED copy is the shim.
+
+    The direction matters less than the invariant — one definition, one module object —
+    but it has to be pinned somewhere, so it is pinned here. Both merge candidates for
+    this file agreed on the invariant and disagreed on the direction; the direction
+    below is the one the resolved tree implements.
+    """
+    shim = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert shim.CANONICAL_PATH.replace("\\", "/").endswith("hisanta/contracts/family.py")
+    assert shim.CANONICAL_MODULE is family
 
 
 def test_every_public_name_is_the_canonical_object():
-    canonical = family.CANONICAL_MODULE
-    assert family.__all__, "the shim must export something"
-    for name in family.__all__:
-        assert getattr(family, name) is getattr(canonical, name), (
+    shim = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert shim.__all__, "the shim must export something"
+    for name in shim.__all__:
+        assert getattr(shim, name) is getattr(family, name), (
             f"{name} is a SECOND definition, not the canonical one"
         )
 
