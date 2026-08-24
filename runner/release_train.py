@@ -29,6 +29,7 @@ import shadow_mode
 import integration_runtime
 import paused_host_guard
 import release_manifest
+import stderr_digest
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -412,6 +413,14 @@ def _recent_failed_gate(project, staging_sha, gate):
         if tag not in str(row.get("note") or ""):
             continue
         created = _parse_time(row.get("created_at"))
+        # A `created_at` without an offset ("2026-08-24T12:00:00", what utcnow().isoformat()
+        # produces and what a DB column typed `timestamp` hands back) parses NAIVE, and
+        # subtracting it from an aware `now` raises TypeError — out of the try above, which
+        # only covers the db.select. That crash lands in _insert_failed_release and the
+        # release pass, i.e. the red-gate cooldown could take the train down rather than
+        # damp it. Assume UTC for naive stamps, exactly as _lineage_birth already does.
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=datetime.timezone.utc)
         if created and (now - created).total_seconds() <= RED_GATE_COOLDOWN_MIN * 60:
             return True
     return False
@@ -480,6 +489,58 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+# 2026-08-17: a bare `npx` prepare in a package root with no node_modules of its own does
+# not fail -- it FETCHES the launcher from the registry, which is what consumed the whole 180s
+# budget and failed staging QA with a timeout. _link_shared_runtime symlinks node_modules
+# at the worktree ROOT only, so a monorepo sub-package never has one. Resolve the linked
+# binary ourselves (walking up to the worktree root, never past it), and when there is no
+# toolchain at all fail fast with `npx --no-install` -- the same convention build_gate
+# already uses -- instead of silently downloading one.
+# Floored, not just defaulted: 180s was demonstrably too tight for a cold prepare, so a
+# machine-local override must not be able to reintroduce the ceiling that failed the
+# 2026-08-17 releases.
+PREPARE_TIMEOUT_S = max(300.0, float(os.environ.get("ORCH_PREPARE_TIMEOUT_S", "600")))
+PREPARE_BINS = ("nuxi", "nuxt")
+
+
+def _local_bin(root, name, stop_at=None):
+    """Return the path to node_modules/.bin/<name> at or above ``root``, else None.
+
+    The search is confined to the checkout under test: it stops after inspecting
+    ``stop_at`` (default: ``root`` itself, i.e. no ascent), so a binary installed
+    outside the worktree is never picked up. Junk input yields None, never raises.
+    """
+    try:
+        root = os.path.abspath(root)
+        stop_at = os.path.abspath(stop_at) if stop_at else root
+    except (TypeError, ValueError, AttributeError):
+        return None
+    while True:
+        candidate = os.path.join(root, "node_modules", ".bin", name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        if root == stop_at:
+            return None
+        parent = os.path.dirname(root)
+        if parent == root or not root.startswith(stop_at + os.sep):
+            return None
+        root = parent
+
+
+def _prepare_cmd(root, worktree):
+    """Return (argv, description) for generating framework types in ``root``.
+
+    Prefers the toolchain the checkout already has -- invoked directly, with no login
+    shell, exactly as resolved_file_gate runs a package-local tsc.
+    """
+    for name in PREPARE_BINS:
+        found = _local_bin(root, name, stop_at=worktree)
+        if found:
+            return [found, "prepare"], f"linked {name} ({os.path.relpath(found, worktree)})"
+    return (["npx", "--no-install", PREPARE_BINS[0], "prepare"],
+            "npx --no-install (no linked toolchain; must not fetch from the registry)")
+
+
 def _prepare_generated_types(worktree):
     """Generate checkout-local framework types for every typed Nuxt package root."""
     roots = [worktree]
@@ -504,10 +565,11 @@ def _prepare_generated_types(worktree):
             return False, str(e)
         if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
             continue
-        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
-                              capture_output=True, text=True, timeout=180)
+        cmd, how = _prepare_cmd(root, worktree)
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                              timeout=PREPARE_TIMEOUT_S)
         log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
+        logs.append(f"[{os.path.relpath(root, worktree)}] via {how}\n{log}")
         generated = os.path.join(root, ".nuxt", "tsconfig.json")
         if proc.returncode != 0 or not os.path.exists(generated):
             return False, "\n".join(logs)
@@ -863,7 +925,7 @@ def _withdraw_unreleased_merged(p, project, repo, prod, note):
             db.update("tasks", {"id": t["id"]},
                       {"state": "DONE",
                        "note": (f"MERGED withdrawn: {sha[:12]} is not on {remote} after a failed "
-                                f"release push — {(note or '')[-160:]}")})
+                                f"release push — {stderr_digest.digest(note, 160)}")})
             # The old integration card is stamped train:MERGED and therefore terminal.
             # Merely returning the task to DONE leaves it invisible until a bounded sweeper
             # happens to see it; in practice the middle of that window never did.  File a
@@ -922,7 +984,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             _self_heal_release_conflict(p, project, repo, prod, inote)
             _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
                                    f"prod integration conflicted before push — self-heal "
-                                   f"queued: {(inote or '')[-160:]}")
+                                   f"queued: {stderr_digest.digest(inote, 160)}")
             return False, to_sha, (inote or "prod integration conflict")
         if moved:
             # Gates were green on the pre-integration tip. Re-verify the tip we will ship.
@@ -935,7 +997,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                     _self_heal_qa(p, project, repo, STAGING, glog)
                 _insert_failed_release(project, gate, ahead, release_base_sha, integrated_sha,
                                        f"post-integration {gate} red — self-heal queued: "
-                                       f"{(glog or '')[-160:]}")
+                                       f"{stderr_digest.digest(glog, 160)}")
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
             if manifest and release_manifest is not None:
                 try:
@@ -989,7 +1051,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             continue
         _self_heal_release_conflict(p, project, repo, prod, plog or "push staging to prod failed")
         _insert_failed_release(project, "push", ahead, release_base_sha, to_sha,
-                               f"push {STAGING}->{prod} failed: {(plog or '')[-160:]}")
+                               f"push {STAGING}->{prod} failed: {stderr_digest.digest(plog, 160)}")
         return False, to_sha, plog or "push staging to prod failed"
     return False, to_sha, "push attempts exhausted"
 
@@ -1324,7 +1386,8 @@ def _run_for_unlocked(project, repo_override=None):
                     qlog = "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1600:]
                     _self_heal_qa(p, project, repo, STAGING, qlog)
                     _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                           f"staging QA dependency prewarm failed — self-heal queued: {qlog[-160:]}")
+                                           f"staging QA dependency prewarm failed — self-heal queued: "
+                                           f"{stderr_digest.digest(qlog, 160)}")
                     return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
             except Exception:
                 pass
@@ -1370,7 +1433,8 @@ def _run_for_unlocked(project, repo_override=None):
             ).strip()
             _self_heal_qa(p, project, repo, STAGING, qlog)
             _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                   f"staging QA failed (tests required) — self-heal queued: {qlog[-160:]}")
+                                   f"staging QA failed (tests required) — self-heal queued: "
+                                   f"{stderr_digest.digest(qlog, 160)}")
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
         if manifest:
             release_manifest.record_gate(manifest["id"], "qa", True, command=qa_cmd,
@@ -1443,7 +1507,8 @@ def _run_for_unlocked(project, repo_override=None):
     if not refreshed:
         _self_heal_release_conflict(p, project, repo, prod, refresh_note)
         _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
-                               f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
+                               f"staging/prod refresh failed — self-heal queued: "
+                               f"{stderr_digest.digest(refresh_note, 160)}")
         return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
@@ -1491,7 +1556,8 @@ def _run_for_unlocked(project, repo_override=None):
     rel = _insert_release({"project": project, "version": ver, "from_sha": last_good,
                     "to_sha": to_sha, "n_changes": int(ahead), "changelog": changelog,
                     "deploy_status": ("building" if pushed else "failed") if push_on else "pending",
-                    "note": "" if (pushed or not push_on) else (push_log or "push failed")[-160:]})
+                    "note": "" if (pushed or not push_on)
+                    else stderr_digest.digest(push_log or "push failed", 160)})
     withdrawn = []
     if push_on and not pushed:
         # Nothing reached origin, so no task in this batch may keep claiming MERGED.
@@ -1501,7 +1567,7 @@ def _run_for_unlocked(project, repo_override=None):
                   f"commits never reached origin/{prod}")
         return {"project": project, "prod": prod, "released": 0, "pushed": False,
                 "merged_withdrawn": withdrawn,
-                "note": f"release push failed; relfix queued: {(push_log or '')[-160:]}"}
+                "note": f"release push failed; relfix queued: {stderr_digest.digest(push_log, 160)}"}
     print(f"release_train {project}: staged {merged}, released {ahead} changes to {prod} "
           f"(push={'on' if pushed else 'off/local'})")
     return {"project": project, "prod": prod, "released": ahead, "pushed": pushed}

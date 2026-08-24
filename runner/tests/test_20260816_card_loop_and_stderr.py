@@ -152,12 +152,33 @@ def test_pick_cards_pages_instead_of_widening_the_limit(monkeypatch):
 
 
 def test_pick_cards_falls_back_when_the_server_cannot_page(monkeypatch):
-    """A server that will not page must degrade, not take the train down."""
+    """A server that will not page must degrade to a bounded window, not take the train down.
+
+    WAS: the fallback returned [] because the stand-in db.select returned [], so the test
+    could not tell "degraded correctly" from "gave up and returned nothing". The fallback
+    now has to prove it read the table, kept the window bounded, and still handed the
+    cards it found to the train.
+    """
+    seen = []
+
     def no_paging(*a, **k):
         raise RuntimeError("offset unsupported")
+
+    def fake_select(table, params=None, **kw):
+        seen.append(params or {})
+        return [{"id": "c1", "kind": "integrate", "status": "approved", "slug": "s",
+                 "title": "merge of s", "decided_by": None}]
+
     monkeypatch.setattr(mt.db, "select_all", no_paging)
-    monkeypatch.setattr(mt.db, "select", lambda *a, **k: [])
-    assert mt._pick_cards() == []          # returned, did not raise
+    monkeypatch.setattr(mt.db, "select", fake_select)
+
+    picked = mt._pick_cards()
+
+    assert seen, "the degraded path must still read the approvals table"
+    assert all(int(p.get("limit") or 0) > 0 for p in seen), \
+        "an unpaged read must stay bounded — that is the whole reason it is a fallback"
+    assert [c["id"] for c in picked] == ["c1"], \
+        "cards the fallback did see must still reach the train"
 
 
 # ---------------------------------------------------------------------- 3. stderr digest
@@ -174,9 +195,26 @@ REAL_PUSH_FAILURE = (
 )
 
 
-def test_old_tail_truncation_loses_the_cause():
-    """Documents the defect this module exists to fix."""
-    assert "rejected" not in REAL_PUSH_FAILURE[-160:]
+def test_the_cause_lines_are_exactly_what_a_tail_throws_away():
+    """The defect this module exists to fix, stated against the real API.
+
+    WAS: `assert "rejected" not in REAL_PUSH_FAILURE[-160:]` — an assertion about a
+    constant defined ten lines above it, which is green no matter what stderr_digest
+    does. Kept as the same documentation of the defect, but anchored to the function
+    that has to know better: diagnostic_lines() must pick up precisely the lines the
+    160-byte tail discards, and must not pick up git's hint block, which is all the
+    tail preserved.
+    """
+    tail = REAL_PUSH_FAILURE[-160:]
+    found = sd.diagnostic_lines(REAL_PUSH_FAILURE)
+
+    assert any("! [rejected]" in ln for ln in found)
+    assert any(ln.startswith("error: failed to push") for ln in found)
+    assert not any(ln.startswith("hint:") for ln in found), "git advice is not a cause"
+    # ...and every one of those cause lines is absent from what the old tail kept.
+    for line in found:
+        assert line not in tail
+    assert "hint:" in tail, "the tail kept the advice and nothing else — that is the bug"
 
 
 def test_digest_keeps_the_cause_at_the_same_budget():
