@@ -172,13 +172,41 @@ def risky():
         self.assertTrue(any(v.rule == 'FAIL_SOFT_ERROR' for v in violations))
 
     def test_detects_naming_convention_violations(self):
-        """Detects naming convention violations."""
+        """Detects naming convention violations.
+
+        Asserted against a camelCase DEFINITION. The previous version only CALLED
+        `badFunction()` and expected a violation — the rule checks definitions, not
+        call sites (it cannot rename a function it does not own), so the test had been
+        failing rather than describing the contract.
+        """
         code = """
-def process():
-    badFunction()
+def badFunction():
+    return 1
 """
         violations = self._check_code(code)
         self.assertTrue(any(v.rule == 'NAMING_CONVENTION' for v in violations))
+
+    def test_a_call_to_a_foreign_camel_case_name_is_not_a_violation(self):
+        """The inverse: third-party APIs are camelCase and are not ours to rename."""
+        code = """
+def process():
+    return someLibrary.doThing()
+"""
+        violations = self._check_code(code)
+        self.assertFalse(any(v.rule == 'NAMING_CONVENTION' for v in violations))
+
+    def test_unittest_fixture_names_are_not_violations(self):
+        """setUp is mandated by unittest; renaming it silently disables the fixture."""
+        code = """
+class T:
+    def setUp(self):
+        return 1
+
+    def tearDown(self):
+        return 1
+"""
+        violations = self._check_code(code)
+        self.assertFalse(any(v.rule == 'NAMING_CONVENTION' for v in violations))
 
     def test_detects_magic_number_violations(self):
         """Detects magic number violations."""

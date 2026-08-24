@@ -88,9 +88,52 @@ class ExemptionTestCase(unittest.TestCase):
         self.assertNotIn("HARDCODED_SECRET", self._check("test_prod.py", SECRETS))
 
     def test_the_exemption_list_is_narrow(self):
-        # widening this silently would re-open the hole the noise came through
+        # Widening this silently would re-open the hole the noise came through, so the
+        # set is pinned and any change has to come here and say why.
+        #
+        # MAGIC_NUMBERS added 2026-08-24: 2,052 of its 3,139 findings (65%) were inside
+        # test files, where the literal IS the expected value —
+        # `assertEqual(cache.limit_bytes, 50000)` becomes a test that a constant equals
+        # itself once the number is hoisted. Production literals are still flagged.
         self.assertEqual(cl.TEST_EXEMPT_RULES,
-                         frozenset({"FAIL_SOFT_ERROR", "HARDCODED_SECRET"}))
+                         frozenset({"FAIL_SOFT_ERROR", "HARDCODED_SECRET",
+                                    "MAGIC_NUMBERS"}))
+
+    def _check_gate(self, name, source):
+        """Same check through tools/lint_conventions.py, the RATCHET gate.
+
+        MAGIC_NUMBERS is implemented there, not in convention_lint (the hook), which is
+        why the exemption has to be asserted against that module: a MAGIC_NUMBERS
+        assertion routed through convention_lint.check_file can only ever be vacuous.
+        The two linters share this frozenset, so this is where the sharing is proved.
+        """
+        import lint_conventions
+
+        path = os.path.join(self.tmp.name, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(source)
+        return {v.rule for v in lint_conventions.check_file(path)}
+
+    def test_a_magic_number_in_production_code_is_still_reported(self):
+        """The exemption is about test DATA, not about the rule being optional."""
+        code = "def gate(n):\n    if n > 4096:\n        return 1\n    return 0\n"
+        self.assertIn("MAGIC_NUMBERS", self._check_gate("prod.py", code))
+
+    def test_a_magic_number_in_a_test_is_not_reported(self):
+        code = "def test_gate(n):\n    if n > 4096:\n        return 1\n    return 0\n"
+        self.assertNotIn("MAGIC_NUMBERS", self._check_gate("test_prod.py", code))
+
+    def test_the_gate_and_the_hook_share_one_exemption_list(self):
+        """Two linters, one definition — they drifted by thousands of findings once."""
+        import lint_conventions
+
+        made_up = [lint_conventions.ConventionViolation("x.py", 1, rule, "msg")
+                   for rule in sorted(cl.TEST_EXEMPT_RULES) + ["MODULE_SINGLETON"]]
+        kept_in_a_test = lint_conventions._apply_test_exemption("tests/x.py", made_up)
+        self.assertEqual({v.rule for v in kept_in_a_test}, {"MODULE_SINGLETON"})
+        kept_in_prod = lint_conventions._apply_test_exemption("runner/x.py", made_up)
+        self.assertEqual(len(kept_in_prod), len(made_up))
 
     def test_syntax_errors_are_reported_even_in_tests(self):
         # a test file that cannot be parsed is broken, not exempt

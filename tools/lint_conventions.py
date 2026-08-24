@@ -177,15 +177,41 @@ class ConventionChecker(ast.NodeVisitor):
                         f'Magic number {val} in expression should be assigned to named constant'
                     ))
 
+    #: Method names a THIRD-PARTY FRAMEWORK requires to be camelCase. Flagging these
+    #: was 596 of the 1491 NAMING_CONVENTION hits — 40% of the rule's entire output,
+    #: none of it actionable: renaming `setUp` does not rename it in unittest, it just
+    #: stops the fixture from running. A rule whose loudest finding cannot be obeyed
+    #: trains people to ignore the rule, so the exemption is part of the rule, not a
+    #: suppression of it.
+    FRAMEWORK_METHOD_NAMES = frozenset({
+        # unittest.TestCase / module-level fixtures
+        'setUp', 'tearDown', 'setUpClass', 'tearDownClass',
+        'setUpModule', 'tearDownModule',
+        'asyncSetUp', 'asyncTearDown', 'runTest', 'shortDescription',
+        # unittest.TestResult / custom runners
+        'addSuccess', 'addFailure', 'addError', 'addSkip', 'startTest', 'stopTest',
+        'startTestRun', 'stopTestRun',
+    })
+
     def _check_function_naming(self, node: ast.FunctionDef) -> None:
-        """Check function names follow snake_case."""
+        """Check function names follow snake_case.
+
+        Framework-mandated names are exempt: unittest's fixtures (see
+        FRAMEWORK_METHOD_NAMES) and ast.NodeVisitor's `visit_<NodeType>` dispatch,
+        whose suffix is a CPython AST class name and is camelCase by definition.
+        """
         name = node.name
-        if not name.startswith('_'):
-            if not self._is_snake_case(name):
-                self.violations.append(ConventionViolation(
-                    self.filepath, node.lineno, 'NAMING_CONVENTION',
-                    f'Function "{name}" should use snake_case'
-                ))
+        if name.startswith('_'):
+            return
+        if name in self.FRAMEWORK_METHOD_NAMES:
+            return
+        if name.startswith('visit_') and name != 'visit_':
+            return  # ast.NodeVisitor dispatch: visit_FunctionDef, visit_ClassDef, ...
+        if not self._is_snake_case(name):
+            self.violations.append(ConventionViolation(
+                self.filepath, node.lineno, 'NAMING_CONVENTION',
+                f'Function "{name}" should use snake_case'
+            ))
 
     def _check_module_singleton_pattern(self, node: ast.FunctionDef) -> None:
         """Check that module-level functions don't have self parameter (singleton pattern)."""
@@ -287,6 +313,31 @@ class ConventionChecker(ast.NodeVisitor):
         return bool(re.match(r'^[a-z][a-z0-9]*(_[a-z0-9]+)*$', name))
 
 
+def _apply_test_exemption(filepath, violations):
+    """Drop the two rules a test file cannot obey, reusing convention_lint's definition.
+
+    THE SPLIT THIS CLOSES. There are two linters over the same rules:
+    tools/convention_lint.py (the pre-commit hook) and this module (the ratchet gate).
+    The hook grew a narrow test-file exemption — FAIL_SOFT_ERROR and HARDCODED_SECRET
+    only, because a test that asserts a function raises has to contain a raise, and a
+    fixture named `secret` is a fixture, not a credential. The gate never got it, so
+    the two disagreed by thousands of findings on the same tree and the gate was red
+    on counts the hook considered clean.
+
+    Imported rather than re-declared so `is_test_file` and TEST_EXEMPT_RULES cannot
+    drift apart again. Fail-soft: if the hook module cannot be imported, nothing is
+    exempted and the gate stays strict.
+    """
+    try:
+        import convention_lint
+    except ImportError:
+        return violations
+    if not convention_lint.is_test_file(filepath):
+        return violations
+    exempt = convention_lint.TEST_EXEMPT_RULES
+    return [v for v in violations if v.rule not in exempt]
+
+
 def check_file(filepath: str) -> List[ConventionViolation]:
     """Parse and check a Python file for convention violations."""
     try:
@@ -302,7 +353,7 @@ def check_file(filepath: str) -> List[ConventionViolation]:
             )]
         checker = ConventionChecker(filepath, source_lines)
         checker.visit(tree)
-        return checker.violations
+        return _apply_test_exemption(filepath, checker.violations)
     except Exception as e:
         return [ConventionViolation(
             filepath, 1, 'PARSE_ERROR',
