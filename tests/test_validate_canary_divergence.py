@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Two functions named `validate_canary` exist, and they do NOT agree.
+"""Two functions named `validate_canary` exist. They now AGREE on the verdict.
 
-    canary.validate_canary            substring match, WARNING on a miss
-    canary_validation.validate_canary word-boundary match, INFO on a miss
+    canary.validate_canary            word-boundary match (delegates), WARNING on a miss
+    canary_validation.validate_canary word-boundary match (the definition), INFO on a miss
 
-Both contracts are deliberate and separately tested, so this file does not try to pick a
-winner. It pins the DIFFERENCE, so a future "remove the duplicate" pass has to confront a
-failing test rather than silently changing what a caller gets — the imports look
-interchangeable at the call site and are not.
+Before 2026-08-13 the first one matched on a substring, so `"precanary"` validated
+through one import path and failed through the other — a canary hop could be reported
+as both intact and broken depending on which module a caller happened to import. That
+divergence was removed by making `canary.py` delegate.
+
+This file pins the post-unification contract: the verdict must be identical through
+either import, the two must remain distinct objects (delegation, not aliasing), and the
+one remaining deliberate difference — log severity on a miss — must survive.
 """
 import logging
 import os
@@ -46,19 +50,42 @@ class AgreementTests(unittest.TestCase):
 
 
 class DivergenceTests(unittest.TestCase):
-    """The cases that make the two NOT interchangeable."""
+    """What the two still do NOT share, after the 2026-08-13 unification.
 
-    AFFIXED = ["precanary build", "xcanary", "canaryish", "my-canary-token"]
+    The matching rule is no longer one of them: `canary.validate_canary` now
+    delegates to `canary_validation.validate_canary`, so both answer on a WORD
+    BOUNDARY. This class used to pin the opposite (substring vs word boundary) and
+    was left asserting a divergence the codebase had deliberately removed, so the
+    suite failed on green code. The affixed cases are kept — inverted — because
+    they are exactly where the old substring rule disagreed, and a regression back
+    to `"canary" in text.lower()` must still fail loudly here.
+    """
 
-    def test_an_affixed_marker_is_a_match_only_for_the_substring_implementation(self):
+    AFFIXED = ["precanary build", "xcanary", "canaryish"]
+    AFFIXED_WITH_SEPARATORS = ["my-canary-token", "canary_build", "build.canary"]
+
+    def test_an_affixed_marker_is_rejected_by_both_implementations(self):
         for text in self.AFFIXED:
-            self.assertTrue(substring_match(text),
-                            f"canary.py must accept the affixed form {text!r}")
-
-    def test_an_affixed_marker_without_a_word_boundary_is_rejected_by_the_other(self):
-        for text in ("precanary build", "xcanary", "canaryish"):
+            self.assertFalse(substring_match(text),
+                             f"canary.py must reject the affixed form {text!r}")
             self.assertFalse(word_boundary_match(text),
                              f"canary_validation.py must reject {text!r}")
+
+    def test_separator_delimited_markers_are_accepted_by_both(self):
+        """`-` and `.` are word boundaries; `_` is not. Pinned so the shared regex
+        cannot be 'tidied' into something that changes a caller's verdict."""
+        self.assertTrue(substring_match("my-canary-token"))
+        self.assertTrue(word_boundary_match("my-canary-token"))
+        self.assertTrue(substring_match("build.canary"))
+        self.assertTrue(word_boundary_match("build.canary"))
+        self.assertFalse(substring_match("canary_build"))
+        self.assertFalse(word_boundary_match("canary_build"))
+
+    def test_the_two_agree_on_every_affixed_case(self):
+        """The unification's actual guarantee: no input may split the verdict."""
+        for text in self.AFFIXED + self.AFFIXED_WITH_SEPARATORS:
+            self.assertIs(substring_match(text), word_boundary_match(text),
+                          f"import path must not change the verdict for {text!r}")
 
     def test_the_two_functions_are_not_the_same_object(self):
         """Guards against a 'deduplication' that aliases one to the other."""
