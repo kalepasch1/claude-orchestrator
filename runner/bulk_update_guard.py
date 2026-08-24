@@ -59,6 +59,48 @@ def is_state_change(patch):
     return any(f in patch for f in STATE_FIELDS)
 
 
+#: What `row_count` means when the guard could not determine it.
+#:
+#: bulk_state_change_audit.row_count is `integer NOT NULL`, so "we could not count the rows"
+#: has to be encoded as a value rather than as NULL. It was written as a bare `-1` literal at
+#: the one place that produces it, which cost a full investigation
+#: (investigate-audit-anomaly-20260814-p3qz): 37 rows reading row_count=-1, actor='unknown'
+#: were read as impossible/corrupt data from an unidentified writer, and the proposed remedy
+#: was a `CHECK (row_count >= 0)` constraint.
+#:
+#: They are neither corrupt nor anonymous. They are this guard working: `check()` refuses an
+#: UNBOUNDED state flip when the count is unknown unless an operator sets
+#: ORCH_ALLOW_BULK_STATE_CHANGE, and when the operator does, `_audit` records the transition
+#: with the count it never had. `actor='unknown'` is the parameter default on `check()` /
+#: `audited_bulk_update()` (and the column default in Postgres), not a mystery writer.
+#:
+#: DO NOT add `CHECK (row_count >= 0)`. It would make this insert fail on exactly the
+#: unknown-count path — the most dangerous write in the system would become the one that
+#: goes unaudited, which is the failure mode the whole module exists to prevent.
+ROW_COUNT_UNKNOWN = -1
+
+
+def _default_actor():
+    """Best available identity for a caller that did not name itself.
+
+    Every one of the 37 audited rows says actor='unknown', which reads as "no writer could be
+    identified" and sent the investigation looking for a rogue process. It only ever meant
+    "the caller used the parameter default". ORCH_ACTOR is already set fleet-wide and is what
+    db.update() passes, so falling back to it recovers a real name in the common case; the
+    literal survives only when there is genuinely nothing to report. Never raises.
+    """
+    try:
+        return (os.environ.get("ORCH_ACTOR") or "").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+#: Prefixed onto the audit `reason` whenever ROW_COUNT_UNKNOWN is stored, so the row explains
+#: itself in a plain `select *` and nobody has to re-derive the above from source again.
+UNKNOWN_COUNT_NOTE = (
+    f"[row_count={ROW_COUNT_UNKNOWN} means COUNT-UNDETERMINED, not a negative count: the "
+    f"affected-row count could not be read before this operator-authorised transition] ")
+
+
 def changed_state_value(patch):
     for f in STATE_FIELDS:
         if f in (patch or {}):
@@ -66,7 +108,7 @@ def changed_state_value(patch):
     return ""
 
 
-def check(table, patch, row_count, actor="unknown", reason=""):
+def check(table, patch, row_count, actor=None, reason=""):
     """Authorise a bulk state transition of `row_count` rows.
 
     Returns True when the operation may proceed. Raises BulkStateChangeRefused otherwise.
@@ -123,13 +165,23 @@ def _audit(table, patch, row_count, actor, reason, token):
     disappears exactly when the database is unhealthy is not an audit trail. A durable local
     JSONL record is written and fsync'd first; only then is the DB row attempted.
     """
+    # Normalise ONCE, so the local JSONL and the DB row cannot disagree about what happened.
+    # They previously could: the JSONL kept row_count=None while the DB row silently became
+    # -1, so the durable record that is documented as authoritative did not contain the value
+    # an investigator would later find in Postgres.
+    count_unknown = row_count is None
+    stored_count = ROW_COUNT_UNKNOWN if count_unknown else int(row_count)
+    stored_reason = ((UNKNOWN_COUNT_NOTE if count_unknown else "") + (reason or ""))[:2000]
+    stored_actor = (actor or _default_actor())[:200]
+
     record = {
         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "bot": "bulk-update-guard", "event": "bulk_state_change",
         "table_name": table, "operation": "bulk_update",
-        "row_count": row_count, "to_state": changed_state_value(patch)[:120],
-        "patch": patch, "reason": (reason or "")[:2000],
-        "actor": (actor or "unknown")[:200], "override_token": (token or "")[:200],
+        "row_count": stored_count, "row_count_unknown": count_unknown,
+        "to_state": changed_state_value(patch)[:120],
+        "patch": patch, "reason": stored_reason,
+        "actor": stored_actor, "override_token": (token or "")[:200],
     }
     try:
         home = os.environ.get(
@@ -151,10 +203,10 @@ def _audit(table, patch, row_count, actor, reason, token):
         db.insert("bulk_state_change_audit", {
             "table_name": table,
             "operation": "bulk_update",
-            "row_count": int(row_count) if row_count is not None else -1,
+            "row_count": stored_count,
             "to_state": changed_state_value(patch)[:120],
-            "reason": (reason or "")[:2000],
-            "actor": (actor or "unknown")[:200],
+            "reason": stored_reason,
+            "actor": stored_actor,
             "override_token": (token or "")[:200],
         })
     except Exception as e:
@@ -162,7 +214,7 @@ def _audit(table, patch, row_count, actor, reason, token):
               f"written and is authoritative): {e}", flush=True)
 
 
-def audited_bulk_update(table, match, patch, actor="unknown", reason=""):
+def audited_bulk_update(table, match, patch, actor=None, reason=""):
     """Convenience helper: count first, authorise, then update. Use this instead of a raw
     multi-row db.update() when you genuinely need one."""
     import db
