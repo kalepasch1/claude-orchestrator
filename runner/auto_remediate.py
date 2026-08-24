@@ -244,6 +244,7 @@ def run(limit=120):
           f"shelf-recovered {shelf_dec}dec/{shelf_req}req, recovered-cards {recovered_cards}, "
           f"restored-noops {restored_noops}, offloaded-backlog {offloaded_backlog}, left {left}")
     print(f"auto_remediate timing: total={_total_elapsed:.1f}s tasks={len(blocked)} phases=[{_phase_str}] slowest=[{_slow_str}]")
+    _record_timing(_total_elapsed, _loop_elapsed, len(blocked), _phase_times, _slowest)
     return {"requeued": requeued, "escalated": escalated, "revised": revised,
             "reclaimed": reclaimed, "decomposed": decomposed, "shelved": shelved,
             "agentic_repairs": agentic_repairs,
@@ -253,6 +254,61 @@ def run(limit=120):
             "timing": {"total_s": round(_total_elapsed, 2),
                        "phases": {k: round(v, 2) for k, v in _phase_times.items()},
                        "slowest_tasks": _slowest[:5]}}
+
+
+# A remediation pass slower than this is worth a loud line: the loop is the
+# fleet's response path for BLOCKED work, so cadence drift here delays every
+# incident behind it. Operator-tunable, ORCH_-prefixed so fleet_control can push it.
+SLOW_PASS_SECONDS = float(os.environ.get("ORCH_REMEDIATION_SLOW_SECONDS", "300") or 300)
+
+
+def _record_timing(total_s, loop_s, task_count, phases, slowest):
+    """Persist one remediation pass's timings to the metric-history time series.
+
+    run() has always measured its own duration, but only printed it, so the
+    numbers died with the process and no one could see whether remediation
+    cadence was drifting. metric_history is the existing owner of orchestrator
+    time-series data (compliance_periodic already feeds it), so the timings go
+    there rather than into a new store.
+
+    Fail-soft in every branch: telemetry must never wedge the remediation loop.
+    """
+    try:
+        metrics = {
+            "remediation_pass_seconds": round(float(total_s), 3),
+            "remediation_task_loop_seconds": round(float(loop_s), 3),
+            "remediation_tasks_examined": int(task_count or 0),
+        }
+        try:
+            count = int(task_count or 0)
+            if count > 0:
+                metrics["remediation_seconds_per_task"] = round(float(loop_s) / count, 3)
+        except Exception:
+            pass
+        for name, value in (phases or {}).items():
+            try:
+                metrics[f"remediation_phase_{name}_seconds"] = round(float(value), 3)
+            except Exception:
+                continue
+        try:
+            if slowest:
+                metrics["remediation_slowest_task_seconds"] = round(float(slowest[0]["elapsed"]), 3)
+        except Exception:
+            pass
+
+        if total_s > SLOW_PASS_SECONDS:
+            print(f"auto_remediate: SLOW PASS {total_s:.1f}s > {SLOW_PASS_SECONDS:.0f}s "
+                  f"threshold over {task_count} tasks — remediation cadence is degrading")
+            metrics["remediation_slow_pass"] = 1
+        else:
+            metrics["remediation_slow_pass"] = 0
+
+        import metric_history
+        metric_history.record_snapshot(metrics)
+        return metrics
+    except Exception as e:
+        print(f"auto_remediate: timing telemetry fail-soft: {e}")
+        return {}
 
 
 _NON_CLAUDE_CACHE = {"t": 0.0, "coder": None}
