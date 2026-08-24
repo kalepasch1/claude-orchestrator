@@ -44,6 +44,34 @@ ORCH_SURFACE_ESCALATE_MAX = int(os.environ.get("ORCH_SURFACE_ESCALATE_MAX", "3")
 ORCH_SURFACE_ESCALATE_DEPTH = int(os.environ.get("ORCH_SURFACE_ESCALATE_DEPTH", "2"))   # explore tasks/surface
 
 
+def _enqueue_task_mod():
+    """The enqueue_task module, imported lazily.
+
+    It is a CLI script as well as a library and pulls in db/prisma-ish setup, so
+    importing it at module load would make `improvement_miner` unimportable in
+    environments where that setup is absent. Callers wrap this in try/except.
+    """
+    import enqueue_task
+    return enqueue_task
+
+
+def _note_with_intent(note, key):
+    """`note` with the dedup marker appended, exactly once.
+
+    The marker is how an open task advertises its intent key, because `tasks`
+    has no `intent_key` column. Appending a second one would leave two markers
+    in the note and make `_intent_from_note` return whichever it saw first.
+    """
+    text = str(note or "").strip()
+    try:
+        marker = "[" + _enqueue_task_mod()._INTENT_MARKER + key + "]"
+    except Exception:
+        return note
+    if marker in text:
+        return text
+    return (text + " " + marker).strip()
+
+
 def surface_returns():
     """{surface: avg_delta} as measured by improvement_measure. Fail-soft: {} on any error."""
     out = {}
@@ -149,18 +177,26 @@ def queue_exploration_tasks(app, surfaces, project_id, base_branch="master", dep
         return {"created": 0, "coalesced": 0}
 
     if find_open_by_intent is None or insert is None or bump is None:
+        # The `tasks` table has NO `intent_key` column. This used to filter on
+        # `intent_key=eq.<key>` and write `row["intent_key"] = key`, so BOTH
+        # calls raised PostgREST "column does not exist" — and both are wrapped
+        # in `except Exception`, so the failures were silent. The read returned
+        # None (never a duplicate, always insert) and the write then failed too,
+        # which means escalation has never actually enqueued anything AND could
+        # never have coalesced if it had. enqueue_task.py already solved this by
+        # embedding the key in `note` as `[enqueue-intent:<key>]` and filtering
+        # on that; reuse its helpers rather than inventing a second scheme.
         def find_open_by_intent(key):
             try:
-                rows = db.select("tasks", {"select": "id,slug,attempt", "intent_key": f"eq.{key}",
-                                           "state": "in.(QUEUED,RUNNING)", "limit": "1"}) or []
+                return _enqueue_task_mod()._find_open_by_intent(project_id, key)
             except Exception:
                 return None
-            return rows[0] if rows else None
 
         def insert(record, key):
             row = dict(record)
             row.pop("assumptions", None)          # transport-only hint, not a tasks column
-            row["intent_key"] = key
+            row.pop("intent_key", None)           # not a column; carried in `note`
+            row["note"] = _note_with_intent(row.get("note"), key)
             try:
                 return db.insert("tasks", row)
             except Exception:
