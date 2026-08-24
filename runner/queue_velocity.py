@@ -168,6 +168,54 @@ def _recovery_action(task):
         return "infra_error", str(e)[:200]
 
 
+_integral_at_shelve = 0
+_depth_at_shelve = 0
+
+
+def _announce_shelving(shelved, slugs, failed=0):
+    """Write a durable, actionable record that the controller shelved real work.
+
+    Shelving reported itself to STDOUT ONLY. Nothing landed in the inbox, no alert
+    fired, and the task note carried the same placeholder-free sentence on every row —
+    so work disappearing from the queue was discoverable only by reading runner logs
+    and noticing an absence. That is the "silently shelving" this is meant to end.
+
+    Shelving is a legitimate control action, not an error, so this states plainly what
+    happened, why, and how to undo it. Fail-soft: an unwritable inbox must not break
+    the controller, but it says so rather than swallowing.
+    """
+    sample = ", ".join(str(s) for s in (slugs or [])[:10])
+    if slugs and len(slugs) > 10:
+        sample += f", … (+{len(slugs) - 10} more)"
+    body = (
+        f"queue-velocity PID I-action shelved {shelved} queued task(s).\n\n"
+        f"Why: cumulative surplus (integral) {_integral_at_shelve} exceeded "
+        f"ORCH_QV_INTEGRAL_SHELVE={INTEGRAL_SHELVE_THRESHOLD} for "
+        f"{SHELVE_CONSECUTIVE_REQUIRED} consecutive samples at queue depth "
+        f"{_depth_at_shelve}.\n\n"
+        f"This is a control action, not a failure: the lowest-EV work was moved to "
+        f"SHELVED so the queue could drain. Pinned (express-lane) tasks were excluded.\n\n"
+        f"To undo: set those tasks back to QUEUED once the backlog clears.\n"
+        f"To make it fire less readily: raise ORCH_QV_INTEGRAL_SHELVE or "
+        f"ORCH_QV_SHELVE_MIN_DEPTH.\n\n"
+        f"Shelved: {sample or '(none recorded)'}"
+    )
+    if failed:
+        body += (f"\n\nWARNING: {failed} shelve write(s) failed, so the queue drained "
+                 f"less than the count above implies.")
+    try:
+        db.insert("inbox", {
+            "kind": "alert",
+            "title": f"[queue-velocity] shelved {shelved} low-EV task(s) to drain backlog",
+            "body": body[:3000],
+        }, upsert=False)
+        return True
+    except Exception as exc:  # noqa: BLE001 — fail-soft, but NOT silent
+        print(f"[queue-velocity] could not record shelving in the inbox "
+              f"({type(exc).__name__}: {exc}); {shelved} task(s) were still shelved")
+        return False
+
+
 def _shelve_lowest_ev(count):
     """Move the lowest-EV queued tasks to SHELVED state so the queue can drain.
 
@@ -191,6 +239,8 @@ def _shelve_lowest_ev(count):
         shelved = 0
         recovered = 0
         skipped_infra = 0
+        failed_shelves = 0
+        shelved_slugs = []
         for t in tasks:
             # Defence in depth. db.py documents deployments where pinned/pin_rank predate their
             # migration, so the server-side filter can be silently dropped; never rely on it alone.
@@ -210,12 +260,30 @@ def _shelve_lowest_ev(count):
             try:
                 db.update("tasks", {"id": t["id"]},
                           {"state": "SHELVED",
-                           "note": f"shelved by queue-velocity PID (low EV, integral too high)"})
+                           # Actionable context on the row itself. The old note was an
+                           # f-string with no placeholders, so every shelved task carried
+                           # the same sentence and an operator could not tell how far over
+                           # threshold the controller was, or what to change to get the
+                           # task back.
+                           "note": (f"shelved by queue-velocity PID I-action: "
+                                    f"integral={_integral_at_shelve} > threshold="
+                                    f"{INTEGRAL_SHELVE_THRESHOLD}, depth={_depth_at_shelve}. "
+                                    f"Not a failure — requeue with state=QUEUED once the "
+                                    f"backlog drains, or raise ORCH_QV_INTEGRAL_SHELVE.")})
                 shelved += 1
-            except Exception:
-                pass
+                shelved_slugs.append(t.get("slug") or t.get("id"))
+            except Exception as exc:  # noqa: BLE001 — fail-soft, but NOT silent
+                # Was a bare `pass`. A shelve that failed looked exactly like one that
+                # succeeded, so the count reported to the operator was fiction.
+                failed_shelves += 1
+                print(f"[queue-velocity] could not shelve {t.get('slug')}: "
+                      f"{type(exc).__name__}: {exc}")
         if shelved:
             print(f"[queue-velocity] shelved {shelved} lowest-EV tasks to drain backlog")
+            _announce_shelving(shelved, shelved_slugs, failed_shelves)
+        if failed_shelves:
+            print(f"[queue-velocity] {failed_shelves} shelve write(s) FAILED — "
+                  f"the queue did not drain by as much as the count above suggests")
         if recovered or skipped_infra:
             print(f"[queue-velocity] shelve pass: recovered={recovered} "
                   f"infra_skipped={skipped_infra}")
@@ -317,6 +385,10 @@ def run():
     if shelve_pressure >= SHELVE_CONSECUTIVE_REQUIRED:
         i_action = True
         shelve_count = int(effective_depth * SHELVE_PCT)
+        # Capture the controller state that justified this action, so the inbox
+        # record and each task's note can say WHY rather than just that it happened.
+        global _integral_at_shelve, _depth_at_shelve
+        _integral_at_shelve, _depth_at_shelve = integral, effective_depth
         shelved = _shelve_lowest_ev(shelve_count)
         integral = max(0, integral - shelve_count)  # reduce integral after shelving
         shelve_pressure = 0
