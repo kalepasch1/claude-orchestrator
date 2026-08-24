@@ -40,9 +40,34 @@ def _branch_exists_remote(repo, branch):
     """Check if branch exists on remote, using authenticated git operations."""
     return git_auth.branch_exists_remote(repo, branch, "origin")
 
+#: Prefix stamped on a requeued task. A task already carrying it is itself the product of
+#: a recovery, so recovering it again would mint `recover-recover-…` forever — the exact
+#: non-terminating remediation this module is supposed to end.
+RECOVERY_PREFIX = "recover-"
+#: How deep a recovery chain may go before we stop and leave the task for an operator.
+MAX_RECOVERY_DEPTH = int(os.environ.get("ORCH_FLEET_RECOVERY_MAX_DEPTH", "1") or 1)
+
+
+def recovery_depth(slug):
+    """How many recovery cycles this slug has already been through. Never raises."""
+    text = str(slug or "")
+    depth = 0
+    while text.startswith(RECOVERY_PREFIX):
+        text = text[len(RECOVERY_PREFIX):]
+        depth += 1
+    return depth
+
+
 def recover_branch(task, repo_path, base_branch="master"):
     slug = task.get("slug", "")
     branch = f"agent/{slug}"
+    # Terminate, don't loop: a slug that has already been recovered MAX_RECOVERY_DEPTH
+    # times stops here in a stable state rather than spawning another requeue.
+    if recovery_depth(slug) >= MAX_RECOVERY_DEPTH:
+        _log.info("recovery exhausted for %s (depth %d); leaving for operator",
+                  slug, recovery_depth(slug))
+        return {"recovered": False, "strategy": "recovery_exhausted",
+                "detail": f"depth {recovery_depth(slug)} >= {MAX_RECOVERY_DEPTH}"}
     if _branch_exists_local(repo_path, branch):
         return {"recovered": True, "strategy": "already_exists"}
     if _branch_exists_remote(repo_path, branch):
@@ -60,7 +85,7 @@ def recover_branch(task, repo_path, base_branch="master"):
     if not git_auth.pat_available():
         _log.info("skipping recovery for %s (PAT unavailable)", slug)
         return {"recovered": False, "strategy": "pat_unavailable"}
-    recovery_slug = f"recover-{slug}"
+    recovery_slug = f"{RECOVERY_PREFIX}{slug}"
     try:
         existing = db.select("tasks", {"select": "id", "slug": f"eq.{recovery_slug}",
                    "project_id": f"eq.{task.get('project_id')}", "limit": "1"}) or []
