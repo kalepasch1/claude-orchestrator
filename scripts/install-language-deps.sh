@@ -128,9 +128,60 @@ install_node() {
   case "$MODE" in
     dry-run) note "would: npm --prefix $dir install"; return ;;
     verify)
-      if [ -d "$dir/node_modules" ] && (cd "$dir" && npm ls --depth=0 >/dev/null 2>&1); then
+      # `npm ls` exit status is NOT a "dependencies are satisfied" signal. It also
+      # goes non-zero for `extraneous` — a package present in node_modules that no
+      # manifest declares — which is what optional native transitive deps leave
+      # behind on every install (@emnapi/*, @napi-rs/*, @tybys/*). web/ had all
+      # nine of its declared deps installed and still reported "unsatisfied" on
+      # every run because of four extraneous packages nobody had asked for.
+      #
+      # What actually matters is `missing` and `invalid`: declared but absent, or
+      # present at a version the range does not allow. Those are read explicitly
+      # from the JSON so the gate fails on real gaps and stays quiet about noise.
+      if [ ! -d "$dir/node_modules" ]; then
+        FAILED+=("$manifest (node, unsatisfied)")
+        return
+      fi
+      local problems
+      problems="$( (cd "$dir" && npm ls --depth=0 --json 2>/dev/null) | node -e '
+        const fs = require("fs"), path = require("path");
+        const dir = process.argv[1];
+        // Local `file:` workspace links (@darwin/kernel -> ../packages/darwin-kernel)
+        // are reported `invalid` whenever node_modules is a link farm shared with
+        // another checkout, because the resolved path is not the one this tree
+        // would have produced. The package is the same source in the same repo, so
+        // that is a path artifact, not a missing dependency — accept it as long as
+        // the target actually exists on disk.
+        let declared = {};
+        try {
+          const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+          declared = Object.assign({}, pkg.dependencies, pkg.devDependencies);
+        } catch {}
+        const isLocalLink = name => String(declared[name] || "").startsWith("file:");
+        let raw = "";
+        process.stdin.on("data", d => raw += d);
+        process.stdin.on("end", () => {
+          let tree;
+          try { tree = JSON.parse(raw || "{}"); }
+          catch { console.log("unreadable-npm-ls-output"); return; }
+          const bad = [];
+          for (const [name, info] of Object.entries(tree.dependencies || {})) {
+            if (!info || typeof info !== "object") continue;
+            if (info.missing) { bad.push(name + " (missing)"); continue; }
+            if (!info.invalid) continue;
+            if (isLocalLink(name)) {
+              const target = path.resolve(dir, String(declared[name]).slice(5));
+              if (fs.existsSync(target)) continue;
+            }
+            bad.push(name + " (invalid)");
+          }
+          console.log(bad.join(", "));
+        });
+      ' "$dir" 2>/dev/null)"
+      if [ -z "$problems" ]; then
         INSTALLED+=("$manifest (node, satisfied)")
       else
+        warn "$manifest: $problems"
         FAILED+=("$manifest (node, unsatisfied)")
       fi
       return ;;

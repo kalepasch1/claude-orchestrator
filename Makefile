@@ -5,7 +5,21 @@ BASE_URL          ?= http://localhost:3000
 E2E_SUPABASE_URL  ?=
 E2E_SESSION_JSON  ?=
 
-.PHONY: test-e2e install-e2e lock lock-check install-deps install-all-deps verify-deps
+.PHONY: test-e2e install-e2e lock lock-check install-deps install-all-deps verify-deps \
+        prepare-worktree check-worktree
+
+## prepare-worktree: link node_modules from the main checkout into an agent worktree
+##
+## A fresh worktree has only tracked files, so every node workspace comes up with
+## node_modules missing and `verify-deps` fails on six manifests. Linking costs
+## milliseconds; `npm install` per worktree costs minutes and ~1GB for a branch
+## that lives for one task. No-op in the main checkout.
+prepare-worktree:
+	bash scripts/prepare-worktree.sh
+
+## check-worktree: fail if this worktree still has unlinked node workspaces
+check-worktree:
+	bash scripts/prepare-worktree.sh --check
 
 ## install-deps: install the exact locked Python dependency set
 install-deps:

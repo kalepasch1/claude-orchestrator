@@ -48,6 +48,24 @@ work to. Once the fleet is healthy, prefer the drop-box.
 
 ## Worktree convention (auto-distilled)
 
+### Before you build in a worktree
+
+A fresh worktree has only *tracked* files. `node_modules/` is gitignored, so all six
+node workspaces (`web/`, `runner/`, `mcp/`, `packages/*`) come up empty and
+`make verify-deps` fails on every one of them — before the task writes a line of
+code. Link them instead of installing per worktree (minutes and ~1GB each, for a
+branch that lives for one task):
+
+```bash
+make prepare-worktree      # bash scripts/prepare-worktree.sh
+make check-worktree        # --check: report only, non-zero if unlinked
+```
+
+Idempotent, fail-soft, and a no-op in the main checkout. Only fall back to
+`make install-all-deps` if it reports there is nothing to link from.
+
+### Worktree convention
+
 All agent work happens in isolated git worktrees under `{repo}-wt/{slug}`, never via
 `git checkout` in the main repo checkout. `sentinel.py` monitors the main checkout and
 will stash+reset any non-base branch it finds there. Worktrees are removed after push;
