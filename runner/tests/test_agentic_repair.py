@@ -45,10 +45,21 @@ class TestOriginalPrompt(unittest.TestCase):
         result = agentic_repair._original_prompt(task)
         self.assertIn("Fix the login bug", result)
 
-    def test_missing_prompt_uses_slug(self):
+    def test_missing_prompt_returns_empty_not_a_slug_stub(self):
+        """Deliberately NOT the old "fall back to the slug" contract.
+
+        _original_prompt used to synthesise "Complete the task '<slug>'." for a
+        missing prompt. That string is the spec-lost quarantine cause: callers
+        write the result back to the task row, so the synthesised stub replaced
+        the real specification and the task could never be completed correctly.
+        Returning "" is what lets a caller tell "no spec here" from "here is a
+        spec", and skip the write. Asserting the old behaviour would re-open the
+        bug, so this test pins the safe contract instead.
+        """
         task = {"slug": "my-task", "prompt": None}
         result = agentic_repair._original_prompt(task)
-        self.assertIn("my-task", result)
+        self.assertEqual(result, "")
+        self.assertNotIn("Complete the task", result)
 
     def test_empty_task_does_not_crash(self):
         result = agentic_repair._original_prompt({})

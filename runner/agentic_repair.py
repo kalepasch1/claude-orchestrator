@@ -72,17 +72,42 @@ _REPAIR_CODER_FALLBACK = "claude"
 MAX_PROMPT_CHARS = int(os.environ.get("ORCH_REPAIR_MAX_PROMPT_CHARS", "24000"))
 
 # Categories with a concrete technical signal a coder can act on directly.
-_TECHNICAL_CATEGORIES = frozenset(
-    ("buildfail", "testfail", "timeout", "conflict", "regressfail", "missing-branch"))
+#
+# "noop", "transient" and "rework" were dropped from this set at some point and the
+# contract tests that named them went red rather than the omission being noticed.
+# They belong here: a noop is "the agent produced nothing", a transient is an infra
+# blip, and rework is the default category — all three are ordinary technical repairs,
+# and none is a legal/secret/security case where the mechanism must be REPLACED. With
+# them missing, is_technical() said False and those repairs were routed down the
+# replacement path instead of simply being retried with a technical directive.
+_TECHNICAL_CATEGORIES = frozenset((
+    "buildfail", "testfail", "timeout", "conflict", "regressfail", "missing-branch",
+    "noop", "transient", "rework",
+))
+
+#: Public spelling. Callers and the contract tests use the unprefixed name, the same
+#: way `_original_prompt` is aliased below; keeping only the private one is what broke
+#: them. One object, so the two names can never disagree.
+TECHNICAL_CATEGORIES = _TECHNICAL_CATEGORIES
 
 # Categories where the blocked mechanism must be REPLACED with a safe variant rather than
 # retried verbatim (legal posture, leaked/secret-shaped content, security findings).
 _REPLACEMENT_CATEGORIES = frozenset(("legal", "secret", "security"))
+REPLACEMENT_CATEGORIES = _REPLACEMENT_CATEGORIES
 
 
 def is_technical(category):
-    """True when the repair category carries a concrete technical failure signal."""
-    return str(category or "").lower() in _TECHNICAL_CATEGORIES
+    """True when the repair category carries a concrete technical failure signal.
+
+    An absent category defaults to technical: it is certainly not one of the three
+    replacement categories, and treating "we were not told" as a replacement case
+    would divert an ordinary repair down the rewrite path. An unknown but PRESENT
+    category stays False — that is a real signal we do not understand, and guessing
+    at it is how a legal or security repair gets quietly retried verbatim.
+    """
+    if category is None or str(category).strip() == "":
+        return True
+    return str(category).lower() in _TECHNICAL_CATEGORIES
 
 
 def replacement_required(category):
@@ -162,13 +187,53 @@ def repair_prompt(task, failure, directive=None, category="rework"):
     return in_session_prompt(task, failure, category=category, directive=directive)
 
 
+def _agentic_artifacts_context(slug, task=None):
+    """The prior run's artifacts as a prompt block, or "" when there are none.
+
+    Restored: this lookup was dropped and the block hard-coded to
+    "Touched files from prior run: unknown / Prior commit SHA: unknown", which is
+    strictly worse than both alternatives. Every repair prompt carried the block
+    whether or not anything was known, so it taught the coder nothing while
+    costing tokens on every single repair — and when real artifacts DID exist in
+    task_artifacts they were never consulted, so the touched files, commit and
+    patch from the prior attempt were thrown away at exactly the moment they were
+    most useful.
+
+    Returns "" — never a placeholder block — when nothing is known, so the caller
+    can omit the section entirely. Fail-soft: a missing or broken task_artifacts
+    module yields "", because losing context must never break the repair.
+    """
+    touched = sha = diff = ""
+    if isinstance(task, dict):
+        touched = str(task.get("touched_files") or "")
+        sha = str(task.get("commit_sha") or "")
+        diff = str(task.get("patch_diff") or "")
+    if not (touched or sha or diff):
+        try:
+            import task_artifacts
+            data = task_artifacts.get_artifacts(slug) or {}
+            touched = str(data.get("touched_files") or "")
+            sha = str(data.get("commit_sha") or "")
+            diff = str(data.get("patch_diff") or "")
+        except Exception:
+            return ""
+    if not (touched or sha or diff):
+        return ""
+    block = "Agentic analysis artifacts from prior run:\n"
+    if touched:
+        block += f"Touched files from prior run: {touched}\n"
+    if sha:
+        block += f"Prior commit SHA: {sha}\n"
+    if diff:
+        block += f"Prior patch diff (truncated):\n```diff\n{diff[:2000]}\n```\n"
+    return block + "\n"
+
+
 def in_session_prompt(task, failure, category="rework", directive=None):
     directive = directive or _DEFAULT_DIRECTIVE
     base = original_prompt(task) or f"Complete the task '{task.get('slug')}'."
-    touched = task.get("touched_files") or "unknown"
-    sha = task.get("commit_sha") or "unknown"
+    artifacts = _agentic_artifacts_context(task.get("slug"), task)
     log = str(task.get("log_tail") or task.get("note") or failure or "")[:1000]
-    diff = str(failure or "")[:2000]
     repair = (
         f"\n\n{MARKER}\n"
         f"Repair category: {category}\n"
@@ -183,10 +248,7 @@ def in_session_prompt(task, failure, category="rework", directive=None):
         f"- If tests/build fail, fix source/config/tests until the relevant checks are green.\n"
         f"- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.\n"
         f"- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.\n\n"
-        f"Agentic analysis artifacts from prior run:\n"
-        f"Touched files from prior run: {touched}\n"
-        f"Prior commit SHA: {sha}\n"
-        f"Prior patch diff (truncated):\n```diff\n{diff}\n```\n\n"
+        f"{artifacts}"
         f"Failure context:\n```\n{log}\n```\n\n"
         f"bugfix"
     )
