@@ -58,9 +58,9 @@ class TestNetworkFailures:
         except ImportError:
             pytest.skip("db module not importable")
 
-        with mock.patch.object(db, "execute", side_effect=ConnectionError("Connection refused")):
+        with mock.patch.object(db, "select", side_effect=ConnectionError("Connection refused")):
             try:
-                result = db.execute("SELECT 1")
+                result = db.select("tasks", {"select": "id", "limit": "1"})
                 assert result is None or (isinstance(result, dict) and "error" in result)
             except ConnectionError:
                 pass  # acceptable: module surfaces the error
@@ -72,9 +72,9 @@ class TestNetworkFailures:
         except ImportError:
             pytest.skip("db module not importable")
 
-        with mock.patch.object(db, "execute", side_effect=OSError("Name or service not known")):
+        with mock.patch.object(db, "select", side_effect=OSError("Name or service not known")):
             try:
-                result = db.execute("SELECT 1")
+                result = db.select("tasks", {"select": "id", "limit": "1"})
                 assert result is None or isinstance(result, dict)
             except OSError:
                 pass  # acceptable
@@ -86,9 +86,9 @@ class TestNetworkFailures:
         except ImportError:
             pytest.skip("db module not importable")
 
-        with mock.patch.object(db, "execute", side_effect=TimeoutError("Read timed out")):
+        with mock.patch.object(db, "select", side_effect=TimeoutError("Read timed out")):
             try:
-                result = db.execute("SELECT 1")
+                result = db.select("tasks", {"select": "id", "limit": "1"})
                 assert result is None or isinstance(result, dict)
             except TimeoutError:
                 pass  # acceptable
@@ -108,9 +108,9 @@ class TestAuthFailures:
             pytest.skip("db module not importable")
 
         err = ConnectionError("401 Unauthorized")
-        with mock.patch.object(db, "execute", side_effect=err):
+        with mock.patch.object(db, "select", side_effect=err):
             try:
-                db.execute("SELECT 1")
+                db.select("tasks", {"select": "id", "limit": "1"})
             except ConnectionError as e:
                 msg = str(e)
                 assert "test-service-key-placeholder" not in msg, (
@@ -125,9 +125,9 @@ class TestAuthFailures:
             pytest.skip("db module not importable")
 
         err = ConnectionError("JWT expired")
-        with mock.patch.object(db, "execute", side_effect=err):
+        with mock.patch.object(db, "select", side_effect=err):
             try:
-                db.execute("SELECT 1")
+                db.select("tasks", {"select": "id", "limit": "1"})
             except ConnectionError:
                 pass  # acceptable: surfaces error without crash
 
@@ -152,7 +152,9 @@ class TestFailSoft:
         """repair_patch builds a patch dict without hitting the database."""
         import agentic_repair
 
-        task = {"slug": "test-task", "prompt": "Fix something", "attempt": 0}
+        # attempt must be >=1: attempt 0 is the "never attempted, nothing to
+        # repair" short-circuit, which deliberately emits no repair counters.
+        task = {"slug": "test-task", "prompt": "Fix something", "attempt": 1}
         patch = agentic_repair.repair_patch(task, "timeout error")
         assert patch["state"] == "QUEUED"
         assert patch["remediation_count"] == 1
