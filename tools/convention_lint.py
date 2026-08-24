@@ -341,8 +341,15 @@ class ConventionChecker(ast.NodeVisitor):
         """
         Rule 1: Fail-soft error handling
 
-        Public module-level functions should not raise on bad input.
-        Flag functions that have raise statements but no try/except handlers.
+        Public module-level functions should not raise on bad input, and they
+        should not swallow it silently either. Both halves fail the rule:
+
+        - a `raise` with no handler that returns a default, and
+        - an `except:` whose body is only `pass`, which hides the error and
+          leaves the caller with an implicit None it never asked for.
+
+        A handler is fail-soft when it returns a default, re-raises
+        deliberately, or at minimum records the error.
         """
         # Only check public module-level functions. function_context already holds
         # this function, so depth > 1 means it is nested inside another function.
@@ -375,21 +382,44 @@ class ConventionChecker(ast.NodeVisitor):
                     f'Public function "{node.name}" raises on bad input; use try/except with sensible defaults instead'
                 ))
 
-        # A bare `except: pass` silently swallows every error including
-        # KeyboardInterrupt/SystemExit — that is silent failure, not fail-soft
-        # (fail-soft returns a sensible default). Flag it in public functions.
+        # An `except: pass` silently swallows the error and hands the caller an
+        # implicit None it never asked for — that is silent failure, not
+        # fail-soft (fail-soft returns a sensible default, re-raises
+        # deliberately, or at minimum records the error). CLAUDE.md states the
+        # rule precisely: "A silent `except Exception: pass` is the defect; a
+        # logged one is the convention." So the check is on the HANDLER BODY,
+        # not on whether the except clause was bare — `except Exception: pass`
+        # loses the error just as completely as `except: pass` does, and it was
+        # the far more common spelling in this repo.
         for child in self._own_nodes(node):
             if not isinstance(child, ast.Try):
                 continue
             for handler in child.handlers:
+                if not self._handler_is_silent(handler):
+                    continue
                 bare = handler.type is None
-                only_pass = all(isinstance(stmt, ast.Pass) for stmt in handler.body)
-                if bare and only_pass:
-                    self._record(ConventionViolation(
-                        self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
-                        f'Public function "{node.name}" has a bare "except: pass"; '
-                        'catch specific exceptions and return a sensible default instead'
-                    ))
+                spelling = 'a bare "except: pass"' if bare else 'an "except ...: pass"'
+                self._record(ConventionViolation(
+                    self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
+                    f'Public function "{node.name}" has {spelling}; return a '
+                    'sensible default or record the error instead of discarding it'
+                ))
+
+    @staticmethod
+    def _handler_is_silent(handler: ast.ExceptHandler) -> bool:
+        """True when an except body does nothing but `pass`.
+
+        A docstring-only body counts as silent too: a comment about why the
+        error is ignored still leaves the caller with no default and no record.
+        """
+        body = [
+            stmt for stmt in handler.body
+            if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str))
+        ]
+        if not body:
+            return True
+        return all(isinstance(stmt, ast.Pass) for stmt in body)
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
         """
