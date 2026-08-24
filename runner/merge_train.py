@@ -710,6 +710,31 @@ def _ensure_node_deps(repo, test_cmd=""):
         pass
 
 
+_FAILING_TESTS_HEADER = "FAILING TESTS (complete, parsed from full output):"
+
+
+def _failure_detail(stdout, stderr):
+    """Failure detail for differential QA: full identifier list, then the tail.
+
+    The 6000-char tail alone silently drops failures on a large suite, and
+    differential_qa can only compare what it is handed — so a regression could be
+    waived because its evidence fell off the front of the tail. The complete
+    identifier list is PREPENDED and the tail kept UNCHANGED after it: the block
+    is added, not substituted, because a human reading this still needs the raw
+    output. Fail-soft — any parse problem degrades to the old tail-only detail.
+    """
+    tail = ((stdout or "")[-6000:] + (stderr or "")[-6000:]).strip()
+    try:
+        import differential_qa
+        ids = differential_qa.test_identifiers((stdout or "") + "\n" + (stderr or ""))
+    except Exception:
+        return tail
+    if not ids:
+        return tail
+    listing = "\n".join("  - " + item for item in ids)
+    return f"{_FAILING_TESTS_HEADER} {len(ids)}\n{listing}\n\n{tail}"
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -750,7 +775,7 @@ def _run_tests(repo, test_cmd, ref=None):
     except subprocess.TimeoutExpired:
         return False, f"tests timed out after {timeout}s"
     if r.returncode != 0:
-        tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
+        tail = _failure_detail(r.stdout, r.stderr)
         # One retry after a forced install if the failure looks like missing deps (env, not code).
         if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
             _ensure_node_deps(repo)
@@ -759,7 +784,7 @@ def _run_tests(repo, test_cmd, ref=None):
                                     text=True, timeout=timeout)
                 if r2.returncode == 0:
                     return True, "green (after dep install)"
-                return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
+                return False, _failure_detail(r2.stdout, r2.stderr)
             except subprocess.TimeoutExpired:
                 return False, f"tests timed out after {timeout}s"
         return False, tail
