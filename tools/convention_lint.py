@@ -113,6 +113,40 @@ def _names_a_secret(name: str) -> bool:
     return bool(words & {'api', 'private', 'access', 'signing', 'encryption'})
 
 
+#: Literals that ARE a credential by their own format, whatever they are named and
+#: whatever shape the generic heuristics expect.
+#:
+#: These exist because the entropy heuristics below are tuned to reject prose, and a PEM
+#: block opens with the words "BEGIN PRIVATE KEY" — spaces and all. The whitespace test
+#: therefore threw out the single most unambiguous secret literal in existence:
+#: ``private_key = "-----BEGIN PRIVATE KEY-----..."`` passed this linter clean while
+#: ``db_password = "hunter2"`` was caught. A format this specific cannot be prose, so it
+#: is matched before any heuristic gets a vote.
+CREDENTIAL_LITERAL_MARKERS = (
+    '-----begin ',           # any PEM block: PRIVATE KEY, RSA PRIVATE KEY, OPENSSH...
+    'private key-----',
+    'aws_secret_access_key',
+    '-----begin certificate-----',
+)
+
+#: Vendor-issued credential prefixes: a literal starting with one of these is a
+#: credential regardless of length, entropy or what it is assigned to.
+CREDENTIAL_VALUE_PREFIXES = (
+    'sk-', 'sk_', 'pk_', 'rk_', 'ghp_', 'gho_', 'ghs_', 'github_pat_',
+    'xoxb-', 'xoxp-', 'xapp-', 'akia', 'asia',
+)
+
+
+def _is_credential_format(text: str) -> bool:
+    """True when the literal's own format identifies it as a credential."""
+    low = str(text or '').strip().lower()
+    if not low:
+        return False
+    if any(marker in low for marker in CREDENTIAL_LITERAL_MARKERS):
+        return True
+    return low.startswith(CREDENTIAL_VALUE_PREFIXES)
+
+
 def _looks_like_secret_value(value: str) -> bool:
     """True only when the assigned literal could plausibly BE a credential.
 
@@ -120,8 +154,14 @@ def _looks_like_secret_value(value: str) -> bool:
     `auth_hint = ""` and `os.environ["PLOEH_S2S_SECRET"] = "test-key"` were reported as
     hardcoded secrets — an empty string and a placeholder respectively, neither of which
     can leak anything. Checking the value is what makes the rule's output actionable.
+
+    Format-identified credentials (PEM blocks, vendor-prefixed keys) short-circuit every
+    heuristic below: those heuristics exist to suppress prose, and a PEM header is prose
+    -shaped by definition, so running them first is what let private keys through.
     """
     text = str(value or '').strip()
+    if _is_credential_format(text):
+        return True
     if len(text) < MIN_SECRET_VALUE_LEN:
         return False           # "" cannot leak anything; neither can a 3-char flag
     if text.startswith('$'):
