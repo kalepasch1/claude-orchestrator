@@ -13,21 +13,34 @@ import importlib
 import pytest
 
 import hisanta.contracts.family as family
+import hisanta.hisanta.contracts.family as shim
+
+# DIRECTION, reconciled once. Two branches each shipped a regression guard for
+# this property pointing OPPOSITE ways: this file asserted the nested module was
+# canonical, while test_family_contract_single_source.py asserts the nested one
+# "is now a re-export shim". Both protect the same thing — one definition, same
+# objects by either path — and differ only in WHERE the definition lives.
+#
+# Canonical is hisanta/contracts/family.py, because that is the module path every
+# consumer actually spells (engine.py:9 among them). It resolves there directly,
+# so the common import needs no indirection and does not depend on the __path__
+# extension in hisanta/__init__.py working. The nested spelling is the unusual
+# one, so it is the one that carries the shim. The assertions below are unchanged
+# apart from that direction.
 
 
 def test_the_shim_points_at_the_canonical_file():
-    """hisanta/contracts/family.py must re-export, never re-declare."""
-    assert family.CANONICAL_PATH.replace("\\", "/").endswith(
-        "hisanta/hisanta/contracts/family.py"
+    """The nested module must re-export, never re-declare."""
+    assert shim.CANONICAL_PATH.replace("\\", "/").endswith(
+        "hisanta/contracts/family.py"
     )
-    assert family.CANONICAL_MODULE is not None
+    assert shim.CANONICAL_MODULE is family
 
 
 def test_every_public_name_is_the_canonical_object():
-    canonical = family.CANONICAL_MODULE
-    assert family.__all__, "the shim must export something"
-    for name in family.__all__:
-        assert getattr(family, name) is getattr(canonical, name), (
+    assert shim.__all__, "the shim must export something"
+    for name in shim.__all__:
+        assert getattr(shim, name) is getattr(family, name), (
             f"{name} is a SECOND definition, not the canonical one"
         )
 
