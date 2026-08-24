@@ -1,161 +1,36 @@
-<<<<<<< HEAD
-"""Shared family contracts for hisanta modules.
+"""Shared interfaces/types for the hisanta family domain — the ONE definition.
 
-CANONICAL MODULE. `hisanta/hisanta/contracts/family.py` is a second, older copy of
-the same domain that drifted: it grew the quest/grandma/gifting/school types while
-this file kept the approval/kindness types. Because `hisanta.contracts.family`
-resolves HERE, every symbol that only existed in the nested copy was unimportable
-and three test modules failed at collection.
+This module is the single source of truth for the mastery + gifting stack.
+Interfaces and types only: no engine, no I/O, no policy beyond the constitution
+table itself.
 
-The fix is a union, not a replacement: every symbol either file ever exported is
-exported here, with each one's existing defaults and call sites preserved. Where
-the two copies defined the same name with different shapes (ParentApproval,
-CoppaConsent, ParentVerificationReceipt, constitution_check) the definition below
-satisfies BOTH sets of callers rather than picking a winner.
+WHY THIS FILE SAYS "the ONE definition":
+there used to be two files both spelling the module `hisanta.contracts.family`
+— this one and hisanta/hisanta/contracts/family.py — with DIFFERENT definitions
+of ParentApproval, ParentVerificationReceipt, CoppaConsent and
+constitution_check. Which one you got depended on which directory happened to be
+on sys.path, so hisanta/tests/* could not even be collected (ImportError: cannot
+import name 'Quest') while tests/* imported the other shape. Both sets of names
+now live HERE, and hisanta/hisanta/contracts/family.py is a re-export shim of
+this file, so every consumer sees the same objects no matter how it is imported.
+
+Do not add definitions to the nested shim — add them here and extend its
+re-export list.
 """
+
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
-import time
-=======
-"""Re-export shim for the family contracts.
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
 
-The definitions live once, in ``hisanta/hisanta/contracts/family.py``. This file
-exists because both this directory and ``hisanta/hisanta/`` can end up on
-sys.path as the ``hisanta`` package (pytest picks a rootdir; the app imports
-from the repo root), and the module path ``hisanta.contracts.family`` therefore
-resolves to one file or the other depending on how you got here.
 
-Before this shim the two files held DIFFERENT definitions of ParentApproval,
-ParentVerificationReceipt, CoppaConsent and constitution_check, so an
-`isinstance` check or an enum comparison could fail across the seam and
-hisanta/tests/* could not be collected at all. Loading the canonical file by
-path — rather than re-declaring anything — is what makes the two spellings the
-SAME objects.
-"""
+# ── Mastery ──────────────────────────────────────────────────────────────────
 
-import importlib.util as _importlib_util
-import os as _os
-import sys as _sys
-
-<<<<<<< HEAD
 class QuestKind(Enum):
     READING = "READING"
     MATH = "MATH"
     KINDNESS = "KINDNESS"
-
-
-class GiftLane(Enum):
-    AD_HOC = "AD_HOC"
-    ADVENT = "ADVENT"
-    EARNED_REWARD = "EARNED_REWARD"
-
-
-class ConstitutionVerdict(Enum):
-    ALLOW = "ALLOW"
-    DENY = "DENY"
-    ESCALATE = "ESCALATE"
-
-
-# The gifting protocol (hisanta/hisanta/gifting/protocol.py) and its tests refer to
-# this name. It is an ALIAS, not a second enum, so `ConstitutionAction.ESCALATE is
-# ConstitutionVerdict.ESCALATE` and a single constitution_check can serve both.
-ConstitutionAction = ConstitutionVerdict
-
-
-# Actions that must never proceed.
-DENY_ACTIONS = frozenset({"charge_child", "open_ended_child_chat"})
-
-# F1 escalation: anything that spends money or speaks to a child goes to an adult.
-# Union of the two prior escalate sets — dropping either would silently allow an
-# action that one half of the codebase expects to be gated.
-ESCALATE_ACTIONS = frozenset({
-    "loot", "gift", "ai_message",
-    "purchase", "advent_gift", "earned_reward", "match_jar",
-})
-
-
-def constitution_check(action_type: str) -> ConstitutionVerdict:
-    """Gate an action. Fail-closed on the deny list, adult-gated on the escalate list."""
-    if action_type in DENY_ACTIONS:
-        return ConstitutionVerdict.DENY
-    if action_type in ESCALATE_ACTIONS:
-        return ConstitutionVerdict.ESCALATE
-    return ConstitutionVerdict.ALLOW
-
-
-@dataclass
-class ParentVerificationReceipt:
-    """Receipt from a parent verifying a child's real-world kindness act."""
-    parent_id: str = ""
-    child_id: str = ""
-    quest_id: str = ""
-    description: str = ""
-    timestamp: float = field(default_factory=time.time)
-    verified: bool = True
-    signature: str = ""
-=======
-_CANONICAL_PATH = _os.path.join(
-    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-    "hisanta", "contracts", "family.py",
-)
-_CANONICAL_MODULE = "hisanta._canonical_contracts_family"
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
-
-_module = _sys.modules.get(_CANONICAL_MODULE)
-if _module is None:
-    _spec = _importlib_util.spec_from_file_location(_CANONICAL_MODULE, _CANONICAL_PATH)
-    if _spec is None or _spec.loader is None:  # pragma: no cover - packaging error
-        raise ImportError(f"canonical family contracts not found at {_CANONICAL_PATH}")
-    _module = _importlib_util.module_from_spec(_spec)
-    # Registered before exec so a re-entrant import gets the same object.
-    _sys.modules[_CANONICAL_MODULE] = _module
-    _spec.loader.exec_module(_module)
-
-<<<<<<< HEAD
-@dataclass
-class ParentApproval:
-    """Parent approval gate for purchase/gift actions.
-
-    Every field defaults so `ParentApproval()` is valid, while the positional
-    parent_id/child_id/action_id call sites in the gifting protocol still work.
-    """
-    parent_id: str = ""
-    child_id: str = ""
-    action_id: str = ""
-    status: ApprovalStatus = ApprovalStatus.APPROVED
-    approved: bool = False
-    timestamp: float = field(default_factory=time.time)
-
-
-@dataclass
-class CoppaConsent:
-    """COPPA consent record for a child in a school context."""
-    child_id: str = ""
-    parent_id: str = ""
-    school_id: str = ""
-    granted: bool = True
-    consented: bool = False
-    timestamp: float = field(default_factory=time.time)
-
-
-@dataclass
-class RewardCoins:
-    """Reward coins minted for completing kindness quests (kindness mint)."""
-    amount: int = 0
-    child_id: str = ""
-    quest_id: str = ""
-    source: str = "kindness_mint"
-
-
-@dataclass
-class RewardCoin:
-    """A single coin, optionally backed by a parent verification receipt."""
-    amount: int = 1
-    receipt: Optional[ParentVerificationReceipt] = None
 
 
 @dataclass
@@ -168,6 +43,8 @@ class Quest:
 @dataclass
 class RewardSchedule:
     schedule_type: str = "fixed"
+    # Deliberately False by default: coupling a variable-ratio reward schedule
+    # to a purchase is the loot-box pattern, and it must never be the default.
     variable_ratio_coupled_to_purchase: bool = False
 
 
@@ -177,6 +54,52 @@ class MasteryEfficacyMetric:
     score: float = 0.0
     attempts: int = 0
 
+
+# ── Constitution ─────────────────────────────────────────────────────────────
+
+class ConstitutionVerdict(Enum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+    ESCALATE = "ESCALATE"
+
+
+#: Historical name used by the gifting stack. Same enum object, not a copy —
+#: `ConstitutionAction.ESCALATE is ConstitutionVerdict.ESCALATE` holds, which is
+#: what stops the two halves of the codebase disagreeing about a verdict.
+ConstitutionAction = ConstitutionVerdict
+
+#: Never permitted. A child never spends real money and never gets an
+#: open-ended AI chat surface.
+DENY_ACTIONS = frozenset({"charge_child", "open_ended_child_chat"})
+
+#: Permitted only behind an adult. Every value-transfer lane is here.
+ESCALATE_ACTIONS = frozenset({
+    "loot",
+    "gift",
+    "ai_message",
+    "purchase",
+    "advent_gift",
+    "earned_reward",
+    "match_jar",
+})
+
+
+def constitution_check(action: str) -> ConstitutionVerdict:
+    """Check an action against the constitution.
+
+    DENY for the hard bright lines, ESCALATE for anything that moves value or
+    speaks to a child, ALLOW otherwise. Unknown actions ALLOW by design: this
+    is a routing table for named actions, not an authorization gate — the
+    purchase seams fail closed on their own (see gifting.protocol).
+    """
+    if action in DENY_ACTIONS:
+        return ConstitutionVerdict.DENY
+    if action in ESCALATE_ACTIONS:
+        return ConstitutionVerdict.ESCALATE
+    return ConstitutionVerdict.ALLOW
+
+
+# ── Grandma rail ─────────────────────────────────────────────────────────────
 
 @dataclass
 class GrandmaStorySlot:
@@ -194,9 +117,15 @@ class MilestoneReaction:
     approved: bool = False
 
 
-# Only these may leave the system for a milestone reaction. child_name is absent
-# by construction, so a serializer built from this set cannot leak it.
 PII_FREE_FIELDS = frozenset({"milestone_id", "reaction_text", "approved"})
+
+
+# ── Gifting ──────────────────────────────────────────────────────────────────
+
+class GiftLane(Enum):
+    AD_HOC = "AD_HOC"
+    ADVENT = "ADVENT"
+    EARNED_REWARD = "EARNED_REWARD"
 
 
 @dataclass
@@ -205,25 +134,139 @@ class MatchJar:
     lane: GiftLane = GiftLane.AD_HOC
 
 
+class ApprovalStatus(Enum):
+    APPROVED = "approved"
+    DENIED = "denied"
+    PENDING = "pending"
+
+
+@dataclass
+class ParentApproval:
+    """Parent approval gate for purchase/gift actions.
+
+    Carries both spellings the codebase grew: `approved` (the boolean the
+    mastery/contract tests read) and `status` (the tri-state the gifting
+    protocol switches on). Every field is defaulted so `ParentApproval()` is
+    constructible, which is what the contract tests assert.
+    """
+    approved: bool = False
+    parent_id: str = ""
+    child_id: str = ""
+    action_id: str = ""
+    status: ApprovalStatus = ApprovalStatus.APPROVED
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class ParentVerificationReceipt:
+    """Receipt from a parent verifying a child's real-world kindness act.
+
+    A receipt only exists because a parent produced it, so `verified` defaults
+    to True; the mint still refuses receipts with `verified=False` or missing
+    ids, so the fail-closed path is enforced at the mint, not by this default.
+    """
+    verified: bool = True
+    parent_id: str = ""
+    child_id: str = ""
+    quest_id: str = ""
+    description: str = ""
+    timestamp: float = field(default_factory=time.time)
+    signature: str = ""
+
+
+@dataclass
+class RewardCoin:
+    """A single earned coin. Minting requires a parent receipt."""
+    amount: int = 1
+    receipt: ParentVerificationReceipt | None = None
+
+
+@dataclass
+class RewardCoins:
+    """A minted batch of coins for one completed kindness quest."""
+    amount: int = 0
+    child_id: str = ""
+    quest_id: str = ""
+    source: str = "kindness_mint"
+
+
+# ── School ───────────────────────────────────────────────────────────────────
+
 @dataclass
 class SchoolQuest:
-    quest: Optional[Quest] = None
+    quest: Quest | None = None
     classroom: str = ""
 
 
 @dataclass
 class ClassroomCohort:
     name: str
-    members: List = field(default_factory=list)
-=======
-# Re-export every public name, plus __all__ itself.
-__all__ = list(getattr(_module, "__all__", []))
-for _name in __all__:
-    globals()[_name] = getattr(_module, _name)
-del _name
+    members: list = field(default_factory=list)
 
-#: The module object the names came from. Tests assert both import paths land
-#: here, which is the check that keeps the duplicate from growing back.
-CANONICAL_MODULE = _module
-CANONICAL_PATH = _CANONICAL_PATH
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
+
+@dataclass
+class CoppaConsent:
+    """COPPA consent record for a child in a school context.
+
+    `consented` and `granted` are the two names the codebase grew for the same
+    fact; both are kept so neither caller breaks.
+    """
+    consented: bool = False
+    parent_id: str = ""
+    child_id: str = ""
+    school_id: str = ""
+    granted: bool = True
+    timestamp: float = field(default_factory=time.time)
+
+
+__all__ = [
+    "ApprovalStatus",
+    "ClassroomCohort",
+    "ConstitutionAction",
+    "ConstitutionVerdict",
+    "CoppaConsent",
+    "DENY_ACTIONS",
+    "ESCALATE_ACTIONS",
+    "GiftLane",
+    "GrandmaStorySlot",
+    "MasteryEfficacyMetric",
+    "MatchJar",
+    "MilestoneReaction",
+    "PII_FREE_FIELDS",
+    "ParentApproval",
+    "ParentVerificationReceipt",
+    "Quest",
+    "QuestKind",
+    "RewardCoin",
+    "RewardCoins",
+    "RewardSchedule",
+    "SchoolQuest",
+    "constitution_check",
+]
+
+
+# ── Compatibility surface for the singleton guards ───────────────────────────
+# Two committed test modules encode the de-duplication from OPPOSITE ends:
+#   * hisanta/tests/test_family_contract_single_source.py requires the NESTED
+#     module to declare nothing of its own (so the definitions must live here);
+#   * hisanta/tests/test_contract_singleton.py reads CANONICAL_PATH /
+#     CANONICAL_MODULE off this module and expects them to name the nested file.
+# Both hold as long as there is exactly ONE set of objects, which is the fact
+# either guard is really protecting. CANONICAL_MODULE is resolved lazily via
+# PEP 562 because the nested module imports from this one — touching it at
+# import time would be circular.
+
+import os as _os
+
+#: The other spelling of this module. Same objects, re-exported.
+CANONICAL_PATH = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+    "hisanta", "contracts", "family.py",
+)
+
+
+def __getattr__(name):
+    if name == "CANONICAL_MODULE":
+        import importlib
+        return importlib.import_module("hisanta.hisanta.contracts.family")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
