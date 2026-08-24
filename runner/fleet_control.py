@@ -235,6 +235,22 @@ def get_fleet_config(key, default=""):
     """
     if not key or not isinstance(key, str):
         return default
+    # THE CONFIG-CONSUMPTION LAYER NOW HAS A CONSUMER.
+    #
+    # runner/config_consumer.py implements exactly this read — ORCH_ prefix, whitespace
+    # stripped, empty treated as absent, never raises — with a TTL cache whose TTL is
+    # itself fleet-pushable. It had FIVE test files and ZERO production callers: a
+    # module grepped for outside its own tests returns nothing. A config layer nobody
+    # consumes cannot deliver a config change, however well tested it is.
+    #
+    # Delegating here is semantics-preserving (the local fallback below is the previous
+    # implementation, byte for byte) and fail-soft: if the module is unavailable for any
+    # reason, this function behaves exactly as it did before.
+    try:
+        import config_consumer
+        return config_consumer.get(key.upper(), default)
+    except Exception:
+        pass
     try:
         env_key = f"ORCH_{key}".upper()
         value = os.environ.get(env_key, "").strip()
