@@ -66,6 +66,64 @@ test('passport: claim ordering does not affect digest', () => {
   assert.equal(p1.id, p2.id);
 });
 
+test('passport: claim ordering does not affect digest when claims differ ONLY in detail', () => {
+  // The discriminating case, and the reason passport.ts keeps getting clobbered.
+  //
+  // The test above orders two claims that differ in `kind` AND `issuer`, so a
+  // comparator built from the five SCALAR fields sorts them correctly and the
+  // test passes. Four separate agent branches carry exactly that scalar-only
+  // comparator, and all of them stay green against it.
+  //
+  // These two claims are identical in every scalar field — kind, issuer, value,
+  // issuedAt, expiresAt — and differ only in `detail`. A scalar-only comparator
+  // returns 0 for them, Array.prototype.sort is STABLE and therefore leaves them
+  // in caller order, and the digest becomes order-dependent again: the same
+  // credential content-addresses to two different ids depending on array order,
+  // silently breaking dedup, caching and every equality check built on id.
+  //
+  // canonicalBody's comparator must be a TOTAL order over exactly the bytes that
+  // get hashed, which is why it falls through to `canonicalize` — the same
+  // key-sorted serialization the digest is taken over, so every digest-relevant
+  // field participates by construction, including fields added later.
+  const iso = new Date().toISOString();
+  const at = new Date(iso);
+  const c1 = claim('kyc_verified', 'galop', 1, 90, { region: 'eu', tier: 'a' }, at);
+  const c2 = claim('kyc_verified', 'galop', 1, 90, { region: 'us', tier: 'b' }, at);
+
+  // Guard the premise: if these ever stop being scalar-identical the test stops
+  // discriminating, and would go green for the wrong reason.
+  assert.equal(c1.kind, c2.kind);
+  assert.equal(c1.issuer, c2.issuer);
+  assert.equal(c1.value, c2.value);
+  assert.equal(c1.issuedAt, c2.issuedAt);
+  assert.equal(c1.expiresAt, c2.expiresAt);
+  assert.notDeepEqual(c1.detail, c2.detail);
+
+  const p1 = buildPassport({ subject: 'user_1', claims: [c1, c2], issuedAt: iso });
+  const p2 = buildPassport({ subject: 'user_1', claims: [c2, c1], issuedAt: iso });
+
+  assert.equal(p1.digest, p2.digest);
+  assert.equal(p1.id, p2.id);
+});
+
+test('passport: a digest-order regression is caught by verify, not just by equality', () => {
+  // Both build and verify hash through canonicalBody. If only one side
+  // canonicalises, every passport fails its own digest check — so this pins that
+  // the two stay in agreement for the detail-only case as well.
+  const iso = new Date().toISOString();
+  const at = new Date(iso);
+  const claims = [
+    claim('accredited', 'pareto', 1, 180, { note: 'z' }, at),
+    claim('accredited', 'pareto', 1, 180, { note: 'a' }, at),
+  ];
+  const forward = buildPassport({ subject: 'user_2', claims, issuedAt: iso });
+  const reversed = buildPassport({ subject: 'user_2', claims: [...claims].reverse(), issuedAt: iso });
+
+  assert.equal(verifyPassport(forward).valid, true);
+  assert.equal(verifyPassport(reversed).valid, true);
+  assert.equal(forward.digest, reversed.digest);
+});
+
 test('passport: verify accepts valid passport', () => {
   const claims = [claim('kyc_verified', 'galop', 1)];
   const passport = buildPassport({ subject: 'user_1', claims });
