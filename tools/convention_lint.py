@@ -113,6 +113,32 @@ def _names_a_secret(name: str) -> bool:
     return bool(words & {'api', 'private', 'access', 'signing', 'encryption'})
 
 
+def _is_self_naming_constant(name: str, value: str) -> bool:
+    """True when the literal is just the constant's own name spelled out.
+
+        RULE_HARDCODED_SECRET = "HARDCODED_SECRET"
+        SECRET = "SECRET"
+        _TOKEN_KIND = "TOKEN_KIND"
+
+    These are identifiers, not credentials. The rule flagged the first one — inside
+    runner/tools/lint_conventions.py, i.e. the linter reported a lint rule's own name
+    constant as a hardcoded secret. That is the most corrosive kind of false positive:
+    it appears under the one rule whose whole value is that people trust it, and the
+    only way to act on it is to suppress it.
+
+    Deliberately narrow. It requires the value to BE the name (or the tail of it) — a
+    real credential does not happen to equal its own variable name, so this cannot
+    launder one.
+    """
+    norm_value = (value or "").strip().upper().replace("-", "_")
+    norm_name = (name or "").strip().upper().lstrip("_")
+    if not norm_value or not norm_name:
+        return False
+    if norm_value == norm_name:
+        return True
+    return norm_name.endswith("_" + norm_value)
+
+
 def _looks_like_secret_value(value: str) -> bool:
     """True only when the assigned literal could plausibly BE a credential.
 
@@ -410,7 +436,7 @@ class ConventionChecker(ast.NodeVisitor):
         for target in node.targets:
             if isinstance(target, ast.Name):
                 var_name = target.id
-                if _names_a_secret(var_name):
+                if _names_a_secret(var_name) and not _is_self_naming_constant(var_name, value):
                     self._record(ConventionViolation(
                         self.filepath, node.lineno, 'HARDCODED_SECRET',
                         f'Variable "{var_name}" is assigned a literal that looks like a '
@@ -419,7 +445,7 @@ class ConventionChecker(ast.NodeVisitor):
             elif isinstance(target, ast.Subscript):
                 if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
                     key_name = target.slice.value
-                    if _names_a_secret(key_name):
+                    if _names_a_secret(key_name) and not _is_self_naming_constant(key_name, value):
                         self._record(ConventionViolation(
                             self.filepath, node.lineno, 'HARDCODED_SECRET',
                             f'Config key "{key_name}" is assigned a literal that looks like '
