@@ -16,18 +16,23 @@ import hisanta.contracts.family as family
 
 
 def test_the_shim_points_at_the_canonical_file():
-    """hisanta/contracts/family.py must re-export, never re-declare."""
-    assert family.CANONICAL_PATH.replace("\\", "/").endswith(
-        "hisanta/hisanta/contracts/family.py"
-    )
-    assert family.CANONICAL_MODULE is not None
+    """`hisanta.contracts.family` is canonical; the nested copy re-exports it.
+
+    The direction matters and is asserted here rather than left to convention:
+    the two files spent a merge each claiming to be the shim over the other.
+    """
+    shim = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert shim.CANONICAL_MODULE is family
+    canonical = shim.CANONICAL_PATH.replace("\\", "/")
+    assert canonical.endswith("hisanta/contracts/family.py")
+    assert not canonical.endswith("hisanta/hisanta/contracts/family.py")
 
 
 def test_every_public_name_is_the_canonical_object():
-    canonical = family.CANONICAL_MODULE
-    assert family.__all__, "the shim must export something"
-    for name in family.__all__:
-        assert getattr(family, name) is getattr(canonical, name), (
+    shim = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert shim.__all__, "the shim must export something"
+    for name in shim.__all__:
+        assert getattr(shim, name) is getattr(family, name), (
             f"{name} is a SECOND definition, not the canonical one"
         )
 
