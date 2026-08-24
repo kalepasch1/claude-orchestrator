@@ -5,12 +5,21 @@
 (case-insensitive, word-boundary match). Used by canary-routing checks to
 confirm a canary marker survived a pipeline hop.
 
-NOT THE SAME FUNCTION as `canary.validate_canary`, despite the identical name. That one
-is a plain SUBSTRING match and logs WARNING on a miss; this one requires a word boundary
-and logs INFO. They disagree on affixed forms — `"precanary build"` is False here and
-True there — so the two imports are not interchangeable. Both behaviours are deliberate
-and separately tested, so neither may be quietly folded into the other;
-`tests/test_validate_canary_divergence.py` pins the difference.
+THIS IS THE SINGLE SOURCE OF THE MATCH. `canary.validate_canary` has the same name and
+DELEGATES here, so the two always return the same verdict.
+
+Corrected 2026-08-24: this docstring used to say the two disagreed on affixed forms
+("precanary build" False here, True there) and cited a test pinning that difference. That
+was true of the pre-unification code and has not been true since 2026-08-13, when three
+disagreeing copies were collapsed onto this word-boundary match — a canary hop could
+otherwise be reported as both intact and broken depending on which import a caller used.
+The stale note was actively dangerous: it told the next reader the split-brain was
+intentional, and `tests/test_validate_canary_divergence.py` still asserted it and had
+been failing on master ever since. Both are corrected; that file now pins AGREEMENT.
+
+What DOES still differ is the log severity on a miss — WARNING from `canary`, INFO here —
+and that remains pinned, so a consolidation cannot change an operator's warning volume by
+accident.
 """
 import logging
 import re
