@@ -15,3 +15,21 @@ with `patch_templates.lookup(template_id)`.
 | 918597e30434 | `runner/patch_templates.py` (`lookup`, `pre_claim_hook`) — branch-recovery template | `runner/tests/test_template_918597e3.py` |
 
 When adding a new hash-scoped test, add a row here in the same commit.
+
+## The local fallback store
+
+`patch_templates._store` writes to the `knowledge` table. When that write fails it falls
+back to `.runtime/patch_templates.jsonl` on whichever Mac ran the task, and that file is
+what `lookup()` and `find_template()` read when the table is unreachable.
+
+Two properties matter, and both are enforced by
+`runner/tests/test_patch_template_fallback_store.py`:
+
+* **It is bounded.** `ORCH_PATCH_TEMPLATE_FALLBACK_MAX` (default 500) caps it, pruned
+  from the FRONT because readers take the last matching line, so pruning cannot change
+  what a reader would have returned. Unbounded, it is a slow leak that every
+  dependency-recovery read walks end to end.
+* **Falling back is loud.** A template that reached only local disk is invisible to every
+  other host, so a recovery pass on another machine will not find it and will rebuild the
+  work. `_store` logs a `LOCAL-ONLY` warning naming the template, the slug and the path.
+  Treat that warning as "this template is not really stored yet".
