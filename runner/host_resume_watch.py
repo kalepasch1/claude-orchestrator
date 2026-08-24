@@ -29,6 +29,13 @@ On success the controls row is flipped paused=false with a reason string that na
 the evidence (mirrors the human-written resume note format), and a notification is
 queued either way isn't needed -- only on actual resume, so it doesn't add noise.
 Nothing in this module ever sets paused=true; it only ever resumes.
+
+DEFAULT-OFF SINCE 2026-08-20 (hrw4). The paused=false write is gated on
+ORCH_HOST_RESUME_AUTOUNPAUSE, which defaults to false, because guardrail 5 reserves
+un-pausing for a human and this module is an automation. With the switch off the
+evidence check still runs in full and a `host-resume-candidate` notification is
+queued for every host that meets the bar, so the finding reaches the human instead of
+being silently dropped. See _autounpause_enabled() for the incident that forced it.
 """
 import os
 import time
@@ -46,6 +53,38 @@ AUTOPAUSE_ACTORS = tuple(
     ).split(",") if a.strip()
 )
 NOTIFY_EMAIL = os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com")
+
+# ── AUTO-UN-PAUSE KILL SWITCH (default OFF, 2026-08-20 — hrw4) ─────────────────
+#
+# Guardrail 5 reserves un-pausing a host for a human, and the pause reason this module
+# consumes says so in its own words: "resume requires human verification". This module
+# was written to automate that verification, and the evidence bar it applies is genuinely
+# the same one a human applied by hand. It still ends in an automation writing paused=false,
+# which is the act the guardrail reserves.
+#
+# What forced the switch: on 2026-08-18 19:36:44Z this module resumed
+# Kales-MacBook-Pro.local, and on 2026-08-20 that same host produced two
+# release_from_paused_host alerts (runner_alerts 7824, 7834) — the host was oscillating
+# between auto-resumed and paused while release_train refused releases against it, during
+# a window in which 0 of 86 releases succeeded.
+#
+# This does NOT decide the open policy question (task
+# human-decision-host-resume-watch-autounpause-20260820-hrw4). It defaults to the behaviour
+# the standing guardrail already mandates, and leaves one env var for the human to flip if
+# they decide automated resume is allowed:
+#
+#     ORCH_HOST_RESUME_AUTOUNPAUSE=true
+#
+# With it off, the module still does all its checking and, for any host that WOULD have
+# been resumed, queues a notification naming the evidence — so the human gets the finding
+# rather than silence, and can flip the row themselves.
+def _autounpause_enabled():
+    """True only when a human has explicitly opted in. Never raises."""
+    try:
+        return os.environ.get(
+            "ORCH_HOST_RESUME_AUTOUNPAUSE", "false").strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return False
 
 
 def _git(repo, *args, timeout=30):
@@ -119,6 +158,28 @@ def check_and_resume(master_sha=None, repo=None):
                 f"at code_sha {str(master_sha)[:12]} (matches current origin/master). "
                 f"Prior pause reason: {str(row.get('reason') or '')[:300]}"
             )[:900]
+
+            # Kill switch: report the finding, do not perform the human-reserved write.
+            if not _autounpause_enabled():
+                try:
+                    db.insert("notifications", {
+                        "channel": "digest", "audience": NOTIFY_EMAIL,
+                        "kind": "host-resume-candidate",
+                        "title": (f"[host-resume-watch] '{host}' MEETS the resume bar "
+                                  f"-- awaiting human un-pause"),
+                        "body": (
+                            "Automated un-pause is disabled (ORCH_HOST_RESUME_AUTOUNPAUSE is not "
+                            "set): guardrail 5 reserves un-pausing a host for a human, and this "
+                            "host previously oscillated between auto-resumed and paused while "
+                            "release_train refused releases against it. The evidence bar is met, "
+                            "so a human can flip controls.paused for this host directly.\n\n"
+                            + reason)[:2000],
+                        "sent": False,
+                    })
+                except Exception:
+                    pass
+                continue
+
             try:
                 db.update("controls", {"id": row["id"]}, {
                     "paused": False,

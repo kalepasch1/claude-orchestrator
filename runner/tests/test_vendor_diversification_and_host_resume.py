@@ -169,26 +169,72 @@ class TestHostResumeWatch(unittest.TestCase):
         self.assertEqual(checked, 0, "a human-set pause must not even be considered a candidate")
         mock_update.assert_not_called()
 
-    def test_verified_fresh_and_matching_sha_resumes(self):
-        controls = [{"id": "c1", "scope": "host", "project": "ghost-host", "paused": True,
-                     "updated_by": "orch-operator-bootstrap", "reason": "dead 32 days"}]
-        hb = {"ghost-host": [
-            {"hostname": "ghost-host", "code_sha": "CURRENTSHA", "last_seen": "2026-08-08T16:10:00+00:00"},
-            {"hostname": "ghost-host", "code_sha": "CURRENTSHA", "last_seen": "2026-08-08T16:05:00+00:00"},
-        ]}
+    # ── the resume bar is met: what happens next depends on the kill switch ──────
+    #
+    # ORCH_HOST_RESUME_AUTOUNPAUSE defaults to false because guardrail 5 reserves
+    # un-pausing a host for a human. All three tests below share the same
+    # bar-is-met fixture and differ only in that env var.
+
+    _MET_CONTROLS = [{"id": "c1", "scope": "host", "project": "ghost-host", "paused": True,
+                      "updated_by": "orch-operator-bootstrap", "reason": "dead 32 days"}]
+    _MET_HB = {"ghost-host": [
+        {"hostname": "ghost-host", "code_sha": "CURRENTSHA", "last_seen": "2026-08-08T16:10:00+00:00"},
+        {"hostname": "ghost-host", "code_sha": "CURRENTSHA", "last_seen": "2026-08-08T16:05:00+00:00"},
+    ]}
+
+    @staticmethod
+    def _fresh_now():
         import datetime
-        fresh_epoch = datetime.datetime.fromisoformat("2026-08-08T16:10:00+00:00").timestamp()
-        with patch.object(host_resume_watch.db, "select", side_effect=self._rows(controls, hb)), \
-             patch.object(host_resume_watch.time, "time", return_value=fresh_epoch + 30):
+        return datetime.datetime.fromisoformat("2026-08-08T16:10:00+00:00").timestamp() + 30
+
+    def _run_with_bar_met(self, env):
+        with patch.object(host_resume_watch.db, "select",
+                          side_effect=self._rows(self._MET_CONTROLS, self._MET_HB)), \
+             patch.object(host_resume_watch.time, "time", return_value=self._fresh_now()), \
+             patch.dict(os.environ, env, clear=False):
             with patch.object(host_resume_watch.db, "update") as mock_update, \
                  patch.object(host_resume_watch.db, "insert") as mock_insert:
                 resumed, checked = host_resume_watch.check_and_resume(master_sha="CURRENTSHA")
+        return resumed, checked, mock_update, mock_insert
+
+    def test_verified_fresh_and_matching_sha_resumes_when_opted_in(self):
+        resumed, _checked, mock_update, mock_insert = self._run_with_bar_met(
+            {"ORCH_HOST_RESUME_AUTOUNPAUSE": "true"})
         self.assertEqual(resumed, 1)
         args, kwargs = mock_update.call_args
         self.assertEqual(args[0], "controls")
         self.assertEqual(args[1], {"id": "c1"})
         self.assertFalse(args[2]["paused"])
         mock_insert.assert_called_once()
+
+    def test_bar_met_but_switch_off_does_not_unpause(self):
+        """Default: the human-reserved write does not happen."""
+        resumed, checked, mock_update, _mock_insert = self._run_with_bar_met(
+            {"ORCH_HOST_RESUME_AUTOUNPAUSE": "false"})
+        self.assertEqual(resumed, 0)
+        self.assertEqual(checked, 1, "the candidate is still examined, just not acted on")
+        mock_update.assert_not_called()
+
+    def test_bar_met_but_switch_off_still_tells_the_human(self):
+        """Silence would be worse than the auto-resume: the finding must reach someone."""
+        _resumed, _checked, _mock_update, mock_insert = self._run_with_bar_met(
+            {"ORCH_HOST_RESUME_AUTOUNPAUSE": "false"})
+        mock_insert.assert_called_once()
+        args, _kwargs = mock_insert.call_args
+        self.assertEqual(args[0], "notifications")
+        self.assertEqual(args[1]["kind"], "host-resume-candidate")
+        self.assertIn("ghost-host", args[1]["title"])
+
+    def test_switch_parsing_is_forgiving_and_defaults_closed(self):
+        for value, expected in [("true", True), ("TRUE", True), (" on ", True), ("1", True),
+                                ("yes", True), ("false", False), ("", False),
+                                ("maybe", False), ("0", False)]:
+            with patch.dict(os.environ, {"ORCH_HOST_RESUME_AUTOUNPAUSE": value}, clear=False):
+                self.assertEqual(host_resume_watch._autounpause_enabled(), expected, value)
+        env = {k: v for k, v in os.environ.items() if k != "ORCH_HOST_RESUME_AUTOUNPAUSE"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(host_resume_watch._autounpause_enabled(),
+                             "unset must mean off — guardrail 5 is the default")
 
 
 if __name__ == "__main__":
