@@ -63,6 +63,35 @@ def _stranded_artifact_rows(limit):
     }) or []
 
 
+def _evidenced_phantom_rows(limit):
+    """Any PHANTOM_UNVERIFIED row carrying an artifact_commit, fleet-wide.
+
+    Both scans above are scoped `slug like 'dropbox-%'`, because this job was
+    written to recover OPERATOR improvements and the requeue path it feeds
+    regenerates work -- a narrow scope is right for that, and it stays narrow.
+
+    But artifact reconciliation is not requeueing. _reconcile_artifact() moves a
+    row only on merge_truth's verdict about a real commit: reachable becomes
+    MERGED, exists-but-not-integrated becomes DONE plus a train card, and absent
+    returns "absent" and changes nothing. Nothing here regenerates code, and
+    nothing here promotes without a reachability check.
+
+    Scoping THAT to one slug prefix is what stranded the rest of the fleet.
+    Measured 2026-08-23, after phantom_triage began recording evidence: 188
+    PHANTOM_UNVERIFIED rows carry an exact artifact_commit and only 2 of them
+    have a dropbox- slug, so 186 had no reconciler at all -- the evidence was
+    found, written down, and then read by nobody.
+    """
+    return db.select("tasks", {
+        "select": ("id,slug,prompt,note,state,project_id,artifact_commit,"
+                   "artifact_branch,base_branch"),
+        "state": "eq.PHANTOM_UNVERIFIED",
+        "artifact_commit": "not.is.null",
+        "order": "updated_at.asc",
+        "limit": str(max(1, int(limit))),
+    }) or []
+
+
 def _project_name(project_id):
     try:
         rows = db.select("projects", {
@@ -199,7 +228,11 @@ def recover(limit=100):
     # can change state between the two snapshots below.
     seen = set()
     artifact_outcomes = {}
-    for row in (_stranded_artifact_rows(limit) + rows):
+    # The evidenced scan is fleet-wide and feeds ONLY this reconciliation loop.
+    # The requeue loop below still iterates `rows`, which stays dropbox-scoped,
+    # so a general row can be moved by hard git evidence and can never be sent
+    # back to be regenerated.
+    for row in (_stranded_artifact_rows(limit) + _evidenced_phantom_rows(limit) + rows):
         if row.get("id") in seen:
             continue
         seen.add(row.get("id"))
@@ -286,6 +319,8 @@ def recover(limit=100):
             )
     except Exception:
         pass
+    print(f"phantom_recovery: scanned {len(seen)} row(s) for artifact evidence "
+          f"({len(rows)} operator-scoped)")
     print(f"phantom_recovery: restored {len(restored)} staged artifact(s), re-carded "
           f"{len(recarded)} existing artifact(s), recovered {len(recovered)}/{len(rows)} "
           f"evidence-free operator task(s), consolidated {len(consolidated)} duplicate(s), "
