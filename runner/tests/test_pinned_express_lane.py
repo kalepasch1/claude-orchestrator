@@ -325,28 +325,104 @@ class TestPinnedExpressLane(unittest.TestCase):
         ]
         self.assertEqual(self._claim(tasks), "pinned-task")
 
-    def test_paused_project_filtering_happens_before_express_lane(self):
-        """Pinned tasks in paused projects are filtered out before sorting.
+    # ── the pause gate, actually exercised ──────────────────────────────────
+    #
+    # The previous version of this test asserted "unpinned-active" against a
+    # fixture where the pinned task's project was simply ABSENT from the project
+    # list. That is a different filter — unknown-project, already covered by
+    # TestEmptyQueueEdges.test_all_tasks_in_unknown_projects_returns_none — and
+    # it left the pause path untested: flipping `paused` changed nothing,
+    # because no pause was ever expressed. A rescue ref carried a note admitting
+    # exactly this ("does NOT discriminate on the pause flag").
+    #
+    # db.claim_task reads the pause from a CONTROLS row (scope=project,
+    # paused=true) and maps it project NAME -> id, so the project must be
+    # present and named for a pause to bind at all. The tests below express a
+    # real pause and assert that flipping it flips the outcome.
 
-        Previously asserted against the DEFAULT projects fixture, which only
-        defines `p1` — so BOTH tasks referenced unknown projects, both were
-        filtered, claim_task returned None, and the test failed for a reason
-        unrelated to what it claims to check. The fixture now actually models
-        the scenario: `p-active` is present (claimable), `p-paused` is absent
-        from the project list, which is how a paused/unavailable project
-        presents to claim_task.
+    _PAUSE_PROJECTS = [
+        {"id": "p-paused", "name": "paused-proj", "priority": 5,
+         "concurrency_weight": 1, "repo_path": None},
+        {"id": "p-active", "name": "active-proj", "priority": 5,
+         "concurrency_weight": 1, "repo_path": None},
+    ]
+
+    def _pause_tasks(self):
+        return [
+            _task("pinned-in-paused", project_id="p-paused", pinned=True, pin_rank=1,
+                  created_at="2024-01-02T00:00:00"),
+            _task("unpinned-active", project_id="p-active",
+                  created_at="2024-01-01T00:00:00"),
+        ]
+
+    @staticmethod
+    def _pause_row(name="paused-proj", paused=True, updated_by="operator"):
+        return {"project": name, "scope": "project", "paused": paused, "updated_by": updated_by}
+
+    def test_pause_beats_the_express_lane(self):
+        """A PINNED task in a PAUSED project is not claimed: pause is a gate.
+
+        Project eligibility is applied to the queued list BEFORE sorting, so the
+        express lane only ever reorders what survived the gate. Pinning cannot
+        rescue a task from a paused project, and that is the intended precedence.
         """
-        projects = [
-            {"id": "p-active", "name": "active", "priority": 5,
-             "concurrency_weight": 1, "repo_path": None},
-        ]
-        tasks = [
-            _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
-            _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
-        ]
-        # The pin must NOT rescue a task whose project was filtered out: project
-        # eligibility is a gate, the express lane only reorders what survives it.
-        self.assertEqual(self._claim(tasks, projects=projects), "unpinned-active")
+        db.invalidate_projects_cache()
+        claimed = self._claim(self._pause_tasks(), projects=self._PAUSE_PROJECTS,
+                              controls=[self._pause_row()])
+        self.assertEqual(claimed, "unpinned-active")
+
+    def test_flipping_the_pause_flag_flips_the_claim(self):
+        """The discriminating assertion — the whole point of this test existing.
+
+        Same tasks, same projects, same runner: the ONLY difference is the pause
+        flag. If the claimed slug does not change when it is flipped, this test
+        is not measuring pause, and it must fail rather than stay quietly green
+        while proving nothing.
+        """
+        tasks = self._pause_tasks()
+
+        db.invalidate_projects_cache()
+        while_paused = self._claim(tasks, projects=self._PAUSE_PROJECTS,
+                                   controls=[self._pause_row(paused=True)])
+
+        db.invalidate_projects_cache()
+        while_running = self._claim(tasks, projects=self._PAUSE_PROJECTS, controls=[])
+
+        self.assertEqual(while_paused, "unpinned-active",
+                         "a pinned task in a paused project must not be claimed")
+        self.assertEqual(while_running, "pinned-in-paused",
+                         "with the pause lifted the pin must win — otherwise the "
+                         "paused case above was decided by something else "
+                         "(host affinity, priority, an unknown project)")
+        self.assertNotEqual(while_paused, while_running,
+                            "flipping the pause flag must flip the claimed task")
+
+    def test_a_paused_row_for_another_project_does_not_bind(self):
+        """Pause is per project, matched by NAME through name2id."""
+        db.invalidate_projects_cache()
+        claimed = self._claim(self._pause_tasks(), projects=self._PAUSE_PROJECTS,
+                              controls=[self._pause_row(name="some-other-proj")])
+        self.assertEqual(claimed, "pinned-in-paused")
+
+    def test_a_paused_row_naming_an_unknown_project_does_not_bind(self):
+        """A control row for a project that does not exist cannot pause anything."""
+        db.invalidate_projects_cache()
+        claimed = self._claim(self._pause_tasks(), projects=self._PAUSE_PROJECTS,
+                              controls=[self._pause_row(name="never-heard-of-it")])
+        self.assertEqual(claimed, "pinned-in-paused")
+
+    def test_remote_quarantine_rows_do_not_pause(self):
+        """`updated_by == 'remote-quarantine'` is explicitly excluded in db.py.
+
+        Pinned here because it is the one carve-out in the pause filter: a
+        quarantine marker written by another machine must not stop this one from
+        working. If that exclusion is ever removed, this fails loudly instead of
+        the fleet quietly going idle.
+        """
+        db.invalidate_projects_cache()
+        claimed = self._claim(self._pause_tasks(), projects=self._PAUSE_PROJECTS,
+                              controls=[self._pause_row(updated_by="remote-quarantine")])
+        self.assertEqual(claimed, "pinned-in-paused")
 
 
 class TestSetPinIntegration(unittest.TestCase):
