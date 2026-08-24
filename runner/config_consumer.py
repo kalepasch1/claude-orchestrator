@@ -54,6 +54,30 @@ def _env_number(name: str, default: float, cast=float, minimum=None):
         return default
 
 
+#: Fleet-wide keys are STORED with the ORCH_ prefix (CLAUDE.md: "prefix config key
+#: changes with ORCH_ to make them fleet-wide applicable"), but callers pass the bare
+#: name because get()/get_int() add the prefix themselves. Both spellings must be tried,
+#: in that order, and neither may be double-prefixed.
+CONFIG_KEY_PREFIX = "ORCH_"
+
+
+def _key_candidates(key: str):
+    """Key spellings to try against fleet_config, most likely first, no duplicates.
+
+    Fail-soft: a non-string or empty key yields nothing, so the caller simply finds no
+    row rather than issuing a query for "eq.None".
+    """
+    if not key or not isinstance(key, str):
+        return ()
+    bare = key.strip()
+    if not bare:
+        return ()
+    if bare.upper().startswith(CONFIG_KEY_PREFIX):
+        # Already prefixed: never prefix twice, but the row may have been written bare.
+        return (bare, bare[len(CONFIG_KEY_PREFIX):]) if len(bare) > len(CONFIG_KEY_PREFIX) else (bare,)
+    return (CONFIG_KEY_PREFIX + bare, bare)
+
+
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
 
@@ -183,13 +207,30 @@ class _ConfigConsumer:
                     value = None
 
             if not value:  # gateway absent or empty -> direct read as a last resort
-                try:
-                    import db
-                    rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
-                    if rows:
-                        value = str(rows[0].get("value") or "").strip()
-                except Exception:
-                    pass
+                # Try BOTH key spellings. Callers pass the bare key ("CACHE_TTL_SEC")
+                # because get()/get_int() add the ORCH_ prefix themselves, but
+                # CLAUDE.md requires fleet-wide rows to be STORED prefixed
+                # ("ORCH_CACHE_TTL_SEC") — that is what makes them fleet-pushable.
+                # This read used only the caller's spelling, so for every
+                # correctly-prefixed row the last-resort path matched nothing and
+                # silently fell through to env. It looked like "the DB has no value"
+                # rather than "we asked for the wrong key".
+                for candidate in _key_candidates(key):
+                    try:
+                        import db
+                        rows = db.select("fleet_config", {
+                            "select": "value", "key": f"eq.{candidate}", "limit": "1"}) or []
+                        if rows:
+                            found = str(rows[0].get("value") or "").strip()
+                            if found:
+                                value = found
+                                break
+                    except Exception:
+                        # Fail-soft per this module's contract, but say so: a silent
+                        # swallow here is indistinguishable from "key not set", which
+                        # is the ambiguity that hid the prefix bug above.
+                        print(f"[config_consumer] fleet_config read failed for "
+                              f"{candidate!r}; falling back", flush=True)
 
             # Fall back to environment
             if value is None or not value:
@@ -214,7 +255,13 @@ class _ConfigConsumer:
         try:
             with self._lock:
                 if key:
+                    # Drop BOTH spellings. The cache is keyed on whatever string the
+                    # caller passed, so invalidating "ORCH_FOO" after a push while some
+                    # other module had cached "FOO" would leave the stale value being
+                    # served — the exact staleness this call exists to end.
                     self._cache.pop(key, None)
+                    for candidate in _key_candidates(key):
+                        self._cache.pop(candidate, None)
                 else:
                     self._cache.clear()
         except Exception:

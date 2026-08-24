@@ -269,6 +269,16 @@ def update_fleet_config(key, value):
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     db.insert("fleet_config", row, upsert=True)
+    # Drop the local read-through cache for this key. Without this the process that just
+    # pushed the change kept serving the OLD value from config_consumer for up to
+    # ORCH_CONFIG_CACHE_TTL_SEC — a fleet-wide config push that does not take effect on
+    # the host that made it is the failure this config layer exists to prevent.
+    # Fail-soft: a missing/broken consumer must not fail an otherwise-successful write.
+    try:
+        import config_consumer
+        config_consumer.invalidate_cache(key)
+    except Exception as e:
+        sys.stderr.write(f"[fleet_control] cache invalidation for {key!r} failed: {e}\n")
     if _ws_server is not None and key.upper().startswith("ORCH_") and new_value != old_value:
         try:
             _ws_server.publish_event("config/*", {
