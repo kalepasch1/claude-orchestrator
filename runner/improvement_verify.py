@@ -292,6 +292,43 @@ def _record_calibration(p, res, outcome):
         print(f"[improvement_verify] calibration insert failed: {exc}")
 
 
+def _record_causal_feedback(p, res):
+    """Close the causal loop: this remediation, this bottleneck, before -> after.
+
+    causal_feedback shipped with its schema, its writer and 59 tests, but nothing
+    in the orchestrator imported it, so `causal_feedback` was never written and
+    `lookup()` could only ever answer from an empty table. settle() is the one
+    place that already holds all four facts the tuple needs — which remediation
+    ran, which metric it targeted, and the metric value before and after — so the
+    write belongs here rather than in a new collector.
+
+    Fail-soft and non-blocking, per the module's own contract: a feedback write
+    must never change the settle verdict or hold up a rollback.
+    """
+    try:
+        import causal_feedback
+        key = p.get("metric_collector") or p.get("metric_name")
+        before = res.get("baseline")
+        if not key or not before or float(before) <= 0:
+            # write() documents signal_before as the delta denominator; a missing
+            # key or non-positive baseline is unattributable, not a failure.
+            return
+        causal_feedback.write(
+            bottleneck_key=key,
+            remediation_slug=p.get("task_slug") or "",
+            signal_before=float(before),
+            signal_after=res.get("realized"),
+            outcome_metric=p.get("metric_name"),
+            task_id=p.get("task_id"),
+            metadata={"surface": p.get("surface"), "verdict": res.get("verdict"),
+                      "realized_multiplier": res.get("multiplier"),
+                      "required_margin": res.get("margin"),
+                      "comparator": res.get("comparator"),
+                      "source": "improvement_verify.settle"})
+    except Exception as exc:
+        print(f"[improvement_verify] causal feedback write failed: {exc}")
+
+
 def settle(p, injected=None, now=None, dry_run=None):
     """Evaluate one shipped proposal and ACT: validate, or revert and mark regressed."""
     res = evaluate(p, injected=injected, now=now)
@@ -305,6 +342,7 @@ def settle(p, injected=None, now=None, dry_run=None):
         patch["status"] = "validated"
         db.update("improvement_proposals", {"id": p["id"]}, patch)
         _record_calibration(p, res, "validated")
+        _record_causal_feedback(p, res)
         gate_liveness.record(ROLLBACK_GATE, "not_needed", p.get("task_slug"), res["reason"])
         return dict(res, acted=True, rolled_back=False)
     rb = revert_commit(p.get("artifact_repo") or _repo_for(p.get("app")),
@@ -317,6 +355,9 @@ def settle(p, injected=None, now=None, dry_run=None):
         patch["rollback_at"] = (now or _now()).isoformat()
     db.update("improvement_proposals", {"id": p["id"]}, patch)
     _record_calibration(p, res, "regressed")
+    # A regression is the more informative half of the loop: it is what teaches
+    # lookup() that a bottleneck-to-action mapping is spurious.
+    _record_causal_feedback(p, res)
     return dict(res, acted=True, rolled_back=bool(rb.get("ok")), rollback=rb)
 
 
