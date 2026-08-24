@@ -13,6 +13,7 @@ person, not work items. repair_patch() refuses to repair them, so no call site
 can rewrite the text a human is meant to read.
 """
 import os
+import re
 
 MARKER = "AGENTIC-REPAIR DIRECTIVE"
 
@@ -218,6 +219,52 @@ def has_evidence(task, signal=""):
     return len(evidence_text(task, signal)) >= 24
 
 
+#: Signals meaning the redo mechanism has ALREADY run to its cap. merge_train.py writes
+#: the first two when its redo cap is exhausted; approval_merge.py writes the third.
+_EXHAUSTED_CONFLICT_RE = re.compile(
+    r"still conflicts after\s+\d+\s+redos|needs manual rebase|conflict-exhausted", re.I)
+
+
+def conflict_exhausted(task, signal=""):
+    """True when a conflict has already been redone to the cap and must not be redone again.
+
+    THE LOOP THIS BREAKS. merge_train.py retries a rebase conflict up to its redo cap and
+    then parks the task with "still conflicts after N redos - needs manual rebase". That
+    note is a CONCLUSION. But it is also failure evidence, so the repair path read it as a
+    reason to try again, re-queued the task, and handed it back to the same redo mechanism
+    that had just given up — with the conflicting file set unchanged. Nothing between one
+    attempt and the next changes the conflict, so every extra round is guaranteed to land
+    in the same place; that is how one task reached attempt 108 against a redo cap of 4.
+
+    Redoing a rebase is only useful when the base has moved or the branch has changed.
+    Once the cap is exhausted the honest answer is a human rebase, so this returns True and
+    the caller exits deterministically instead of looping.
+    """
+    row = task if isinstance(task, dict) else {}
+    text = " ".join(str(x or "") for x in (signal, row.get("note"), row.get("log_tail")))
+    return bool(_EXHAUSTED_CONFLICT_RE.search(text))
+
+
+def _manual_rebase_patch(task, category, signal=""):
+    """Park a conflict the redo mechanism has already exhausted, naming the files."""
+    row = task if isinstance(task, dict) else {}
+    text = " ".join(str(x or "") for x in (signal, row.get("note"), row.get("log_tail")))
+    files = ""
+    marker = "Conflicting files:"
+    if marker in text:
+        files = " " + text.split(marker, 1)[1].strip()[:300]
+    note = ("%s %s: the redo cap is already exhausted and the conflicting file set has not "
+            "changed, so another rebuild would resolve to the same conflict. Parked for a "
+            "MANUAL REBASE rather than re-queued.%s"
+            % (TERMINAL_NOTE_PREFIX, category, (" Conflicting files:" + files) if files else ""))
+    return {
+        "state": "QUARANTINED",
+        "account": None,
+        "updated_at": "now()",
+        "note": note[:900],
+    }
+
+
 def _terminal_patch(task, category, rc, blind, signal=""):
     """Park a task that repair cannot converge on, instead of re-queueing it forever."""
     why = ("%d blind repairs with no failure evidence — every retry was a guess"
@@ -376,6 +423,13 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     # at the chokepoint they all share.
     if is_operator_decision(task):
         return _awaiting_operator_patch(task)
+
+    # An exhausted rebase conflict is checked next, and before any ceiling, because it is
+    # decidable from the signal alone: the redo mechanism already ran to its cap on this
+    # exact file set. Waiting for a COUNT to catch up means every intervening round is a
+    # rebuild guaranteed to land on the same conflict.
+    if conflict_exhausted(task, signal):
+        return _manual_rebase_patch(task, category, signal)
 
     rc, attempts = _true_counters(task)
     blind = not has_evidence(task, signal)
