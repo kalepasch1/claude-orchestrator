@@ -61,6 +61,52 @@ SENSITIVE_PATHS = [
 ]
 
 
+def _path_is_sensitive(path):
+    """True when `path` matches any SENSITIVE_PATHS pattern.
+
+    THE BUG THIS FIXES
+    ------------------
+    Every pattern in SENSITIVE_PATHS is written `*/something*`, and fnmatch's `*/`
+    requires a directory component. So a file at the REPO ROOT matched nothing:
+
+        src/auth.py   -> sensitive
+        auth.py       -> NOT sensitive        <-- eligible for auto-approve + auto-merge
+        app/.env      -> sensitive
+        .env          -> NOT sensitive
+
+    Verified against the shipped list: `.env`, `auth.py`, `secrets.py`, `security.py`,
+    `migration.sql` and `token.py` at the repo root all returned False. This repo has
+    root-level modules (CI compiles `*.py` there), so a change to a root-level auth or
+    secrets file could be auto-approved without a human ever seeing it.
+
+    Each pattern is therefore matched against the full path AND the basename, and the
+    leading `*/` is stripped for a second attempt so a root-level file is reachable.
+    Matching is case-insensitive throughout.
+
+    Widening a deny-list can only move files from "auto-approve" to "ask a human",
+    which is the correct direction for this gate to err.
+    """
+    if not path or not isinstance(path, str):
+        return True  # unreadable entry: err on the side of caution, as callers do
+    candidate = path.strip().lower()
+    # NOT lstrip("./"): that strips a character SET, so ".env" became "env" and the
+    # single most important file in the deny-list went on failing to match. Remove the
+    # prefix as a prefix.
+    while candidate.startswith("./"):
+        candidate = candidate[2:]
+    if not candidate:
+        return True
+    name = candidate.rsplit("/", 1)[-1]
+
+    for pattern in SENSITIVE_PATHS:
+        low = pattern.lower()
+        bare = low[2:] if low.startswith("*/") else low
+        for target in (candidate, name):
+            if fnmatch.fnmatch(target, low) or fnmatch.fnmatch(target, bare):
+                return True
+    return False
+
+
 def _touches_sensitive_paths(repo, branch, base):
     """Check if diff between base and branch touches any sensitive paths."""
     try:
@@ -74,9 +120,8 @@ def _touches_sensitive_paths(repo, branch, base):
         for file in changed_files:
             if not file:
                 continue
-            for pattern in SENSITIVE_PATHS:
-                if fnmatch.fnmatch(file, pattern) or fnmatch.fnmatch(file.lower(), pattern.lower()):
-                    return True
+            if _path_is_sensitive(file):
+                return True
         return False
     except Exception as e:
         print(f"[approval_merge] warning: _touches_sensitive_paths failed: {e}")
