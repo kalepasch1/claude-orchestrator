@@ -40,15 +40,55 @@ def _git(repo, *args):
 
 
 def _list_agent_branches(repo_path):
-    """Return set of agent branch names (without 'agent/' prefix)."""
-    rc, out, _ = _git(repo_path, "branch", "--list", "agent/*")
+    """Return set of agent branch names (without 'agent/' prefix).
+
+    Counts a branch as existing if it is present LOCALLY **or** on any remote.
+
+    The remote half is the load-bearing part. Per the worktree convention in
+    CLAUDE.md an agent pushes `agent/{slug}` and then the worktree is removed,
+    and every other machine in the fleet only ever sees that branch as a
+    remote-tracking ref. A local-only lookup therefore reports a branch that
+    was pushed successfully as missing, and "missing" is what queues a
+    recovery — so the blind spot does not merely under-report, it forks one
+    piece of work into two branches and hands the merge train a conflict.
+
+    Fail-soft: a git error yields whatever the other ref namespace produced,
+    and an unreadable repo yields an empty set (same as before). An empty set
+    means "could not tell", which callers must not read as "everything is
+    missing" — see detect_missing_branches.
+    """
+    slugs = set()
+    # Both ref namespaces in one pass. for-each-ref is used over `branch --list`
+    # because it names the namespace explicitly rather than depending on the
+    # porcelain's current-branch marker, and because it prints full refnames —
+    # which is what lets a slug containing a slash survive intact below.
+    rc, out, _ = _git(
+        repo_path, "for-each-ref", "--format=%(refname)",
+        "refs/heads/", "refs/remotes/",
+    )
     if rc != 0 or not out:
-        return set()
-    return {
-        b.strip().lstrip("* ").replace("agent/", "", 1)
-        for b in out.splitlines()
-        if b.strip()
-    }
+        return slugs
+
+    for ref in out.splitlines():
+        ref = ref.strip()
+        if ref.startswith("refs/heads/agent/"):
+            slug = ref[len("refs/heads/agent/"):]
+        elif ref.startswith("refs/remotes/"):
+            # refs/remotes/<remote>/agent/<slug> — split off exactly the remote
+            # name, so an unrelated branch like <remote>/feature/agent/x cannot
+            # masquerade as agent/x.
+            rest = ref[len("refs/remotes/"):]
+            _, _, after_remote = rest.partition("/")
+            if not after_remote.startswith("agent/"):
+                continue
+            slug = after_remote[len("agent/"):]
+        else:
+            continue
+        # Slugs may contain slashes; only the `agent/` prefix is stripped, never
+        # a trailing path component.
+        if slug:
+            slugs.add(slug)
+    return slugs
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +175,10 @@ def classify_branch_state(repo_path, slug, known_slugs=None, tasks=None):
 
     Returns a dict with 'slug', 'state', and 'detail'.
     """
-    full_branch = f"agent/{slug}"
-    rc, _, _ = _git(repo_path, "rev-parse", "--verify", full_branch)
-    branch_exists = (rc == 0)
+    # Local OR remote, via the same helper the batch detectors use — a single
+    # branch must not be classified "missing" on a rule the batch sweep would
+    # have called healthy.
+    branch_exists = slug in _list_agent_branches(repo_path)
 
     known = set(known_slugs) if known_slugs else set()
     task_slugs = {t.get("slug") for t in (tasks or [])}
