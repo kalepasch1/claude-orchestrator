@@ -36,6 +36,7 @@ _DEFAULT_FLOORS = {
     "avg_duration_s": 60.0,     # a minute per task where the baseline was unmeasured
 }
 
+
 def _floor(metric: str) -> float:
     """Absolute level at which *metric* alerts on a zero baseline. Env-overridable."""
     raw = os.environ.get(f"ANOMALY_FLOOR_{metric.upper()}")
