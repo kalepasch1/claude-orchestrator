@@ -168,7 +168,45 @@ def _recovery_action(task):
         return "infra_error", str(e)[:200]
 
 
-def _shelve_lowest_ev(count):
+#: Marker every capacity shelving carries. A remediation loop can key on this to tell a
+#: SCHEDULING decision apart from a technical failure — see shelve_note().
+CAPACITY_SHELVE_MARKER = "capacity-shelve"
+
+
+def shelve_note(task, integral=None, threshold=None):
+    """The note written when the PID shelves a task. Self-describing on purpose.
+
+    THE PROBLEM WITH THE OLD ONE. It was a fixed string: "shelved by queue-velocity PID
+    (low EV, integral too high)". No EV, no integral, no threshold, and — worst — no
+    statement that nothing had actually FAILED. So when a task sat shelved and the
+    unblock loop was told to "diagnose the root cause (build failure, merge conflict,
+    flaky test, or a genuine blocker) and fix it — do not just retry blindly, read the
+    actual error", there was no error to read. The task
+    orch-cross-project-depends-fix-remaining-conflicts-redo-issues-with is exactly that:
+    shelved 60+ minutes, its own proof command (`npm --prefix packages/darwin-kernel run
+    test`) green at 276/276, and a factory-unblock task generated to investigate a failure
+    that never existed.
+
+    A capacity decision and a broken build are different things and must not read the
+    same. This note names the numbers that caused it and says plainly that the work was
+    not tried and failed — it was never tried.
+    """
+    row = task if isinstance(task, dict) else {}
+    ev = row.get("confidence")
+    ev_txt = f"{ev}" if ev is not None else "unset"
+    bits = [f"{CAPACITY_SHELVE_MARKER}: queue-velocity PID shelved this to drain backlog",
+            f"EV/confidence={ev_txt}"]
+    if integral is not None:
+        bits.append(f"integral={integral}")
+    if threshold is not None:
+        bits.append(f"threshold={threshold}")
+    bits.append("NOT a failure — the task was never attempted, so there is no build error, "
+                "conflict or flaky test to diagnose. Requeue when the queue drains, or "
+                "raise its confidence/pin it if it should not have been deprioritised.")
+    return "; ".join(bits)[:900]
+
+
+def _shelve_lowest_ev(count, integral=None, threshold=None):
     """Move the lowest-EV queued tasks to SHELVED state so the queue can drain.
 
     Before shelving each task, run a zero-spend recovery check: a task whose
@@ -210,7 +248,7 @@ def _shelve_lowest_ev(count):
             try:
                 db.update("tasks", {"id": t["id"]},
                           {"state": "SHELVED",
-                           "note": f"shelved by queue-velocity PID (low EV, integral too high)"})
+                           "note": shelve_note(t, integral=integral, threshold=threshold)})
                 shelved += 1
             except Exception:
                 pass
@@ -300,7 +338,8 @@ def run():
     if acceleration > 0 and consecutive_positive >= 2 and depth > 200:
         # Queue is growing AND getting worse — compact aggressively
         compact_count = min(50, int(depth * 0.05))
-        _shelve_lowest_ev(compact_count)
+        _shelve_lowest_ev(compact_count, integral=integral,
+                          threshold=INTEGRAL_SHELVE_THRESHOLD)
         print(f"[queue-velocity] D-action: compacted {compact_count} (acceleration={acceleration:+d})")
 
     # I (integral): shelve lowest-EV when cumulative surplus is too high — but
@@ -317,7 +356,8 @@ def run():
     if shelve_pressure >= SHELVE_CONSECUTIVE_REQUIRED:
         i_action = True
         shelve_count = int(effective_depth * SHELVE_PCT)
-        shelved = _shelve_lowest_ev(shelve_count)
+        shelved = _shelve_lowest_ev(shelve_count, integral=integral,
+                                    threshold=INTEGRAL_SHELVE_THRESHOLD)
         integral = max(0, integral - shelve_count)  # reduce integral after shelving
         shelve_pressure = 0
         print(f"[queue-velocity] I-action: shelved {shelved}/{shelve_count} (integral={integral})")
