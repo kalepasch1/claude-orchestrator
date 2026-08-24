@@ -143,19 +143,72 @@ def record_deploy(commit_sha, project=""):
             del _deploy_log[k]
 
 # ── Guardrail 5: Worktree count cap ───────────────────────────────────────
+def parse_worktree_paths(porcelain_out):
+    """Worktree paths from `git worktree list --porcelain`, MAIN CHECKOUT EXCLUDED.
+
+    Pure, so the counting rule is testable without a repository.
+    """
+    paths = [l[len("worktree "):].strip()
+             for l in (porcelain_out or "").splitlines() if l.startswith("worktree ")]
+    return paths[1:]  # the first entry is always the main checkout
+
+
+def stale_worktrees(paths):
+    """Registrations whose working directory no longer exists.
+
+    `git worktree list` reports these until someone runs `git worktree prune`. They hold
+    no files, no branch checkout and no agent — they are bookkeeping, not capacity.
+    """
+    out = []
+    for p in paths or []:
+        try:
+            if p and not os.path.isdir(p):
+                out.append(p)
+        except Exception:
+            continue
+    return out
+
+
 def check_worktree_count(repo_path):
+    """Cap on LIVE worktrees. Read-only — this never prunes or deletes anything.
+
+    WHY LIVE, NOT REGISTERED. The old count included every entry `git worktree list`
+    reported, and that list keeps returning registrations whose directory is already gone
+    until someone runs `git worktree prune`. An executor that finished and removed its
+    directory without pruning therefore kept consuming a slot forever, so the cap drifted
+    upward on its own and started refusing real work:
+
+        guardrail blocked: 42 active worktrees (limit 40)
+
+    recover-missing-branch-backlog-blitz-context-diet-verify was blocked by exactly that
+    and retried to attempt 8 without ever getting to run. Counting only directories that
+    actually exist makes the number mean what the guardrail says it means, and the
+    violation now names the reclaimable registrations so the fix is one prune away
+    instead of a mystery.
+    """
     rc, out, _ = _git(repo_path, "worktree", "list", "--porcelain")
     if rc != 0:
         return {"passed": True, "count": 0, "reason": "could not list worktrees"}
-    count = max(0, sum(1 for l in out.splitlines() if l.startswith("worktree ")) - 1)
+
+    paths = parse_worktree_paths(out)
+    stale = stale_worktrees(paths)
+    count = max(0, len(paths) - len(stale))
+
     # Re-read from env each call so fleet_config updates take effect without restart
     _mode = os.environ.get("ORCH_GUARDRAIL_MODE", "warn")
     _max_wt = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
+    result = {"passed": True, "count": count, "registered": len(paths), "stale": stale}
     if count > _max_wt:
-        v = _violation("worktree_cap", f"{count} active worktrees (limit {_max_wt})",
-                       {"count": count, "limit": _max_wt})
-        return {"passed": _mode != "block", "count": count, "violation": v}
-    return {"passed": True, "count": count}
+        detail = f"{count} active worktrees (limit {_max_wt})"
+        if stale:
+            detail += (f"; {len(stale)} further registration(s) are stale and were not "
+                       f"counted — `git worktree prune` clears them")
+        result["violation"] = _violation(
+            "worktree_cap", detail,
+            {"count": count, "limit": _max_wt, "registered": len(paths),
+             "stale": len(stale), "stale_paths": stale[:20]})
+        result["passed"] = _mode != "block"
+    return result
 
 # ── Guardrail 6: Remote branch GC (the missing piece) ─────────────────────
 def terminal_slugs(project_repo_path=None):
