@@ -105,6 +105,11 @@ def _safe_key(k):
 #   2. every *effective* change is logged once (both sides shown), so precedence is auditable
 #      instead of invisible. Logged on change only — this runs every loop.
 _applied_config = {}
+#: Value each key had BEFORE fleet_config first overrode it, so the override can be undone.
+#: `_UNSET` means the key did not exist in the environment at all and must be deleted, not
+#: reset to "" — an empty string is a value, and several consumers treat it as one.
+_UNSET = object()
+_env_baseline = {}
 
 # CONFIG THAT IS STORED BUT NEVER CONSUMED (2026-08-06).
 #
@@ -127,7 +132,7 @@ _applied_config = {}
 # allowlist exists to prevent. Every non-consumed key is now named, with its reason, once
 # per process — so "I set it and nothing happened" becomes answerable.
 _reported_ignored = {}
-_last_consumption = {"applied": {}, "ignored": {}, "at": None}
+_last_consumption = {"applied": {}, "ignored": {}, "reverted": [], "at": None}
 
 IGNORE_UNSAFE_KEY = "not-a-safe-key"
 IGNORE_CREDENTIAL = "credential-marker"
@@ -166,6 +171,7 @@ def config_consumption():
     """
     return {"applied": dict(_last_consumption["applied"]),
             "ignored": dict(_last_consumption["ignored"]),
+            "reverted": list(_last_consumption.get("reverted") or []),
             "at": _last_consumption["at"]}
 
 
@@ -183,10 +189,13 @@ def load_config():
     """
     n = 0
     applied, ignored = {}, {}
+    seen = set()
     try:
         blocked = config_approval.blocked_keys()
         pins = _env_pins()
         for row in (db.select("fleet_config", {"select": "key,value"}) or []):
+            if row.get("key"):
+                seen.add(row["key"])
             k, v = row.get("key"), row.get("value")
             # NAME WHAT IS DROPPED. Silence here is what made a pushed-but-inert knob
             # indistinguishable from a working one.
@@ -211,6 +220,10 @@ def load_config():
                 if cur != new and _applied_config.get(k) != new:
                     sys.stderr.write(
                         f"[fleet_control] config {k}: fleet_config {new!r} overrides local {cur!r}\n")
+                # Remember what this host had before the first override, so withdrawing
+                # the key can actually put it back (see revert_withdrawn_keys).
+                if k not in _env_baseline:
+                    _env_baseline[k] = os.environ[k] if k in os.environ else _UNSET
                 _applied_config[k] = new
                 os.environ[k] = new
                 applied[k] = new
@@ -223,8 +236,46 @@ def load_config():
         # "local variable 'sys' referenced before assignment" — aborting load_config partway and
         # leaving config half-applied. sys is already imported at module scope; do not re-import.
         sys.stderr.write(f"[fleet_control] fleet_config load failed: {e}\n")
-    _last_consumption.update(applied=applied, ignored=ignored, at=time.time())
+        # A read that failed says NOTHING about which keys were withdrawn. Reverting on
+        # an empty result would undo the whole fleet's config on one transient DB error.
+        seen = None
+    reverted = revert_withdrawn_keys(seen)
+    _last_consumption.update(applied=applied, ignored=ignored, reverted=reverted,
+                             at=time.time())
     return n
+
+
+def revert_withdrawn_keys(seen):
+    """Undo overrides for keys that are no longer in fleet_config.
+
+    Deleting a fleet_config row was a one-way door: `load_config` only ever wrote into
+    os.environ, so the withdrawn value stayed live in every already-running process until
+    it restarted. "Revert that config fleet-wide" silently did nothing, which is the
+    worst possible behaviour for the control an operator reaches for during an incident.
+
+    `seen` of None means the read failed — revert nothing. Returns the reverted keys.
+    """
+    if seen is None:
+        return []
+    reverted = []
+    for key in [k for k in _applied_config if k not in seen]:
+        marker = _applied_config.pop(key, None)
+        _reported_ignored.pop(key, None)
+        if isinstance(marker, str) and marker.startswith("\0pin\0"):
+            continue          # pinned keys were never applied to env; nothing to undo
+        baseline = _env_baseline.pop(key, _UNSET)
+        try:
+            if baseline is _UNSET:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = baseline
+            reverted.append(key)
+            sys.stderr.write(
+                f"[fleet_control] config {key}: WITHDRAWN from fleet_config; restored to "
+                f"{'<unset>' if baseline is _UNSET else repr(baseline)}\n")
+        except Exception as exc:
+            sys.stderr.write(f"[fleet_control] config {key}: revert failed ({exc})\n")
+    return reverted
 
 
 def get_fleet_config(key, default=""):
