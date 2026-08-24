@@ -104,6 +104,59 @@ def call_with_grant(token, provider, model, prompt, app="orchestrator", operatio
     return res
 
 
+# ── provider auth failures ────────────────────────────────────────────────────────────
+#: Substrings every major provider uses when it rejects a key. Matched case-insensitively
+#: against the exception text, so this needs no provider-specific SDK imports.
+_AUTH_MARKERS = (
+    "invalid api key", "invalid_api_key", "incorrect api key", "api key not valid",
+    "invalid x-api-key", "no api key", "missing api key", "unauthorized",
+    "unauthenticated", "authentication_error", "authentication failed",
+    "permission_denied", "forbidden", "401", "403",
+)
+
+#: Anything that looks like a credential is redacted before the text is stored or logged.
+#: A rejected key still IS a key; echoing it into an error dict that lands in app_triage,
+#: a task note and the run log is how one bad config turns into three secret leaks.
+_SECRET_PREFIXES = ("sk-", "sk_", "xai-", "gsk_", "AIza", "ghp_", "glpat-", "Bearer ")
+
+
+def redact_secrets(text):
+    """Mask anything credential-shaped in `text`. Never raises."""
+    out = []
+    for token in str(text or "").split():
+        stripped = token.strip("'\"`,;()[]{}")
+        if len(stripped) >= 12 and stripped.startswith(_SECRET_PREFIXES):
+            out.append("<redacted>")
+        else:
+            out.append(token)
+    return " ".join(out)
+
+
+def is_auth_error(error):
+    """True when `error` is a provider REJECTING THE KEY rather than a transient fault.
+
+    The distinction matters because the two need opposite handling: a transient error
+    should be retried, an invalid key never will succeed and retrying it just burns the
+    budget and the rate limit while the real problem (a missing or rotated key) stays
+    invisible. Fail-soft: anything unrecognised is NOT called an auth error, so a
+    genuinely transient failure is never mislabelled unretryable.
+    """
+    text = str(error or "").lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _AUTH_MARKERS)
+
+
+def describe_provider_error(provider, exc):
+    """A one-line, secret-free explanation of a failed provider call."""
+    detail = redact_secrets(" ".join(str(exc or "").split()))[:300]
+    kind = type(exc).__name__ if exc is not None else "error"
+    if is_auth_error(exc):
+        return (f"{provider} rejected the API key — check the configured credential "
+                f"({kind}: {detail or 'no detail'})")
+    return f"{provider} call failed ({kind}: {detail or 'no detail'})"
+
+
 def call(provider, model, prompt, app="orchestrator", operation="call", max_usd=None):
     """Mediated, budget-gated provider call. Anthropic is refused (use claude_cli/subscription)."""
     if provider in ("claude", "anthropic"):
@@ -123,7 +176,28 @@ def call(provider, model, prompt, app="orchestrator", operation="call", max_usd=
     if _today_spend() >= MAX_USD_DAY:
         return {"text": "", "cost_usd": 0, "provider": provider, "model": model,
                 "error": f"broker daily ceiling ${MAX_USD_DAY} reached — call refused"}
-    res = mg.complete(provider, model, prompt, project=app)
+    # AN INVALID KEY IS A CONFIGURATION FAULT, NOT A TRANSIENT CALL FAILURE.
+    #
+    # mg.complete() raises straight out of the provider SDK on a rejected key, and this
+    # function had no guard: the exception propagated to whichever caller happened to be
+    # on the stack. Every one of those callers already treats a broker result as a dict
+    # with an `error` string, so a bad key surfaced as an unrelated crash somewhere
+    # upstream instead of "this provider's key is rejected". It also never reached
+    # app_triage, so the one place that would have shown a provider failing every call
+    # recorded nothing at all.
+    try:
+        res = mg.complete(provider, model, prompt, project=app)
+    except Exception as exc:
+        res = {"text": "", "cost_usd": 0, "provider": provider, "model": model,
+               "error": describe_provider_error(provider, exc),
+               "auth_error": is_auth_error(exc)}
+    if not isinstance(res, dict):
+        res = {"text": "", "cost_usd": 0, "provider": provider, "model": model,
+               "error": f"{provider} returned {type(res).__name__}, expected a result dict"}
+    # A provider that answers with an auth error in-band gets the same classification as
+    # one that raises, so callers have a single flag to key retry/alerting off.
+    if res.get("error") and "auth_error" not in res:
+        res["auth_error"] = is_auth_error(res.get("error"))
     cost = float(res.get("cost_usd") or 0)
     if cost > cap:
         # over the per-call ceiling: record it (already spent) but flag loudly
