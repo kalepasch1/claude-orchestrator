@@ -236,7 +236,18 @@ def _tsc_binary(repo):
                     found = _tsc_in(other)
                     if found:
                         break
-        except (OSError, TypeError, ValueError):
+        # FIXED 2026-08-24. This was `except (OSError, TypeError, ValueError)`, which does not
+        # cover what db.select actually raises: RuntimeError("set SUPABASE_URL and
+        # SUPABASE_SERVICE_KEY") when the control plane is unconfigured, and
+        # db.TransientDBError / db.MissingRelationError when it is configured but unreachable or
+        # missing the table. The exception escaped _tsc_binary -> check_paths_at ->
+        # verify_commit, breaking that function's documented "Never raises" contract: on any box
+        # without control-plane credentials (a fresh checkout, CI, a detached worktree) the
+        # merge-path gate crashed instead of syntax-checking, and gate() has no handler either,
+        # so the whole merge path went down with it. This lookup is a purely OPTIONAL third
+        # choice for borrowing a tsc from another project — the `shutil.which("tsc")` fallback
+        # below is the real backstop — so no failure of it may be fatal.
+        except Exception:
             pass
     found = found or shutil.which("tsc") or ""
     _TSC_CACHE[repo] = found

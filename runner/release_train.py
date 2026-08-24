@@ -489,6 +489,58 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+# 2026-08-17: a bare `npx` prepare in a package root with no node_modules of its own does
+# not fail -- it FETCHES the launcher from the registry, which is what consumed the whole 180s
+# budget and failed staging QA with a timeout. _link_shared_runtime symlinks node_modules
+# at the worktree ROOT only, so a monorepo sub-package never has one. Resolve the linked
+# binary ourselves (walking up to the worktree root, never past it), and when there is no
+# toolchain at all fail fast with `npx --no-install` -- the same convention build_gate
+# already uses -- instead of silently downloading one.
+# Floored, not just defaulted: 180s was demonstrably too tight for a cold prepare, so a
+# machine-local override must not be able to reintroduce the ceiling that failed the
+# 2026-08-17 releases.
+PREPARE_TIMEOUT_S = max(300.0, float(os.environ.get("ORCH_PREPARE_TIMEOUT_S", "600")))
+PREPARE_BINS = ("nuxi", "nuxt")
+
+
+def _local_bin(root, name, stop_at=None):
+    """Return the path to node_modules/.bin/<name> at or above ``root``, else None.
+
+    The search is confined to the checkout under test: it stops after inspecting
+    ``stop_at`` (default: ``root`` itself, i.e. no ascent), so a binary installed
+    outside the worktree is never picked up. Junk input yields None, never raises.
+    """
+    try:
+        root = os.path.abspath(root)
+        stop_at = os.path.abspath(stop_at) if stop_at else root
+    except (TypeError, ValueError, AttributeError):
+        return None
+    while True:
+        candidate = os.path.join(root, "node_modules", ".bin", name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        if root == stop_at:
+            return None
+        parent = os.path.dirname(root)
+        if parent == root or not root.startswith(stop_at + os.sep):
+            return None
+        root = parent
+
+
+def _prepare_cmd(root, worktree):
+    """Return (argv, description) for generating framework types in ``root``.
+
+    Prefers the toolchain the checkout already has -- invoked directly, with no login
+    shell, exactly as resolved_file_gate runs a package-local tsc.
+    """
+    for name in PREPARE_BINS:
+        found = _local_bin(root, name, stop_at=worktree)
+        if found:
+            return [found, "prepare"], f"linked {name} ({os.path.relpath(found, worktree)})"
+    return (["npx", "--no-install", PREPARE_BINS[0], "prepare"],
+            "npx --no-install (no linked toolchain; must not fetch from the registry)")
+
+
 def _prepare_generated_types(worktree):
     """Generate checkout-local framework types for every typed Nuxt package root."""
     roots = [worktree]
@@ -513,10 +565,11 @@ def _prepare_generated_types(worktree):
             return False, str(e)
         if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
             continue
-        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
-                              capture_output=True, text=True, timeout=180)
+        cmd, how = _prepare_cmd(root, worktree)
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                              timeout=PREPARE_TIMEOUT_S)
         log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
+        logs.append(f"[{os.path.relpath(root, worktree)}] via {how}\n{log}")
         generated = os.path.join(root, ".nuxt", "tsconfig.json")
         if proc.returncode != 0 or not os.path.exists(generated):
             return False, "\n".join(logs)

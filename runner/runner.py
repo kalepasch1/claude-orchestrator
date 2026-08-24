@@ -3539,34 +3539,52 @@ def _reap_zombie_tasks():
         for t in running:
             if (t.get("account") or "").startswith("cowork-"):
                 continue
-            account = str(t.get("account") or "")
-            dead_runner_claim = (bool(live_runner_ids)
-                                 and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
-                                 and account not in live_runner_ids
-                                 and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
-            if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
-                patch = agentic_repair.repair_patch(
-                    t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
-                        else "zombie-reaper: stale RUNNING >30min"),
-                    category="orphaned-running",
-                    directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
-                db.update("tasks", {"id": t["id"]}, patch)
-                reclaimed += 1
+            # Per-row isolation. One unusable row -- a task whose repair patch cannot be
+            # built, a write PostgREST rejects, a naive `updated_at` that will not compare
+            # against an aware cutoff -- used to abort the whole cycle from the outer
+            # handler below, taking the remaining orphans AND the retry promoter with it.
+            # That is the failure mode that produced the orphan backlog in the first place:
+            # a reaper that throws on one bad id abandons the rest of the batch (the same
+            # rule zombie_reaper.terminate_expired() is built on). Log the row, keep going.
+            try:
+                account = str(t.get("account") or "")
+                dead_runner_claim = (bool(live_runner_ids)
+                                     and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
+                                     and account not in live_runner_ids
+                                     and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
+                if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
+                    patch = agentic_repair.repair_patch(
+                        t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
+                            else "zombie-reaper: stale RUNNING >30min"),
+                        category="orphaned-running",
+                        directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
+                    db.update("tasks", {"id": t["id"]}, patch)
+                    reclaimed += 1
+            except Exception as e:
+                print(f"[zombie-reaper] task {t.get('id')} not reclaimed: {e}")
         if reclaimed:
             print(f"[zombie-reaper] reclaimed {reclaimed} stale RUNNING tasks")
         retry_cutoff = (datetime.datetime.now(datetime.timezone.utc)
                         - datetime.timedelta(seconds=int(os.environ.get("ORCH_RETRY_PROMOTE_AFTER_S", "120")))).isoformat()
         retries = db.select("tasks", {"select": "id,note,updated_at", "state": "eq.RETRY",
                                        "updated_at": f"lt.{retry_cutoff}", "limit": "250"}) or []
+        promoted = 0
         for task in retries:
-            note = str(task.get("note") or "")
-            new_note = common_utils.truncate_string_at_bytes(f"{note} | retry-promoter", 1000)
-            db.update("tasks", {"id": task["id"]}, {
-                "state": "QUEUED", "updated_at": "now()",
-                "note": new_note,
-            })
-        if retries:
-            print(f"[retry-promoter] returned {len(retries)} elapsed RETRY tasks to QUEUED")
+            # Same rule as the reclaim loop: RETRY is not claimable, so a row that cannot
+            # be promoted must not strand every RETRY behind it in the same limbo this
+            # promoter exists to drain.
+            try:
+                note = str(task.get("note") or "")
+                new_note = common_utils.truncate_string_at_bytes(f"{note} | retry-promoter", 1000)
+                db.update("tasks", {"id": task["id"]}, {
+                    "state": "QUEUED", "updated_at": "now()",
+                    "note": new_note,
+                })
+                promoted += 1
+            except Exception as e:
+                print(f"[retry-promoter] task {task.get('id')} not promoted: {e}")
+        if promoted:
+            print(f"[retry-promoter] returned {promoted} elapsed RETRY tasks to QUEUED")
     except Exception as e:
         print(f"[zombie-reaper] error: {e}")
 

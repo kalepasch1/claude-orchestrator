@@ -46,7 +46,16 @@ MARKER = "ORCHESTRATION PIPELINE CONTRACT"
 ORIGINAL_HEADER = "# Original improvement request"
 CONTROL_PREFIXES = ("REPLAY:", "ROTATE_KEY:", "REVOKE_AND_STOP:")
 
-SECURITY_RX = re.compile(r"\b(auth|oauth|permission|rls|secret|token|credential|security|xss|csrf|sql injection)\b", re.I)
+# Word-boundary anchored on both sides, so the singular nouns used to match only their
+# exact form: "authentication", "authorization", "credentials", "secrets", "tokens" and
+# "permissions" all fell through to task_class="build" (need 6, risk standard) and never
+# reached the security gate below. "Update authentication flow" and "Implement JWT
+# authentication" classifying as routine build work is the whole failure mode this
+# classifier exists to prevent. The auth family is spelled out rather than as `auth\w*`
+# because that would also swallow "author"/"authored", which this module itself uses.
+SECURITY_RX = re.compile(
+    r"\b(auth|authn|authz|oauth|authenticat\w*|authoris\w*|authoriz\w*|permissions?|rls"
+    r"|secrets?|tokens?|credentials?|security|xss|csrf|sql injection)\b", re.I)
 LEGAL_RX = re.compile(r"\b(legal|compliance|licensing|registration|custody|transmission|advice|contract|terms|privacy|gdpr|hipaa|pci|soc|audit|regulatory|counsel|attorney|lawyer)\b", re.I)
 MIGRATION_RX = re.compile(r"\b(schema|migration|database|backfill|data model|rls|release train|merge train)\b", re.I)
 RESEARCH_RX = re.compile(r"\b(research|investigate|ideate|concept|strategy|proposal|experiment|ab test|a/b)\b", re.I)
@@ -272,10 +281,12 @@ def _recent_context(project: str) -> List[str]:
     """Small cross-learning bundle. Best effort only; DB/network failure returns an empty list."""
     if not project:
         return []
-    try:
-        import db
-    except Exception:
-        return []
+    # NOTE: no local `import db` here. This function used to re-import db into its own
+    # scope, which shadowed the module-level import and meant rebinding
+    # `pipeline_contract.db` — the module's only dependency seam — had no effect on the
+    # one function that reads the database. The guarded local import was also dead:
+    # `import db` at module scope already ran, so it can never fail here. Every query
+    # below is individually fail-soft, which is where the "best effort" promise lives.
     items: List[str] = []
     try:
         rows = db.select("outcomes", {"select": "model,tests_passed,integrated,usd",
