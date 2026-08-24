@@ -186,38 +186,77 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(status, payload)
 
     def do_PUT(self):
-        """Config writes are NOT exposed in this slice — 405 with the reason.
+        """Config writes, mounted WITH the authentication the previous slice deferred.
 
-        `config_api.put_config` exists and is tested, and mounting it here would be four
-        lines. It is deliberately not mounted yet: this console binds 127.0.0.1 with no
-        authentication on its own routes, so a PUT mount would let ANY local process
-        rewrite fleet configuration. The compliance routes beside it carry
-        `compliance_auth` precisely because they mutate.
+        The prior slice answered 405 here and said why: the console binds 127.0.0.1 with
+        no auth on its own routes, so an unguarded PUT would let ANY local process rewrite
+        fleet configuration. This slice mounts the write path and brings the auth with it,
+        exactly as the compliance routes beside it do.
 
-        So the write path lands in the next slice, together with the auth check — not as
-        a follow-up someone might forget. Answering 405 rather than 404 makes the
-        endpoint's existence and its absence both discoverable.
+        ONE NON-OBVIOUS RULE, and it is the whole safety of this mount:
+        `compliance_auth.resolve_principal` falls back to LOCAL_PRINCIPAL for a loopback
+        caller when no token adapter is configured, and LOCAL_PRINCIPAL HOLDS THE WRITE
+        SCOPE. So `require_scope(WRITE)` alone would authorise every local process — the
+        precise hazard the previous slice refused to ship. Config writes therefore also
+        require `auth_configured()`: with no adapter the answer is 403, never an implicit
+        local yes. Reads are unaffected; they were already safe and stay open on loopback.
         """
-        # Drain the request body before answering, bounded. Replying while bytes are
-        # still in flight makes the peer see a connection reset instead of the 405 we
-        # actually sent — the refusal has to be legible, not a mystery TCP error.
+        is_config = self.path == "/config" or self.path.startswith("/config/")
+
+        # Bound BEFORE reading, same as do_POST: a single declared-huge request must not
+        # be able to exhaust memory on the console.
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
             length = 0
-        if length > 0:
-            self.rfile.read(min(length, _MAX_DRAIN_BYTES))
-            if length > _MAX_DRAIN_BYTES:
-                # Refuse to read an unbounded body just to be polite about it.
-                self.close_connection = True
 
-        if self.path == "/config" or self.path.startswith("/config/"):
-            return self._send_json(405, {
-                "error": "config writes are not exposed on the console yet",
-                "reason": "pending authentication; use the config_api module directly",
-                "allowed": ["GET"],
-            })
-        return self._send_json(404, {"error": "not found"})
+        if not is_config:
+            # Unknown route: drain politely, bounded, then 404. Replying while bytes are
+            # still in flight makes the peer see a connection reset instead of the answer
+            # we actually sent — the refusal has to be legible, not a mystery TCP error.
+            if length > 0:
+                self.rfile.read(min(length, _MAX_DRAIN_BYTES))
+                if length > _MAX_DRAIN_BYTES:
+                    self.close_connection = True
+            return self._send_json(404, {"error": "not found"})
+
+        import compliance_auth
+        token, client_host = self._caller()
+
+        # AUTH BEFORE BODY. Nothing is read from an unauthenticated caller, so a rejected
+        # request costs one header parse rather than a megabyte of reads.
+        try:
+            compliance_auth.check_body_size(length)
+            if not compliance_auth.auth_configured():
+                # See the docstring: the loopback principal already carries WRITE, so a
+                # scope check alone would wave through every local process.
+                raise compliance_auth.AuthError(
+                    "config writes require ORCH_COMPLIANCE_API_TOKENS to be configured; "
+                    "loopback is not sufficient to rewrite fleet configuration", 403)
+            principal = compliance_auth.resolve_principal(token=token,
+                                                          client_host=client_host)
+            compliance_auth.require_scope(principal, compliance_auth.WRITE)
+        except compliance_auth.AuthError as exc:
+            self.close_connection = True
+            return self._send_json(exc.status, {"error": str(exc)},
+                                   extra_headers={"Connection": "close"})
+
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("JSON object required")
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self._send_json(400, {"error": str(exc)})
+
+        import config_api
+        status, payload = config_api.dispatch("PUT", urlparse(self.path).path, body)
+        if status < 400:
+            # Attribute the change. A fleet-config write that cannot be traced to a
+            # principal is the audit gap this mount would otherwise open.
+            payload = dict(payload)
+            payload["written_by"] = principal.redacted()
+            log.info("web_console: config write %s by %s", self.path, principal.name)
+        return self._send_json(status, payload)
 
     def log_message(self, format, *args):
         pass  # suppress request logging
