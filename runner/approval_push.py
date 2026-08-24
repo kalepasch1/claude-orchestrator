@@ -64,14 +64,25 @@ class ApprovalBatcher:
         self.size_threshold = max(1, self.size_threshold)
 
     def append(self, cards):
-        """Add cards to batch queue. Returns count added; 0 on error."""
+        """Add cards to batch queue. Returns count added; 0 on malformed input or error.
+
+        Only a list of cards or a single card dict is accepted. A bare string used to be
+        wrapped as if it were one card, so `append("not a list")` reported success and
+        put a string into the queue, where build_digest's `a.get(...)` then failed at
+        flush time — far away from the caller that supplied the bad value.
+        """
         if not cards:
+            return 0
+        if not isinstance(cards, (list, tuple, dict)):
+            print(f"approval_batcher append: ignoring {type(cards).__name__} "
+                  "(expected a list of cards or a single card dict); fail-soft")
             return 0
         try:
             pending_flush = None
             with self.lock:
-                card_count = len(cards) if isinstance(cards, list) else 1
-                self.queue.extend(cards if isinstance(cards, list) else [cards])
+                is_many = isinstance(cards, (list, tuple))
+                card_count = len(cards) if is_many else 1
+                self.queue.extend(list(cards) if is_many else [cards])
                 self._items_queued += card_count
 
                 if len(self.queue) == card_count:
@@ -121,13 +132,27 @@ class ApprovalBatcher:
             print(f"approval_batcher timer callback error ({type(e).__name__}: {e}); fail-soft")
 
     def get_pending(self):
-        """Return copy of pending items (for testing/monitoring)."""
+        """Return copy of pending items (for testing/monitoring). Never raises.
+
+        Uses an explicit acquire/release rather than `with self.lock`. The `with` form
+        goes through the lock type's __enter__ slot, so a failure to acquire could not
+        be caught here at all and this "fail-soft" observer would propagate it into a
+        monitoring path. Acquiring explicitly puts the failure inside the try.
+        """
+        acquired = False
         try:
-            with self.lock:
-                return self.queue[:] if self.queue else []
+            self.lock.acquire()
+            acquired = True
+            return self.queue[:] if self.queue else []
         except Exception as e:
             print(f"approval_batcher get_pending error ({type(e).__name__}: {e}); fail-soft")
             return []
+        finally:
+            if acquired:
+                try:
+                    self.lock.release()
+                except Exception:
+                    pass
 
     def flush(self):
         """Manually trigger flush of pending batch. Returns items flushed."""
@@ -178,20 +203,32 @@ class ApprovalBatcher:
             self._last_flush_time = time.time()
 
     def stats(self):
-        """Return statistics dict for operator monitoring."""
+        """Return statistics dict for operator monitoring. Never raises.
+
+        Explicit acquire for the same reason as get_pending: a monitoring read must not
+        be able to raise out of the module whose contract is fail-soft.
+        """
+        acquired = False
         try:
-            with self.lock:
-                return {
-                    "items_queued": self._items_queued,
-                    "items_pending": len(self.queue),
-                    "batches_sent": self._batches_sent,
-                    "last_flush_time": self._last_flush_time,
-                    "window_ms": self.window_ms,
-                    "size_threshold": self.size_threshold
-                }
+            self.lock.acquire()
+            acquired = True
+            return {
+                "items_queued": self._items_queued,
+                "items_pending": len(self.queue),
+                "batches_sent": self._batches_sent,
+                "last_flush_time": self._last_flush_time,
+                "window_ms": self.window_ms,
+                "size_threshold": self.size_threshold
+            }
         except Exception as e:
             print(f"approval_batcher stats error ({type(e).__name__}: {e}); fail-soft")
             return {}
+        finally:
+            if acquired:
+                try:
+                    self.lock.release()
+                except Exception:
+                    pass
 
 
 _approval_batcher = ApprovalBatcher()
@@ -354,6 +391,26 @@ def build_digest(cards):
     return title, "\n".join(lines)
 
 
+def _as_brief(value):
+    """Coerce a brief_json column to a dict. Never raises; unusable input -> {}.
+
+    The column comes back as a dict when PostgREST hands over jsonb, but as a raw JSON
+    STRING whenever it is stored as text or round-tripped through an export. The old
+    `a.get("brief_json") or {}` kept the string, `isinstance(bj, dict)` was then False,
+    and the owner-facing QUESTION line — the one thing that says what is actually being
+    asked — was silently dropped from the notification.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (str, bytes)):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _digest_enabled():
     return os.environ.get("APPROVAL_DIGEST_BATCHING", "1").strip().lower() in _TRUTHY
 
@@ -381,7 +438,7 @@ def run(limit=50):
         if a["kind"] == "legal" and (a.get("legal_risk_level") == "routine"):
             continue
         title = ("Decision: " if is_decision else "Action: ") + (a.get("title") or "")[:140]
-        bj = a.get("brief_json") or {}
+        bj = _as_brief(a.get("brief_json"))
         parts = [f"[{a.get('project') or '-'}] {a.get('title') or ''}"]
         if isinstance(bj, dict) and bj.get("question"):
             parts.append(f"QUESTION: {bj['question']}")
@@ -406,6 +463,13 @@ def run(limit=50):
     # (time window or count threshold). One outbound ping per batch, not per card.
     if batched and _digest_enabled():
         append_to_batch(batched)
+        # ...and flush before returning. run() is a one-shot entrypoint: periodic.py
+        # calls it and the process exits, so the 30s threading.Timer the batcher arms
+        # never fires and neither the digest row nor the outbound ping is ever produced.
+        # Batching only ever meant "one ping per run instead of one per card"; the run
+        # itself is the batch boundary, so flushing here is what makes the feature real
+        # rather than silently dropping every digest.
+        flush_approvals()
     elif batched:
         for a in batched:
             try:

@@ -278,7 +278,20 @@ class BriefJsonHandlingTest(unittest.TestCase):
 
 
 class AlternativesHandlingTest(unittest.TestCase):
-    """Test alternatives/options field handling."""
+    """Test alternatives/options field handling.
+
+    _links_block emits one-click links only when a signing key is configured; without
+    one it correctly degrades to an unsigned cockpit pointer with no option lines at
+    all. These cases are about the option rendering, so the key has to be present or
+    they assert against the degraded path and can never pass.
+    """
+
+    def setUp(self):
+        self._env = patch.dict(os.environ, {"APPROVAL_LINK_SIGNING_KEY": GOOD_KEY})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
 
     def test_alternatives_as_list_of_dicts(self):
         alts = [

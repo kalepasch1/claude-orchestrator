@@ -280,6 +280,22 @@ class BatcherStatsTest(unittest.TestCase):
         self.assertEqual(stats["size_threshold"], 3)
 
 
+class _FailingLock:
+    """Stand-in for a lock that cannot be acquired, for the fail-soft paths."""
+
+    def acquire(self, *args, **kwargs):
+        raise RuntimeError("Lock error")
+
+    def release(self):
+        raise RuntimeError("Lock error")
+
+    def __enter__(self):
+        raise RuntimeError("Lock error")
+
+    def __exit__(self, *exc_info):
+        return False
+
+
 class BatcherErrorHandlingTest(unittest.TestCase):
     """Fail-soft error handling."""
 
@@ -305,7 +321,11 @@ class BatcherErrorHandlingTest(unittest.TestCase):
                 self.fail("append raised an exception on timer error")
 
     def test_get_pending_error_returns_empty_list(self):
-        with patch.object(self.batcher.lock, "acquire", side_effect=Exception("Lock error")):
+        # Replace the lock object rather than patching its `acquire`: a real
+        # _thread.lock has read-only attributes, so patch.object on it raises
+        # AttributeError before the batcher is ever called and the test could not
+        # pass against any implementation.
+        with patch.object(self.batcher, "lock", _FailingLock()):
             result = self.batcher.get_pending()
             self.assertEqual(result, [])
 
@@ -318,7 +338,7 @@ class BatcherErrorHandlingTest(unittest.TestCase):
                 pass
 
     def test_stats_error_returns_empty_dict(self):
-        with patch.object(self.batcher.lock, "acquire", side_effect=Exception("Lock error")):
+        with patch.object(self.batcher, "lock", _FailingLock()):
             result = self.batcher.stats()
             self.assertEqual(result, {})
 
@@ -415,7 +435,14 @@ class BatcherThreadSafetyTest(unittest.TestCase):
 
         self.assertEqual(self.errors, [])
         stats = self.batcher.stats()
-        self.assertEqual(stats["items_pending"], 50)
+        # Every card is accounted for: 5 threads x 10 appends. Asserting on
+        # items_PENDING instead was self-contradictory — the size threshold here is 50,
+        # and BatcherCountThresholdTest.test_threshold_exactly_triggers_send requires
+        # that reaching the threshold flushes, which necessarily empties the queue.
+        # items_queued is the invariant thread safety is actually about: no lost or
+        # double-counted appends under concurrency.
+        self.assertEqual(stats["items_queued"], 50)
+        self.assertEqual(stats["items_pending"], 0)
 
     def test_concurrent_get_pending_is_safe(self):
         self.batcher.append([{"id": f"a{i}"} for i in range(10)])
