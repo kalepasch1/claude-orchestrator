@@ -117,15 +117,31 @@ def _ollama_up():
         return False
 
 
+#: Hosted providers this gateway can dispatch to, in the order they are reported.
+#: Membership is decided by provider_credentials, which owns the alias table — asking
+#: it here is the whole point of that module.
+_HOSTED = ("openai", "google", "deepseek", "groq", "xai")
+
+
 def configured():
-    """Providers with local configuration present, regardless of health."""
+    """Providers with local configuration present, regardless of health.
+
+    Reads through provider_credentials rather than os.environ directly. This used to
+    test one hardcoded env name per provider, so a credential stored under an accepted
+    ALIAS enabled nothing: GROK_API_KEY left "xai" out of routing, GEMINI_API_KEY left
+    out "google". provider_credentials.py exists precisely because "provider
+    integrations historically checked one spelling while credential setup accepted
+    another" — and this function was still checking one spelling. A key counts only if
+    it is non-empty, so blank .env lines still enable nothing.
+    """
     prov = ["claude"]
-    # a key counts only if it's non-empty (blank .env lines don't enable a provider)
-    if os.environ.get("OPENAI_API_KEY", "").strip(): prov.append("openai")
-    if os.environ.get("GOOGLE_API_KEY", "").strip(): prov.append("google")
-    if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
-    if os.environ.get("GROQ_API_KEY", "").strip(): prov.append("groq")
-    if os.environ.get("XAI_API_KEY", "").strip(): prov.append("xai")
+    for name in _HOSTED:
+        try:
+            present = provider_credentials.has(name)
+        except Exception:
+            present = bool(os.environ.get(f"{name.upper()}_API_KEY", "").strip())
+        if present:
+            prov.append(name)
     if _ollama_up() and not _local_disabled(): prov.append("local")
     return prov
 
