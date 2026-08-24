@@ -3,6 +3,7 @@
 import os
 import sys
 import pytest
+from types import ModuleType as _ModuleType
 
 import db as _real_db
 import kill_switch as _real_kill_switch
@@ -86,8 +87,51 @@ _REAL_MODULES = {
 }
 
 
+_RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _evict_synthetic_runner_modules():
+    """Drop stub modules that shadow a real runner module, so the next import is real.
+
+    `_REAL_MODULES` above is a hardcoded list of five names. Every other runner module
+    a test file stubs stays stubbed for the rest of the session, and the damage is
+    order-dependent -- the file passes alone and fails in the suite, or the reverse,
+    which is the most expensive kind of test failure to diagnose because the failing
+    test is not the broken one.
+
+    Two live examples, both hit while working this queue:
+
+      * test_scoreboard_history.py does `sys.modules["queue_counters"] =
+        ModuleType("queue_counters")` at import time and never removes it. Any later
+        module doing `import queue_counters` got the stub, and reading an attribute off
+        it raised AttributeError during collection.
+      * a module leaves patched state on `claude_cli`, so a later file driving it saw
+        StopIteration from an exhausted mock rather than a real result.
+
+    Rather than extend the hardcoded list every time this recurs, evict generically: a
+    `sys.modules` entry that is a bare ModuleType with no `__file__` (never a real
+    import) and whose name matches a real `runner/<name>.py` is removed, so the next
+    import loads the genuine module.
+
+    Deliberately eviction rather than replacement. It cannot break the polluting test
+    -- that bound its own reference at import, exactly as the collectstart docstring
+    below already reasons -- and it needs no snapshot of a module that may not have
+    been imported when this file was loaded.
+    """
+    for name, module in list(sys.modules.items()):
+        if "." in name or name in _REAL_MODULES:
+            continue
+        if not isinstance(module, _ModuleType):
+            continue
+        if getattr(module, "__file__", None) is not None:
+            continue
+        if os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py")):
+            del sys.modules[name]
+
+
 def _restore_real_modules():
     sys.modules.update(_REAL_MODULES)
+    _evict_synthetic_runner_modules()
 
 
 @pytest.hookimpl(hookwrapper=True)
