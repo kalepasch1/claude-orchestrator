@@ -710,6 +710,43 @@ def _ensure_node_deps(repo, test_cmd=""):
         pass
 
 
+#: Marker introducing the complete failing-test list in a QA detail string.
+FAILED_TESTS_HEADER = "FAILING TESTS (complete, from full output):"
+
+
+def _failure_detail(stdout, stderr, tail_chars=6000):
+    """Failure evidence that survives truncation and runner ordering.
+
+    The tail alone was not enough. differential_qa.compare waives a red baseline
+    only when every candidate failure also appears in the baseline, and
+    `node --test` prints its failing-test summary in COMPLETION order, which is
+    nondeterministic under concurrency. Keeping the last 6000 characters therefore
+    kept a DIFFERENT subset of failures on each run of the same tree, so the waiver
+    was granted or refused essentially at random and correct branches kept landing
+    in TESTFAIL.
+
+    The complete identifier list is extracted from the FULL output first and
+    prepended, so the comparison sees every failure regardless of ordering. The
+    truncated tail is retained after it, unchanged, because a human reading a
+    TESTFAIL still needs the actual error text.
+    """
+    full = (stdout or "") + "\n" + (stderr or "")
+    tail = ((stdout or "")[-tail_chars:] + (stderr or "")[-tail_chars:]).strip()
+    try:
+        import differential_qa
+        ids = differential_qa.test_identifiers(full)
+    except Exception:
+        ids = []
+    if not ids:
+        return tail
+    # Numbered, because the block has to be readable by the same parser that wrote
+    # it: differential_qa's TAP pattern requires `not ok <n> - <name>`. An unnumbered
+    # line looked fine and parsed to nothing, which would have made the identifier
+    # list invisible to the very comparison it exists to feed.
+    listed = "\n".join(f"not ok {n} - {i}" for n, i in enumerate(ids, start=1))
+    return f"{FAILED_TESTS_HEADER}\n{listed}\n\n{tail}"
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -750,7 +787,7 @@ def _run_tests(repo, test_cmd, ref=None):
     except subprocess.TimeoutExpired:
         return False, f"tests timed out after {timeout}s"
     if r.returncode != 0:
-        tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
+        tail = _failure_detail(r.stdout, r.stderr)
         # One retry after a forced install if the failure looks like missing deps (env, not code).
         if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
             _ensure_node_deps(repo)
@@ -759,7 +796,7 @@ def _run_tests(repo, test_cmd, ref=None):
                                     text=True, timeout=timeout)
                 if r2.returncode == 0:
                     return True, "green (after dep install)"
-                return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
+                return False, _failure_detail(r2.stdout, r2.stderr)
             except subprocess.TimeoutExpired:
                 return False, f"tests timed out after {timeout}s"
         return False, tail
