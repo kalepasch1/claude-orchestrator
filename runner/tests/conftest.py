@@ -309,7 +309,27 @@ def _hermetic(request, monkeypatch):
             )
         return real_connect(self, address, *a, **kw)
 
+    def _blocked_connect_ex(self, address, *a, **kw):
+        """connect_ex is the same egress, spelled so it returns errno instead of raising.
+
+        The guard only ever wrapped `connect`, so any caller that used `connect_ex`
+        went straight out to the real network — a port scanner, a health probe, or
+        `socket.socket().connect_ex(("example.com", 80))` in a test all bypassed it
+        silently. Silently is the problem: a hole that raises nothing looks exactly
+        like a suite with no remote dependencies.
+
+        Returns ECONNREFUSED rather than raising, because that is connect_ex's whole
+        contract — a caller that gets an exception here would break on the guard in a
+        way it would never break offline.
+        """
+        if self.family in (_socket.AF_INET, _socket.AF_INET6) and not _is_loopback(address):
+            return 111  # ECONNREFUSED
+        return real_connect_ex(self, address, *a, **kw)
+
+    real_connect_ex = _socket.socket.connect_ex
+
     monkeypatch.setattr(_socket.socket, "connect", _blocked_connect, raising=False)
+    monkeypatch.setattr(_socket.socket, "connect_ex", _blocked_connect_ex, raising=False)
 
     # Patching socket.connect only covers sockets THIS process opens. The calls
     # that actually cost us were in children: blocked_triage shells out to

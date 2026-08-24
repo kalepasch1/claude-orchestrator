@@ -1,5 +1,8 @@
 """The hermetic guard must block the network without blocking this machine.
 
+Specification: `runner/tests/test-plan.md`. Each numbered edge case there has an
+assertion here; the docstring below is the same contract in prose.
+
 CORE SCENARIO. A test starts a server in its own process and scrapes it over
 loopback. `runner/tests/test_canary_metrics_server.py` does exactly that — it binds the
 canary `/metrics` endpoint on 127.0.0.1 and reads it back, which IS the behaviour under
@@ -125,6 +128,31 @@ class GuardStillBlocksRemoteTest(unittest.TestCase):
         with self.assertRaises(urllib.error.URLError):
             urllib.request.urlopen("http://example.com/", timeout=5)
 
+    def test_connect_ex_to_a_remote_host_is_refused(self):
+        # test-plan.md edge case 8. connect_ex is the same egress as connect, spelled
+        # so it returns an errno instead of raising — and the guard only ever wrapped
+        # connect, so this walked out to the real network and did so silently.
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        try:
+            self.assertEqual(s.connect_ex(("example.com", 80)), 111)
+        finally:
+            s.close()
+
+    def test_connect_ex_returns_rather_than_raises(self):
+        # blocking it by raising would break callers in a way they would never break
+        # on a genuinely offline machine, where connect_ex returns ECONNREFUSED.
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        try:
+            result = s.connect_ex(("8.8.8.8", 53))
+        except OSError:  # pragma: no cover
+            self.fail("connect_ex raised; it must return an errno")
+        finally:
+            s.close()
+        self.assertIsInstance(result, int)
+        self.assertNotEqual(result, 0)
+
     def test_the_refusal_is_still_an_oserror_with_econnrefused(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(5)
@@ -179,6 +207,15 @@ class LoopbackReachesItsOwnServerTest(unittest.TestCase):
         # the original failure signature was ('127.0.0.1', 9) — the proxy, not us
         self.assertNotEqual(self.port, 9)
         self.assertIn("127.0.0.1", os.environ.get("no_proxy", ""))
+
+    def test_connect_ex_to_our_own_port_succeeds(self):
+        # test-plan.md edge case 9: closing the connect_ex hole must not close loopback.
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        try:
+            self.assertEqual(s.connect_ex(("127.0.0.1", self.port)), 0)
+        finally:
+            s.close()
 
     def test_localhost_by_name_also_works(self):
         with urllib.request.urlopen(f"http://localhost:{self.port}/x", timeout=5) as r:
