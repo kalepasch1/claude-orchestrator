@@ -1,15 +1,34 @@
 #!/usr/bin/env python3
-"""Tests for account_pool.py credential rotation and thread-safe cache.
+"""Tests for account_pool.py credential rotation and its cross-module cache.
 
 Tests validate:
-- Thread-safe credential cache with TTL (claude_exhausted)
-- Tunable cache TTL via ORCH_EXH_CACHE_TTL env var
-- Robust file I/O: context managers, error="replace", specific exception handling
-- Fail-soft error handling on credential config load failures
+- The thread-safe claude_exhausted() cache and its 15s window
+- Robust file I/O: corrupt/wrong-shaped state, unwritable state, corrupt flag file
+- Fail-soft behaviour on credential config load failures
 - Thread-safe singleton pattern for AccountPool
 - Exponential backoff on repeated credential exhaustion
 - Credential rotation and mark_ok() reset behavior
 - Exhausted flag persistence and clearing
+
+REWRITE NOTES
+-------------
+1. Paths. account_pool computes CFG / STATE / EXHAUSTED_FLAG once, at import, from
+   CLAUDE_ORCH_HOME. This file used to set that env var inside the test body, which
+   changes nothing after import: every "temp dir" test was really reading and
+   WRITING the operator's real ~/.claude-orchestrator. That is why the flag-file and
+   backoff-counter assertions failed (they saw state left by earlier runs). All
+   classes now redirect the module constants themselves — the convention used by
+   runner/tests/test_account_pool.py and runner/test_account_pool_secret_outcomes.py.
+
+2. `_exh_cache_ttl()` does not exist. The whole TestCacheTTLConfiguration class
+   asserted against an ORCH_EXH_CACHE_TTL knob that account_pool never had; the cache
+   window is a fixed 15 seconds inside claude_exhausted(). Those five tests were
+   replaced by tests of the real caching contract (see TestExhaustedCacheWindow).
+
+3. `TestFailSoftDocstrings` asserted the literal word "Fail-soft" appeared in four
+   docstrings. That tests prose, not code — and would have been "fixed" by editing a
+   comment. It is now TestFailSoftBehaviour, which asserts the four functions
+   actually degrade instead of raising.
 """
 
 import os
@@ -17,133 +36,174 @@ import sys
 import json
 import time
 import tempfile
+import shutil
 import threading
-from unittest.mock import Mock, patch, mock_open
-from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
 
 import account_pool
+import subscription_guard
+
+
+class _TempPaths:
+    """Redirect account_pool's import-time path constants into a temp directory."""
+
+    def setup_method(self, method):
+        self.temp_dir = tempfile.mkdtemp()
+        self.cfg_path = os.path.join(self.temp_dir, "accounts.json")
+        self.state_path = os.path.join(self.temp_dir, "accounts_state.json")
+        self.flag_path = os.path.join(self.temp_dir, "claude_exhausted.json")
+        self._orig = (account_pool.CFG, account_pool.STATE, account_pool.EXHAUSTED_FLAG)
+        account_pool.CFG = self.cfg_path
+        account_pool.STATE = self.state_path
+        account_pool.EXHAUSTED_FLAG = self.flag_path
+        self._env_backup = dict(os.environ)
+        self._orig_pool = account_pool._pool
+        account_pool._pool = None
+        account_pool._EXH_CACHE = {"t": 0.0, "v": False}
+
+    def teardown_method(self, method):
+        account_pool.CFG, account_pool.STATE, account_pool.EXHAUSTED_FLAG = self._orig
+        account_pool._pool = self._orig_pool
+        account_pool._EXH_CACHE = {"t": 0.0, "v": False}
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def write_cfg(self, cfg):
+        with open(self.cfg_path, "w") as f:
+            json.dump(cfg, f)
+
+    def write_flag(self, until):
+        with open(self.flag_path, "w") as f:
+            json.dump({"until": until}, f)
 
 
 # ============================================================================
-# Test Cache TTL Configuration
+# claude_exhausted() cache window (replaces TestCacheTTLConfiguration)
 # ============================================================================
 
-class TestCacheTTLConfiguration:
-    """Test cache TTL is configurable via ORCH_EXH_CACHE_TTL."""
+class TestExhaustedCacheWindow(_TempPaths):
+    """The cross-module 'all Claude capacity is cooling' signal and its 15s cache.
 
-    def setup_method(self):
-        """Clean env before each test."""
-        os.environ.pop("ORCH_EXH_CACHE_TTL", None)
+    Replaces TestCacheTTLConfiguration, which called account_pool._exh_cache_ttl()
+    — a function this module has never defined (every test errored with
+    AttributeError). The cache window is the literal 15 in claude_exhausted().
+    """
 
-    def test_default_cache_ttl_is_15_seconds(self):
-        """_exh_cache_ttl() returns 15s by default."""
-        assert account_pool._exh_cache_ttl() == 15
+    def _exhaust_the_pool(self):
+        """Leave one configured account cooling, with no flag file on disk."""
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        pool = account_pool.AccountPool()
+        pool.mark_exhausted(pool.accts[0])
+        os.remove(self.flag_path)   # force the derive-from-state path
+        return pool
 
-    def test_cache_ttl_respects_env_var(self):
-        """_exh_cache_ttl() reads ORCH_EXH_CACHE_TTL."""
-        os.environ["ORCH_EXH_CACHE_TTL"] = "30"
-        assert account_pool._exh_cache_ttl() == 30
+    def test_cached_value_is_reused_inside_the_15s_window(self):
+        """A 14s-old cache entry is returned without re-deriving from state."""
+        self._exhaust_the_pool()
+        account_pool._EXH_CACHE = {"t": time.time() - 14, "v": False}
+        # Live state says exhausted; the fresh cache entry must win.
+        assert account_pool.claude_exhausted() is False
 
-    def test_cache_ttl_invalid_env_var_fails_soft(self):
-        """_exh_cache_ttl() returns default if ORCH_EXH_CACHE_TTL is invalid."""
-        os.environ["ORCH_EXH_CACHE_TTL"] = "not_a_number"
-        try:
-            result = account_pool._exh_cache_ttl()
-            # Should raise ValueError on int() or return default
-            assert False, "should raise ValueError"
-        except ValueError:
-            pass  # Expected
+    def test_cache_recomputes_once_the_15s_window_passes(self):
+        """A 16s-old entry is discarded and the live account state re-derived."""
+        self._exhaust_the_pool()
+        account_pool._EXH_CACHE = {"t": time.time() - 16, "v": False}
+        assert account_pool.claude_exhausted() is True
 
-    def test_cache_ttl_zero_allowed(self):
-        """_exh_cache_ttl() allows zero (no caching)."""
-        os.environ["ORCH_EXH_CACHE_TTL"] = "0"
-        assert account_pool._exh_cache_ttl() == 0
+    def test_cache_window_is_not_env_tunable(self):
+        """ORCH_EXH_CACHE_TTL is not wired up; the window stays 15s either way.
 
-    def test_cache_ttl_large_value_allowed(self):
-        """_exh_cache_ttl() allows large values."""
+        Was test_cache_ttl_respects_env_var, which asserted the env var changed the
+        TTL. Nothing in account_pool reads it — pinning that down keeps a future
+        reader from assuming the knob works."""
+        self._exhaust_the_pool()
         os.environ["ORCH_EXH_CACHE_TTL"] = "3600"
-        assert account_pool._exh_cache_ttl() == 3600
+        account_pool._EXH_CACHE = {"t": time.time() - 16, "v": False}
+        assert account_pool.claude_exhausted() is True   # recomputed, not held 1h
+
+    def test_recompute_writes_timestamp_and_value_back_to_cache(self):
+        """Was test_cache_ttl_zero_allowed. The real invariant: after a miss the
+        cache holds the fresh answer and the time it was taken."""
+        self._exhaust_the_pool()
+        account_pool._EXH_CACHE = {"t": 0.0, "v": False}
+        before = time.time()
+
+        assert account_pool.claude_exhausted() is True
+
+        assert account_pool._EXH_CACHE["v"] is True
+        assert account_pool._EXH_CACHE["t"] >= before
+
+    def test_unexpired_flag_file_short_circuits_the_cache(self):
+        """Was test_cache_ttl_large_value_allowed. The real fast path: the flag file
+        written by mark_exhausted wins over a fresh cache entry, and an expired flag
+        falls through to the derived answer."""
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        self.write_flag(time.time() + 300)
+        account_pool._EXH_CACHE = {"t": time.time(), "v": False}
+        assert account_pool.claude_exhausted() is True
+
+        # Expired flag -> ignored; the pool is healthy, so no exhaustion.
+        self.write_flag(time.time() - 1)
+        account_pool._EXH_CACHE = {"t": 0.0, "v": False}
+        assert account_pool.claude_exhausted() is False
 
 
 # ============================================================================
 # Test Thread-Safe Cache (claude_exhausted)
 # ============================================================================
 
-class TestThreadSafeExhaustedCache:
+class TestThreadSafeExhaustedCache(_TempPaths):
     """Test claude_exhausted() cache is thread-safe."""
-
-    def setup_method(self):
-        """Reset cache and env before each test."""
-        account_pool._EXH_CACHE = {"t": 0.0, "v": False}
-        os.environ.pop("ORCH_EXH_CACHE_TTL", None)
-        os.environ.pop("CLAUDE_ORCH_HOME", None)
 
     def test_cache_returns_same_value_within_ttl(self):
         """Cache hit: claude_exhausted() returns cached value within TTL."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
-            # Manually set cache
-            now = time.time()
-            account_pool._EXH_CACHE = {"t": now - 5, "v": True}
-
-            # Should return cached True without DB call
-            assert account_pool.claude_exhausted() is True
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        account_pool._EXH_CACHE = {"t": time.time() - 5, "v": True}
+        assert account_pool.claude_exhausted() is True
 
     def test_cache_recomputes_after_ttl(self):
         """Cache miss: claude_exhausted() recomputes after TTL expires."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            os.environ["ORCH_EXH_CACHE_TTL"] = "1"  # 1 second TTL
-
-            # Set old cached value
-            now = time.time()
-            account_pool._EXH_CACHE = {"t": now - 10, "v": True}
-
-            # Wait for TTL to expire
-            time.sleep(0.1)
-
-            # Should recompute, result depends on actual account state
-            result = account_pool.claude_exhausted()
-            assert isinstance(result, bool)
+        # Was asserting only isinstance(result, bool); with a real (temp) config the
+        # recomputed value is knowable: one healthy account -> not exhausted.
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        account_pool._EXH_CACHE = {"t": time.time() - 20, "v": True}
+        assert account_pool.claude_exhausted() is False
 
     def test_cache_lock_prevents_race(self):
         """Multiple threads calling claude_exhausted() don't corrupt cache."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            results = []
-            errors = []
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        results = []
+        errors = []
 
-            def call_claude_exhausted():
-                try:
-                    for _ in range(10):
-                        result = account_pool.claude_exhausted()
-                        results.append(result)
-                except Exception as e:
-                    errors.append(e)
+        def call_claude_exhausted():
+            try:
+                for _ in range(10):
+                    results.append(account_pool.claude_exhausted())
+            except Exception as e:  # pragma: no cover - only on a real race
+                errors.append(e)
 
-            threads = [threading.Thread(target=call_claude_exhausted) for _ in range(5)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        threads = [threading.Thread(target=call_claude_exhausted) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-            assert not errors, f"Errors in concurrent cache access: {errors}"
-            assert len(results) == 50, "All calls should complete"
-            assert all(isinstance(r, bool) for r in results)
+        assert not errors, f"Errors in concurrent cache access: {errors}"
+        assert len(results) == 50, "All calls should complete"
+        assert all(r is False for r in results)   # healthy account, no flag file
 
     def test_cache_initialization_is_thread_safe(self):
-        """Multiple threads initializing cache at same time don't corrupt it."""
-        account_pool._EXH_CACHE = {"t": 0.0, "v": False}
+        """Threads that all force a recompute leave a coherent cache entry."""
+        self.write_cfg([{"name": "acct1", "type": "login"}])
 
         def reset_and_call():
-            # Reset to force recomputation
             account_pool._EXH_CACHE["t"] = 0.0
-            return account_pool.claude_exhausted()
+            account_pool.claude_exhausted()
 
         threads = [threading.Thread(target=reset_and_call) for _ in range(10)]
         for t in threads:
@@ -151,144 +211,103 @@ class TestThreadSafeExhaustedCache:
         for t in threads:
             t.join()
 
-        # Cache should still be valid dict
         assert isinstance(account_pool._EXH_CACHE, dict)
-        assert "t" in account_pool._EXH_CACHE
-        assert "v" in account_pool._EXH_CACHE
+        assert set(account_pool._EXH_CACHE) == {"t", "v"}
+        assert isinstance(account_pool._EXH_CACHE["v"], bool)
 
 
 # ============================================================================
 # Test Robust File I/O and Error Handling
 # ============================================================================
 
-class TestRobustFileIO:
+class TestRobustFileIO(_TempPaths):
     """Test file I/O handles corruption and missing files gracefully."""
-
-    def setup_method(self):
-        """Reset env before each test."""
-        os.environ.pop("CLAUDE_ORCH_HOME", None)
 
     def test_load_state_missing_file_returns_empty_dict(self):
         """_load_state() returns {} if file missing."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            # Don't reuse pool instance state from setUp
-            pool = account_pool.AccountPool()
-            pool.state = {}
-
-            # Manually call _load_state with fresh instance
-            state = pool._load_state()
-            # When file doesn't exist, should return empty dict
-            assert state == {} or isinstance(state, dict), f"Expected dict, got {type(state).__name__}"
+        pool = account_pool.AccountPool()
+        assert pool._load_state() == {}
 
     def test_load_state_corrupted_json_returns_empty_dict(self):
         """_load_state() returns {} if file contains invalid JSON."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            state_path = os.path.join(tmpdir, "accounts_state.json")
+        with open(self.state_path, "w") as f:
+            f.write("{ invalid json }")
 
-            # Write corrupted JSON
-            with open(state_path, "w") as f:
-                f.write("{ invalid json }")
-
-            pool = account_pool.AccountPool()
-            state = pool._load_state()
-            assert state == {}, f"Expected empty dict on corrupt JSON, got {state}"
+        pool = account_pool.AccountPool()
+        assert pool._load_state() == {}
 
     def test_load_state_wrong_type_returns_empty_dict(self):
         """_load_state() returns {} if file contains non-dict."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            state_path = os.path.join(tmpdir, "accounts_state.json")
+        # This one was a genuine product gap, not just a path bug: _load_state
+        # returned the parsed list as-is and current() later died on
+        # list.get(). _load_state now type-checks before returning.
+        with open(self.state_path, "w") as f:
+            json.dump([1, 2, 3], f)
 
-            # Write list instead of dict
-            with open(state_path, "w") as f:
-                json.dump([1, 2, 3], f)
-
-            pool = account_pool.AccountPool()
-            state = pool._load_state()
-            assert state == {}, f"Expected empty dict on wrong type, got {state}"
+        pool = account_pool.AccountPool()
+        assert pool._load_state() == {}
+        assert pool.current()["name"] == "default"   # pool stays usable
 
     def test_load_cfg_missing_file_returns_default(self):
         """_load_cfg() returns default if file missing."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
+        pool = account_pool.AccountPool()
 
-            cfg = pool._load_cfg()
-            assert isinstance(cfg, list)
-            assert len(cfg) > 0
-            assert cfg[0]["name"] == "default"
+        cfg = pool._load_cfg()
+        assert isinstance(cfg, list)
+        assert len(cfg) > 0
+        assert cfg[0]["name"] == "default"
 
     def test_load_cfg_corrupted_json_returns_default(self):
         """_load_cfg() returns default if file contains invalid JSON."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            cfg_path = os.path.join(tmpdir, "accounts.json")
+        with open(self.cfg_path, "w") as f:
+            f.write("{ invalid json }")
 
-            # Write corrupted JSON
-            with open(cfg_path, "w") as f:
-                f.write("{ invalid json }")
-
-            pool = account_pool.AccountPool()
-            cfg = pool._load_cfg()
-            assert cfg[0]["name"] == "default"
+        pool = account_pool.AccountPool()
+        assert pool._load_cfg()[0]["name"] == "default"
 
     def test_save_disk_error_doesnt_raise(self):
-        """_save() doesn't raise on disk write error."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
-            pool.state = {"test": {"use_count": 1}}
+        """_save() doesn't raise on disk write error.
 
-            # Make directory read-only to force write error
-            state_dir = tmpdir
-            try:
-                os.chmod(state_dir, 0o444)
-                # Should not raise
-                pool._save()
-            finally:
-                os.chmod(state_dir, 0o755)
+        The old version chmod'ed the temp dir to 0o444, which does not stop root (CI
+        runs as root) and pointed at the wrong STATE path anyway, so the write always
+        succeeded and nothing was exercised. Putting a regular FILE where the state
+        directory should be makes the write fail for every user."""
+        blocker = os.path.join(self.temp_dir, "blocker")
+        with open(blocker, "w") as f:
+            f.write("not a directory")
+        account_pool.STATE = os.path.join(blocker, "accounts_state.json")
+
+        pool = account_pool.AccountPool()
+        pool.state = {"test": {"use_count": 1}}
+        pool._save()   # must not raise
+
+        assert not os.path.exists(account_pool.STATE)
+        assert pool.state == {"test": {"use_count": 1}}   # in-memory state intact
 
     def test_exhausted_flag_handles_corrupted_json(self):
         """claude_exhausted() handles corrupted exhausted flag file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            flag_path = os.path.join(tmpdir, "claude_exhausted.json")
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        with open(self.flag_path, "w") as f:
+            f.write("{ invalid json }")
 
-            # Write corrupted JSON
-            with open(flag_path, "w") as f:
-                f.write("{ invalid json }")
-
-            # Should not raise, should fall back to empty result
-            result = account_pool.claude_exhausted()
-            assert isinstance(result, bool)
+        # Falls through to the live derivation instead of raising.
+        assert account_pool.claude_exhausted() is False
 
     def test_exhausted_flag_handles_missing_until_field(self):
         """claude_exhausted() handles exhausted flag with missing 'until' field."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            flag_path = os.path.join(tmpdir, "claude_exhausted.json")
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        with open(self.flag_path, "w") as f:
+            json.dump({"other_field": "value"}, f)
 
-            # Write valid JSON but missing 'until'
-            with open(flag_path, "w") as f:
-                json.dump({"other_field": "value"}, f)
-
-            # Should not raise
-            result = account_pool.claude_exhausted()
-            assert isinstance(result, bool)
+        assert account_pool.claude_exhausted() is False
 
 
 # ============================================================================
 # Test Thread-Safe Singleton Pattern
 # ============================================================================
 
-class TestThreadSafeSingleton:
+class TestThreadSafeSingleton(_TempPaths):
     """Test _get_pool() creates singleton safely."""
-
-    def setup_method(self):
-        """Reset singleton before each test."""
-        account_pool._pool = None
 
     def test_get_pool_creates_singleton(self):
         """_get_pool() creates AccountPool singleton."""
@@ -307,8 +326,6 @@ class TestThreadSafeSingleton:
             with lock:
                 pools.append(pool)
 
-        # Reset for this test
-        account_pool._pool = None
         threads = [threading.Thread(target=get_and_store) for _ in range(10)]
         for t in threads:
             t.start()
@@ -321,289 +338,285 @@ class TestThreadSafeSingleton:
 
     def test_module_level_stats_delegates_to_singleton(self):
         """stats() calls _get_pool().stats()."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            account_pool._pool = None
+        self.write_cfg([{"name": "acct1", "type": "login"}])
 
-            stats = account_pool.stats()
-            assert isinstance(stats, dict)
-            assert "total_accounts" in stats
+        stats = account_pool.stats()
+        assert stats["total_accounts"] == 1
+        assert stats["current"] == "acct1"
+
+        # It is the SAME singleton: a use recorded on it shows up in the next
+        # module-level snapshot.
+        account_pool._get_pool().record_use({"name": "acct1"})
+        assert account_pool.stats()["accounts"][0]["use_count"] == 1
 
     def test_module_level_invalidate_delegates_to_singleton(self):
         """invalidate() calls _get_pool().invalidate()."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            account_pool._pool = None
+        self.write_cfg([{"name": "acct1", "type": "login"}])
+        pool = account_pool._get_pool()
+        pool.mark_exhausted(pool.accts[0])
 
-            # Should not raise
-            account_pool.invalidate()
+        account_pool.invalidate("acct1")
 
-            # Should reload config
-            pool = account_pool._get_pool()
-            assert isinstance(pool.accts, list)
+        assert "cooldown_until" not in pool.state["acct1"]
+        assert not os.path.exists(self.flag_path)
 
 
 # ============================================================================
 # Test Credential Rotation and Backoff
 # ============================================================================
 
-class TestCredentialRotationBackoff:
+class TestCredentialRotationBackoff(_TempPaths):
     """Test mark_exhausted() implements exponential backoff."""
 
-    def setup_method(self):
-        """Set up test pool with predictable time."""
+    def setup_method(self, method):
+        super().setup_method(method)
         os.environ.pop("ORCH_ACCOUNT_COOLDOWN", None)
         os.environ.pop("ORCH_ACCOUNT_COOLDOWN_MAX", None)
-        os.environ.pop("CLAUDE_ORCH_HOME", None)
+        self.write_cfg([{"name": "test", "type": "login"}])
 
     def test_first_exhaustion_uses_base_cooldown(self):
         """First mark_exhausted() call uses COOLDOWN."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
+        pool = account_pool.AccountPool()
+        acct = pool.accts[0]
 
-            before = time.time()
-            pool.mark_exhausted(acct)
-            after = time.time()
+        before = time.time()
+        pool.mark_exhausted(acct)
+        after = time.time()
 
-            state = pool.state.get("test", {})
-            cooldown_until = state.get("cooldown_until", 0)
-
-            # Should be approximately now + COOLDOWN
-            expected_min = before + account_pool._COOLDOWN_DEFAULT
-            expected_max = after + account_pool._COOLDOWN_DEFAULT
-
-            assert expected_min <= cooldown_until <= expected_max + 1
+        cooldown_until = pool.state["test"]["cooldown_until"]
+        assert before + account_pool._COOLDOWN_DEFAULT <= cooldown_until
+        assert cooldown_until <= after + account_pool._COOLDOWN_DEFAULT
 
     def test_second_exhaustion_doubles_cooldown(self):
         """Second mark_exhausted() call doubles backoff."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
+        pool = account_pool.AccountPool()
+        acct = pool.accts[0]
 
-            # First exhaustion
-            pool.mark_exhausted(acct)
-            first_until = pool.state.get("test", {}).get("cooldown_until", 0)
+        sent = time.time()
+        pool.mark_exhausted(acct)
+        first = pool.state["test"]["cooldown_until"] - sent
 
-            # Second exhaustion
-            pool.mark_exhausted(acct)
-            second_until = pool.state.get("test", {}).get("cooldown_until", 0)
+        sent = time.time()
+        pool.mark_exhausted(acct)
+        second = pool.state["test"]["cooldown_until"] - sent
 
-            # Second should be roughly double first
-            first_duration = first_until - time.time()
-            second_duration = second_until - time.time()
-
-            # Second should be ~2x first (allowing some time skew)
-            assert second_duration > first_duration
+        # Was only "second > first"; the documented contract is a doubling.
+        assert abs(second - 2 * first) < 2
 
     def test_backoff_respects_cooldown_max(self):
         """Backoff never exceeds COOLDOWN_MAX."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            os.environ["ORCH_ACCOUNT_COOLDOWN_MAX"] = "60"
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
+        os.environ["ORCH_ACCOUNT_COOLDOWN_MAX"] = "60"
+        pool = account_pool.AccountPool()
+        acct = pool.accts[0]
 
-            # Mark exhausted many times
-            for _ in range(10):
-                pool.mark_exhausted(acct)
+        for _ in range(10):
+            pool.mark_exhausted(acct)
 
-            state = pool.state.get("test", {})
-            cooldown_until = state.get("cooldown_until", 0)
-            remaining = cooldown_until - time.time()
-
-            # Should never exceed COOLDOWN_MAX (60 seconds)
-            assert remaining <= 60 + 5  # Allow some time skew
+        remaining = pool.state["test"]["cooldown_until"] - time.time()
+        assert 58 <= remaining <= 60
 
     def test_mark_ok_resets_backoff_counter(self):
         """mark_ok() clears exh_hits so backoff resets."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
+        # Previously read exh_hits out of the machine's real state file, which
+        # already carried hits for "test" from earlier runs.
+        pool = account_pool.AccountPool()
+        acct = pool.accts[0]
 
-            # Exhaust twice
-            pool.mark_exhausted(acct)
-            pool.mark_exhausted(acct)
-            hits = pool.state.get("test", {}).get("exh_hits", 0)
-            assert hits == 2
+        pool.mark_exhausted(acct)
+        pool.mark_exhausted(acct)
+        assert pool.state["test"]["exh_hits"] == 2
 
-            # mark_ok() resets counter
-            pool.mark_ok(acct)
-            hits = pool.state.get("test", {}).get("exh_hits", 0)
-            assert hits == 0
+        pool.mark_ok(acct)
+        assert pool.state["test"].get("exh_hits", 0) == 0
+
+        # ...and the next hit starts from the base cooldown again.
+        sent = time.time()
+        pool.mark_exhausted(acct)
+        assert pool.state["test"]["cooldown_until"] - sent <= account_pool._COOLDOWN_DEFAULT + 1
 
     def test_mark_ok_clears_cooldown(self):
         """mark_ok() clears cooldown_until."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
+        pool = account_pool.AccountPool()
+        acct = pool.accts[0]
 
-            pool.mark_exhausted(acct)
-            assert pool.state.get("test", {}).get("cooldown_until", 0) > time.time()
+        pool.mark_exhausted(acct)
+        assert pool.state["test"]["cooldown_until"] > time.time()
 
-            pool.mark_ok(acct)
-            # cooldown_until should be removed
-            assert "cooldown_until" not in pool.state.get("test", {})
+        pool.mark_ok(acct)
+        assert "cooldown_until" not in pool.state["test"]
+        assert pool._healthy(acct)
 
     def test_mark_ok_preserves_use_count(self):
         """mark_ok() does not reset use_count (cumulative load tracking)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
+        # Same real-state-file contamination: use_count started non-zero.
+        pool = account_pool.AccountPool()
+        acct = pool.accts[0]
 
-            pool.record_use(acct)
-            pool.record_use(acct)
-            use_count = pool.state.get("test", {}).get("use_count", 0)
-            assert use_count == 2
+        pool.record_use(acct)
+        pool.record_use(acct)
+        assert pool.state["test"]["use_count"] == 2
 
-            pool.mark_ok(acct)
+        pool.mark_ok(acct)
 
-            # use_count should still be 2 (not reset)
-            use_count_after = pool.state.get("test", {}).get("use_count", 0)
-            assert use_count_after == 2
+        assert pool.state["test"]["use_count"] == 2
 
 
 # ============================================================================
 # Test Exhausted Flag Persistence
 # ============================================================================
 
-class TestExhaustedFlagPersistence:
+class TestExhaustedFlagPersistence(_TempPaths):
     """Test exhausted flag file is written/cleared correctly."""
 
-    def setup_method(self):
-        """Reset cache and env."""
-        account_pool._EXH_CACHE = {"t": 0.0, "v": False}
-        os.environ.pop("CLAUDE_ORCH_HOME", None)
+    def setup_method(self, method):
+        super().setup_method(method)
+        self.write_cfg([{"name": "test", "type": "login"}])
 
     def test_write_exhausted_flag_when_all_cooling(self):
         """_write_exhausted_flag() creates flag when all accounts cooling."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            flag_path = os.path.join(tmpdir, "claude_exhausted.json")
+        # The assertion targeted a temp path the module never used, so the flag was
+        # (and stayed) missing there.
+        pool = account_pool.AccountPool()
+        pool.mark_exhausted(pool.accts[0])
 
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
-            pool.accts = [acct]
-
-            # Mark as cooling
-            pool.mark_exhausted(acct)
-
-            # Flag should exist
-            assert os.path.exists(flag_path)
-            with open(flag_path) as f:
-                flag_data = json.load(f)
-            assert "until" in flag_data
-            assert flag_data["until"] > time.time()
+        assert os.path.exists(self.flag_path)
+        with open(self.flag_path) as f:
+            flag_data = json.load(f)
+        assert flag_data["until"] == pool.state["test"]["cooldown_until"]
+        assert flag_data["until"] > time.time()
 
     def test_clear_exhausted_flag_when_account_recovers(self):
         """_write_exhausted_flag() removes flag when any account healthy."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            flag_path = os.path.join(tmpdir, "claude_exhausted.json")
+        pool = account_pool.AccountPool()
+        acct = pool.accts[0]
 
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
-            pool.accts = [acct]
+        pool.mark_exhausted(acct)
+        assert os.path.exists(self.flag_path)
 
-            # Exhaust, then recover
-            pool.mark_exhausted(acct)
-            assert os.path.exists(flag_path)
-
-            pool.mark_ok(acct)
-            # Flag should be removed
-            assert not os.path.exists(flag_path)
+        pool.mark_ok(acct)
+        assert not os.path.exists(self.flag_path)
 
     def test_exhausted_flag_contains_valid_until_timestamp(self):
         """Exhausted flag 'until' field is a valid future timestamp."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["CLAUDE_ORCH_HOME"] = tmpdir
-            flag_path = os.path.join(tmpdir, "claude_exhausted.json")
+        pool = account_pool.AccountPool()
+        pool.mark_exhausted(pool.accts[0])
 
-            pool = account_pool.AccountPool()
-            acct = {"name": "test", "type": "login"}
-            pool.accts = [acct]
+        with open(self.flag_path) as f:
+            flag_data = json.load(f)
 
-            pool.mark_exhausted(acct)
+        until = float(flag_data["until"])
+        now = time.time()
 
-            with open(flag_path) as f:
-                flag_data = json.load(f)
-
-            until = float(flag_data["until"])
-            now = time.time()
-
-            # Should be in future
-            assert until > now
-            # Should be within reasonable bounds (not decades away)
-            assert until < now + 24 * 3600
+        assert until > now
+        # Never longer than the documented 6h backoff ceiling.
+        assert until <= now + account_pool._COOLDOWN_MAX_DEFAULT
 
 
 # ============================================================================
 # Test API Billing Guard
 # ============================================================================
 
-class TestAPIBillingAllowed:
+class TestAPIBillingAllowed(_TempPaths):
     """Test _api_billing_allowed() with guard and env fallback."""
-
-    def setup_method(self):
-        """Clean env before each test."""
-        os.environ.pop("ORCH_ALLOW_API_BILLING", None)
 
     def test_api_billing_default_deny(self):
         """_api_billing_allowed() returns False by default."""
-        # When subscription_guard not available and env not set
-        result = account_pool._api_billing_allowed()
-        assert result is False
-
-    def test_api_billing_respects_env_var(self):
-        """_api_billing_allowed() reads ORCH_ALLOW_API_BILLING."""
-        os.environ["ORCH_ALLOW_API_BILLING"] = "true"
-        assert account_pool._api_billing_allowed() is True
-
-        os.environ["ORCH_ALLOW_API_BILLING"] = "false"
+        os.environ.pop("ORCH_ALLOW_API_BILLING", None)
         assert account_pool._api_billing_allowed() is False
 
-    def test_api_billing_case_insensitive(self):
-        """ORCH_ALLOW_API_BILLING check is case-insensitive."""
-        os.environ["ORCH_ALLOW_API_BILLING"] = "TRUE"
-        assert account_pool._api_billing_allowed() is True
+    def test_api_billing_follows_subscription_guard(self):
+        """_api_billing_allowed() mirrors subscription_guard.is_api_allowed().
 
-        os.environ["ORCH_ALLOW_API_BILLING"] = "True"
-        assert account_pool._api_billing_allowed() is True
+        Was test_api_billing_respects_env_var, which set ORCH_ALLOW_API_BILLING and
+        expected True. That env var is only the FALLBACK for when subscription_guard
+        cannot be imported; subscription_guard is importable here (and reads its own
+        switches at import), so the guard's answer is what counts."""
+        os.environ["ORCH_ALLOW_API_BILLING"] = "false"
+        with patch.object(subscription_guard, "is_api_allowed", lambda: True):
+            assert account_pool._api_billing_allowed() is True
 
-    def test_api_billing_fail_soft_on_import_error(self):
-        """_api_billing_allowed() returns False if guard import fails."""
-        # Simulate subscription_guard not being available
-        result = account_pool._api_billing_allowed()
-        assert result is False
+        os.environ["ORCH_ALLOW_API_BILLING"] = "true"
+        with patch.object(subscription_guard, "is_api_allowed", lambda: False):
+            assert account_pool._api_billing_allowed() is False
+
+    def test_api_billing_env_fallback_is_case_insensitive(self):
+        """With the guard unavailable, ORCH_ALLOW_API_BILLING decides, any casing.
+
+        Was test_api_billing_case_insensitive, which never made the guard
+        unavailable, so the env var it set was ignored."""
+        original = sys.modules.get("subscription_guard")
+        sys.modules["subscription_guard"] = None   # makes `import` raise ImportError
+        try:
+            for value, expected in (("TRUE", True), ("True", True), ("true", True),
+                                    ("False", False), ("no", False)):
+                os.environ["ORCH_ALLOW_API_BILLING"] = value
+                assert account_pool._api_billing_allowed() is expected
+        finally:
+            if original is not None:
+                sys.modules["subscription_guard"] = original
+            else:
+                del sys.modules["subscription_guard"]
+
+    def test_api_billing_fail_soft_on_guard_error(self):
+        """A guard that raises is treated as 'not allowed', not propagated."""
+        os.environ.pop("ORCH_ALLOW_API_BILLING", None)
+
+        def _boom():
+            raise RuntimeError("control_flags unreachable")
+
+        with patch.object(subscription_guard, "is_api_allowed", _boom):
+            assert account_pool._api_billing_allowed() is False
 
 
 # ============================================================================
-# Test Fail-Soft Docstring Updates
+# Fail-soft behaviour (was TestFailSoftDocstrings)
 # ============================================================================
 
-class TestFailSoftDocstrings:
-    """Test that functions have 'Fail-soft' documentation."""
+class TestFailSoftBehaviour(_TempPaths):
+    """The four functions the old TestFailSoftDocstrings only grepped for the word
+    "Fail-soft" in. Asserting on docstring text proves nothing about the code (and
+    could be 'fixed' by editing a comment), so each test now drives the failure the
+    docstring is about — CLAUDE.md rule 2: I/O errors must not wedge the runner."""
 
-    def test_api_billing_allowed_documented(self):
-        """_api_billing_allowed has fail-soft in docstring."""
-        assert "Fail-soft" in account_pool._api_billing_allowed.__doc__
+    def test_api_billing_allowed_fails_soft(self):
+        """Guard blow-up -> deny (never bill the API on an error path)."""
+        os.environ.pop("ORCH_ALLOW_API_BILLING", None)
 
-    def test_claude_exhausted_documented(self):
-        """claude_exhausted has fail-soft in docstring."""
-        assert "Fail-soft" in account_pool.claude_exhausted.__doc__
+        def _boom():
+            raise RuntimeError("guard exploded")
 
-    def test_save_documented(self):
-        """_save has fail-soft in docstring."""
-        assert "Fail-soft" in account_pool.AccountPool._save.__doc__
+        with patch.object(subscription_guard, "is_api_allowed", _boom):
+            assert account_pool._api_billing_allowed() is False
 
-    def test_load_state_documented(self):
-        """_load_state has fail-soft in docstring."""
-        assert "Fail-soft" in account_pool.AccountPool._load_state.__doc__
+    def test_claude_exhausted_fails_soft(self):
+        """Pool construction blow-up -> False, so pick() keeps using Claude."""
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        with patch.object(account_pool, "AccountPool", _boom):
+            assert account_pool.claude_exhausted() is False
+
+    def test_save_fails_soft_and_rotation_still_works(self):
+        """An unwritable state file must not break the in-memory rotation."""
+        blocker = os.path.join(self.temp_dir, "blocker")
+        with open(blocker, "w") as f:
+            f.write("not a directory")
+        account_pool.STATE = os.path.join(blocker, "accounts_state.json")
+        self.write_cfg([{"name": "a1", "type": "login"}, {"name": "a2", "type": "login"}])
+
+        pool = account_pool.AccountPool()
+        a1 = [a for a in pool.accts if a["name"] == "a1"][0]
+
+        assert pool.mark_exhausted(a1) == "a2"      # rotated despite the failed write
+        assert pool.current()["name"] == "a2"
+
+    def test_load_state_fails_soft_on_unreadable_path(self):
+        """A directory where the state file should be -> {} instead of IsADirectoryError."""
+        os.remove(self.state_path) if os.path.exists(self.state_path) else None
+        os.makedirs(self.state_path)
+
+        pool = account_pool.AccountPool()
+        assert pool.state == {}
 
 
 if __name__ == "__main__":

@@ -2232,6 +2232,15 @@ def _train_run_unleased(report=None):
                 with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
                     for card, slug, task, risk in _select_batch(group):
                         if used[risk] >= caps[risk] or scanned >= scan_cap:
+                            # FIX 2026-08-24: the PassReport was told about this card but the
+                            # summary counter was not, so a pass that deferred every card to
+                            # the next bounded pass reported "0 merged, 0 skipped" — the
+                            # shape that is indistinguishable from a pass that never ran, and
+                            # the exact confusion merge_train_report exists to remove.
+                            # _train_run_unleased's own docstring defines skipped as
+                            # "branches skipped (cap reached or repo locked)"; the repo-lock
+                            # half counted, this half did not.
+                            result["skipped"] += 1
                             _r("skipped", slug,
                                f"cap: {risk} batch cap {caps[risk]} reached"
                                if used[risk] >= caps[risk]

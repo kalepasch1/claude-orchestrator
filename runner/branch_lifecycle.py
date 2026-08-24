@@ -29,6 +29,71 @@ MAX_RETRIES = int(os.environ.get("ORCH_BRANCH_MAX_RETRIES", "3"))
 
 
 # ---------------------------------------------------------------------------
+# Branch name validation
+# ---------------------------------------------------------------------------
+# RESTORED 2026-08-24: two production callers import this — branch_creator.create_agent_branch()
+# (`ok, err = bl.validate_branch_name(branch_name)`) and branch_health.health_score()
+# (`from branch_lifecycle import validate_branch_name`) — but the function was never present in
+# this module. Every create_agent_branch() call raised AttributeError before it reached git, and
+# health_score() raised ImportError on its first line, so bulk_health()'s `except Exception`
+# scored EVERY branch 0.5/"exception during scoring" and the naming component never ran.
+#
+# The rules are git's own (`git check-ref-format --branch`), verified case-by-case against it:
+# a name that this accepts is one `git branch` will accept. Two deliberate divergences, both
+# stricter than git:
+#   - a 255-character cap: a loose ref is a FILE under .git/refs, so longer names are creatable
+#     on some filesystems and not others, and the fleet mirrors branches across machines.
+#   - the single character "@": git allows it, but it is also the revision shorthand for HEAD,
+#     so every later `git rev-parse agent/@`-style read of it is ambiguous.
+_MAX_BRANCH_LEN = 255
+# Characters git forbids anywhere in a ref, plus ASCII control characters.
+_ILLEGAL_CHARS = {
+    "~": "'~'", "^": "'^'", ":": "':'", "?": "'?'", "*": "'*'",
+    "[": "'['", "\\": "backslash", " ": "a space", "\x7f": "a control character",
+}
+
+
+def validate_branch_name(name):
+    """Validate a git branch name. Returns (ok, reason).
+
+    ``reason`` is "" when the name is valid, otherwise a short human-readable
+    explanation suitable for a caller's error message. Never raises: a
+    non-string argument is simply invalid.
+    """
+    if not name or not isinstance(name, str):
+        return False, "branch name is empty"
+    if len(name) > _MAX_BRANCH_LEN:
+        return False, f"branch name too long ({len(name)} > {_MAX_BRANCH_LEN})"
+    for ch, label in _ILLEGAL_CHARS.items():
+        if ch in name:
+            return False, f"contains {label}"
+    if any(ord(c) < 0x20 for c in name):
+        return False, "contains a control character"
+    if ".." in name:
+        return False, "contains '..'"
+    if "@{" in name:
+        return False, "contains '@{'"
+    if name == "@":
+        return False, "'@' alone is not a valid branch name"
+    if name.startswith("-"):
+        return False, "starts with '-'"
+    if name.startswith("/") or name.endswith("/"):
+        return False, "starts or ends with '/'"
+    if "//" in name:
+        return False, "contains consecutive slashes"
+    if name.endswith("."):
+        return False, "ends with '.'"
+    for part in name.split("/"):
+        if not part:
+            return False, "contains an empty path component"
+        if part.startswith("."):
+            return False, "a path component starts with '.'"
+        if part.endswith(".lock"):
+            return False, "a path component ends with '.lock'"
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Supabase event logging
 # ---------------------------------------------------------------------------
 def log_branch_event(event_type, slug, project_id=None, details=None):
@@ -77,7 +142,13 @@ def get_branch_health_summary(project_id=None):
 # Branch existence & staleness
 # ---------------------------------------------------------------------------
 def branch_exists(repo_path, branch_name):
-    """Check if a branch exists in *repo_path*. Returns True/False/None."""
+    """Check if a branch exists in *repo_path*. Returns True/False/None.
+
+    None means "could not determine" — the path is missing, is not a git repository, or
+    git could not be run. Callers (zero_spend_recovery_eligible) branch on that: None is
+    "cannot access repo", False is the much stronger claim "this repo definitely has no
+    such branch", which is what sends a task down the recreate_from_base path.
+    """
     if not repo_path or not os.path.isdir(repo_path):
         return None
     try:
@@ -85,7 +156,16 @@ def branch_exists(repo_path, branch_name):
             ["git", "rev-parse", "--verify", branch_name],
             cwd=repo_path, capture_output=True, text=True, timeout=15,
         )
-        return r.returncode == 0
+        if r.returncode == 0:
+            return True
+        # FIX 2026-08-24: a directory that EXISTS but is not a git repository used to return
+        # False — indistinguishable from "the branch is absent" — because `git rev-parse
+        # --verify` exits 128 for both a missing ref and a missing repository. A wrong repo
+        # path or a worktree replaced by a plain directory therefore reported "no branch" and
+        # recommended recreate_from_base against something that is not a repo at all.
+        if "not a git repository" in (r.stderr or "").lower():
+            return None
+        return False
     except Exception:
         return None
 

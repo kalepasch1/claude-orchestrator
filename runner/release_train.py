@@ -412,6 +412,14 @@ def _recent_failed_gate(project, staging_sha, gate):
         if tag not in str(row.get("note") or ""):
             continue
         created = _parse_time(row.get("created_at"))
+        # A `created_at` without an offset ("2026-08-24T12:00:00", what utcnow().isoformat()
+        # produces and what a DB column typed `timestamp` hands back) parses NAIVE, and
+        # subtracting it from an aware `now` raises TypeError — out of the try above, which
+        # only covers the db.select. That crash lands in _insert_failed_release and the
+        # release pass, i.e. the red-gate cooldown could take the train down rather than
+        # damp it. Assume UTC for naive stamps, exactly as _lineage_birth already does.
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=datetime.timezone.utc)
         if created and (now - created).total_seconds() <= RED_GATE_COOLDOWN_MIN * 60:
             return True
     return False

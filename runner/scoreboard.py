@@ -48,8 +48,12 @@ def persist_snapshot():
             for r in rows[:5]  # top 5 per kind
         ]
 
-    _ensure_dir()
     try:
+        # _ensure_dir() used to run outside this guard, so an unwritable or
+        # non-directory _SCOREBOARD_DIR raised straight out of persist_snapshot()
+        # and took run() — a scheduled fleet job — down with it. Persisting is
+        # best effort; the snapshot is still returned to the caller.
+        _ensure_dir()
         with open(_SCOREBOARD_FILE, "a") as f:
             f.write(json.dumps(snapshot, default=str) + "\n")
         log.info("scoreboard: persisted snapshot with %d route kinds", len(snapshot["routes"]))

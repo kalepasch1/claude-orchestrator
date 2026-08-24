@@ -182,6 +182,138 @@ def _recently_active(path):
     return newest > time.time() - MIN_AGE_MIN * 60
 
 
+# ---------------------------------------------------------------------------
+# Orphaned worktree detection (report only)
+#
+# ADDED 2026-08-24. docs/recovery/reconcile-ee86a2cff698.md describes this module as
+# "gain[ing] is_orphaned_worktree, orphaned_worktrees and report_orphaned_worktrees" and
+# runner/tests/test_orphaned_worktrees.py was written against them, but the implementation
+# never landed here — so the defect that reconciliation documented was still invisible.
+#
+# A worktree's `.git` is a FILE reading "gitdir: <admin dir>". When that admin dir is
+# deleted but the working directory survives, the worktree becomes invisible to everything
+# that would clean it up:
+#   - `git worktree prune` only removes admin dirs whose WORKING directory is gone. Here it
+#     is the other way round, so prune finds nothing and reports success.
+#   - gc_repo() reaches _recently_active(), which cannot stat a gitdir that isn't there and
+#     fails CLOSED ("recent") — correct as a safety default, but it means an orphan reads as
+#     freshly active forever.
+#   - any git command run inside the directory dies with "fatal: not a git repository".
+#
+# These REPORT ONLY. An orphan's working directory is often the last surviving copy of
+# whatever was being built when the admin dir went (the evidence case was 29 MB / 3440
+# files), so it stays put until a human says otherwise. Detection fails closed toward NOT an
+# orphan: a garbage `.git`, a missing path, or an ordinary checkout is never reported,
+# because the only safe response to a false positive here is to do nothing.
+# ---------------------------------------------------------------------------
+def _gitlink_target(path):
+    """The admin dir a worktree's `.git` FILE points at, or None.
+
+    Returns None for anything that is not a gitlink: a missing path, an ordinary checkout
+    (`.git` is a directory), an unreadable or non-"gitdir:" file. A relative target is
+    resolved against the WORKTREE, never the cwd — resolving against the cwd would report
+    healthy slots as orphans depending on where the sweep happened to run from.
+    """
+    if not path:
+        return None
+    dotgit = os.path.join(path, ".git")
+    if os.path.isdir(dotgit) or not os.path.isfile(dotgit):
+        return None
+    try:
+        with open(dotgit, "r", errors="replace") as fh:
+            head = fh.read(4096).strip()
+    except OSError:
+        return None
+    if not head.startswith("gitdir:"):
+        return None
+    target = head.split(":", 1)[1].strip().splitlines()[0].strip() if ":" in head else ""
+    if not target:
+        return None
+    if not os.path.isabs(target):
+        target = os.path.join(path, target)
+    return os.path.normpath(target)
+
+
+def is_orphaned_worktree(path):
+    """True when *path* is a worktree whose git admin dir has gone. Never raises.
+
+    False for every other shape — missing path, ordinary checkout, no `.git` at all,
+    unreadable/garbage gitlink — because an unreadable slot is not the same as an orphaned
+    one and only one of them is safe to act on.
+    """
+    try:
+        if not path or not os.path.isdir(path):
+            return False
+        target = _gitlink_target(path)
+        if target is None:
+            return False
+        return not os.path.exists(target)
+    except Exception:
+        return False
+
+
+def orphaned_worktrees(repo, extra_paths=None):
+    """Every orphaned worktree reachable from *repo*, plus any *extra_paths* given.
+
+    Returns a list of {"path", "gitdir", "reason"} dicts sorted by path, duplicates
+    collapsed. Candidates come from git's own registry, the fleet's `<repo>-wt/<slug>`
+    slot layout, and the caller's extra_paths — the last matters because once the main
+    repo's records go too, the directory on disk is the only evidence left. Never raises
+    on a bad repo argument: detection that can take down its caller just gets wrapped in
+    try/except at every call site.
+    """
+    candidates = []
+
+    def _add(p):
+        if p:
+            candidates.append(os.path.abspath(str(p)))
+
+    if repo and os.path.isdir(str(repo)):
+        try:
+            out = _run_git(["git", "worktree", "list", "--porcelain"], str(repo)).stdout or ""
+            for line in out.splitlines():
+                if line.startswith("worktree "):
+                    _add(line[len("worktree "):].strip())
+        except Exception:
+            pass
+        # The per-task slots this module was written to collect: `<repo>-wt/<slug>`.
+        wt_root = os.path.abspath(str(repo)).rstrip(os.sep) + "-wt"
+        try:
+            for name in os.listdir(wt_root):
+                _add(os.path.join(wt_root, name))
+        except OSError:
+            pass
+    for p in (extra_paths or []):
+        _add(p)
+
+    found, seen = [], set()
+    for path in sorted(set(candidates)):
+        if path in seen:
+            continue
+        seen.add(path)
+        if not is_orphaned_worktree(path):
+            continue
+        found.append({"path": path,
+                      "gitdir": _gitlink_target(path),
+                      "reason": "gitdir missing"})
+    return found
+
+
+def report_orphaned_worktrees(repo, extra_paths=None):
+    """One human-readable line per orphan. Empty list when there are none.
+
+    Each line names BOTH halves — the directory to look at and the admin dir that is
+    missing — plus why prune cannot help. Without the second half a reader cannot tell an
+    orphan from an ordinary stale slot.
+    """
+    lines = []
+    for o in orphaned_worktrees(repo, extra_paths=extra_paths):
+        lines.append(
+            f"orphaned worktree: {o['path']} -> gitdir {o['gitdir']} is missing; "
+            f"`git worktree prune` cannot see it (report only — nothing removed)")
+    return lines
+
+
 def gc_repo(repo):
     if not repo or not os.path.isdir(repo):
         return 0

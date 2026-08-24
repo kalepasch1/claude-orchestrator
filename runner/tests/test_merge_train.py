@@ -17,6 +17,8 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import merge_train
+import merge_truth
+import minimal_commit
 import subprocess
 
 
@@ -54,6 +56,16 @@ class TrainCase(unittest.TestCase):
         # exercise cross-host localization override this per-test.
         self.mock_db.localize_repo_path.side_effect = lambda p: p
 
+        # HARNESS REPAIR (2026-08-24): this list had fallen behind _integrate_card's real
+        # git surface. Every card reached _already_integrated() -- a real `git merge-base`
+        # against the non-existent /tmp/fake-repo-* -- which raised FileNotFoundError,
+        # was caught by process_project()'s "worktree vanished mid-pass" handler, and
+        # skipped the card. Every outcome-counting test in this file was therefore
+        # asserting against a pass that never ran a single card, and one test
+        # (already_integrated) reached for self.mocks["_already_integrated"], which the
+        # list never created. The gates below are all real merge-blocking steps with their
+        # own test files; mocking them green here keeps these tests about the TRAIN's
+        # control flow rather than about the gates.
         patches = [
             patch.object(merge_train, "db", self.mock_db),
             patch.object(merge_train, "_branch_exists", return_value=True),
@@ -63,6 +75,37 @@ class TrainCase(unittest.TestCase):
             patch.object(merge_train, "_run_tests", return_value=(True, "green")),
             patch.object(merge_train, "_ff_base", return_value=True),
             patch.object(merge_train, "_push_base", return_value=""),
+            # Any residual git plumbing (merge-base fork point, rev-parse) answers "ok,
+            # empty" instead of exploding on a repo path that does not exist.
+            patch.object(merge_train, "_git",
+                         return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")),
+            patch.object(merge_train, "_already_integrated", return_value=False),
+            patch.object(merge_train, "_post_fork_regression", return_value=(True, "")),
+            patch.object(merge_train, "_regression_gate", return_value=(True, "")),
+            patch.object(merge_train, "_divergent_gate", return_value=(True, "")),
+            patch.object(merge_train, "_stub_gate", return_value=(True, "")),
+            patch.object(merge_train, "_orphan_import_gate", return_value=(True, "")),
+            patch.object(merge_train, "_build_gate", return_value=(True, "")),
+            patch.object(merge_train, "_verify_push", return_value=""),
+            # This host owns the integrator lease for every project under test; without
+            # this the real delivery_lease reports an infra error and _integrate_card's
+            # answer depends on whether a Supabase URL happens to be configured.
+            patch.object(merge_train.delivery_lease, "ensure", return_value="test-lease"),
+            patch.object(merge_train.delivery_lease, "release_all", return_value=None),
+            # The 2026-08-24 minimal-extraction step (see _integrate_card (2b)) runs on the
+            # rebase-conflict path. Default it to "declined" so the conflict tests below
+            # assert the redo/CONFLICT behaviour they are named for; the extraction path
+            # itself is asserted separately in TestMinimalExtractionOnConflict.
+            patch.object(minimal_commit, "extract",
+                         return_value={"ok": False, "reason": "test: extraction declined"}),
+            # _task_patch routes every write through merge_truth.gate_merged_patch, which
+            # refuses to write MERGED unless the sha is provably reachable from the
+            # project's integration branch. Against these fake projects it cannot resolve a
+            # repo at all, correctly returns None ("infra error -- leave the row alone"),
+            # and the MERGED write these tests assert on never happens. Pass patches
+            # through here; the gate itself is covered by test_merge_truth.py.
+            patch.object(merge_truth, "gate_merged_patch",
+                         side_effect=lambda task, patch, **kw: patch),
             patch.object(merge_train, "_freeze_integration_identity",
                          return_value={"artifact_commit": "rebased-sha", "artifact_ref": "refs/orchestrator/integrations/t1/0001/proof"}),
             patch.object(merge_train, "_delete_branch", return_value=None),
@@ -191,22 +234,48 @@ class TestCleanMerge(TrainCase):
 
 class TestBoundedHandoff(TrainCase):
 
-    def test_redo_consumes_batch_budget_and_releases_lease_for_next_pass(self):
-        """A large stale-branch backlog must not scan forever while holding the
-        global train lease.  A redo is work (delete/requeue/card update), so it
-        consumes the same risk budget as a normal integration attempt."""
+    # WAS ONE TEST: test_redo_consumes_batch_budget_and_releases_lease_for_next_pass, which
+    # asserted that a redo consumes the per-risk BATCH budget (merged == 0 after a redo with
+    # STANDARD_BATCH == 1). Two things were wrong with it. Mechanically, it set
+    # _rebase_onto_base.side_effect = [False, True] -- bare booleans, where the real helper
+    # returns (ok, conflict_detail) and _integrate_card unpacks it -- so the first card died
+    # with "cannot unpack non-sequence bool", process_project_isolated logged a project error
+    # and no redo ever happened. Substantively, the policy it asserted is not the product's:
+    # ATTEMPT_OUTCOMES is ("merged", "testfail", "regressfail", "buildfail", "conflict") and
+    # its comment shows the list is curated deliberately -- a redo lands nothing in base, so
+    # it does not spend the risk budget, which is what that budget bounds. The stated intent
+    # ("a large stale-branch backlog must not scan forever while holding the global train
+    # lease") IS honoured, by the per-project SCAN cap. Both halves are pinned below.
+
+    def test_redo_consumes_the_per_project_scan_budget(self):
+        """A backlog of stale branches cannot scan forever while holding the train lease:
+        every card looked at spends the per-project scan cap, redo included."""
         self.cards = [_card("c1", "stale"), _card("c2", "fresh")]
         self.tasks = [_task("t1", "stale"), _task("t2", "fresh")]
-        self.mocks["_rebase_onto_base"].side_effect = [False, True]
+        self.mocks["_rebase_onto_base"].side_effect = [(False, ""), (True, "")]
 
-        with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2"}), \
-             patch.object(merge_train, "STANDARD_BATCH", 1):
+        with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2",
+                                     "MERGE_TRAIN_SCAN_PER_PROJECT": "1"}):
             summary = merge_train.train_run()
 
         self.assertEqual(summary["redo"], 1)
         self.assertEqual(summary["merged"], 0,
                          "the second card belongs to the next bounded pass")
+        self.assertEqual(summary["skipped"], 1)
         self.assertEqual(self.mocks["_rebase_onto_base"].call_count, 1)
+
+    def test_a_real_attempt_consumes_the_risk_batch_budget(self):
+        """What the batch cap actually bounds: integration attempts that touch base."""
+        self.cards = [_card("c1", "first"), _card("c2", "second")]
+        self.tasks = [_task("t1", "first"), _task("t2", "second")]
+
+        with patch.object(merge_train, "STANDARD_BATCH", 1):
+            summary = merge_train.train_run()
+
+        self.assertEqual(summary["merged"], 1)
+        self.assertEqual(summary["skipped"], 1,
+                         "the second card belongs to the next bounded pass")
+        self.assertEqual(self.mocks["_ff_base"].call_count, 1)
 
 
 # ── B: idempotency + filtering ────────────────────────────────────────────────
@@ -336,6 +405,77 @@ class TestConflictRedo(TrainCase):
         self.assertEqual(self.task_updates("t1")[-1]["state"], "CONFLICT")
         self.assertEqual(self.card_updates("c1")[-1]["decided_by"], "train:conflict-exhausted")
         self.mocks["_delete_branch"].assert_not_called()
+
+
+# ── C2: minimal extraction before paying for a rebuild ───────────────────────
+#
+# Added with the 2026-08-24 change that calls minimal_commit.extract() on the rebase-failure
+# path (_integrate_card step (2b)). setUp declines extraction by default so the redo/CONFLICT
+# tests above stay about redo and CONFLICT; these two pin the new step itself.
+
+class TestMinimalExtractionOnConflict(TrainCase):
+
+    def test_successful_extraction_retries_the_rebase_and_merges(self):
+        self.cards = [_card("c1", "noisy")]
+        self.tasks = [_task("t1", "noisy")]
+        self.mocks["_rebase_onto_base"].side_effect = [(False, "pkg/a.ts"), (True, "")]
+        minimal_commit.extract.return_value = {
+            "ok": True, "commit": "b" * 40, "files": ["pkg/a.ts"], "source": "agent/noisy"}
+
+        summary = merge_train.train_run()
+
+        self.assertEqual(summary["merged"], 1)
+        self.assertEqual(summary["redo"], 0)
+        self.assertEqual(self.mocks["_rebase_onto_base"].call_count, 2,
+                         "the extracted commit must be re-rebased, not merged unchecked")
+        args = minimal_commit.extract.call_args.args
+        self.assertEqual(args[1], "agent/noisy")
+        self.assertIs(args[3], self.tasks[0])
+        # The rescue is not a bypass: the branch still had to pass the ff/push path.
+        self.mocks["_ff_base"].assert_called_once()
+        self.mocks["_delete_branch"].assert_not_called()
+
+    def test_extraction_that_still_conflicts_falls_through_to_redo(self):
+        self.cards = [_card("c1", "noisy")]
+        self.tasks = [_task("t1", "noisy", retries=0)]
+        self.mocks["_rebase_onto_base"].return_value = (False, "pkg/a.ts")
+        minimal_commit.extract.return_value = {
+            "ok": True, "commit": "b" * 40, "files": ["pkg/a.ts"], "source": "agent/noisy"}
+
+        with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2"}):
+            summary = merge_train.train_run()
+
+        self.assertEqual(summary["redo"], 1)
+        self.assertEqual(summary["merged"], 0)
+        self.assertEqual(self.mocks["_rebase_onto_base"].call_count, 2)
+        self.assertEqual(self.card_updates("c1")[-1]["decided_by"], "train:redo")
+
+    def test_a_raising_extractor_never_breaks_integration(self):
+        """noqa: BLE001 in the product says never let recovery break integration -- hold it."""
+        self.cards = [_card("c1", "noisy")]
+        self.tasks = [_task("t1", "noisy", retries=0)]
+        self.mocks["_rebase_onto_base"].return_value = (False, "")
+        minimal_commit.extract.side_effect = RuntimeError("extractor exploded")
+
+        with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2"}):
+            summary = merge_train.train_run()
+
+        self.assertEqual(summary["redo"], 1)
+        self.assertEqual(summary["project_errors"], 0)
+        self.assertEqual(self.task_updates("t1")[-1]["state"], "QUEUED")
+
+    def test_extraction_is_skipped_when_disabled(self):
+        self.cards = [_card("c1", "noisy")]
+        self.tasks = [_task("t1", "noisy", retries=0)]
+        self.mocks["_rebase_onto_base"].return_value = (False, "")
+
+        with patch.dict(os.environ, {"ORCH_MINIMAL_COMMIT_ON_CONFLICT": "0",
+                                     "MERGE_CONFLICT_REDO_CAP": "2"}):
+            summary = merge_train.train_run()
+
+        minimal_commit.extract.assert_not_called()
+        self.assertEqual(summary["redo"], 1)
+        self.assertEqual(self.mocks["_rebase_onto_base"].call_count, 1)
 
 
 # ── E: test failures never merge ──────────────────────────────────────────────
@@ -523,18 +663,43 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
             self.assertEqual(len(calls), 1)
 
     def test_prefix_package_path_is_scoped(self):
+        # WAS: called merge_train._test_package_paths(repo, cmd) and compared its return
+        # value. No such helper exists (or ever has) in merge_train -- the root list is
+        # computed inline inside _ensure_node_deps. The property under test is real, so it
+        # is asserted here through the real entry point: --prefix adds exactly the named
+        # package to the repo root, and the unrelated sibling pkg0 is never hydrated.
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=2)
-            roots = merge_train._test_package_paths(repo, "npm --prefix pkg1 run test")
-            self.assertEqual(roots, [os.path.realpath(repo),
+            with open(os.path.join(repo, "package.json"), "w") as f:
+                f.write("{}")
+            calls = []
+
+            def fake_run(*args, **kwargs):
+                calls.append(kwargs.get("cwd"))
+                return MagicMock(returncode=0)
+
+            with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
+                merge_train._ensure_node_deps(repo, "npm --prefix pkg1 run test")
+
+            self.assertEqual(calls, [os.path.realpath(repo),
                                      os.path.realpath(os.path.join(repo, "pkg1"))])
 
-    def test_nuxt_package_prepares_worktree_local_types(self):
+    def test_lockfile_decides_ci_versus_install(self):
+        # SUBSTITUTION for test_nuxt_package_prepares_worktree_local_types, which called
+        # merge_train._prepare_generated_types(repo, test_cmd) and asserted it ran
+        # `npx nuxi prepare` in the package. That function belongs to release_train, takes
+        # one argument (the worktree), and is covered by tests/test_release_worktree_types.py
+        # and tests/test_20260817_prepare_toolchain.py -- merge_train has never had it, and
+        # asserting on a bare `npx nuxi` here would in fact contradict those tests, which
+        # exist precisely because bare npx downloads the toolchain and times out.
+        # What merge_train really does for a package on this path is hydrate it, choosing
+        # `npm ci` over `npm install` when a lockfile is present. That is asserted instead.
         with tempfile.TemporaryDirectory() as tmp:
-            repo = self._make_repo(tmp, n_packages=1)
-            pkg = os.path.join(repo, "pkg0")
-            with open(os.path.join(pkg, "package.json"), "w") as f:
-                f.write('{"devDependencies":{"nuxt":"latest"}}')
+            repo = self._make_repo(tmp, n_packages=2)
+            with open(os.path.join(repo, "package.json"), "w") as f:
+                f.write("{}")
+            with open(os.path.join(repo, "pkg1", "package-lock.json"), "w") as f:
+                f.write("{}")
             calls = []
 
             def fake_run(*args, **kwargs):
@@ -542,9 +707,12 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
                 return MagicMock(returncode=0)
 
             with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
-                merge_train._prepare_generated_types(repo, "npm --prefix pkg0 test")
+                merge_train._ensure_node_deps(repo, "npm --prefix pkg1 run test")
 
-            self.assertEqual(calls, [(["npx", "nuxi", "prepare"], os.path.realpath(pkg))])
+            self.assertEqual(calls, [
+                (["bash", "-lc", "npm install"], os.path.realpath(repo)),
+                (["bash", "-lc", "npm ci"], os.path.realpath(os.path.join(repo, "pkg1"))),
+            ])
 
 
 class TestMergeRiskClassification(unittest.TestCase):
