@@ -16,6 +16,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import base_branch as _base_branch
 import db
 import model_catalog
 import model_gateway
@@ -559,7 +560,12 @@ def seed_improvement_batches(apps=None):
             "state": "QUEUED",
             "prompt": prompt,
             "deps": [],
-            "base_branch": project.get("default_branch") or project.get("prod_branch") or "main",
+            # Was `project.get("default_branch") or project.get("prod_branch") or "main"`.
+            # The projects column is `default_base`, so neither key ever resolved and every
+            # queued task got the literal "main" — wrong for most repos in this fleet.
+            "base_branch": _base_branch.resolve(
+                project=project, repo=project.get("repo_path")
+            ),
             "priority": 1,
             "confidence": 0.82,
             "material": False,
