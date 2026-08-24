@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import collections
+import hashlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -78,10 +79,24 @@ def find_exact_duplicates(repo_path):
     return dupes
 
 
-def find_semantic_duplicates(repo_path, base="master"):
-    """Find branches with identical diffs against base (same changes, different branch names).
+def _diff_fingerprint(stat: str) -> str:
+    """Stable fingerprint for a diffstat.
 
-    Returns list of {'diff_hash': str, 'branches': [str], 'count': int}.
+    Was `hash(stat) & 0xFFFFFFFF`. Python randomizes str hashing per process
+    (PYTHONHASHSEED), so the same branches produced a DIFFERENT fingerprint on every
+    run. Grouping still worked — it keys on the stat itself — but the number reported
+    to the operator could not be compared between two reports, correlated with anything,
+    or stored. A fingerprint that changes every run is worse than none, because it looks
+    like one.
+    """
+    return hashlib.sha256((stat or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def find_semantic_duplicates(repo_path, base="master"):
+    """Find branches with identical diffs against base (same changes, different names).
+
+    Returns list of {'diff_fingerprint': str, 'branches': [str], 'count': int,
+    'empty_diff': bool}.
     """
     if not ENABLED or not repo_path or not os.path.isdir(repo_path):
         return []
@@ -90,16 +105,31 @@ def find_semantic_duplicates(repo_path, base="master"):
     stat_map = collections.defaultdict(list)
     for b in branches:
         stat = _diff_stat(repo_path, b, base)
-        if stat:
-            stat_map[stat].append(b)
+        # `if stat:` here made the detector blind to its single largest category.
+        #
+        # A branch with NO diff against base — created, never committed to, or already
+        # fully merged — returns "", which is falsey, so it was skipped. Those no-op
+        # branches are the most duplicated thing in the repo: measured on this
+        # checkout, 20 agent branches collapse onto 2 commits and the semantic pass
+        # reported ZERO groups, because every one of them diffs empty against master.
+        #
+        # None means the diff could not be read (bad ref, timeout) and is still skipped;
+        # "" is a real, and highly actionable, answer.
+        if stat is None:
+            continue
+        stat_map[stat].append(b)
 
     dupes = []
     for stat, names in stat_map.items():
         if len(names) > 1:
-            dupes.append({"diff_fingerprint": hash(stat) & 0xFFFFFFFF,
-                          "branches": sorted(names), "count": len(names)})
+            dupes.append({"diff_fingerprint": _diff_fingerprint(stat),
+                          "branches": sorted(names), "count": len(names),
+                          # Flagged rather than merely grouped: an empty-diff group is
+                          # not "duplicate work to consolidate", it is "nothing to
+                          # merge", and the two want opposite handling.
+                          "empty_diff": stat == ""})
 
-    dupes.sort(key=lambda x: -x["count"])
+    dupes.sort(key=lambda x: (-x["count"], x["diff_fingerprint"]))
     return dupes
 
 
