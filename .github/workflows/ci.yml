@@ -45,6 +45,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `npm ci` DELETES node_modules and reinstalls from the lockfile on every run, so
+      # this job refetched every dependency from the registry each time — the single
+      # slowest step in the pipeline, repeated on every push and every PR update, for a
+      # tree that only changes when package-lock.json does.
+      #
+      # Keyed on the lockfile hash: a dependency change misses the cache and installs
+      # fresh, which is correct — `npm ci` must still be the thing that decides what is
+      # installed. The cache only removes the download, never the resolution.
+      #
+      # Restored into npm's own cache dir rather than node_modules, because `npm ci`
+      # wipes node_modules before it starts; a node_modules cache would be deleted by the
+      # very command it was meant to speed up.
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-darwin-kernel-${{ hashFiles('packages/darwin-kernel/package-lock.json') }}
+          restore-keys: npm-darwin-kernel-
+
       - name: Install dependencies
         run: npm ci
 
