@@ -1123,6 +1123,31 @@ def main(argv=None):
     worse for an operator than an error, because it looks like it worked.
     """
     args = _build_parser().parse_args(argv)
+    try:
+        return _main(args)
+    except db.TransientDBError as exc:
+        # The control plane being unreachable is infrastructure weather, not a
+        # defect in this job, and it must not present as one. Losing DNS
+        # ("nodename nor servname provided") let a TransientDBError escape main()
+        # as an unhandled traceback on every scheduled run: 3951 tracebacks, 64%
+        # of everything this job has ever logged, none of them actionable and all
+        # of them burying the failures that are. Same classification
+        # crash_loop_detector already applies to 5xx/429/DNS.
+        #
+        # Exit 75 (EX_TEMPFAIL), not 0: the sweep did NOT run, and reporting
+        # success for work that never happened is the silent-failure this job was
+        # filed for. A distinct temp-fail code lets the scheduler back off without
+        # treating it as a crash.
+        print(f"integration_sweeper: control plane unreachable, skipping this pass "
+              f"(transient): {exc}", file=sys.stderr)
+        return EX_TEMPFAIL
+
+
+#: sysexits.h EX_TEMPFAIL — "the command was not possible at this time".
+EX_TEMPFAIL = 75
+
+
+def _main(args):
     if args.verify_phantom:
         result = verify_phantom(project=args.project,
                                 limit=args.limit if args.limit is not None else 100,
