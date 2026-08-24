@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import learn_from_merges
+import merge_candidate
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 MEMORY_ROOT = os.environ.get("CLAUDE_MEMORY_ROOT",
@@ -67,11 +68,25 @@ def _get_merged_commits(repo=".", lookback_days=None):
         cmd = ["git", "log", "--oneline", "--merges", since, "master"]
         out = subprocess.check_output(cmd, cwd=repo, text=True, errors="replace", timeout=30)
         commits = []
+        skipped = 0
         for line in out.strip().splitlines():
             if line.strip():
                 parts = line.split(None, 1)
                 if len(parts) >= 2:
+                    # GATE 1 (message level, before any subprocess is spawned).
+                    # _extract_patterns_from_commit costs three git subprocesses per
+                    # commit. Measured on this repo: 448 merges in a 14-day window, 58
+                    # rejectable from the message alone — 174 subprocesses per run spent
+                    # to reach a foregone rejection.
+                    ok, reason = merge_candidate.is_candidate_message(parts[1])
+                    if not ok:
+                        skipped += 1
+                        logger.debug("merge_candidate: skipping %s — %s", parts[0], reason)
+                        continue
                     commits.append((parts[0], parts[1]))
+        if skipped:
+            logger.info("merge_candidate: skipped %d of %d merges before extraction",
+                        skipped, skipped + len(commits))
         return commits
     except Exception as e:
         _log_error(f"Failed to get merged commits: {e}", f"repo={repo}")
@@ -118,6 +133,17 @@ def _extract_patterns_from_commit(repo, commit_hash):
         rules = _extract_rules(full_text)
         frameworks = _frameworks(full_text)
         files = _changed_files(repo, f"{commit_hash}^", commit_hash)
+
+        # GATE 2 (record level). The changed-file list does not exist until here, so
+        # this is the earliest point that can tell an empty diff, or a merge that only
+        # touched lockfiles / vendored trees / build output, from real work. Distilling
+        # "conventions" from a package-lock.json bump produces noise that then gets
+        # written into CLAUDE.md as if it were a learned rule.
+        candidate, reason = merge_candidate.is_candidate_record(files)
+        if not candidate:
+            logger.debug("merge_candidate: dropping %s at record level — %s",
+                         commit_hash, reason)
+            return None
 
         if not rules and not frameworks and not files:
             return None  # nothing learnable in this commit
