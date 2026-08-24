@@ -16,6 +16,35 @@ import sys
 from pathlib import Path
 from typing import List, Tuple, Optional, Set
 
+# Precise credential-name test, shared so the repo's linters cannot drift apart on it.
+# Fail-soft import: a linter that cannot import a helper must still lint, so it degrades
+# to an inline equivalent rather than failing to import. APPEND to sys.path, never
+# insert(0) — this directory holds modules whose names collide with ones elsewhere in the
+# tree, and putting it first shadows them for every later importer in the process.
+try:
+    _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _TOOLS_DIR not in sys.path:
+        sys.path.append(_TOOLS_DIR)
+    from secret_names import names_a_secret as _names_a_secret  # noqa: F401
+except Exception:  # pragma: no cover - only when tools/ is unreachable
+    _FALLBACK_SECRET_TOKENS = (
+        "password", "passwd", "secret", "token", "credential", "api_key", "apikey",
+        "private_key", "privatekey", "secret_key", "access_key", "signing_key",
+        "encryption_key", "client_secret",
+    )
+
+    def _names_a_secret(name) -> bool:
+        try:
+            lowered = str(name or "").lower()
+            if lowered.startswith(("ignore_", "_ignore_", "reason_", "_reason_")):
+                return False
+            if lowered.endswith(("_env", "_var", "_name", "_key_name", "_path",
+                                 "_file", "_url", "_prefix")):
+                return False
+            return any(t in lowered for t in _FALLBACK_SECRET_TOKENS)
+        except Exception:
+            return False
+
 
 class ConventionViolation:
     def __init__(self, filepath: str, lineno: int, rule: str, message: str, severity: str = "error"):
@@ -220,15 +249,20 @@ class ConventionChecker(ast.NodeVisitor):
         pass
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
-        """Check for hardcoded secrets in variables with sensitive names."""
-        secret_keywords = ('password', 'token', 'secret', 'key', 'api_key')
+        """Check for hardcoded secrets in variables with sensitive names.
 
+        The name test lives in tools/secret_names.py. It used to be a bare
+        ``'key' in var_name``, which matched every KV-namespace constant in the runner
+        (_ALERT_KEY, PRESSURE_KEY, STATE_KEY, problem_key) and produced 144 findings that
+        were almost entirely noise — 11 above the ratchet baseline, which kept the
+        pre-commit gate red for every other rule as well.
+        """
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             if node.value.value and not node.value.value.startswith('$'):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         var_name = target.id.lower()
-                        if any(keyword in var_name for keyword in secret_keywords):
+                        if _names_a_secret(var_name):
                             self.violations.append(ConventionViolation(
                                 self.filepath, node.lineno, 'HARDCODED_SECRET',
                                 f'Variable "{target.id}" contains secret keyword; use environment variables instead'
@@ -236,7 +270,7 @@ class ConventionChecker(ast.NodeVisitor):
                     elif isinstance(target, ast.Subscript):
                         if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
                             key_name = target.slice.value.lower()
-                            if any(keyword in key_name for keyword in secret_keywords):
+                            if _names_a_secret(key_name):
                                 self.violations.append(ConventionViolation(
                                     self.filepath, node.lineno, 'HARDCODED_SECRET',
                                     f'Key "{target.slice.value}" contains secret keyword; use environment variables instead'
