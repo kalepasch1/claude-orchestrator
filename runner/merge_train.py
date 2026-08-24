@@ -512,6 +512,66 @@ def _rebase_onto_base(repo, branch, base):
     return True, ""
 
 
+def _branch_own_paths(repo, branch, base):
+    """Paths this branch's own contribution actually touches, vs `base`.
+
+    `git rebase base branch` replays EVERY commit reachable from the branch and
+    not from base — which, for a branch that merged other agent branches in,
+    includes their commits too. A conflict raised while replaying one of those
+    foreign commits is reported against whichever branch is being rebased.
+    """
+    out = _git(repo, "diff", "--name-only", f"{base}...{branch}").stdout or ""
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def _conflict_is_foreign(repo, branch, base, conflict_detail):
+    """True when NONE of the conflicting paths belong to this branch.
+
+    The tarpit this closes: three dropbox tasks were requeued 61, 36 and 134
+    times on the same error, `Conflicting files:
+    packages/darwin-kernel/src/passport/passport.ts`. At least one of them
+    (agent commit ae4f5f7d64) touches exactly one file,
+    tests/test_lease_night_config_divergence.py, and never mentions passport.ts
+    — 14 OTHER unmerged agent branches conflict on it. Rebuilding a task that
+    does not touch the file cannot ever resolve the conflict, so each redo
+    burned a full agent run and came back to the identical error, forever.
+
+    Returns False when the attribution is uncertain (no detail, or the branch's
+    own path set cannot be computed) — a redo is the cheaper mistake there.
+    """
+    paths = {line.strip() for line in (conflict_detail or "").splitlines() if line.strip()}
+    if not paths:
+        return False
+    own = _branch_own_paths(repo, branch, base)
+    if not own:
+        return False
+    return paths.isdisjoint(own)
+
+
+def _conflict_owners(repo, base, path, limit=8):
+    """Unmerged agent branches that actually modify `path`, for the note.
+
+    Naming them turns "needs manual rebase" into something an operator can act
+    on: the conflict is one file shared by N branches, resolved once.
+    """
+    owners = []
+    listed = _git(repo, "branch", "-r", "--list", "origin/agent/*",
+                  "--format=%(refname:short)").stdout or ""
+    for name in listed.splitlines():
+        name = name.strip()
+        if not name:
+            continue
+        if _git(repo, "merge-base", "--is-ancestor", name, base).returncode == 0:
+            continue
+        touched = (_git(repo, "diff", "--name-only", f"{base}...{name}", "--", path)
+                   .stdout or "").strip()
+        if touched:
+            owners.append(name)
+            if len(owners) >= limit:
+                break
+    return owners
+
+
 
 # (duplicate _run_tests removed 2026-07-31 — runtime always used the later def)
 
@@ -1832,6 +1892,29 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         tr = int(task.get("transient_retries") or 0)
         cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
         files_hint = (f" Conflicting files: {conflict_detail}." if conflict_detail else "")
+
+        # Do not requeue a task that cannot possibly fix the conflict. When none
+        # of the conflicting paths are in this branch's own diff, the hunk came
+        # from another branch replayed during the rebase, and every redo will
+        # rebuild the same task and hit the same error. That is how three
+        # dropbox tasks reached attempts 61, 36 and 134 on one shared file.
+        if _conflict_is_foreign(repo, branch, base, conflict_detail):
+            first = next((ln.strip() for ln in conflict_detail.splitlines() if ln.strip()), "")
+            owners = _conflict_owners(repo, base, first) if first else []
+            owners_hint = (" Branches that actually modify it: "
+                           + ", ".join(owners) + "." if owners else "")
+            _task_patch(task, {
+                "state": "BLOCKED",
+                "note": (f"train: rebase conflict on {conflict_detail}, but this branch "
+                         f"does not touch it — the hunk comes from another branch in the "
+                         f"rebase overlay. Not requeued: rebuilding this task cannot "
+                         f"resolve it.{owners_hint} Resolve the file once on {base}.")})
+            db.update("approvals", {"id": card["id"]},
+                      {"decided_by": f"{MARK}:conflict-foreign"})
+            _attribute_train_outcome(slug, task, "conflict", integrated=False)
+            _log(pname, slug, "BLOCKED", f"foreign conflict{files_hint} — not requeued")
+            return "conflict-foreign"
+
         if tr < cap:
             _delete_branch(repo, branch)
             patch = agentic_repair.repair_patch(
