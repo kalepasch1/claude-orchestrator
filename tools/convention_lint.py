@@ -23,6 +23,27 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 
+#: Paths checked when the caller names none. Named rather than repeated as a literal in
+#: two places, where the two copies were free to drift apart.
+DEFAULT_CHECK_PATHS = ('runner', 'tools')
+
+#: Severity spellings that mean "does not block a commit". Both are in use — the
+#: class-naming rule emits 'warning' while the CLI flag is spelled --fail-on=warn — so
+#: the exit-code logic accepts either rather than silently treating an unrecognised
+#: spelling as blocking.
+WARN_SEVERITIES = frozenset({'warn', 'warning'})
+
+
+def is_blocking(severity: str) -> bool:
+    """True when a violation of this severity should fail an --fail-on=error run.
+
+    Anything that is not explicitly warn-level blocks: an unknown severity is treated as
+    an error, because the failure mode of guessing the other way is a rule that silently
+    stops gating.
+    """
+    return str(severity or 'error').strip().lower() not in WARN_SEVERITIES
+
+
 class ConventionViolation:
     """Represents a single convention violation."""
 
@@ -518,8 +539,12 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    # Collect all paths to check
-    check_paths = args.paths or ['runner', 'tools']
+    # Collect all paths to check.
+    #
+    # `list(...)` matters: with nargs='*' argparse hands back the SAME list object it was
+    # given as `default`, so extending it in place mutated the parser's own default and
+    # made a second call in one process check paths the caller never asked for.
+    check_paths = list(args.paths or DEFAULT_CHECK_PATHS)
     if args.check_paths:
         check_paths.extend(args.check_paths)
 
@@ -530,6 +555,16 @@ def main() -> int:
             all_violations.extend(check_directory(path))
         elif Path(path).is_file():
             all_violations.extend(check_file(path))
+        else:
+            # A path that does not exist used to be skipped in silence, so a typo in a
+            # pre-commit hook ("runnr", a renamed directory) made the linter check
+            # nothing and exit 0 — a gate reporting success precisely because it never
+            # ran. Report it as an error so the miss is loud instead of invisible.
+            all_violations.append(ConventionViolation(
+                str(path), 1, 'MISSING_PATH',
+                'Path does not exist, so nothing was checked for it '
+                '(a silent skip here makes the linter pass by doing no work)'
+            ))
 
     # Output results
     if args.json:
@@ -541,10 +576,12 @@ def main() -> int:
 
     # Determine exit code
     if all_violations:
-        error_violations = [v for v in all_violations if v.severity == 'error']
-        if error_violations and args.fail_on == 'error':
+        # `is_blocking` rather than `severity == 'error'`: the class-naming rule emits
+        # 'warning', and any rule added later that spells its severity differently would
+        # otherwise stop failing the build without anyone noticing.
+        if args.fail_on == 'warn':
             return 1
-        if all_violations and args.fail_on == 'warn':
+        if any(is_blocking(v.severity) for v in all_violations):
             return 1
 
     return 0
