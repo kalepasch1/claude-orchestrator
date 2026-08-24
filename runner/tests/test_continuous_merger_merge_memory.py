@@ -21,6 +21,28 @@ def _run(returncode=0, stdout=""):
     return MagicMock(returncode=returncode, stdout=stdout, stderr="")
 
 
+def _declare_resolved_file_gate_green(case):
+    """Stub _merge_branch's resolved-file gate for the duration of one test case.
+
+    The resolver path in _merge_branch calls _resolved_file_gate_blocked(), which
+    delegates to resolved_file_gate.promotion_blocked() — a REAL scan of a real
+    working tree, fail-closed by design. These tests hand it the fictional "/repo",
+    so the gate scans whatever checkout the suite happens to run from, finds the
+    conflict-marker strings that live in this repo's own fixtures, and refuses. The
+    merge then reports merged=False and the memory-capture assertions fail — an
+    outcome decided by the contents of the developer's checkout rather than by the
+    capture wiring these tests are named for.
+
+    The gate is fail-closed on purpose and owns its own test file
+    (test_resolved_file_gate.py); declaring it green here keeps this file about
+    _merge_branch's capture wiring.
+    """
+    p = patch.object(continuous_merger, "_resolved_file_gate_blocked",
+                     return_value=(False, ""))
+    p.start()
+    case.addCleanup(p.stop)
+
+
 class TestCaptureMergeMemoryHelper(unittest.TestCase):
     def test_delegates_to_merged_diff_memory(self):
         fake = MagicMock()
@@ -57,6 +79,7 @@ class TestMergeBranchWiring(unittest.TestCase):
             side_effect=lambda repo, branch, sha: self.captured.append((repo, branch, sha)) or True)
         self.capture_patch.start()
         self.addCleanup(self.capture_patch.stop)
+        _declare_resolved_file_gate_green(self)
 
     def test_already_ancestor_path_captures_before_the_ref_is_deleted(self):
         calls = []
@@ -140,6 +163,9 @@ class TestMergeBranchWiring(unittest.TestCase):
 
 
 class TestCaptureNeverBreaksAMerge(unittest.TestCase):
+    def setUp(self):
+        _declare_resolved_file_gate_green(self)
+
     def test_a_raising_capture_does_not_fail_a_landed_merge(self):
         def fake_git(args, repo, timeout=None):
             if args[:2] == ["git", "status"]:
