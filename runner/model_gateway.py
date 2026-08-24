@@ -350,7 +350,19 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "claude":
         import claude_cli
         r = claude_cli.run(prompt, model, project=project, max_turns=1, permission=None, timeout=timeout)
-        return {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+        out = {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+        # PRESERVE THE TERMINAL REASON. This used to return text/cost only, so a run that
+        # ended on error_max_turns was indistinguishable from a successful empty response
+        # — and with max_turns=1 above, that is the single most likely way this call ends.
+        # The caller could not tell "the turn budget ran out, the answer is truncated"
+        # from "the provider failed", which are fixed in opposite ways.
+        reason = r.get("terminal_reason")
+        if reason:
+            out["terminal_reason"] = reason
+        err = r.get("error") or (r.get("stderr") or "").strip()
+        if err or r.get("returncode"):
+            out["error"] = err or f"claude returncode {r.get('returncode')}"
+        return out
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
     else:

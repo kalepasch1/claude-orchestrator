@@ -130,6 +130,40 @@ def _paused(project=None):
 # rate limit events, and per-task budget caps.
 # ---------------------------------------------------------------------------
 
+#: SDK ResultMessage subtypes that terminate a run, mapped to a stable reason name the
+#: rest of the fleet can branch on without knowing SDK vocabulary.
+_TERMINAL_SUBTYPES = {
+    "error_max_turns": "max_turns",
+    "max_turns": "max_turns",
+    "error_during_execution": "execution_error",
+    "error": "error",
+}
+
+
+def normalize_terminal_reason(subtype):
+    """Stable reason name for an SDK error subtype. "" when there is nothing to report.
+
+    Unknown subtypes pass through rather than being flattened to "error": a name we do
+    not recognise yet is still more actionable than a generic one, and silently
+    discarding it is the bug this whole change exists to fix.
+    """
+    if not subtype:
+        return ""
+    key = str(subtype).strip().lower()
+    return _TERMINAL_SUBTYPES.get(key, key)
+
+
+def terminal_message(reason, num_turns=0, max_turns=None):
+    """One human line naming the terminal condition. Never empty for a real reason."""
+    if not reason:
+        return ""
+    if reason == "max_turns":
+        return ("claude run hit the max_turns limit (%s of %s turns used); the response is "
+                "truncated, not failed — raise max_turns or split the task"
+                % (num_turns or "?", max_turns if max_turns is not None else "?"))
+    return "claude run terminated: %s" % reason
+
+
 async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, timeout):
     """Execute a Claude call via the claude-agent-sdk Python package.
 
@@ -167,6 +201,7 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
     num_turns = 0
     returncode = 0
     rate_limit_type = None
+    terminal_reason = None
 
     async for message in _sdk_query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -183,6 +218,16 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
                 collected_text = [message.result]
             if message.is_error:
                 returncode = 1
+                # WHY THIS IS CAPTURED. is_error alone collapses every terminal
+                # condition into "returncode 1, empty stderr". The SDK's subtype
+                # names the actual cause — `error_max_turns` above all, which this
+                # fleet hits constantly because model_gateway calls with
+                # max_turns=1. Losing it produced "agent run failed after 3
+                # error-retries" with nothing to act on, and made a turn-budget
+                # exhaustion indistinguishable from a real provider failure. One is
+                # fixed by raising max_turns; the other is not.
+                terminal_reason = normalize_terminal_reason(
+                    getattr(message, "subtype", None))
         else:
             # Check for rate limit events (for account rotation signaling)
             msg_type = getattr(message, "type", None)
@@ -192,6 +237,11 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
 
     text = "\n".join(collected_text) if collected_text else ""
 
+    stderr = ""
+    if terminal_reason:
+        stderr = terminal_message(terminal_reason, num_turns, max_turns)
+        log.warning("claude run terminated: %s", stderr)
+
     return {
         "text": text,
         "cost_usd": cost,
@@ -200,8 +250,11 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
         "returncode": returncode,
         "raw": {"result": text, "total_cost_usd": cost,
                 "usage": {"input_tokens": itok, "output_tokens": otok},
-                "agent_sdk": True, "turns": num_turns},
-        "stderr": "",
+                "agent_sdk": True, "turns": num_turns,
+                "terminal_reason": terminal_reason},
+        "stderr": stderr,
+        "error": stderr or None,
+        "terminal_reason": terminal_reason,
         "rate_limit_type": rate_limit_type,
     }
 
