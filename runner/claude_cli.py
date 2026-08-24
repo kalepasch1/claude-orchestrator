@@ -180,6 +180,47 @@ def detect_terminal_reason(raw=None, text="", stderr=""):
         return None, None
 
 
+def succeeded(result):
+    """True when `result` represents a run that actually finished its work.
+
+    Callers previously read `result["text"]` and treated anything non-empty as a
+    completion, so a max_turns stop looked identical to success. This is the one place
+    that question is answered. Fail-soft and tolerant of legacy dicts that predate
+    `terminal_reason`: a plain {"returncode": 0} still reads as success, and a
+    non-dict reads as failure rather than raising.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("terminal_reason"):
+        return False
+    try:
+        return int(result.get("returncode") or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def failure_reason(result):
+    """Short human-readable reason a run did not succeed, or None if it did.
+
+    Never raises, and never returns an empty string — an empty reason next to a
+    failed run is exactly the silent case this exists to remove.
+    """
+    if succeeded(result):
+        return None
+    if not isinstance(result, dict):
+        return "no result object returned"
+    reason = result.get("terminal_reason")
+    detail = result.get("error") or result.get("stderr") or ""
+    detail = " ".join(str(detail).split())[:200]
+    if reason == TERMINAL_MAX_TURNS:
+        return f"max_turns: {detail or 'reached maximum number of turns'}"
+    if reason:
+        return f"{reason}: {detail}" if detail else str(reason)
+    if result.get("skipped"):
+        return f"skipped: {result['skipped']}"
+    return detail or f"exited {result.get('returncode')}"
+
+
 # ---------------------------------------------------------------------------
 # Agent SDK path — uses subscription tokens via the CLI's OAuth auth.
 # Same billing as the CLI subprocess path, but with structured output,
