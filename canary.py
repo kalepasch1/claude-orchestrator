@@ -6,6 +6,8 @@ canary-gemini-25 series (define-valida / setup-basic-c / exit-code-en slices):
     immediately after imports, guarded so an embedding application's logging
     configuration is never clobbered.
   * validate_canary(response_text) -> bool  (str -> bool)
+  * process_response(response_text) -> int  (the exit-code decision: 0 pass, 1 fail);
+    main() routes through it, so the CLI and any embedding caller share one contract.
   * CLI integration: `python canary.py <text…>` exits 0 when the canary marker
     is present, 1 when absent — so pipelines can gate on the exit code.
   * parse_gemini_text(payload) -> str, and `python canary.py --request-only [PATH]`,
@@ -134,6 +136,25 @@ def request_only(path=None, out=None):
     return 0
 
 
+def process_response(response_text) -> int:
+    """Validate *response_text* and return the PROCESS EXIT CODE: 0 pass, 1 fail.
+
+    This is the seam the exit-code slice asks for. validate_canary answers a
+    question (bool); process_response makes the pipeline decision (exit code), and
+    keeping them apart matters: a caller that wants the verdict must not have to
+    remember that 0 means success and therefore True — the two types are inverted,
+    and that inversion is a classic source of silently-passing canaries.
+
+    Anything that is not a string is a failed hop, not a crash: validate_canary is
+    already fail-soft on it, so this returns 1 rather than raising (fail-soft).
+    """
+    if validate_canary(response_text):
+        logger.info("canary: validation passed")
+        return 0
+    logger.error("canary: validation failed")
+    return 1
+
+
 def main(argv=None) -> int:
     """Validate CLI-provided text; exit 0 iff the canary marker is present.
 
@@ -144,12 +165,8 @@ def main(argv=None) -> int:
     if args and args[0] == "--request-only":
         rest = args[1:]
         return request_only(rest[0] if rest else None)
-    text = " ".join(args)
-    if validate_canary(text):
-        logger.info("canary: validation passed")
-        return 0
-    logger.error("canary: validation failed")
-    return 1
+    response_text = " ".join(args)
+    return process_response(response_text)
 
 
 if __name__ == "__main__":
