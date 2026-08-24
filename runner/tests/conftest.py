@@ -86,8 +86,56 @@ _REAL_MODULES = {
 }
 
 
+# ── modules whose NAME exists at more than one path in this repo ──────────────────────
+#
+# `lint_conventions.py` exists twice: `tools/lint_conventions.py` and
+# `runner/tools/lint_conventions.py`. Ten test modules import it as the bare name
+# `lint_conventions`, each first inserting its own directory on sys.path — but sys.path
+# only decides the FIRST import. After that the name is cached, so whichever test module
+# is collected first binds the name for the whole session and every later importer gets
+# the other file. That is why four security tests
+# (test_hardcoded_secret_rule, test_annotated_secret_detection,
+# test_secret_risk_pool_detection, test_secret_risk_pool_rework) fail whole-suite
+# collection with
+#   ImportError: cannot import name 'RULE_HARDCODED_SECRET' from 'lint_conventions'
+# while every one of them passes in isolation. The hardcoded-secret lint had no
+# effective coverage in any combined run.
+#
+# Evicting the cached binding between test modules makes each importer resolve against
+# its OWN sys.path, which is what each file already tried to arrange.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SCAN_SKIP = {".git", "node_modules", "__pycache__", ".venv", ".runtime",
+              ".pytest_cache", "_to_delete", "dist", "build"}
+
+
+def _ambiguous_module_names():
+    """Top-level module basenames that exist at more than one path in the repo."""
+    seen = {}
+    for dirpath, dirnames, filenames in os.walk(_REPO_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _SCAN_SKIP]
+        for name in filenames:
+            if name.endswith(".py") and not name.startswith("test_") and name != "__init__.py":
+                seen[name[:-3]] = seen.get(name[:-3], 0) + 1
+    return {name for name, count in seen.items() if count > 1}
+
+
+try:
+    _AMBIGUOUS = _ambiguous_module_names()
+except Exception:                      # fail-soft: never block collection on this scan
+    _AMBIGUOUS = set()
+
+
+def _evict_ambiguous_modules():
+    """Un-cache shadow-prone names so the next importer's sys.path decides. Fail-soft."""
+    for name in _AMBIGUOUS:
+        if name in ("conftest",):      # pytest owns this one
+            continue
+        sys.modules.pop(name, None)
+
+
 def _restore_real_modules():
     sys.modules.update(_REAL_MODULES)
+    _evict_ambiguous_modules()
 
 
 @pytest.hookimpl(hookwrapper=True)
