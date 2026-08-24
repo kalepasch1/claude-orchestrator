@@ -54,6 +54,25 @@ def _env_number(name: str, default: float, cast=float, minimum=None):
         return default
 
 
+class _Absent:
+    """Cache sentinel: no configuration source defines this key.
+
+    A distinct object rather than None or "", both of which a source could legitimately
+    produce, and which is what let a caller's default get cached as if it were a value.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):  # pragma: no cover - debugging aid
+        return "<config_consumer.ABSENT>"
+
+    def __bool__(self):
+        return False
+
+
+_ABSENT = _Absent()
+
+
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
 
@@ -161,12 +180,23 @@ class _ConfigConsumer:
             if not key or not isinstance(key, str):
                 return default
 
-            # Check cache first
+            # Check cache first.
+            #
+            # A cache entry records what the SOURCES said, never what a caller passed as
+            # its default. The cache is keyed by key alone, so caching the resolved
+            # default meant the first caller's default leaked to every later one:
+            #
+            #     load_config("MAX_RETRIES", "3")   -> "3"   (absent everywhere)
+            #     load_config("MAX_RETRIES", "10")  -> "3"   <-- someone else's default
+            #
+            # Silent, and near-impossible to trace from the call site. _ABSENT keeps the
+            # negative caching (a missing key still costs one DB read per TTL) while
+            # letting each caller apply its own default at return time.
             with self._lock:
                 if key in self._cache:
                     cached_value, cached_time = self._cache[key]
                     if time.time() - cached_time < self._cache_ttl_sec:
-                        return cached_value
+                        return default if cached_value is _ABSENT else cached_value
 
             # Read through the fleet_control gateway. CLAUDE.md is explicit that
             # fleet-wide config goes through that in-process gateway rather than
@@ -191,17 +221,19 @@ class _ConfigConsumer:
                 except Exception:
                     pass
 
-            # Fall back to environment
-            if value is None or not value:
-                value = self.get(key, default).strip()
-                if not value:
-                    value = default
+            # Fall back to environment. `get(key, "")` rather than `get(key, default)`
+            # so an absent env var is distinguishable from one that happens to hold the
+            # caller's default — the cache needs to know which of those it saw.
+            if not value:
+                value = self.get(key, "").strip()
 
-            # Cache and return
+            # Cache what the sources said. _ABSENT records "no source has this key",
+            # which is worth caching (it saves the DB read) but must never be confused
+            # with a real value.
             with self._lock:
-                self._cache[key] = (value, time.time())
+                self._cache[key] = (value if value else _ABSENT, time.time())
                 self._evict_locked()
-            return value
+            return value if value else default
         except Exception:
             return default
 
