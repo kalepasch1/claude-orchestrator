@@ -81,7 +81,37 @@ _SECRET_EXPLICIT = re.compile(
 _SECRET_PROXIMITY_CHARS = 80
 
 
+#: Literal credential SHAPES. These are the one thing in this ruleset that needs no
+#: corroborating context: "token" is vocabulary, `xoxb-1234567890-…` is a token.
+#:
+#: The proximity rule above exists because generic secret VOCABULARY is everywhere in an
+#: auth-related codebase, and it correctly refuses to classify on the word "credential"
+#: alone. But it refused the concrete case too: a log_tail reading
+#: "Await user-supplied Slack credentials (Bot Token xoxb-…, Signing Secret)" has no
+#: "hardcoded"/"leaked"/"exposed" nearby, so every term match failed its context check and
+#: the task classified as generic rework — the vocabulary guard swallowed an actual token
+#: prefix sitting in the evidence. A real marker is decided on its own.
+#: The PREFIX alone is enough — the body is deliberately not required. Blocker notes
+#: routinely elide the value ("Bot Token xoxb-…, Signing Secret"), and that elision is
+#: what a human writes when the credential is the subject of the blocker. Matching only
+#: full-length tokens would classify the redacted mention as ordinary rework, i.e. would
+#: be strictest exactly where the evidence is clearest. These prefixes appear in no other
+#: context, so the prefix is the signal.
+_SECRET_MARKER = re.compile(
+    r"xox[baprs]-|"                        # Slack bot/app/user/refresh tokens
+    r"gh[pousr]_[A-Za-z0-9]{4,}|"          # GitHub tokens
+    r"\bsk-[A-Za-z0-9-]{8,}|"              # OpenAI/Anthropic-style API keys
+    r"\bAKIA[0-9A-Z]{8,}|"                 # AWS access key ids
+    r"whsec_|"                             # Stripe webhook signing secrets
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----", # PEM blocks
+    re.I,
+)
+
+
 def _is_secret(evidence):
+    # A literal credential shape is definitive; no proximity context required.
+    if _SECRET_MARKER.search(evidence):
+        return True
     if _SECRET_EXPLICIT.search(evidence):
         return True
     for term_match in _SECRET_TERM.finditer(evidence):
@@ -149,12 +179,31 @@ def _clean_note_for_classification(note):
     return text
 
 
-_REWORK_PREFIX = re.compile(r"^(?:rework-[a-z]+-)+", re.I)
+#: Trailing `(?:rework-)?` matters: the pipeline's last hop often appends a bare
+#: "rework-" with no category before the original slug
+#: ("rework-legal-rework-legal-…-rework-0d98862"). Without it the strip stopped one
+#: marker short and left "rework-0d98862" — still pipeline noise, still read as identity.
+_REWORK_PREFIX = re.compile(r"^(?:rework-[a-z]+-)+(?:rework-)?", re.I)
+
+
+def _strip_rework_noise(slug):
+    """Drop the pipeline's own `rework-<category>-` prefixes from *slug*.
+
+    `rework-secret-canary-ollama-5-c55a0b3` -> `canary-ollama-5-c55a0b3`, and a nested
+    chain (`rework-legal-rework-legal-…-0d98862`) strips all the way down. A slug that
+    does not start with the marker is returned unchanged.
+
+    Split out of _blocker_signal because the classifier is not the only caller that needs
+    it: anything reasoning about a task's IDENTITY has to see the original name, or it
+    reads the quarantine history as if it were the subject matter — which is how
+    `rework-secret-*` kept re-classifying as a secret blocker forever. Fail-soft on None.
+    """
+    return _REWORK_PREFIX.sub("", str(slug or ""))
 
 
 def _blocker_signal(task):
     raw_slug = str(task.get("slug") or "")
-    slug = _REWORK_PREFIX.sub("", raw_slug)
+    slug = _strip_rework_noise(raw_slug)
     note = _clean_note_for_classification(task.get("note"))
     log_tail = str(task.get("log_tail") or "")
     # strip the task's own full slug from evidence so the quarantine history embedded in branch
@@ -230,6 +279,12 @@ def _identity_only_category(task, category):
     stripped = dict(task)
     stripped["note"] = ""
     stripped["log_tail"] = ""
+    # `state` is FAILURE EVIDENCE, not identity, so it is stripped with the rest. Leaving it
+    # in made state == "TESTFAIL" survive the blanking, so every task the pipeline had
+    # already marked TESTFAIL looked self-referential and was downgraded to generic rework —
+    # the guard discarded the most reliable signal in the row, which the fleet itself had
+    # written after actually running the tests.
+    stripped["state"] = ""
     try:
         return _classify_raw(stripped) == category
     except Exception:
@@ -273,9 +328,18 @@ def _classify_raw(task):
     # hours that single path accounted for 84 of the fleet's repair spawns.
     if _MISSING.search(evidence):
         return "missing-branch"
-    if _BUILD.search(text):
+    # buildfail/testfail read EVIDENCE, for the same reason secret/security/missing-branch
+    # do above. Both regexes match this fleet's own generator prefixes — "qafix", "buildfail",
+    # "relfix" — which appear in the SLUG of every task the categories themselves created. A
+    # task named qafix-tomorrow-07062319 therefore classified as testfail from its own name;
+    # the identity guard then correctly saw that the verdict survived with all evidence
+    # blanked and downgraded it to rework. So a real test failure carrying a real
+    # "44 failed | 245 passed" log came out as generic rework, and the repair directive lost
+    # the one fact that would have targeted it. Reading the note/log fixes both halves: the
+    # name can no longer classify, and the evidence can.
+    if _BUILD.search(evidence):
         return "buildfail"
-    if state == "TESTFAIL" or _TEST.search(text):
+    if state == "TESTFAIL" or _TEST.search(evidence):
         return "testfail"
     if _NOOP.search(text):
         return "noop"
