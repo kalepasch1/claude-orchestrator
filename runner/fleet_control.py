@@ -227,6 +227,29 @@ def load_config():
     return n
 
 
+#: Injectable for tests; None means "use config_store's process-wide default".
+_store_override = None
+
+
+def set_config_store(store):
+    """Inject a ConfigStore. Pass None to fall back to the module default."""
+    global _store_override
+    _store_override = store
+
+
+def _config_store():
+    """The ConfigStore this module writes through.
+
+    Imported lazily so fleet_control keeps loading on a host where the seam is not
+    importable — config is load-bearing for the runner and must not be taken out by an
+    import error in an indirection layer.
+    """
+    if _store_override is not None:
+        return _store_override
+    import config_store
+    return config_store.get_store()
+
+
 def get_fleet_config(key, default=""):
     """Get a fleet_config value from environment with ORCH_ prefix validation.
 
@@ -255,20 +278,31 @@ def update_fleet_config(key, value):
     if not _safe_key(key):
         raise ValueError(f"refusing unsafe fleet config key: {key}")
     new_value = str(value)
-    old_value = None
-    try:
-        rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
-        if rows:
-            old_value = str(rows[0].get("value") or "")
-    except Exception:
-        pass
-    row = {
-        "key": key,
-        "value": new_value,
-        "updated_by": HOST,
-        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-    db.insert("fleet_config", row, upsert=True)
+
+    # THE INTEGRATION. This used to read with db.select and write with
+    # db.insert("fleet_config", ..., upsert=True) — going straight past the storage seam
+    # that config_store.py exists to be. Two consequences, one of them a security hole:
+    #
+    #  * The seam did not hold. config_store's whole purpose is that a later slice can
+    #    swap the backing store without any caller learning about it; a caller talking to
+    #    db.py directly is exactly the binding it was written to remove.
+    #  * fleet_config_guard was bypassed. config_store routes writes through
+    #    fleet_config_dao._write, which is where the guard is enforced FAIL-CLOSED after
+    #    the 2026-08-02 incident that found four live credentials in plaintext in this
+    #    table. _safe_key() above is a prefix allowlist, not that guard.
+    #
+    # Both are fixed by using the store. The DAO also captures the old row itself, so the
+    # separate read disappears rather than being reimplemented.
+    store = _config_store()
+    old_row, row = store.update_config(key, new_value, updated_by=HOST)
+    old_value = str((old_row or {}).get("value") or "") if old_row else None
+    if not row:
+        row = {
+            "key": key,
+            "value": new_value,
+            "updated_by": HOST,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
     if _ws_server is not None and key.upper().startswith("ORCH_") and new_value != old_value:
         try:
             _ws_server.publish_event("config/*", {

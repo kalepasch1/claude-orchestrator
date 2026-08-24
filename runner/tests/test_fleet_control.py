@@ -111,10 +111,26 @@ class TestLoadConfig(unittest.TestCase):
 
 
     def _make_db(self, old_value=None):
+        # update_fleet_config now writes through the config_store seam rather than
+        # db.insert("fleet_config", ...), so the double it needs is a ConfigStore. The
+        # db mock is still returned because other paths under test read through db.
         fake_db = MagicMock()
         fake_db.select.return_value = [{"value": old_value}] if old_value is not None else []
         fake_db.insert.return_value = None
+        self._store = self._make_store(old_value)
+        fleet_control.set_config_store(self._store)
+        self.addCleanup(fleet_control.set_config_store, None)
         return fake_db
+
+    @staticmethod
+    def _make_store(old_value=None):
+        store = MagicMock()
+        old_row = {"value": old_value} if old_value is not None else None
+        store.update_config.side_effect = (
+            lambda key, value, note=None, updated_by=None: (
+                old_row, {"key": key, "value": value, "updated_by": updated_by}))
+        store.get_config.return_value = old_row
+        return store
 
     def test_update_fleet_config_emits_event_on_orch_key_change(self):
         fake_db = self._make_db(old_value="false")
