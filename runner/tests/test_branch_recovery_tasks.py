@@ -59,7 +59,14 @@ class TestTask1BranchStatusVerification(unittest.TestCase):
              patch.object(branch_recovery_tasks, "_git") as mock_git:
 
             def git_side_effect(repo, *args):
-                if "--verify" in args:
+                # _get_branch_status runs rev-parse TWICE: once with --verify to test
+                # existence, then again (no --verify) to read the sha. The fallback
+                # below used to answer that second call with an empty string, and an
+                # empty sha is falsy — so the cat-file corruption probe was skipped
+                # entirely and corruption_flags came back []. The test was asserting
+                # on a path its own mock prevented from running. Resolve the sha for
+                # both forms, the way real git does.
+                if "rev-parse" in args:
                     return 0, "corrupted_sha", ""
                 if "cat-file" in args:
                     return 1, "", "not found"
@@ -70,6 +77,7 @@ class TestTask1BranchStatusVerification(unittest.TestCase):
             status = branch_recovery_tasks._get_branch_status("/repo", "corrupt-branch")
 
             self.assertTrue(status["exists"])
+            self.assertEqual(status["last_commit_sha"], "corrupted_sha")
             self.assertIn("commit_object_missing", status["corruption_flags"])
 
     def test_branch_orphaned(self):
@@ -119,25 +127,34 @@ class TestTask1PatchArtifactRetrieval(unittest.TestCase):
 
     def test_artifact_loaded_and_verified(self):
         """Patch artifact is loaded and hash verified."""
-        with patch("sys.modules") as mock_modules:
-            mock_lib = MagicMock()
-            mock_lib.list_patches.return_value = [
-                {
-                    "template_id": "06b43339ce93",
-                    "id": "06b43339ce93",
-                    "content": b"patch content here",
-                }
-            ]
-            mock_modules.__contains__.return_value = True
-            mock_modules.__getitem__.return_value = mock_lib
+        # Two fixture defects made this unreachable:
+        #  1. _load_patch_artifact checks os.path.exists(library_path) FIRST, and
+        #     "/path/to/library.py" does not exist, so it returned found=False before
+        #     any of the module mocking below could matter.
+        #  2. replacing sys.modules wholesale with a MagicMock does not make
+        #     `import merged_diff_library` resolve to the stub — the import machinery
+        #     looks the name up as a dict key. Inject the stub under its real name
+        #     instead, and remove it again afterwards so no other test inherits it.
+        mock_lib = MagicMock()
+        mock_lib.list_patches.return_value = [
+            {
+                "template_id": "06b43339ce93",
+                "id": "06b43339ce93",
+                "content": b"patch content here",
+            }
+        ]
 
-            with patch.object(sys, "modules", mock_modules):
-                result = branch_recovery_tasks._load_patch_artifact(
-                    "/path/to/library.py", "06b43339ce93"
-                )
+        sys.modules["merged_diff_library"] = mock_lib
+        self.addCleanup(sys.modules.pop, "merged_diff_library", None)
 
-                self.assertTrue(result["found"])
-                self.assertIsNotNone(result["patch_data"])
+        with patch.object(os.path, "exists", return_value=True):
+            result = branch_recovery_tasks._load_patch_artifact(
+                "/path/to/library.py", "06b43339ce93"
+            )
+
+            self.assertTrue(result["found"], result.get("error"))
+            self.assertIsNotNone(result["patch_data"])
+            self.assertEqual(result["patch_data"]["template_id"], "06b43339ce93")
 
     def test_artifact_not_found(self):
         """Missing patch artifact returns error."""
