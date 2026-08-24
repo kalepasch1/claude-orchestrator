@@ -30,6 +30,43 @@ runner = importlib.util.module_from_spec(_spec)
 sys.modules["runner"] = runner
 _spec.loader.exec_module(runner)
 
+def _pad(values, extra=4):
+    """Pad a db.select side_effect list with trailing empty results.
+
+    `_reap_zombie_tasks` issues THREE selects — RUNNING, runner_heartbeats, then RETRY.
+    These tests were written against an earlier two-query implementation, so the third
+    call exhausted the list and raised StopIteration, which the reaper's broad
+    `except Exception` swallowed and printed as an empty "[zombie-reaper] error:" line.
+    The test then failed on a downstream assertion (`mock_update.called` is False) with
+    no hint that the cause was a short mock.
+
+    Padding only ever APPENDS, so the first N results — the ones each test actually
+    controls — are untouched, and a test that asserts on call COUNT still sees the real
+    number of queries the implementation makes.
+    """
+    return list(values) + [[] for _ in range(extra)]
+
+
+
+@pytest.fixture(autouse=True)
+def _reset_reap_throttle():
+    """Clear the reaper's 5-minute throttle before EVERY test in this module.
+
+    `_reap_zombie_tasks` starts with `if time.time() - _ZOMBIE_REAP_T < 300: return`,
+    and `_ZOMBIE_REAP_T` is MODULE-LEVEL state that survives across tests. So the first
+    test to call the reaper ran it and every later test silently got an immediate return
+    — no db.select calls at all, which is why so many of these failed with
+    `IndexError: list index out of range` on `calls[0]` rather than on anything they
+    were actually asserting.
+
+    The throttle is correct production behaviour (do not reap more often than every five
+    minutes); it is shared test state that was the defect. A few tests in the sibling
+    module already reset it by hand — this makes it uniform so a new test cannot forget.
+    """
+    runner._ZOMBIE_REAP_T = 0.0
+    yield
+    runner._ZOMBIE_REAP_T = 0.0
+
 
 class MockTaskFactory:
     """Factory for creating task records matching DB schema."""
@@ -74,9 +111,9 @@ class MockTaskFactory:
 class TestHeartbeatExpiryBoundaries:
     """Test heartbeat expiration at critical time boundaries."""
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_task_exactly_at_30min_boundary_over(self, mock_update, mock_select, mock_repair):
         """Task at 30:01 minutes is reclaimed."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -85,16 +122,16 @@ class TestHeartbeatExpiryBoundaries:
             updated_offset_sec=int(30 * 60 + 1)  # 30:01
         )
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         assert mock_update.called
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_task_exactly_at_30min_boundary_under(self, mock_update, mock_select):
         """Task at 29:59 minutes is NOT reclaimed."""
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -102,17 +139,17 @@ class TestHeartbeatExpiryBoundaries:
             updated_offset_sec=int(30 * 60 - 1)  # 29:59
         )
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         mock_update.assert_not_called()
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_dead_runner_at_grace_period_boundary(self, mock_update, mock_select, mock_repair):
         """Dead runner reclaim respects grace period boundary."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -123,10 +160,10 @@ class TestHeartbeatExpiryBoundaries:
                 updated_offset_sec=int(300 + 1)  # 300:01s
             )
 
-            mock_select.side_effect = [
+            mock_select.side_effect = _pad([
                 [task],
                 [],  # dead runner
-            ]
+            ])
 
             runner._reap_zombie_tasks()
             assert mock_update.called
@@ -135,34 +172,34 @@ class TestHeartbeatExpiryBoundaries:
 class TestFleetTTLVariations:
     """Test behavior with different FLEET_TTL_S configurations."""
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_fleet_ttl_s_short_30_seconds(self, mock_update, mock_select):
         """With FLEET_TTL_S=30, heartbeats older than 30s mark runner dead."""
         with patch.dict(os.environ, {"FLEET_TTL_S": "30"}):
             task = MockTaskFactory.running(account="Mac.lan-0", updated_offset_sec=60)
             hb = MockTaskFactory.heartbeat(last_seen_offset_sec=40)  # older than 30s
 
-            mock_select.side_effect = [
+            mock_select.side_effect = _pad([
                 [task],
                 [],  # no live runners
-            ]
+            ])
 
             runner._reap_zombie_tasks()
             assert mock_update.called
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_fleet_ttl_s_long_600_seconds(self, mock_update, mock_select):
         """With FLEET_TTL_S=600, 300s-old heartbeat keeps runner alive."""
         with patch.dict(os.environ, {"FLEET_TTL_S": "600"}):
             task = MockTaskFactory.running(account="Mac.lan-0", updated_offset_sec=60)
             hb = MockTaskFactory.heartbeat("Mac.lan-0", last_seen_offset_sec=300)
 
-            mock_select.side_effect = [
+            mock_select.side_effect = _pad([
                 [task],
                 [hb],  # runner is alive (300s < 600s TTL)
-            ]
+            ])
 
             runner._reap_zombie_tasks()
             mock_update.assert_not_called()
@@ -171,34 +208,34 @@ class TestFleetTTLVariations:
 class TestRetryPromotionThreshold:
     """Test RETRY promotion with various time thresholds."""
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_retry_promotion_threshold_1_second(self, mock_update, mock_select):
         """With ORCH_RETRY_PROMOTE_AFTER_S=1, 2s-old RETRY promoted."""
         with patch.dict(os.environ, {"ORCH_RETRY_PROMOTE_AFTER_S": "1"}):
             task = MockTaskFactory.retry(updated_offset_sec=2)
 
-            mock_select.side_effect = [
+            mock_select.side_effect = _pad([
                 [],  # no RUNNING
                 [],  # no heartbeats
                 [task],
-            ]
+            ])
 
             runner._reap_zombie_tasks()
             assert mock_update.called
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_retry_promotion_threshold_3600_seconds(self, mock_update, mock_select):
         """With ORCH_RETRY_PROMOTE_AFTER_S=3600, 1800s-old RETRY not promoted."""
         with patch.dict(os.environ, {"ORCH_RETRY_PROMOTE_AFTER_S": "3600"}):
             task = MockTaskFactory.retry(updated_offset_sec=1800)
 
-            mock_select.side_effect = [
+            mock_select.side_effect = _pad([
                 [],  # no RUNNING
                 [],  # no heartbeats
                 [task],
-            ]
+            ])
 
             runner._reap_zombie_tasks()
             mock_update.assert_not_called()
@@ -207,9 +244,9 @@ class TestRetryPromotionThreshold:
 class TestConcurrentZombieRecovery:
     """Test zombie reaper under concurrent task updates."""
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_large_batch_stale_tasks_all_reclaimed(self, mock_update, mock_select, mock_repair):
         """Reclaim 50 stale RUNNING tasks in single cycle."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -225,16 +262,16 @@ class TestConcurrentZombieRecovery:
             for i in range(50)
         ]
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             tasks,
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         assert mock_update.call_count == 50
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_mixed_tasks_selective_reclaim(self, mock_update, mock_select):
         """In batch of mixed ages, only stale are reclaimed."""
         tasks = [
@@ -244,10 +281,10 @@ class TestConcurrentZombieRecovery:
             MockTaskFactory.running("t4", updated_offset_sec=45*60),  # stale
         ]
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             tasks,
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
@@ -262,9 +299,9 @@ class TestConcurrentZombieRecovery:
 class TestRunnerAccountPatternMatching:
     """Test account pattern recognition for dead-runner claims."""
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_mac_lan_pattern_matches(self, mock_update, mock_select, mock_repair):
         """Account 'Mac.lan-X' pattern matches dead-runner detection."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -273,18 +310,18 @@ class TestRunnerAccountPatternMatching:
             updated_offset_sec=200
         )
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],  # no heartbeats - runner is dead
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         assert mock_repair.called
         call_args = mock_repair.call_args
         assert "expired runner heartbeat" in call_args[1]["directive"]
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_mandys_macbook_pattern_matches(self, mock_update, mock_select):
         """Account 'Mandys-MacBook-Pro.local-X' pattern matches."""
         task = MockTaskFactory.running(
@@ -292,16 +329,16 @@ class TestRunnerAccountPatternMatching:
             updated_offset_sec=200
         )
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],  # no heartbeats
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         assert mock_update.called
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_unknown_account_pattern_doesnt_match(self, mock_update, mock_select):
         """Arbitrary account string doesn't trigger dead-runner claim."""
         task = MockTaskFactory.running(
@@ -309,17 +346,17 @@ class TestRunnerAccountPatternMatching:
             updated_offset_sec=200
         )
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],  # no heartbeats
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         # Should NOT be reclaimed as dead-runner (wrong pattern)
         # Would need stale check, but this doesn't reach it with pattern check first
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_cowork_prefix_always_skipped(self, mock_update, mock_select):
         """Cowork-prefixed accounts always skipped, even if stale."""
         tasks = [
@@ -328,10 +365,10 @@ class TestRunnerAccountPatternMatching:
             MockTaskFactory.running("t3", account="cowork-adhoc-789", updated_offset_sec=100*60),
         ]
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             tasks,
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         mock_update.assert_not_called()
@@ -340,9 +377,9 @@ class TestRunnerAccountPatternMatching:
 class TestRecoveryPatchGeneration:
     """Test agentic_repair patch generation for different failure modes."""
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_dead_runner_patch_includes_correct_signal(self, mock_update, mock_select, mock_repair):
         """Dead-runner recovery patch includes 'expired runner heartbeat' signal."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -351,10 +388,10 @@ class TestRecoveryPatchGeneration:
             updated_offset_sec=200
         )
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
@@ -362,9 +399,9 @@ class TestRecoveryPatchGeneration:
         signal = call_args[0][1]
         assert "expired runner heartbeat" in signal
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_stale_running_patch_includes_correct_signal(self, mock_update, mock_select, mock_repair):
         """Stale-RUNNING recovery patch includes correct signal."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -373,10 +410,10 @@ class TestRecoveryPatchGeneration:
             updated_offset_sec=31*60
         )
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
@@ -384,36 +421,36 @@ class TestRecoveryPatchGeneration:
         signal = call_args[0][1]
         assert "stale RUNNING >30min" in signal
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_patch_category_orphaned_running(self, mock_update, mock_select, mock_repair):
         """All recovery patches use 'orphaned-running' category."""
         mock_repair.return_value = {"state": "QUEUED"}
         task = MockTaskFactory.running(updated_offset_sec=31*60)
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
         call_args = mock_repair.call_args
         assert call_args[1]["category"] == "orphaned-running"
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_patch_directive_includes_recovery_guidance(self, mock_update, mock_select, mock_repair):
         """Recovery patch directive includes explicit recovery instructions."""
         mock_repair.return_value = {"state": "QUEUED"}
         task = MockTaskFactory.running(updated_offset_sec=31*60)
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
@@ -425,8 +462,8 @@ class TestRecoveryPatchGeneration:
 class TestScheduledExecution:
     """Test zombie reaper invocation from scheduler."""
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_reaper_throttles_300_seconds(self, mock_update, mock_select):
         """Reaper throttles to 300s minimum between invocations."""
         import time as real_time
@@ -435,7 +472,7 @@ class TestScheduledExecution:
         try:
             runner._ZOMBIE_REAP_T = real_time.time() - 200  # 200s ago
 
-            mock_select.side_effect = [[], [], []]
+            mock_select.side_effect = _pad([[], [], []])
             runner._reap_zombie_tasks()
             first_count = mock_select.call_count
 
@@ -449,8 +486,8 @@ class TestScheduledExecution:
         finally:
             runner._ZOMBIE_REAP_T = orig_time
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_reaper_executes_after_300s_throttle(self, mock_update, mock_select):
         """Reaper executes if 300+ seconds since last run."""
         import time as real_time
@@ -459,7 +496,7 @@ class TestScheduledExecution:
         try:
             runner._ZOMBIE_REAP_T = real_time.time() - 301  # 301s ago
 
-            mock_select.side_effect = [[], [], []]
+            mock_select.side_effect = _pad([[], [], []])
             runner._reap_zombie_tasks()
 
             assert mock_select.called
@@ -471,8 +508,8 @@ class TestScheduledExecution:
 class TestErrorResilience:
     """Test error handling and fail-soft behavior."""
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     @patch("builtins.print")
     def test_db_select_failure_no_crash(self, mock_print, mock_update, mock_select):
         """DB select failure doesn't crash reaper."""
@@ -488,9 +525,9 @@ class TestErrorResilience:
         print_calls = [call[0][0] for call in mock_print.call_args_list]
         assert any("error" in str(c).lower() for c in print_calls)
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     @patch("builtins.print")
     def test_repair_patch_failure_doesnt_block_other_tasks(self, mock_print, mock_update,
                                                            mock_select, mock_repair):
@@ -502,10 +539,10 @@ class TestErrorResilience:
             MockTaskFactory.running("t2", updated_offset_sec=35*60),
         ]
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             tasks,
             [],
-        ]
+        ])
 
         try:
             runner._reap_zombie_tasks()
@@ -515,17 +552,17 @@ class TestErrorResilience:
         # Both updates should have been attempted
         assert mock_update.call_count == 2
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_malformed_task_record_handled(self, mock_update, mock_select):
         """Task with missing fields doesn't crash reaper."""
         task = MockTaskFactory.running()
         del task["updated_at"]
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [],
-        ]
+        ])
 
         try:
             runner._reap_zombie_tasks()
@@ -536,17 +573,17 @@ class TestErrorResilience:
 class TestRetryNoteHandling:
     """Test RETRY promotion note truncation and appending."""
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_retry_note_appends_promoter_tag(self, mock_update, mock_select):
         """RETRY promotion appends 'retry-promoter' to note."""
         task = MockTaskFactory.retry(updated_offset_sec=150, note="initial note")
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [],
             [],
             [task],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
@@ -555,18 +592,18 @@ class TestRetryNoteHandling:
         assert "retry-promoter" in patch.get("note", "")
         assert "initial note" in patch.get("note", "")
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_retry_note_truncated_to_1000_chars(self, mock_update, mock_select):
         """RETRY note truncated to 1000 chars max."""
         long_note = "x" * 950  # 950 + " | retry-promoter" = 967 chars
         task = MockTaskFactory.retry(updated_offset_sec=150, note=long_note)
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [],
             [],
             [task],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
@@ -575,17 +612,17 @@ class TestRetryNoteHandling:
         note = patch.get("note", "")
         assert len(note) <= 1000
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_retry_note_preserves_state_and_timestamp(self, mock_update, mock_select):
         """RETRY promotion sets state=QUEUED and updated_at=now()."""
         task = MockTaskFactory.retry(updated_offset_sec=150)
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [],
             [],
             [task],
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
@@ -598,9 +635,9 @@ class TestRetryNoteHandling:
 class TestLaneHeartbeatSkipping:
     """Test exclusion of lane heartbeats from live-runner detection."""
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_lane_heartbeats_not_counted_as_live(self, mock_update, mock_select, mock_repair):
         """Heartbeats with ' lane ' in hostname don't mark runner as live."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -608,18 +645,18 @@ class TestLaneHeartbeatSkipping:
         task = MockTaskFactory.running("t1", account="Mac.lan-0", updated_offset_sec=200)
         lane_hb = MockTaskFactory.heartbeat("Mac.lan-0", hostname="Mac.lan lane 1")
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [lane_hb],  # only lane heartbeat
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         # Should still reclaim because lane HBs don't count as live
         assert mock_update.called
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_scheduler_heartbeats_not_counted_as_live(self, mock_update, mock_select, mock_repair):
         """Heartbeats with '-scheduler' suffix don't mark runner as live."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -627,10 +664,10 @@ class TestLaneHeartbeatSkipping:
         task = MockTaskFactory.running("t1", account="Mac.lan-0", updated_offset_sec=200)
         sched_hb = MockTaskFactory.heartbeat("Mac.lan-0-scheduler")
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             [task],
             [sched_hb],  # only scheduler heartbeat
-        ]
+        ])
 
         runner._reap_zombie_tasks()
         assert mock_update.called
@@ -639,9 +676,9 @@ class TestLaneHeartbeatSkipping:
 class TestLargeScaleRecovery:
     """Test zombie reaper at production scale."""
 
-    @patch("runner.agentic_repair.repair_patch")
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.agentic_repair, "repair_patch")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_recovers_100_tasks_with_50_retry_in_single_cycle(self, mock_update, mock_select, mock_repair):
         """Single cycle handles 100 RUNNING + 50 RETRY tasks."""
         mock_repair.return_value = {"state": "QUEUED"}
@@ -659,23 +696,23 @@ class TestLargeScaleRecovery:
             for i in range(50)
         ]
 
-        mock_select.side_effect = [
+        mock_select.side_effect = _pad([
             running_tasks,
             [],  # heartbeats
             retry_tasks,
-        ]
+        ])
 
         runner._reap_zombie_tasks()
 
         # Should have updated 50 stale RUNNING + 50 RETRY = 100 updates
         assert mock_update.call_count == 100
 
-    @patch("runner.db.select")
-    @patch("runner.db.update")
+    @patch.object(runner.db, "select")
+    @patch.object(runner.db, "update")
     def test_query_limits_respected(self, mock_update, mock_select):
         """DB queries respect configured limits (100 RUNNING, 250 RETRY)."""
         # This test verifies the implementation calls db.select with proper limits
-        mock_select.side_effect = [[], []]
+        mock_select.side_effect = _pad([[], []])
 
         runner._reap_zombie_tasks()
 
