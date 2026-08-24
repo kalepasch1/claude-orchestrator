@@ -1273,6 +1273,35 @@ def run_canarywatch():
     return res
 
 
+# ── compliance subsystem (compliance_periodic.py) ───────────────────────────
+# These four existed with a documented cadence (compliance_periodic.DEFAULT_INTERVALS,
+# "the values registered in runner._SCHEDULE") and were registered NOWHERE, so nothing
+# ever ran them: the durable evidence outbox drained only when some caller happened to
+# call flush(), and scorecards/anomaly sweeps were request-only. Same class of dead
+# registration as quarantine_gc and stuck_reaper. Each is fail-soft by contract — it
+# returns a dict describing what happened and never raises into the scheduler.
+
+
+def run_complianceoutbox():
+    """Drain the durable evidence outbox and alert when it stops keeping up."""
+    import compliance_periodic; return compliance_periodic.run_outbox_flush()
+
+
+def run_compliancescorecard():
+    """Recompute fleet/department compliance scorecards and persist a snapshot."""
+    import compliance_periodic; return compliance_periodic.run_scorecard_refresh()
+
+
+def run_complianceanomaly():
+    """Rolling z-score sweep over the persisted compliance composite scores."""
+    import compliance_periodic; return compliance_periodic.run_anomaly_check()
+
+
+def run_compliancehealth():
+    """Record the compliance readiness snapshot and alert while it is degraded."""
+    import compliance_periodic; return compliance_periodic.run_health()
+
+
 JOBS = {
     "deployterminal": run_deployterminal,
     "shipped": run_shipped,
@@ -1377,6 +1406,10 @@ JOBS = {
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
     "portfolioautopilot": run_portfolio_autopilot,
+    "complianceoutbox": run_complianceoutbox,
+    "compliancescorecard": run_compliancescorecard,
+    "complianceanomaly": run_complianceanomaly,
+    "compliancehealth": run_compliancehealth,
 }
 
 if __name__ == "__main__":
@@ -1406,6 +1439,9 @@ if __name__ == "__main__":
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "remotegc",
         "priority_scorer", "quarantine_gc", "markersentinel",
         "relationshipcrm",
+        # Observation must not stop when the fleet pauses: a paused fleet is exactly when
+        # an undrained evidence outbox goes unnoticed. None of these spend tokens.
+        "complianceoutbox", "compliancescorecard", "complianceanomaly", "compliancehealth",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:

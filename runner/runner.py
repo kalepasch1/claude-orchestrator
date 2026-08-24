@@ -107,6 +107,7 @@ if __name__ == "__main__":
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
 import provider_banner
+import stderr_digest
 import prompt_assembler
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
@@ -473,7 +474,8 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             if bcmd:
                 ok, blog = build_gate.run_build(repo, branch, bcmd)
                 if not ok:
-                    print(f"[integrate] build RED for {branch} -> not merging: {blog[-160:]}")
+                    print(f"[integrate] build RED for {branch} -> not merging: "
+                          f"{stderr_digest.digest(blog, 160)}")
                     try:
                         import build_fixer
                         build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
@@ -744,7 +746,8 @@ def _durable_share_branch(wt, slug, env=None, attempts=3):
                 except Exception:
                     pass
                 return True
-            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: {err[-160:]}")
+            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: "
+                  f"{stderr_digest.digest(err, 160)}")
         except Exception as e:
             print(f"[branch-durability] push {branch} attempt {attempt+1} error: {e}")
         time.sleep(2 * (attempt + 1))
@@ -2470,7 +2473,8 @@ def run_task(t):
                         if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
                             _shared = True
                             break
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {(_pr.stderr or '')[-160:]}")
+                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: "
+                              f"{stderr_digest.digest(_pr.stderr, 160)}")
                     except Exception as _pe:
                         print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
                     time.sleep(2 * (_attempt + 1))
@@ -3176,6 +3180,15 @@ _SCHEDULE = [
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
     ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
     ("portfolioautopilot-night","portfolioautopilot",    "daily",    (1, 0)),  # nightly: cold-start idle apps, auto-tune distribution, digest
+    # Compliance subsystem. compliance_periodic.DEFAULT_INTERVALS documents these four
+    # cadences as "the values registered in runner._SCHEDULE" — and they were registered
+    # neither here nor in periodic.JOBS, so evidence_bus's durable outbox had no clock at
+    # all and drained only when some caller happened to call flush(). Keep the intervals
+    # in step with DEFAULT_INTERVALS; the rationale for each number lives there.
+    ("complianceoutbox-120",    "complianceoutbox",    "interval", 120),  # drain the durable evidence outbox
+    ("compliancescorecard-900", "compliancescorecard", "interval", 900),  # recompute fleet compliance scorecards
+    ("complianceanomaly-600",   "complianceanomaly",   "interval", 600),  # z-score sweep over composite scores
+    ("compliancehealth-60",     "compliancehealth",    "interval", 60),   # readiness snapshot + degraded alert
 ]
 _sched_last: dict = {}
 
@@ -3212,7 +3225,12 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "surge_planner.py", "service_agent.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "batch_completion.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
-                     "cost_intelligence.py", "improvement_roadmap.py"}
+                     "cost_intelligence.py", "improvement_roadmap.py",
+                     # Observation must not stop when the fleet pauses — a paused fleet is
+                     # exactly when an undrained evidence outbox goes unnoticed. These four
+                     # only read, deliver already-captured evidence and record metrics.
+                     "complianceoutbox", "compliancescorecard", "complianceanomaly",
+                     "compliancehealth"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.

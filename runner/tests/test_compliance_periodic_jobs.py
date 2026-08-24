@@ -256,9 +256,25 @@ class TestSafeFailureHandling(_OutboxCase):
         self.assertEqual(result["anomalies"], [])
 
     def test_alert_channel_failure_never_propagates(self):
-        import notify
-        with patch.object(notify, "send", side_effect=RuntimeError("slack down")):
-            cp._alert("headline", "detail")  # must not raise
+        """A dead channel must not raise — and must not silence the other channels.
+
+        WAS: it patched notify.send to raise and asserted only that _alert did not raise.
+        That is half of the documented contract ("Any one of them being unavailable must
+        not suppress the others"), and it passes just as happily against an _alert that
+        swallows the exception by giving up on the durable approval row too — which is the
+        channel an operator actually reads later.
+        """
+        import db, notify
+        with patch.object(notify, "send", side_effect=RuntimeError("slack down")), \
+             patch.object(db, "insert") as insert:
+            cp._alert("evidence outbox not draining", "pending=9000")
+
+        insert.assert_called_once()
+        table, row = insert.call_args[0]
+        self.assertEqual(table, "approvals")
+        self.assertEqual(row["kind"], "compliance-slo")
+        self.assertIn("outbox", row["title"])
+        self.assertIn("pending=9000", row["why"])
 
     def test_metric_emit_failure_never_propagates(self):
         import events

@@ -60,6 +60,23 @@ def _reset_projects_cache():
 
 
 @pytest.fixture(autouse=True)
+def _evict_leaked_module_doubles():
+    """Put back any real runner module a test swapped for a Mock and did not restore.
+
+    _restore_real_modules() already runs at every module boundary, which is enough for a
+    fake installed at import time. It is not enough for a double installed and leaked
+    INSIDE a test — a threaded patch.dict whose restores interleave, or a test that raises
+    before its context manager unwinds. Those leak for the remainder of the session and
+    the symptom lands on some unrelated file much later.
+
+    Only Mock-shaped stand-ins are evicted here; a types.ModuleType fake is the deliberate
+    module-scope convention in this suite and is left alone until the next module boundary.
+    """
+    yield
+    _evict_stub_shadows()
+
+
+@pytest.fixture(autouse=True)
 def _reset_tdd_gate_cache():
     """tdd_gate memoizes its fleet_config reads for 30s on module globals.
 
@@ -134,15 +151,35 @@ def _evict_stub_shadows():
     for name, module in list(sys.modules.items()):
         if "." in name or module is None:
             continue
-        if getattr(module, "__file__", None):
-            continue
         if not os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py")):
+            continue
+        if not _is_stand_in(module):
             continue
         real = _REAL_MODULES.get(name)
         if real is not None:
             sys.modules[name] = real
         else:
             del sys.modules[name]
+
+
+def _is_stand_in(module):
+    """True when this sys.modules entry is a test double rather than a real module.
+
+    Two shapes, and the second is the one that got away. A `types.ModuleType` with no
+    __file__ is the documented fake in this suite. A MagicMock is not a module at all —
+    and it answers `getattr(m, "__file__")` with another Mock, so a __file__ check reads
+    it as real and leaves it in place.
+
+    That is not hypothetical: test_canary_ollama_22 runs `patch.dict(sys.modules, {"db":
+    MagicMock()})` inside five concurrent threads, and patch.dict restores by clearing and
+    re-filling the dict — interleaved restores park the mock in sys.modules["db"] for the
+    rest of the session. Every later `@patch("db.select")` then patches the leftover mock
+    while the real db runs unpatched and reaches for a live database.
+    """
+    import types
+    if not isinstance(module, types.ModuleType):
+        return True
+    return not getattr(module, "__file__", None)
 
 
 def _restore_real_modules():

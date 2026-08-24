@@ -233,22 +233,39 @@ class BriefJsonHandlingTest(unittest.TestCase):
         self.assertIn("Should we proceed?", bodies[0])
 
     def test_string_brief_json_is_parsed(self):
+        # PRODUCT FIX: run() did `bj = a.get("brief_json") or {}` and then guarded on
+        # isinstance(bj, dict), so a text-encoded jsonb column silently dropped the
+        # owner's QUESTION headline. approval_push.run() now json.loads() a string
+        # brief_json, matching what it already does for `alternatives` and what
+        # decision_confidence_autodecide does for this very column.
         brief = '{"question": "Parse me", "data": "yes"}'
         calls = self._run_with_brief(brief)
         bodies = [call[0][1]["body"] for call in calls if call[0][0] == "notifications" and "QUESTION" in call[0][1].get("body", "")]
         self.assertTrue(len(bodies) > 0)
+        self.assertIn("QUESTION: Parse me", bodies[0])
 
     def test_invalid_json_string_is_ignored(self):
+        # FIX (assertion was vacuous): this only checked that *some* insert happened,
+        # which is true even if run() had rendered the raw garbage into the email. The
+        # documented behaviour is "ignore the malformed JSON": the card still pushes, and
+        # the body carries no QUESTION section and none of the unparsed text.
         brief = "{not valid json"
         calls = self._run_with_brief(brief)
-        # Should not raise, just ignore the malformed JSON
-        self.assertGreater(len(calls), 0)
+        bodies = [c[0][1]["body"] for c in calls if c[0][0] == "notifications"]
+        self.assertTrue(bodies)
+        for body in bodies:
+            self.assertNotIn("QUESTION:", body)
+            self.assertNotIn("not valid json", body)
 
     def test_null_brief_json_is_handled(self):
+        # FIX (assertion was vacuous): see above. A null brief_json must still push the
+        # card, just with no QUESTION headline.
         brief = None
         calls = self._run_with_brief(brief)
-        # Should not raise
-        self.assertGreater(len(calls), 0)
+        bodies = [c[0][1]["body"] for c in calls if c[0][0] == "notifications"]
+        self.assertTrue(bodies)
+        for body in bodies:
+            self.assertNotIn("QUESTION:", body)
 
     def test_missing_brief_json_field(self):
         cards = [
@@ -279,6 +296,31 @@ class BriefJsonHandlingTest(unittest.TestCase):
 
 class AlternativesHandlingTest(unittest.TestCase):
     """Test alternatives/options field handling."""
+
+    # FIX (test was wrong): every test in this class called ap._links_block() with no
+    # APPROVAL_LINK_SIGNING_KEY in the environment. _signing_key() then raises
+    # SigningKeyUnavailable by design (an empty-key HMAC is publicly computable, so the
+    # module refuses to sign) and _links_block() correctly returns the unsigned cockpit
+    # pointer, which contains none of the option text these tests assert on. The tests
+    # were asserting against a security fallback they never meant to exercise. Configuring
+    # a real key puts them back on the signed path they were written for; the unsigned
+    # fallback is covered separately by test_links_block_without_key_is_unsigned below.
+    def setUp(self):
+        self._env = patch.dict(os.environ, {"APPROVAL_LINK_SIGNING_KEY": GOOD_KEY})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def test_links_block_without_key_is_unsigned(self):
+        """With no signing key the block must degrade to an unsigned cockpit pointer."""
+        card = {"id": "a1", "title": "Test", "alternatives": [{"label": "Option 1"}]}
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("APPROVAL_LINK_SIGNING_KEY", "APPROVAL_LINK_ALLOW_SERVICE_KEY")}
+        with patch.dict(os.environ, env, clear=True):
+            block = ap._links_block(card)
+        self.assertIn("One-click links are disabled", block)
+        self.assertIn("a1", block)
+        self.assertNotIn("sig=", block)
+        self.assertNotIn("OPTION 1", block)
 
     def test_alternatives_as_list_of_dicts(self):
         alts = [
@@ -548,6 +590,15 @@ class NotificationChannelTest(unittest.TestCase):
 
         env = dict(os.environ)
         env["APPROVAL_LINK_SIGNING_KEY"] = GOOD_KEY
+        # FIX (test was wrong): the digest-row tests below used to assert that run() had
+        # inserted the `digest` notification row by the time it returned. It has not, and
+        # by design: ApprovalBatcher.append() only sends when the time window expires
+        # (ORCH_APPROVAL_BATCH_WINDOW_MS, default 30s) or the item count reaches
+        # ORCH_APPROVAL_BATCH_SIZE (default 50). With two cards neither trigger fires
+        # inside run(), so digest_rows was empty and the tests blew up on digest_rows[0].
+        # Setting the count threshold to the number of cards exercises the real
+        # count-threshold flush path synchronously instead of racing a 30s daemon timer.
+        env.setdefault("ORCH_APPROVAL_BATCH_SIZE", str(len(cards)))
         env.update(env_vars)
 
         with patch.dict(os.environ, env, clear=True):

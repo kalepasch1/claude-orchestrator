@@ -1135,7 +1135,21 @@ def _queue_depth_estimate(ceiling):
         depth = len(rows)
         return depth > ceiling, depth if depth <= ceiling else ceiling + 1
     except Exception:
-        return False, ceiling  # fail-soft: assume queue is OK on error
+        # FAIL-SOFT MEANS ADMIT, AND THE DEPTH IS THE HALF THAT DECIDES (fixed 2026-08-24).
+        #
+        # This used to return `False, ceiling`. The `False` says "not over the ceiling", but
+        # _queue_depth_block DISCARDS it: it caches only the depth and then re-derives the
+        # verdict with `if _QUEUE_DEPTH_CACHE["depth"] < ceiling: return False`. `ceiling` is
+        # not less than `ceiling`, so every unreachable-database moment refused every
+        # non-exempt insert for the next cache TTL — and printed "[queue-cap] QUEUED depth
+        # 800 >= ceiling 800" while the true depth was unknown and possibly zero.
+        #
+        # That is the exact failure this gate is documented to never commit: the except arm
+        # in _queue_depth_block says "never let admission control fail an insert on its own
+        # error", and the operator-origin block above records what silently dropping
+        # admissible work already cost once. A transient db blip must not become a fleet-wide
+        # write freeze, so the no-measurement depth is 0 — the only value that cannot block.
+        return False, 0  # fail-soft: no measurement, assume queue is OK on error
 
 
 def _queue_depth_block(row):

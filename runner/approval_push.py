@@ -382,6 +382,17 @@ def run(limit=50):
             continue
         title = ("Decision: " if is_decision else "Action: ") + (a.get("title") or "")[:140]
         bj = a.get("brief_json") or {}
+        # brief_json is a jsonb column, but it reaches callers as a raw JSON *string* often
+        # enough that the rest of the fleet decodes it defensively (see
+        # decision_confidence_autodecide.sweep and db._ev_rank_map), and this function
+        # already does exactly that for the sibling `alternatives` column in _links_block().
+        # Without this, a text-encoded brief_json silently dropped the one narrow QUESTION
+        # the owner is being asked — the single most important line in the email.
+        if isinstance(bj, str):
+            try:
+                bj = json.loads(bj)
+            except Exception:
+                bj = {}
         parts = [f"[{a.get('project') or '-'}] {a.get('title') or ''}"]
         if isinstance(bj, dict) and bj.get("question"):
             parts.append(f"QUESTION: {bj['question']}")
