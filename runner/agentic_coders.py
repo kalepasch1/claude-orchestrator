@@ -874,9 +874,25 @@ def _substitute_if_dead(name, task):
                  and not _heavy_ollama_saturated(c)]
         if not alive:
             return name
-        # Prefer one that clears the task's capability need; if none does, take
-        # the most capable survivor rather than stalling on a dead provider.
-        qualified = [c for c in alive if c["cap"] >= need] or alive
+        # A substitute must CLEAR the task's capability need. This first read
+        # "…or alive", falling back to the most capable survivor so as not to
+        # stall on a dead provider — which quietly downgraded critical work to
+        # whatever was left. tests/test_coder_routing_selection.py caught it:
+        # a critical task landed on a cap-8 local coder.
+        #
+        # That trade is wrong, and this incident is the argument. Under-capable
+        # output is not a smaller version of the work; it is
+        # plausible-but-wrong output that then needs review capacity which, in
+        # exactly the situation that triggers this path, does not exist either.
+        # The canary that prompted all of this produced a syntactically perfect
+        # commit whose content was the prompt pasted into a README.
+        #
+        # So when nothing alive is good enough, hand back the original. It is
+        # demoted, the task will not run, and that is the honest outcome —
+        # visible as a stalled queue rather than invisible as bad merges.
+        qualified = [c for c in alive if c["cap"] >= need]
+        if not qualified:
+            return name
         best = sorted(qualified, key=lambda c: (float(c["cost"]), -c["cap"]))[0]
         logging.getLogger(__name__).info(
             "coder substitution: %s is demoted -> %s", name, best["name"])

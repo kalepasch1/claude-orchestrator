@@ -73,12 +73,41 @@ class IdempotencyTest(unittest.TestCase):
     """Test idempotent routing behavior for duplicate submissions."""
 
     def test_duplicate_routing_request_returns_same_result(self):
-        """Duplicate routing requests should return identical results."""
-        with patch.object(model_policy.mg, "available", return_value=["deepseek", "google"]):
+        """Duplicate routing requests should return identical results.
+
+        WITH THE ROTATION HELD STILL. `model_policy._rr_next` is a persistent
+        round-robin counter whose own docstring says it exists "so successive
+        non-agentic calls rotate providers" — so two back-to-back calls are
+        *designed* to differ, and asserting they match contradicts the router
+        rather than testing it.
+
+        It passed anyway because `_least_used` runs first and usually returns a
+        stable answer from telemetry, hiding the rotation. That makes the test
+        pass or fail on database contents: it was green here and failed the
+        moment the telemetry behind it shifted.
+
+        Pinning the counter tests what the name claims — that routing is a
+        function of its inputs — instead of depending on which answer the
+        diversifier happened to give.
+        """
+        with patch.object(model_policy.mg, "available", return_value=["deepseek", "google"]), \
+             patch.object(model_policy, "_rr_next", return_value=0), \
+             patch.object(model_policy, "_least_used", return_value=None):
             route1 = app_triage.route("test-app", "op1", task_class="qa")
             route2 = app_triage.route("test-app", "op1", task_class="qa")
         self.assertEqual(route1["provider"], route2["provider"])
         self.assertEqual(route1["model"], route2["model"])
+
+    def test_successive_routes_rotate_providers_by_design(self):
+        """The behaviour the test above must not be read as forbidding."""
+        seen = []
+        with patch.object(model_policy.mg, "available", return_value=["deepseek", "google"]), \
+             patch.object(model_policy, "_least_used", return_value=None):
+            for i in (0, 1):
+                with patch.object(model_policy, "_rr_next", return_value=i):
+                    seen.append(app_triage.route(
+                        "test-app", "op1", task_class="qa")["provider"])
+        self.assertEqual(len(set(seen)), 2, f"expected rotation, got {seen}")
 
     def test_db_insert_with_409_conflict_retries_as_upsert(self):
         """DB insert that returns 409 should retry with merge-duplicates."""
