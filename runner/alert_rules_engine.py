@@ -21,6 +21,16 @@ _STATE = {
     "firing": {},
     "resolved": 0,
     "evaluations": 0,
+    # rule_id -> ISO expiry. Kept OUTSIDE "firing" deliberately.
+    #
+    # silence() used to stash `silenced_until` on the firing alert itself, which had two
+    # consequences: nothing ever read it, so silencing was a no-op; and the silence was
+    # discarded the moment the alert resolved, so a flapping rule re-notified on its
+    # very next transition — precisely the notification fatigue this module's docstring
+    # says silencing exists to prevent. A silence is a property of the RULE, not of one
+    # firing episode, so it outlives the episode and can be set before one starts.
+    "silenced": {},
+    "suppressed": 0,
 }
 
 DEFAULT_RULES = [
@@ -172,7 +182,8 @@ def evaluate(rules=None, metrics=None):
     if metrics is None:
         metrics = _collect_metrics()
 
-    now = datetime.datetime.utcnow().isoformat() + "Z"
+    silence_now = datetime.datetime.utcnow()
+    now = silence_now.isoformat() + "Z"
     events = []
 
     with _lock:
@@ -184,6 +195,26 @@ def evaluate(rules=None, metrics=None):
 
             is_firing = _compare(value, rule["operator"], rule["threshold"])
             was_firing = rule_id in _STATE["firing"]
+
+            if is_firing and not was_firing and _is_silenced_locked(rule_id, silence_now):
+                # Silenced: track the state so the eventual resolution is still
+                # correct, but emit no event, so nothing downstream notifies.
+                # Suppressing the NOTIFICATION rather than the evaluation is the point
+                # — a silenced rule must not become an unmonitored one.
+                _STATE["firing"][rule_id] = {
+                    "rule_id": rule_id,
+                    "name": rule["name"],
+                    "severity": rule["severity"],
+                    "event": "firing",
+                    "metric": rule["metric"],
+                    "value": value,
+                    "threshold": rule["threshold"],
+                    "fired_at": now,
+                    "silenced_until": _STATE["silenced"].get(rule_id),
+                    "suppressed": True,
+                }
+                _STATE["suppressed"] += 1
+                continue
 
             if is_firing and not was_firing:
                 # New alert
@@ -203,6 +234,11 @@ def evaluate(rules=None, metrics=None):
             elif not is_firing and was_firing:
                 # Alert resolved
                 prev = _STATE["firing"].pop(rule_id)
+                if prev.get("suppressed"):
+                    # Nobody was told it fired, so "resolved" would be the first and
+                    # only thing they heard about it. Count it, say nothing.
+                    _STATE["resolved"] += 1
+                    continue
                 events.append({
                     "rule_id": rule_id,
                     "name": rule["name"],
@@ -283,16 +319,74 @@ def firing_alerts():
 
 
 def silence(rule_id, minutes=None):
-    """Silence a specific alert rule for N minutes."""
+    """Silence a rule for N minutes. Returns True.
+
+    Works whether or not the rule is currently firing: pre-silencing a known-noisy rule
+    before planned maintenance is the main thing an operator wants, and the previous
+    implementation returned False and did nothing in exactly that case.
+    """
+    if not rule_id:
+        return False
     if minutes is None:
         minutes = SILENCE_MINUTES
+    try:
+        minutes = float(minutes)
+    except (TypeError, ValueError):  # fail-soft: bad input uses the default
+        minutes = SILENCE_MINUTES
+    if minutes <= 0:
+        return unsilence(rule_id)
+
+    until = (datetime.datetime.utcnow()
+             + datetime.timedelta(minutes=minutes)).isoformat() + "Z"
     with _lock:
+        _STATE["silenced"][rule_id] = until
+        # Reflected on the live alert too, so a dashboard reading firing_alerts() can
+        # show the silence without having to ask a second question.
         if rule_id in _STATE["firing"]:
-            _STATE["firing"][rule_id]["silenced_until"] = (
-                datetime.datetime.utcnow() + datetime.timedelta(minutes=minutes)
-            ).isoformat() + "Z"
-            return True
-    return False
+            _STATE["firing"][rule_id]["silenced_until"] = until
+    return True
+
+
+def unsilence(rule_id):
+    """Lift a silence early. Returns True if one was in effect."""
+    with _lock:
+        existed = _STATE["silenced"].pop(rule_id, None) is not None
+        if rule_id in _STATE["firing"]:
+            _STATE["firing"][rule_id].pop("silenced_until", None)
+    return existed
+
+
+def is_silenced(rule_id, now=None):
+    """Is `rule_id` silenced right now? Expired silences are cleared as a side effect."""
+    with _lock:
+        return _is_silenced_locked(rule_id, now)
+
+
+def _is_silenced_locked(rule_id, now=None):
+    """Caller must hold _lock."""
+    until = _STATE["silenced"].get(rule_id)
+    if not until:
+        return False
+    now = now or datetime.datetime.utcnow()
+    try:
+        expiry = datetime.datetime.fromisoformat(until.rstrip("Z"))
+    except (TypeError, ValueError):
+        # An unparseable expiry must not silence forever — drop it and alert.
+        _STATE["silenced"].pop(rule_id, None)
+        return False
+    if now >= expiry:
+        _STATE["silenced"].pop(rule_id, None)
+        if rule_id in _STATE["firing"]:
+            _STATE["firing"][rule_id].pop("silenced_until", None)
+        return False
+    return True
+
+
+def silenced_rules():
+    """{rule_id: expiry} for silences still in effect."""
+    with _lock:
+        return {rid: until for rid, until in list(_STATE["silenced"].items())
+                if _is_silenced_locked(rid)}
 
 
 def stats():
@@ -301,6 +395,8 @@ def stats():
             "firing": len(_STATE["firing"]),
             "resolved": _STATE["resolved"],
             "evaluations": _STATE["evaluations"],
+            "silenced": len(_STATE["silenced"]),
+            "suppressed": _STATE["suppressed"],
         }
 
 
