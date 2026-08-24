@@ -196,6 +196,34 @@ def check(stream=None):
     return ready, results
 
 
+def dead_model_ids(stream=None):
+    """Pinned model ids the vendors no longer serve. [] when clean or unknown.
+
+    A funded account is not sufficient to resume. On 2026-08-24 the default
+    agentic coder was `gemini-2.5-pro`, retired by Google — so the moment
+    credit returned, routing would have gone straight back to a 404. Money and
+    a working config are separate conditions and both have to hold.
+
+    Unlike the provider probe, this one does NOT fail closed. The audit needs a
+    vendor catalogue, and a catalogue that cannot be reached is exactly the
+    situation where refusing to resume would strand a fleet that is otherwise
+    fine. A dead id degrades one route; a stuck halt stops everything. So an
+    audit that errors returns [] and says so.
+    """
+    stream = stream or sys.stdout
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import model_id_audit
+        dead, _live, _unver, errors = model_id_audit.audit()
+    except Exception as exc:
+        print(f"  (model-id audit unavailable: {type(exc).__name__}: {exc})",
+              file=stream)
+        return []
+    for provider, why in sorted((errors or {}).items()):
+        print(f"  (model catalogue unavailable — {provider}: {why})", file=stream)
+    return sorted(dead)
+
+
 def _promote(results, stream):
     """Clear the demote flag for any provider that answered, so routing sees it."""
     try:
@@ -256,7 +284,19 @@ def main(argv=None):
         return 1
 
     live = [n for n, (s, _d) in results.items() if s is True]
-    print(f"\nREADY — {', '.join(live)} answered.")
+    print(f"\n{', '.join(live)} answered. Checking the config it would route with.")
+
+    dead = dead_model_ids()
+    if dead:
+        print(f"\nNOT READY — {len(dead)} pinned model id(s) are no longer served:")
+        for mid in dead:
+            print(f"    {mid}")
+        print("\nA funded account routing to a retired id fails with a 404 that reads")
+        print("like any other provider error. Repin them first:")
+        print("    python3 runner/tools/model_id_audit.py --list")
+        return 1
+
+    print("READY — providers answered and every pinned model id is live.")
     if "--resume" in argv:
         _promote(results, sys.stdout)
         return resume()

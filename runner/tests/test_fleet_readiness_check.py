@@ -137,6 +137,59 @@ class ExitCodeTest(unittest.TestCase):
         self.assertEqual(resumed, [1])
 
 
+class DeadModelIdGateTest(unittest.TestCase):
+    """A funded account is not sufficient. The config has to be sound too.
+
+    On 2026-08-24 the default agentic coder was `gemini-2.5-pro`, which Google
+    had retired. Resuming on money alone would have routed straight back to a
+    404 that reads like any other provider error.
+    """
+
+    def _ready(self):
+        return mock.patch.object(
+            frc, "check", lambda *a, **k: (True, {"openai": (True, "ok")}))
+
+    def test_a_dead_id_blocks_the_resume(self):
+        resumed = []
+        with self._ready(), \
+             mock.patch.object(frc, "dead_model_ids",
+                               lambda *a, **k: ["gemini-2.5-pro"]), \
+             mock.patch.object(frc, "resume", lambda *a, **k: resumed.append(1)):
+            self.assertEqual(frc.main(["--resume"]), 1)
+        self.assertEqual(resumed, [], "resumed onto a retired model id")
+
+    def test_a_clean_config_resumes(self):
+        resumed = []
+
+        def fake_resume(*a, **k):
+            resumed.append(1)
+            return 0
+        with self._ready(), \
+             mock.patch.object(frc, "dead_model_ids", lambda *a, **k: []), \
+             mock.patch.object(frc, "_promote", lambda *a, **k: None), \
+             mock.patch.object(frc, "resume", fake_resume):
+            self.assertEqual(frc.main(["--resume"]), 0)
+        self.assertEqual(resumed, [1])
+
+    def test_the_dead_ids_are_named(self):
+        out = io.StringIO()
+        with self._ready(), \
+             mock.patch.object(frc, "dead_model_ids",
+                               lambda *a, **k: ["gemini-4.0-flash"]), \
+             mock.patch("sys.stdout", out):
+            frc.main([])
+        self.assertIn("gemini-4.0-flash", out.getvalue())
+
+    def test_an_unavailable_audit_does_not_strand_the_fleet(self):
+        # This gate does NOT fail closed, unlike the provider probe. A dead id
+        # degrades one route; a halt that cannot lift stops everything, and the
+        # audit needs a vendor catalogue it may not be able to reach.
+        broken = mock.Mock()
+        broken.audit = mock.Mock(side_effect=RuntimeError("catalogue down"))
+        with mock.patch.dict(sys.modules, {"model_id_audit": broken}):
+            self.assertEqual(frc.dead_model_ids(io.StringIO()), [])
+
+
 class BannerWiringTest(unittest.TestCase):
     """The probe's verdicts come from provider_banner, so the two must agree."""
 
