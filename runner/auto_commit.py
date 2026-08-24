@@ -107,47 +107,25 @@ def generate_commit_message(changed_files, slug="", prefix="auto"):
 #: This is also where the `recovery-intent-stub` commits polluting other repos'
 #: histories come from: a stub plus a pile of scratch, wearing an agent commit
 #: message.
-TOOL_ARTIFACT_PATTERNS = (
-    ".aider*",
-    "**/.aider*",
-    ".claude/",
-    ".cursor/",
-    ".continue/",
-    "**/__pycache__/",
-    "*.pyc",
-    ".DS_Store",
-    "**/.DS_Store",
-    "*.db-shm",
-    "*.db-wal",
-)
 
 
 def _unstage_tool_artifacts(repo):
     """Remove agent-tool leavings from the index. Returns what was taken back.
 
-    Uses pathspec exclusion against the STAGED set, so it reports only what was
-    actually about to be committed rather than everything matching on disk.
+    Defers to write_guard._is_tool_artifact so there is ONE definition of what a
+    tool artifact is. runner._commit_agent_work quarantines them before staging;
+    this is the second net, for commit paths that do not go through that.
     """
     staged, _, rc = _git(repo, "diff", "--cached", "--name-only")
     if rc != 0 or not (staged or "").strip():
         return []
+    try:
+        import write_guard
+    except ImportError:
+        return []
 
-    import fnmatch
-    excluded = []
-    for path in staged.splitlines():
-        path = path.strip()
-        if not path:
-            continue
-        base = os.path.basename(path)
-        for pat in TOOL_ARTIFACT_PATTERNS:
-            probe = pat.replace("**/", "")
-            if (fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(path, probe)
-                    or fnmatch.fnmatch(base, probe)
-                    or (probe.endswith("/") and (path + "/").startswith(probe))
-                    or ("/" + probe) in ("/" + path)):
-                excluded.append(path)
-                break
-
+    excluded = [p for p in (l.strip() for l in staged.splitlines())
+                if p and write_guard._is_tool_artifact(p)]
     for path in excluded:
         _git(repo, "reset", "-q", "HEAD", "--", path)
     return excluded

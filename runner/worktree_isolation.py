@@ -264,6 +264,11 @@ def _salvage_commit(worktree: str, slug: str) -> None:
     branch = _git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD")
     if branch.returncode or branch.stdout.strip() != f"agent/{slug}":
         return
+    try:
+        import write_guard
+        write_guard.install_repo_excludes(worktree)
+    except Exception:
+        pass
     if not _git(worktree, "status", "--porcelain").stdout.strip():
         return
     _git(worktree, "add", "-A")

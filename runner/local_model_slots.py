@@ -218,6 +218,28 @@ def wait_for_ram(model, free_fn=None, sleep_fn=time.sleep, now_fn=time.time):
         sleep_fn(min(5.0, max(0.1, max_wait / 6)))
 
 
+def _slot_wait_s():
+    """How long a lane may wait for the heavy-model slot before giving up.
+
+    Default 180s: long enough to queue behind one in-flight local inference
+    (model load plus generation), short enough that a lane never disappears.
+    ORCH_OLLAMA_SLOT_WAIT_S=0 disables waiting entirely.
+    """
+    try:
+        return max(0.0, float(os.environ.get("ORCH_OLLAMA_SLOT_WAIT_S", "180") or 180))
+    except (TypeError, ValueError):
+        return 180.0
+
+
+def _log_slot(msg, *args):
+    """Never let a diagnostic raise on the resource path."""
+    try:
+        import logging
+        logging.getLogger(__name__).warning(msg, *args)
+    except Exception:
+        pass
+
+
 @contextlib.contextmanager
 def slot(model, operation="local_completion"):
     if not is_heavy(model) or not _truthy("ORCH_OLLAMA_SLOT_SCHEDULER", True):
@@ -228,8 +250,49 @@ def slot(model, operation="local_completion"):
         os.makedirs(lock_dir, exist_ok=True)
     with open(LOCK, "a+") as f:
         start = time.time()
-        fcntl.flock(f, fcntl.LOCK_EX)
+        # BOUNDED acquire. This was `fcntl.flock(f, fcntl.LOCK_EX)` — blocking,
+        # with no deadline. Every other wait in this module is bounded and
+        # fail-soft (see wait_for_ram below, which admits anyway rather than
+        # stall a lane); the lock that gates all of them was the one exception.
+        #
+        # What that cost, 2026-08-24: the runner had NINE open descriptors on
+        # this file at once. flock is per-descriptor, so lanes inside a single
+        # process serialize here just as separate processes would. Seven canary
+        # tasks all routed to heavy local models, one took the lock, and the
+        # other six blocked forever — before issuing a request, so they emitted
+        # no output, tripped no timeout, and were eventually reaped as
+        # "orphaned-running". The queue looked busy and moved nothing.
+        #
+        # Timing out and running unslotted is strictly better than hanging: the
+        # slot is a RAM-politeness optimisation (unload the other model first),
+        # not a correctness guarantee. Ollama serves concurrent requests on its
+        # own. The risk of proceeding is memory pressure, which wait_for_ram
+        # already bounds; the risk of blocking is a permanently stalled lane.
+        deadline = _slot_wait_s()
+        acquired = False
+        while time.time() - start < deadline:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (OSError, IOError):
+                time.sleep(0.25)
         waited_ms = int((time.time() - start) * 1000)
+        if not acquired:
+            try:
+                import db
+                db.insert("resource_events", {
+                    "kind": "ollama_slot_timeout", "value": waited_ms,
+                    "detail": f"{operation} {model}",
+                    "action": f"proceeding unslotted after {deadline}s (fail-soft)",
+                })
+            except Exception:
+                pass
+            _log_slot("slot wait exceeded %ss for %s (%s) — running unslotted",
+                      deadline, model, operation)
+            yield {"locked": False, "waited_ms": waited_ms, "unloaded": [],
+                   "slot_timeout": True}
+            return
         unloaded = unload_others(model)
         admitted, ram_waited_s = wait_for_ram(model)
         if not admitted:

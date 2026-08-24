@@ -79,6 +79,105 @@ def _norm(relpath):
     return str(relpath or "").replace("\\", "/")
 
 
+#: Files a coding tool writes ABOUT ITSELF. Every one is a well-formed filename,
+#: so every shape check below passes them, and `git add -A` then commits the
+#: agent's own transcript as if it were the work.
+#:
+#: Measured 2026-08-24 on a controlled fleet verification. Ten canary tasks each
+#: asked for exactly one line in one file. Three branches came back with 231-378
+#: insertions across 6 files and the product file untouched:
+#:
+#:     .aider.chat.history.md, .aider.input.history,
+#:     .aider.tags.cache.v4/cache.db (+ -shm, -wal)
+#:
+#: The requested string existed ONLY inside the chat transcript — the agent was
+#: told to do it, discussed it, and committed the conversation.
+TOOL_ARTIFACT_NAMES = (
+    ".aider", ".claude", ".cursor", ".continue", ".windsurf", "__pycache__",
+    ".DS_Store", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+)
+TOOL_ARTIFACT_SUFFIXES = (".pyc", ".pyo", ".db-shm", ".db-wal")
+
+
+def _is_tool_artifact(path):
+    """True when any segment is a coding tool's own scratch, at any depth."""
+    for seg in str(path or "").split("/"):
+        if not seg:
+            continue
+        for name in TOOL_ARTIFACT_NAMES:
+            if seg == name or seg.startswith(name + ".") or seg.startswith(name + "-"):
+                return seg
+        if seg.startswith(".aider"):
+            return seg
+    base = str(path or "").rsplit("/", 1)[-1]
+    for suf in TOOL_ARTIFACT_SUFFIXES:
+        if base.endswith(suf):
+            return base
+    return None
+
+
+_EXCLUDE_HEADER = "# managed by write_guard — agent-tool artifacts, never product"
+
+#: Written to <repo>/.git/info/exclude, which git shares across EVERY worktree of
+#: the repo. That matters because the fleet has three separate `git add -A` call
+#: sites — runner._commit_agent_work, auto_commit.stage_and_commit and
+#: worktree_isolation._salvage_commit — and guarding them one at a time is a game
+#: you lose the next time someone adds a fourth. An exclude file is checked by git
+#: itself, before any of them run, and it needs no cooperation from the caller.
+#:
+#: info/exclude is local-only: it is never committed and never changes what the
+#: project's own .gitignore says.
+EXCLUDE_LINES = (
+    ".aider*",
+    ".claude/",
+    ".cursor/",
+    ".continue/",
+    ".windsurf/",
+    "__pycache__/",
+    "*.pyc",
+    "*.pyo",
+    ".DS_Store",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    ".mypy_cache/",
+    "*.db-shm",
+    "*.db-wal",
+)
+
+
+def install_repo_excludes(repo):
+    """Make git itself ignore agent-tool scratch in `repo` and all its worktrees.
+
+    Idempotent, fail-soft, and additive: existing lines are preserved and only
+    missing ones are appended.
+    """
+    if not repo:
+        return False
+    try:
+        common = os.path.join(repo, ".git")
+        if os.path.isfile(common):          # a worktree: .git is a file pointing home
+            with open(common, encoding="utf-8") as fh:
+                gitdir = fh.read().strip().split("gitdir:", 1)[-1].strip()
+            common = os.path.join(gitdir, "..", "..") if "worktrees" in gitdir else gitdir
+        info = os.path.abspath(os.path.join(common, "info"))
+        os.makedirs(info, exist_ok=True)
+        path = os.path.join(info, "exclude")
+        existing = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                existing = fh.read()
+        missing = [l for l in EXCLUDE_LINES if l not in existing.split()]
+        if not missing:
+            return False
+        with open(path, "a", encoding="utf-8") as fh:
+            if _EXCLUDE_HEADER not in existing:
+                fh.write("\n" + _EXCLUDE_HEADER + "\n")
+            fh.write("\n".join(missing) + "\n")
+        return True
+    except OSError:
+        return False
+
+
 def check(relpath, content=None):
     """Return a human-readable reason the write must be refused, or None if fine.
 
@@ -113,6 +212,13 @@ def check(relpath, content=None):
     for seg in segments[:-1]:
         if seg and seg != seg.strip():
             return f"directory segment has leading/trailing whitespace: {seg!r}"
+
+    # The coding tool's own leavings. Checked before the shape rules because they
+    # are shaped perfectly well; what disqualifies them is whose file they are.
+    artifact = _is_tool_artifact(path)
+    if artifact:
+        return (f"agent-tool artifact, not product: {artifact!r}. The tool's own "
+                f"transcript/cache is never the work it was asked to do.")
 
     base = segments[-1]
     if not base:

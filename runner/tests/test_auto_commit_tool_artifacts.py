@@ -108,3 +108,26 @@ def test_a_file_merely_named_like_a_tool_artifact_is_kept(repo):
     r = auto_commit.stage_and_commit(str(repo), slug="s", message="m")
     assert r["committed"] is True
     assert "aider_notes.md" in _staged_in_head(repo)
+
+
+# --- the guard that actually runs first, in runner._commit_agent_work ----------
+
+def test_write_guard_refuses_the_observed_artifacts():
+    """runner quarantines these BEFORE `git add -A`; auto_commit is the second net."""
+    import write_guard
+    for path in (".aider.chat.history.md",
+                 ".aider.input.history",
+                 ".aider.tags.cache.v4/cache.db",
+                 ".aider.tags.cache.v4/cache.db-shm",
+                 ".aider.tags.cache.v4/cache.db-wal",
+                 "pkg/__pycache__/m.cpython-39.pyc",
+                 ".DS_Store",
+                 "nested/deep/.claude/settings.json"):
+        assert write_guard.check(path), f"{path} should be refused"
+
+
+def test_write_guard_keeps_product_that_merely_resembles_a_tool():
+    import write_guard
+    for path in ("README.md", "aider_notes.md", "src/claude_helper.py",
+                 "docs/cursor-workflow.md", "claude.md"):
+        assert write_guard.check(path) is None, f"{path} is product and must be kept"

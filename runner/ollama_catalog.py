@@ -19,6 +19,53 @@ def _host():
         return os.environ.get("OLLAMA_HOST", "http://localhost:11434").split()[0]
 
 
+_GENERATIVE_CACHE = {}
+
+
+def is_generative(model):
+    """Can this local model produce text at all? Embedding models cannot.
+
+    WHY THIS EXISTS. `infer_cap()` scores a model from its NAME, and
+    "qwen3-embedding:4b" scores cap=7 — higher than llama3.1. Nothing
+    downstream asked whether the thing could generate, so an embedding model
+    ranked above working coders and was eligible to be handed to aider as the
+    agentic coder for a real task. It would have returned nothing usable, and
+    "agent produced output but no committable file changes" is exactly the
+    failure mode the fleet has been unable to explain.
+
+    Ollama answers this authoritatively: /api/show returns `capabilities`, and
+    an embedding model reports ['embedding'] (or ['tools','embedding']) with no
+    'completion'. Ask it, and cache — the endpoint is local and the answer for
+    an installed model does not change.
+
+    Fail-OPEN on an unreachable or unparseable answer: pruning a working coder
+    because the daemon hiccuped is worse than the bug being fixed. But the name
+    heuristic still applies in that case, so a model that literally says
+    "embed" is excluded even when /api/show cannot be reached.
+    """
+    name = str(model or "")
+    if not name:
+        return False
+    if name in _GENERATIVE_CACHE:
+        return _GENERATIVE_CACHE[name]
+    verdict = True
+    try:
+        req = urllib.request.Request(
+            _host() + "/api/show",
+            data=json.dumps({"model": name}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=3) as r:
+            caps = (json.loads(r.read().decode()) or {}).get("capabilities")
+        if isinstance(caps, list) and caps:
+            verdict = "completion" in [str(c).lower() for c in caps]
+    except Exception:
+        verdict = True                       # undeterminable -> keep it
+    if verdict and re.search(r"embed", name, re.I):
+        verdict = False                      # backstop when /api/show is down
+    _GENERATIVE_CACHE[name] = verdict
+    return verdict
+
+
 def models():
     """Return local Ollama model names from /api/tags, env fallback included."""
     found = []
@@ -205,6 +252,8 @@ def _is_canary_only(candidate):
 def candidates(include_canary_only=False):
     out = []
     for m in models():
+        if not is_generative(m):
+            continue                 # embedding models are not coders
         prov = provenance(m)
         c = {"provider": "local", "model": m, "cap": infer_cap(m), "tier": "free",
              "trust": prov["trust"], "status": prov["status"], "note": prov["note"]}

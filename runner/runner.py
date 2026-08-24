@@ -673,6 +673,11 @@ def _commit_agent_work(wt, slug, prompt, base="main"):
            "GIT_AUTHOR_NAME": _git_name, "GIT_AUTHOR_EMAIL": _git_email,
            "GIT_COMMITTER_NAME": _git_name, "GIT_COMMITTER_EMAIL": _git_email}
     try:
+        try:
+            import write_guard as _wg
+            _wg.install_repo_excludes(wt)   # git ignores tool scratch before any add -A
+        except Exception:
+            pass
         _quarantine_garbage_paths(wt, slug, env)
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         # commit any uncommitted changes the agent left staged
