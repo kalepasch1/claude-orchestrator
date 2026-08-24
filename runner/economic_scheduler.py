@@ -24,6 +24,10 @@ import revenue_attribution
 ENABLED = os.environ.get("ORCH_ECONOMIC_SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
 ROI_THRESHOLD = float(os.environ.get("ORCH_ROI_THRESHOLD", "1.5"))  # only pursue if 1.5x ROI
 REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
+#: How many tasks apply_routing() promotes. Same knob under the name the rest of the
+#: fleet (and this module's tests) refer to; kept as one binding so the two can never
+#: drift into meaning different sizes.
+TOP_REVENUE_TASKS = REVENUE_CRITICAL_LANE_SIZE
 
 # PLAN HORIZON (added for the economic-scheduler revenue loop fix).
 #
@@ -291,7 +295,11 @@ def predict_revenue(task, ctx):
     # Made configurable so the decision is a config change rather than another patch. Nothing
     # outside this module reads confidence_low/confidence_high (grep: zero consumers), so this
     # constant is inert in production either way.
-    band = float(os.environ.get("ORCH_ECONOMIC_CONFIDENCE_BAND", "0.20"))
+    # 0.25. The comment above described a suite that could not be satisfied because two
+    # test files demanded 20% and 25%. The 20% file (test_economic_scheduler_revenue.py)
+    # NO LONGER EXISTS — verified: the path is absent — so the contradiction is gone and
+    # the one surviving spec, test_economic_scheduler.py, asks for 25%. Still env-tunable.
+    band = float(os.environ.get("ORCH_ECONOMIC_CONFIDENCE_BAND", "0.25"))
     if base_revenue == 0:
         low, high = 0.0, estimate
     else:
@@ -299,6 +307,50 @@ def predict_revenue(task, ctx):
         high = estimate * (1.0 + band)
 
     return _estimate(estimate, low, high)
+
+
+def estimated_cost_usd(task, ctx):
+    """What this task is expected to COST, in USD.
+
+    Read from the project's measured `outcome_stats[project].avg_usd`, falling back to
+    an explicit `task["usd"]`. The previous implementation read ONLY `task["usd"]`, a
+    field the queue does not populate, so every task costed 1.0: ROI collapsed to
+    "predicted revenue", and `score()` could not fall as cost rose because cost never
+    varied. A scheduler whose cost term is constant is not doing cost-benefit.
+    """
+    stats = (ctx or {}).get("outcome_stats") or {}
+    project = str((task or {}).get("project") or "")
+    measured = _as_float((stats.get(project) or {}).get("avg_usd"), default=None) \
+        if isinstance(stats.get(project), dict) else None
+    if measured is None:
+        measured = _as_float((task or {}).get("usd"), default=0.0)
+    return max(0.0, measured)
+
+
+#: A family that never merges is weighted DOWN, never to zero: a floor keeps a bad
+#: history from permanently un-schedulable-ing a whole kind, which would make the
+#: weighting self-fulfilling (never run => never merges => weight stays at the bottom).
+KIND_WEIGHT_FLOOR = float(os.environ.get("ORCH_ECONOMIC_KIND_WEIGHT_FLOOR", "0.1"))
+
+
+def kind_outcome_weight(kind, ctx):
+    """Multiplier in [KIND_WEIGHT_FLOOR, 1.0] from this kind's realized outcomes.
+
+    Neutral (1.0) when nothing has been measured — an unmeasured family must not be
+    penalised for the absence of data.
+    """
+    families = (ctx or {}).get("family_outcomes") or {}
+    row = families.get(str(kind or "")) or {}
+    total = _as_float(row.get("total"), 0.0)
+    if total <= 0:
+        return 1.0
+    merged = _as_float(row.get("merged_green"), 0.0)
+    retries = _as_float(row.get("retries"), 0.0)
+    rejected = _as_float(row.get("rejected"), 0.0)
+    success = max(0.0, min(1.0, merged / total))
+    friction = (retries + rejected) / total
+    weight = success / (1.0 + max(0.0, friction))
+    return max(KIND_WEIGHT_FLOOR, min(1.0, weight))
 
 
 def cost_benefit(task, ctx):
@@ -313,19 +365,26 @@ def cost_benefit(task, ctx):
                 "roi": 0.0, "worthwhile": False}
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    estimated_cost = estimated_cost_usd(task, ctx)
 
-    # Avoid division by zero
-    if estimated_cost <= 0:
-        estimated_cost = 1.0
-
-    roi = predicted_revenue / estimated_cost if estimated_cost > 0 else 0.0
-    worthwhile = predicted_revenue > (ROI_THRESHOLD * estimated_cost)
+    # FREE WORK IS NOT UNIT-COST WORK. `estimated_cost = 1.0` on a zero cost silently
+    # rewrote the question from "what does this return per dollar" to "per notional
+    # dollar", so free revenue-earning work scored the same as work that cost a dollar
+    # and could never be told apart from it. Zero cost with revenue is unbounded ROI —
+    # always worth doing; zero cost with NO revenue is 0.0, not infinity, because
+    # nothing over nothing is not a win.
+    if estimated_cost > 0:
+        roi = predicted_revenue / estimated_cost
+        worthwhile = predicted_revenue > (ROI_THRESHOLD * estimated_cost)
+    elif predicted_revenue > 0:
+        roi, worthwhile = float("inf"), True
+    else:
+        roi, worthwhile = 0.0, False
 
     return {
         "predicted_revenue": round(predicted_revenue, 2),
         "estimated_cost": round(estimated_cost, 2),
-        "roi": round(roi, 2),
+        "roi": roi if roi in (float("inf"),) else round(roi, 2),
         "worthwhile": worthwhile,
     }
 
@@ -343,23 +402,30 @@ def score(task, ctx):
         return 0.0
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    # Same cost source as cost_benefit — two different answers to "what does this cost"
+    # is how a ranking and its own justification drift apart.
+    estimated_cost = estimated_cost_usd(task, ctx)
 
-    if estimated_cost <= 0:
-        estimated_cost = 1.0
-
-    # Base score: ROI
+    # Free work is ranked on revenue alone rather than divided by a fabricated 1.0, so it
+    # sorts above paid work of equal revenue instead of tying with it.
     s = (predicted_revenue / estimated_cost) if estimated_cost > 0 else predicted_revenue
 
-    # Success rate boost (assume 0.7 baseline if not specified)
-    success_rate = float(task.get("success_rate") or 0.7)
-    s *= (1.0 + success_rate)
+    # Success rate boost. Measured project success rate wins over the 0.7 baseline; a
+    # task-level override still wins over both.
+    stats = (ctx or {}).get("outcome_stats") or {}
+    project_row = stats.get(str(task.get("project") or "")) or {}
+    success_rate = _as_float(
+        task.get("success_rate"),
+        _as_float(project_row.get("success_rate") if isinstance(project_row, dict) else None,
+                  0.7))
+    s *= (1.0 + max(0.0, success_rate))
 
-    # Kind outcome weight (future: integrate with outcome_stats from ev_scheduler context)
-    # For now, neutral (1.0)
-    s *= 1.0
+    # Kind outcome weight — this was hardcoded to 1.0 with a "future:" note, so the
+    # documented factor did nothing: a family that never merged ranked identically to one
+    # that always did. It is now computed (with a floor, see kind_outcome_weight).
+    s *= kind_outcome_weight(task.get("kind"), ctx)
 
-    return s
+    return max(0.0, s)
 
 
 def predict_revenue_bulk(tasks, ctx=None, horizon=None):
@@ -412,11 +478,11 @@ def apply_routing(scored):
 
     scored: list of (score, task) tuples, sorted descending by score
     """
-    if not ENABLED:
-        return {"routed": 0}
-
-    # Sort by score descending
-    scored_copy = sorted(scored or [], key=lambda x: -x[0])[:REVENUE_CRITICAL_LANE_SIZE]
+    # The ENABLED gate belongs on the scheduled entry point (run()), not here. Refusing
+    # inside the function the caller explicitly invoked made apply_routing a silent no-op
+    # for every direct caller — it returned {"routed": 0} exactly as if the queue were
+    # empty, with nothing to distinguish "switched off" from "nothing to route".
+    scored_copy = sorted(scored or [], key=lambda x: -x[0])[:TOP_REVENUE_TASKS]
 
     routed = 0
     for score_val, task in scored_copy:
