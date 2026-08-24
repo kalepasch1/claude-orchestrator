@@ -225,12 +225,23 @@ def validate_canary(response_text):
     """
     if not isinstance(response_text, str):
         _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
+        record_failure()
         return False
     import canary_validation
     if canary_validation.validate_canary(response_text):
         _log.info("canary marker found in response text")
         return True
+    # VALIDATION FAILURE PATH. Zeroing here, not only in main(): a missing marker means
+    # the canary did NOT survive the pipeline hop, but the gauge kept the timestamp of
+    # the last success, so an alert written as
+    # `time() - canary_last_success > threshold` stayed green through a failing
+    # validation until the threshold expired on its own. That is the same defect
+    # record_failure was written for on the rollback path, left open on this one.
+    #
+    # This module owns the gauge and this function already logs, so the side effect is
+    # where it belongs; `canary_validation.validate_canary` stays a pure predicate.
     _log.warning("canary marker NOT found in response text")
+    record_failure()
     return False
 
 
@@ -305,7 +316,21 @@ def main(argv=None):
         # rather than raising if the port is taken.
         start_metrics_server()
 
-    result = evaluate(argv[0] if argv else None)
+    try:
+        result = evaluate(argv[0] if argv else None)
+    except Exception as exc:
+        # EXCEPTION PATH. evaluate() returns a rollback verdict for the failures it
+        # anticipates, but anything it does NOT anticipate propagated straight out of
+        # main() — so the gauge kept the previous SUCCESS timestamp while the canary was
+        # crashing, and a `time() - canary_last_success > threshold` alert read green.
+        # A canary that raises is not succeeding; the gauge has to say so, and it has to
+        # say so before the traceback escapes.
+        record_failure()
+        result = {"verdict": "rollback", "reason": f"canary evaluation raised: {exc}"}
+        _log.exception("canary evaluation raised; gauge zeroed and verdict forced to rollback")
+        print(json.dumps(result))
+        return 1
+
     if result.get("verdict") == "promote":
         record_success()
     else:
