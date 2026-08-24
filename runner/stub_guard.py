@@ -77,7 +77,13 @@ _SKIP_DIR = re.compile(
     # .runtime holds the orchestrator's own scratch worktrees (integration-worktrees/, agent
     # checkouts). Scanning it re-reports every OTHER project's files through a scratch path,
     # which filed ~400 duplicate remediation tasks on the first live run.
-    r"|\.runtime|\.claude/worktrees)(/|$)")
+    # The fleet's worktree convention is `{repo}-wt/{slug}` (see CLAUDE.md), and
+    # projects keep their own scratch checkouts as `.<name>-wt/`. Both are gitignored
+    # working copies of code that is ALREADY scanned at its real path, so visiting them
+    # re-reports the same symbols through a throwaway path — one such directory
+    # (`.spine-wt/`) produced a remediation task pointing at a file that does not exist
+    # on any branch.
+    r"|\.runtime|\.claude/worktrees|[^/]*-wt)(/|$)")
 
 # A commit whose MESSAGE advertises that it papered over a build break with stubs.
 # These are the exact shapes seen in the fleet.
@@ -176,45 +182,42 @@ def is_critical_name(symbol):
     return bool(symbol and _CRITICAL.search(symbol))
 
 
-#: SCREAMING_SNAKE_CASE. In TS/JS this names a VALUE, never a function, by universal
-#: convention — and this guard's whole argument ("its NAME promises a computation, so a
-#: constant body means the check no longer runs") is an argument about functions.
-_SCREAMING_SNAKE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-#: A value binding, not a callable: no function keyword, no arrow, no class.
-_CALLABLE_HINT = re.compile(r"\bfunction\b|=>|\bclass\b")
+# The value half of `export const NAME = <literal>`: a number, boolean, null, or a
+# quoted string, and nothing else. Anything containing `(`, `=>` or `function` is a
+# callable and stays in scope for the fabricated-return detectors.
+_CONST_VALUE = (
+    r"(?:-?\d[\d_]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    r"|true|false|null"
+    r"|'[^'\n]*'|\"[^\"\n]*\"|`[^`\n]*`)")
 
 
-def _is_named_constant(name, slice_text):
-    """True for `export const SOME_NAME = <literal>` — a constant, not a stubbed function.
+def is_value_constant(txt, symbol):
+    """Is `symbol` a named VALUE constant rather than a stubbed function?
 
-    THE FALSE POSITIVE THIS FIXES (2026-09-01)
-    ------------------------------------------
-    smarter/packages/corpus-lattice/src/admit.ts:49 is
+    The fabricated-return detectors ask "does this declaration's body reduce to a
+    literal". That is the right question for a function and the wrong one for a
+    constant: a threshold is SUPPOSED to be a literal. Without the distinction the
+    guard reports things like
 
+        /** The margin a challenger must beat the incumbent by. ... */
         export const REPLACEMENT_MARGIN = 0.01
 
-    with a nine-line comment above it explaining why it is not zero. _CRITICAL matches
-    case-insensitively, so the domain suffix `Margin` matched `..._MARGIN`, and the
-    structural pass saw an export whose body is a constant. Result:
+    as "a regulatory gate that stopped throwing", and the remediation it files —
+    "if it is genuinely unimplemented it MUST throw" — would replace a documented,
+    actively-used tunable with an exception. That is a worse repository than the
+    one the guard started with, and it costs an agent a full run to find out.
 
-        REGRESSFAIL — SILENT STUB / SHADOWED RE-EXPORT
-        [fabricated_critical_return] packages/corpus-lattice/src/admit.ts:49
-
-    A constant returning a constant is what a constant IS. And because the finding is
-    BLOCKING, it quarantined every smarter candidate that came near that package — four
-    unrelated cards in one evening, all rejected for the same line, none of which had
-    touched it. The lane cannot clear while one declaration in the BASE trips the gate.
-
-    The teeth are kept where they belong. `computePrice = 0` is not SCREAMING_SNAKE and
-    is still reported. A named constant that was legitimately computed yesterday and is a
-    literal today is a DIFFERENTIAL change, and regression_guard.check_ts_symbols compares
-    pre- and post-merge exports specifically to catch that — which is the only place the
-    distinction can actually be made, because an absolute scan of one file cannot tell a
-    deliberate 0.01 from a fabricated one.
+    Decided on the DECLARATION, never the name: a stubbed arrow function
+    (`export const getPrice = () => 0`) contains callable syntax and is still
+    reported, as is `= compute()`.
     """
-    if not _SCREAMING_SNAKE.match(name or ""):
+    if not symbol or not txt:
         return False
-    return not _CALLABLE_HINT.search(slice_text or "")
+    rx = re.compile(
+        r"^[ \t]*export\s+const\s+" + re.escape(symbol) +
+        r"\s*(?::[^=\n]*)?=\s*" + _CONST_VALUE + r"\s*(?:;|$)",
+        re.MULTILINE)
+    return bool(rx.search(txt))
 
 
 def _home():
@@ -507,7 +510,7 @@ def scan_fabricated(repo, files=None):
     def _extra_fabricated(path, txt, rel):
         found = []
         for sym, kind in _structural_stubs(path, txt):
-            if is_critical_name(sym):
+            if is_critical_name(sym) and not is_value_constant(txt, sym):
                 found.append((sym, kind, _line_of(txt, sym)))
         for m in _CLASS_METHOD.finditer(txt):
             sym, body = m.group(1), (m.group(2) or "").strip()
@@ -548,6 +551,8 @@ def scan_fabricated(repo, files=None):
             scalar_stub = bool(_FABRICATED_SCALAR.match(body)) or body == ""
             if not (obj_stub or scalar_stub):
                 continue
+            if is_value_constant(txt, sym):
+                continue          # a named threshold, not a stubbed callable
             critical = is_critical_name(sym)
             if not critical and not (_QUANT.match(sym) and obj_stub):
                 continue
