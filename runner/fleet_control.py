@@ -243,8 +243,68 @@ def get_fleet_config(key, default=""):
         return default
 
 
+def _invalidate_consumer_cache(key):
+    """Drop `key` from the config_consumer cache. Fail-soft; never raises.
+
+    Imported lazily: config_consumer is a leaf that must stay importable on its own,
+    and a module-level import here would make the two modules mutually dependent.
+    """
+    try:
+        import config_consumer
+        # Both spellings. fleet_config stores the PREFIXED key ("ORCH_FOO"), but
+        # config_consumer is called as load_config("FOO") and caches under the bare
+        # name — so invalidating only the prefixed form cleared nothing and the stale
+        # value survived the push. Caught by
+        # test_the_consumer_cache_is_dropped_so_a_stale_read_cannot_survive.
+        config_consumer.invalidate_cache(key)
+        if key.upper().startswith("ORCH_"):
+            config_consumer.invalidate_cache(key[len("ORCH_"):])
+        return True
+    except Exception as exc:  # noqa: BLE001 — fail-soft, but not silent
+        sys.stderr.write(f"[fleet_control] could not invalidate config cache for "
+                         f"{key}: {type(exc).__name__}: {exc}\n")
+        return False
+
+
+def _apply_locally(key, new_value):
+    """Make a just-written key visible in this process, honouring the same gates.
+
+    Returns the reason it was NOT applied, or None when it was. Deliberately reuses
+    `_classify_key` rather than re-deriving the rules: a write path that applied keys
+    load_config() would refuse — a credential, an unsafe key, a key pinned to this
+    machine's local .env — would be a second, looser policy, and the pinned case would
+    silently override the very local value the pin exists to protect.
+    """
+    try:
+        reason = _classify_key(key, new_value, config_approval.blocked_keys(), _env_pins())
+    except Exception as exc:  # noqa: BLE001 — fail-soft: never break the write
+        sys.stderr.write(f"[fleet_control] could not classify {key} for local apply: "
+                         f"{type(exc).__name__}: {exc}\n")
+        return "classify-failed"
+
+    if reason is not None:
+        return reason
+
+    try:
+        os.environ[key] = new_value
+        _applied_config[key] = new_value
+    except Exception as exc:  # noqa: BLE001 — fail-soft
+        sys.stderr.write(f"[fleet_control] could not apply {key} locally: "
+                         f"{type(exc).__name__}: {exc}\n")
+        return "apply-failed"
+
+    # Env is the source config_consumer falls back to, so the cache must be dropped
+    # AFTER env is updated or the next read re-caches the stale value.
+    _invalidate_consumer_cache(key)
+    return None
+
+
 def update_fleet_config(key, value):
-    """Upsert a fleet config key and publish a ConfigChanged event for ORCH_* keys.
+    """Upsert a fleet config key, apply it locally, and publish a ConfigChanged event.
+
+    The write is applied to this process's env immediately (subject to the same gates
+    load_config uses) and the config_consumer cache entry is dropped, so the pushing
+    process observes its own change without waiting for the next periodic reload.
 
     Emits to 'config/*' via the injected WebSocket server when:
       - the key starts with ORCH_
@@ -269,6 +329,18 @@ def update_fleet_config(key, value):
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     db.insert("fleet_config", row, upsert=True)
+
+    # Apply the write to THIS process immediately.
+    #
+    # Without this, a runner that pushed a config change kept reading the old value
+    # until the next periodic load_config() — up to a full cycle — and
+    # config_consumer.load_config() kept returning its cached value for up to
+    # ORCH_CONFIG_CACHE_TTL_SEC on top of that. The push was durable and broadcast, but
+    # invisible to the process that made it, which is the one place a change should be
+    # observable instantly. config_consumer.invalidate_cache() already existed for
+    # exactly this and nothing called it.
+    _apply_locally(key, new_value)
+
     if _ws_server is not None and key.upper().startswith("ORCH_") and new_value != old_value:
         try:
             _ws_server.publish_event("config/*", {
