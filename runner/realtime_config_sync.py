@@ -2,6 +2,11 @@
 """
 realtime_config_sync.py - push fleet-wide config changes in real-time via polling.
 
+CANONICAL. runner/ accumulated five rival "real-time sync" modules; this one is the
+config-sync survivor and `realtime_approval_monitor.py` is the approval-sync survivor.
+`realtime_sync.py`, `config_sync_realtime.py` and `realtime_monitor.py` are deprecated
+shells with zero importers — do not extend them, and do not add a sixth.
+
 Uses frequent polling of the fleet_config table with change detection (ETag/hash)
 to apply configuration changes to all machines with minimal delay, reducing the
 need for manual pushes.
@@ -14,6 +19,12 @@ Usage:
     realtime_config_sync.start()   # starts background thread
     realtime_config_sync.stop()    # stops it
     realtime_config_sync.stats()   # monitoring
+    realtime_config_sync.run()     # ONE poll+apply cycle, for periodic.py
+
+`run()` exists because a daemon thread is not reachable from the scheduler: the
+Mac runner drives work through runner.py's interval table and periodic.py's JOBS
+dict, and a module nobody schedules never executes. Same never-scheduled gap that
+cost stuck_reaper and priority_scorer (see the notes in runner.py's table).
 """
 import os, sys, time, threading, hashlib, json
 from typing import Optional
@@ -129,6 +140,43 @@ def stats():
     """Return sync statistics."""
     with _lock:
         return dict(_stats_data)
+
+
+def run():
+    """Run ONE poll+apply cycle. Periodic-job entry point (periodic.py JOBS).
+
+    Fail-soft by contract: any error is logged and counted, never raised, so a
+    Supabase blip cannot wedge the scheduler tick. Returns a stats-shaped dict
+    so the caller can log an outcome.
+    """
+    global _last_hash
+    if not _ENABLED:
+        _log.info("realtime config sync disabled")
+        return {"synced": 0, "applied": 0, "error": "disabled"}
+    try:
+        import db
+        rows = db.select("fleet_config", {"select": "key,value,policy_change_id"}) or []
+        h = _config_hash(rows)
+        applied = 0
+        # First observation only records the baseline: applying on the very first
+        # tick would re-push every key on every process restart.
+        if h != _last_hash and _last_hash:
+            applied = _apply_config(rows)
+        with _lock:
+            _stats_data["syncs"] += 1
+            _stats_data["last_sync_ts"] = time.time()
+            _stats_data["changes_applied"] += applied
+            if applied:
+                _stats_data["last_change_ts"] = time.time()
+        _last_hash = h
+        if applied:
+            _log.info("config change detected, applied %d keys", applied)
+        return {"synced": len(rows), "applied": applied, "error": None}
+    except Exception as exc:
+        with _lock:
+            _stats_data["errors"] += 1
+        _log.warning("realtime config sync run failed: %s", exc)
+        return {"synced": 0, "applied": 0, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------

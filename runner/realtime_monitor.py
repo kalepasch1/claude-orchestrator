@@ -2,6 +2,10 @@
 """
 realtime_monitor.py – Real-time task monitoring and approval dashboard data provider.
 
+DEPRECATED — zero importers. `realtime_approval_monitor.py` is the canonical
+approval monitor and is the one periodic.py/runner.py schedule (job "rtmon").
+Do not extend this file.
+
 Aggregates live orchestrator state into dashboard-ready snapshots: queue depths,
 throughput rates, pending approvals, and per-project health. Powers the ops
 approval dashboard with sub-minute data.

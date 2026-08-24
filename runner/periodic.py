@@ -1137,6 +1137,17 @@ def run_rtmon():
     realtime_approval_monitor.run()
 
 
+def run_rtconfig():
+    """Realtime fleet_config sync: one poll+apply cycle (canonical module).
+
+    runner/ holds five rival real-time sync modules; only realtime_approval_monitor
+    (approvals) and realtime_config_sync (config) are wired. The other three are
+    deprecated shells with zero importers.
+    """
+    import realtime_config_sync
+    print(f"rtconfig: {realtime_config_sync.run()}")
+
+
 def run_quarantine_gc():
     """GC non-recoverable quarantined tasks (PATCH TEMPLATE, dedup) to reduce scan noise."""
     import quarantine_gc
@@ -1377,6 +1388,11 @@ JOBS = {
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
     "portfolioautopilot": run_portfolio_autopilot,
+    # run_rtmon existed since the approval monitor landed but was never in this
+    # dict, so `periodic.py rtmon` exited usage-error and nothing ever polled the
+    # approval fallback. Same never-registered gap as stuck_reaper/priority_scorer.
+    "rtmon": run_rtmon,
+    "rtconfig": run_rtconfig,
 }
 
 if __name__ == "__main__":
@@ -1406,6 +1422,9 @@ if __name__ == "__main__":
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "remotegc",
         "priority_scorer", "quarantine_gc", "markersentinel",
         "relationshipcrm",
+        # neither spends tokens: rtmon moves approval-card state, rtconfig applies
+        # already-authorized safe config keys. Both must keep running while paused.
+        "rtmon", "rtconfig",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:
