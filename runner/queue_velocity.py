@@ -88,6 +88,71 @@ def _queue_depth():
     return db.count("tasks", {"state": "eq.QUEUED"})
 
 
+#: EV floor for admission. A task at or below this is not worth a queue slot.
+#: Default 0.0 keeps current behaviour: only a genuinely non-positive EV is refused.
+LOW_EV_THRESHOLD = _env_float("ORCH_QV_LOW_EV_THRESHOLD", 0.0)
+
+
+def task_ev(task):
+    """A task's expected value, or None when it has none recorded.
+
+    None is NOT zero. A task whose EV was never scored has not been judged low-value, and
+    refusing it would silently drop every unscored task the moment this check went live.
+    """
+    if not isinstance(task, dict):
+        return None
+    for key in ("ev", "expected_value", "confidence"):
+        if key in task and task[key] is not None:
+            try:
+                return float(task[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def should_enqueue(task, threshold=None):
+    """(admit, reason) — refuse a task whose EV is at or below the floor.
+
+    PRE-QUEUE, AND DELIBERATELY OUTSIDE THE PID. The controller's integral accumulates
+    from queue DEPTH, so anything that never enters the queue never enters the integral.
+    That is the property this check depends on and the reason the check belongs HERE
+    rather than after insertion: a task admitted and then removed has already pushed the
+    integral up, and the I-action shelves other people's work to pay it back. Refusing
+    admission costs the integral nothing, which is exactly the windup this prevents.
+
+    A pinned task is admitted regardless. Pinning is an explicit operator instruction and
+    the PID is not allowed to override it — the same rule _shelve_lowest_ev already
+    enforces on the way out.
+
+    Fail-soft: anything unreadable is ADMITTED. Wrongly refusing real work is far worse
+    than one extra low-value task, and an EV that could not be parsed is not evidence of
+    low value.
+    """
+    try:
+        if not isinstance(task, dict):
+            return True, ""
+        if task.get("pinned"):
+            return True, "pinned: express lane is not subject to the EV floor"
+        floor = LOW_EV_THRESHOLD if threshold is None else float(threshold)
+        ev = task_ev(task)
+        if ev is None:
+            return True, "no EV recorded; not judged low-value"
+        if ev <= floor:
+            return False, (f"EV {ev:g} at or below the floor {floor:g}; not enqueued "
+                           f"(pre-queue skip, excluded from the PID integral)")
+        return True, ""
+    except Exception:
+        return True, ""
+
+
+def admit(task, threshold=None):
+    """Log-and-decide wrapper. True when the task should be inserted."""
+    ok, reason = should_enqueue(task, threshold)
+    if not ok:
+        print(f"[queue-velocity] pre-queue skip {task.get('slug', '?')}: {reason}")
+    return ok
+
+
 def _pinned_depth():
     """Queued pinned (express-lane) tasks. Fail-soft: 0 means 'assume none'.
 
