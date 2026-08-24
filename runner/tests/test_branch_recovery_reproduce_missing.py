@@ -392,6 +392,20 @@ class TestReflogRecoveryCore(unittest.TestCase):
 class TestStatisticsTracking(unittest.TestCase):
     """Statistics accumulation: recovery outcomes tracked correctly."""
 
+    def setUp(self):
+        """Zero the module counters and restore them afterwards.
+
+        branch_recovery._stats is a module-level singleton shared by the whole
+        process, so 'stats start at zero' was only ever true when this class ran
+        first. Under the full suite the earlier recovery tests had already pushed
+        recover_attempts to 25 and this failed — a test-isolation defect, not a
+        counter defect. Snapshot/restore so the reset cannot leak the other way.
+        """
+        self._stats_snapshot = dict(branch_recovery._stats)
+        for key in branch_recovery._stats:
+            branch_recovery._stats[key] = 0
+        self.addCleanup(branch_recovery._stats.update, self._stats_snapshot)
+
     def test_stats_initial_state(self):
         """Stats start at zero."""
         stats = branch_recovery.stats()
@@ -605,7 +619,11 @@ class TestRecoveryResponseFormat(unittest.TestCase):
             "recover_unrecoverable", "recover_errors",
             "detect_calls", "detect_missing_found"
         }
-        self.assertEqual(set(result.keys()), required_keys)
+        # Subset, not equality — see the same fix in test_branch_recovery_core.py.
+        # Adding a counter to branch_recovery._stats is not a contract break.
+        self.assertTrue(
+            required_keys.issubset(result.keys()),
+            f"stats() is missing required keys: {sorted(required_keys - result.keys())}")
 
 
 class TestIntegrationWorkflows(unittest.TestCase):
@@ -619,9 +637,15 @@ class TestIntegrationWorkflows(unittest.TestCase):
              patch.object(branch_recovery, "_branch_on_remote", return_value=True), \
              patch.object(branch_recovery, "_fetch_branch", return_value=(True, "")):
 
-            # First call to detect: branch missing
-            # Recovery calls: branch not found initially, then recovered
-            mock_exists.side_effect = [False, False, True]
+            # Model existence by branch name, not by call order. The list
+            # [False, False, True] supplied exactly three answers, but
+            # detect_missing_branches already consumes one per branch (three), so
+            # recover_branch's own lookup was the fourth call and raised
+            # StopIteration. A predicate cannot run out, and it also states the
+            # intended fixture plainly: main and develop are present locally,
+            # feature-x is not, so it is the branch that gets recovered.
+            mock_exists.side_effect = (
+                lambda repo, branch: branch in ("main", "develop"))
 
             missing = branch_recovery.detect_missing_branches(
                 "/repo",

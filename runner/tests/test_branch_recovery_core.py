@@ -471,7 +471,14 @@ class TestRecoveryResponseStructure(unittest.TestCase):
             "recover_unrecoverable", "recover_errors",
             "detect_calls", "detect_missing_found"
         }
-        self.assertEqual(set(result.keys()), expected_keys)
+        # Subset, not equality. The contract this test names is "stats() exposes all
+        # the required keys"; an exact-set comparison also asserts that no counter is
+        # ever ADDED, which is not a contract anyone agreed to. branch_recovery grew
+        # recover_archive, recover_repo_unreachable and the four batch_* counters, and
+        # this assertion failed for every one of them while stats() was working fine.
+        self.assertTrue(
+            expected_keys.issubset(result.keys()),
+            f"stats() is missing required keys: {sorted(expected_keys - result.keys())}")
 
 
 if __name__ == "__main__":
