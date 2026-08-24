@@ -49,19 +49,10 @@ ZERO_EV = 0.01             # scores below this are "near-zero"
 #
 # Refusing is STRONGER than parking, so the bar is deliberately harder to trip:
 # LOW_EV_THRESHOLD < ZERO_EV, i.e. a task can be park-eligible and still be enqueued.
-LOW_EV_THRESHOLD = float(os.environ.get("ORCH_LOW_EV_THRESHOLD", "0.0"))
-LOW_EV_EARLY_EXIT = os.environ.get("ORCH_LOW_EV_EARLY_EXIT", "true").lower() == "true"
-
-#: Fields producers use for expected value, in precedence order.
-EV_FIELDS = ("ev", "expected_value", "score", "value")
-
-#: Lanes whose value is not EV-expressible. Recovery, evidence and repair work exists
-#: precisely because something is broken, so scoring it low and refusing it would make the
-#: fleet unable to repair itself — the one refusal that must never happen.
-EV_EXEMPT_PREFIXES = ("recovery", "recover-", "breach-remediation", "canary",
-                      "qafix", "relfix", "buildfix", "deployfix", "toolchain-repair",
-                      "rework")
-EV_EXEMPT_KINDS = ("recovery", "canary", "toolchain-repair")
+#: LOW_EV_THRESHOLD / LOW_EV_EARLY_EXIT / EV_FIELDS / the exempt lists are defined ONCE,
+#: below, under "TWO SPELLINGS, ONE KNOB". They used to be declared here as well and
+#: silently overwritten there, which is how the documented `ORCH_LOW_EV_*` knobs became
+#: dead config and how the two exemption call sites drifted apart.
 PARK_NOTE = "[ev-low-priority: near-zero expected value — keep queued, run when capacity allows]"
 BOOST_KINDS = ("build",)
 REVENUE_WORDS = ("revenue", "pricing", "growth", "conversion")
@@ -82,16 +73,62 @@ def _env_float_ev(name, default):
 #
 # The bar is intentionally STRICTLY LOWER than ZERO_EV: refusing is a stronger action
 # than parking, so it must be harder to trigger. Only genuinely negative EV is refused.
-LOW_EV_THRESHOLD = _env_float_ev("ORCH_EV_LOW_THRESHOLD", 0.0)
-LOW_EV_EARLY_EXIT = os.environ.get("ORCH_EV_LOW_EARLY_EXIT", "true").lower() in ("true", "1", "yes", "on")
+# TWO SPELLINGS, ONE KNOB. This block used to redefine LOW_EV_THRESHOLD /
+# LOW_EV_EARLY_EXIT under `ORCH_EV_LOW_*` while the block above read `ORCH_LOW_EV_*`.
+# The later definition silently won, so an operator raising `ORCH_LOW_EV_THRESHOLD` to
+# stop a job being shelved by the queue-velocity PID changed nothing at all — the
+# documented mitigation was dead config. Accept BOTH spellings, first one set wins, and
+# fail soft on an unparseable value rather than raising at import.
+_LOW_EV_THRESHOLD_VARS = ("ORCH_LOW_EV_THRESHOLD", "ORCH_EV_LOW_THRESHOLD")
+_LOW_EV_EARLY_EXIT_VARS = ("ORCH_LOW_EV_EARLY_EXIT", "ORCH_EV_LOW_EARLY_EXIT")
+_TRUEY = ("true", "1", "yes", "on")
+
+
+def _first_env(names, default=""):
+    for name in names:
+        value = os.environ.get(name)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _coerce_float(raw, default):
+    """float(raw), or `default` for anything unparseable/NaN/inf. Never raises."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return default if (math.isnan(value) or math.isinf(value)) else value
+
+
+def low_ev_threshold():
+    """Current enqueue bar, read live so a mid-run env change takes effect."""
+    return _coerce_float(_first_env(_LOW_EV_THRESHOLD_VARS), 0.0)
+
+
+def low_ev_early_exit():
+    """Whether the early-exit refusal is armed. Either env spelling works."""
+    return _first_env(_LOW_EV_EARLY_EXIT_VARS, "true").strip().lower() in _TRUEY
+
+
+LOW_EV_THRESHOLD = _coerce_float(_first_env(_LOW_EV_THRESHOLD_VARS), 0.0)
+LOW_EV_EARLY_EXIT = _first_env(_LOW_EV_EARLY_EXIT_VARS, "true").strip().lower() in _TRUEY
 LOW_EV_SKIP_NOTE = "[ev-low-skip: expected value below the enqueue bar — not scheduled, kept for audit]"
 # Field names producers have used for EV, in precedence order.
 EV_FIELDS = ("ev", "expected_value", "score", "value")
 # Lanes whose value is not EV-expressible: recovery, remediation and evidence work.
+# ONE list, shared by both exemption call sites. They previously read two different
+# tuples, so a qafix/relfix/buildfix task was exempt on one path and shelved on the
+# other — the same job passing or being shelved depending on which check ran.
 EXEMPT_KINDS = frozenset({"recovery", "canary", "toolchain-repair", "qafix", "relfix",
                           "buildfix", "deployfix", "rework", "remediation"})
-EXEMPT_SLUG_PREFIXES = ("recovery", "recover-", "breach-", "canary-", "qafix-", "relfix-",
-                        "buildfix-", "deployfix-", "toolchain-repair", "rework-")
+EXEMPT_SLUG_PREFIXES = ("recovery", "recover-", "breach-", "breach-remediation", "canary",
+                        "canary-", "qafix", "qafix-", "relfix", "relfix-", "buildfix",
+                        "buildfix-", "deployfix", "deployfix-", "toolchain-repair",
+                        "rework", "rework-")
+# Aliases kept so the older call site cannot drift from the shared definition again.
+EV_EXEMPT_KINDS = EXEMPT_KINDS
+EV_EXEMPT_PREFIXES = EXEMPT_SLUG_PREFIXES
 
 # Outcome weighting: when ORCH_EV_OUTCOME_WEIGHTING=true, task-family priority is
 # weighted by REALIZED outcomes (merged-and-stayed-green rate, retries, human-reject
