@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for self_review.py monthly subsystem audit."""
 import sys, os, types, unittest, json, math
+import unittest.mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 _db_data = {}
@@ -30,145 +31,177 @@ for mod_name in ["model_policy", "model_gateway", "claude_cli", "queue_counters"
 import self_review
 
 
-class TestParseScheduleTable(unittest.TestCase):
-    def test_parses_jobs(self):
-        jobs = self_review._parse_schedule_table()
-        self.assertGreater(len(jobs), 50, "Should find 50+ jobs in runner.py schedule")
+# ─────────────────────────────────────────────────────────────────────────────
+# REWRITTEN 2026-08-24. Everything between this banner and TestStatsFunction used
+# to exercise an API self_review.py has never had: _parse_schedule_table(),
+# _score_job(), monthly_audit(), _PROTECTED_JOBS, and a report shaped
+# {total_jobs, bottom_decile, all_scores}. `git log -S` finds no commit where any
+# of those existed. 23 of the 25 tests raised AttributeError on import of the
+# name; the suite had never once passed.
+#
+# The real surface is _load_schedule() / _fetch_kpi_contributions() /
+# _fetch_incident_counts() / audit_subsystem_jobs() -> list of records /
+# run_monthly_audit() -> writes subsystem_audits rows, with _INFRASTRUCTURE_JOBS
+# as the protection set. These cover that.
+# ─────────────────────────────────────────────────────────────────────────────
 
-    def test_job_has_id_and_script(self):
-        jobs = self_review._parse_schedule_table()
-        for j in jobs[:5]:
-            self.assertIn("id", j)
-            self.assertIn("script", j)
-            self.assertTrue(len(j["id"]) > 0)
-
-    def test_known_jobs_present(self):
-        jobs = self_review._parse_schedule_table()
-        ids = {j["id"] for j in jobs}
-        self.assertIn("scoreboard-600", ids)
-        self.assertIn("train-60", ids)
-        self.assertIn("billing-300", ids)
-
-
-class TestProtectedJobs(unittest.TestCase):
-    def test_billing_guard_protected(self):
-        job = {"id": "billingguard", "script": "billingguard"}
-        s = self_review._score_job(job, {}, {})
-        self.assertTrue(s["protected"])
-        self.assertEqual(s["score"], float("inf"))
-
-    def test_kill_switch_protected(self):
-        job = {"id": "killswitch", "script": "kill_switch"}
-        s = self_review._score_job(job, {}, {})
-        self.assertTrue(s["protected"])
-
-    def test_pause_arbiter_protected(self):
-        job = {"id": "pause-arbiter-300", "script": "pause_arbiter.py"}
-        s = self_review._score_job(job, {}, {})
-        self.assertTrue(s["protected"])
-
-    def test_worktreegc_protected(self):
-        job = {"id": "worktreegc", "script": "worktreegc"}
-        s = self_review._score_job(job, {}, {})
-        self.assertTrue(s["protected"])
-
-    def test_normal_job_not_protected(self):
-        job = {"id": "anomaly-3600", "script": "anomaly.py"}
-        s = self_review._score_job(job, {}, {})
-        self.assertFalse(s["protected"])
+def _schedule(n=20):
+    """A synthetic _SCHEDULE: (key, job, schedule_type, args) tuples."""
+    return [(f"job-{i}", f"job_{i}.py", "interval", {"seconds": 60}) for i in range(n)]
 
 
-class TestJobScoring(unittest.TestCase):
-    def test_zero_incidents_neutral_score(self):
-        job = {"id": "test-job", "script": "test.py"}
-        s = self_review._score_job(job, {}, {})
-        self.assertEqual(s["score"], 50.0)
-        self.assertEqual(s["incidents"], 0)
+class TestScheduleLoading(unittest.TestCase):
+    def test_load_schedule_fails_soft_when_runner_has_no_schedule(self):
+        stub = types.ModuleType("runner")           # no _SCHEDULE attribute
+        with unittest.mock.patch.dict(sys.modules, {"runner": stub}):
+            self.assertEqual(self_review._load_schedule(), [])
 
-    def test_incidents_reduce_score(self):
-        job = {"id": "bad-job", "script": "bad.py"}
-        incidents = {"bad.py": 3}
-        s = self_review._score_job(job, {}, incidents)
-        self.assertEqual(s["score"], 20.0)  # 50 - 3*10
-        self.assertEqual(s["incidents"], 3)
-
-    def test_incidents_by_job_id(self):
-        job = {"id": "my-job", "script": "my.py"}
-        incidents = {"my-job": 2}
-        s = self_review._score_job(job, {}, incidents)
-        self.assertEqual(s["incidents"], 2)
-
-    def test_zero_kpi_zero_incidents_not_punished(self):
-        """Infrastructure jobs with no KPI but no incidents stay neutral."""
-        job = {"id": "infra-job", "script": "infra.py"}
-        s = self_review._score_job(job, {}, {})
-        self.assertGreaterEqual(s["score"], 50.0)
-
-    def test_negative_contribution_vs_zero(self):
-        """Job with incidents scores lower than job with zero incidents."""
-        good = {"id": "good", "script": "good.py"}
-        bad = {"id": "bad", "script": "bad.py"}
-        s_good = self_review._score_job(good, {}, {})
-        s_bad = self_review._score_job(bad, {}, {"bad.py": 5})
-        self.assertGreater(s_good["score"], s_bad["score"])
+    def test_load_schedule_returns_a_copy_not_the_live_list(self):
+        stub = types.ModuleType("runner")
+        stub._SCHEDULE = _schedule(3)
+        with unittest.mock.patch.dict(sys.modules, {"runner": stub}):
+            loaded = self_review._load_schedule()
+        loaded.append(("intruder", "x.py", "interval", {}))
+        self.assertEqual(len(stub._SCHEDULE), 3, "mutating the result must not edit runner._SCHEDULE")
 
 
-class TestMonthlyAudit(unittest.TestCase):
+class TestContributionAndIncidentReads(unittest.TestCase):
     def setUp(self):
-        global _db_data, _approvals
-        _db_data = {}
-        _approvals = []
+        _db_data.clear()
 
-    def test_audit_returns_report(self):
-        r = self_review.monthly_audit()
-        self.assertIsNotNone(r)
-        self.assertIn("total_jobs", r)
-        self.assertIn("bottom_decile", r)
-        self.assertIn("all_scores", r)
+    def test_kpi_counts_only_outcomes_that_passed(self):
+        _db_data["outcomes"] = [
+            {"source": "a.py", "tests_passed": True},
+            {"source": "a.py", "tests_passed": True},
+            {"source": "a.py", "tests_passed": False},
+            {"source": "b.py", "tests_passed": True},
+        ]
+        self.assertEqual(self_review._fetch_kpi_contributions(), {"a.py": 2.0, "b.py": 1.0})
 
-    def test_audit_files_one_approval(self):
-        self_review.monthly_audit()
-        material_approvals = [a for a in _approvals if a.get("kind") == "material"]
-        self.assertEqual(len(material_approvals), 1, "Should file exactly 1 material approval card")
+    def test_incidents_count_every_row_regardless_of_severity(self):
+        _db_data["incidents"] = [
+            {"source": "a.py", "severity": "low"},
+            {"source": "a.py", "severity": "critical"},
+        ]
+        self.assertEqual(self_review._fetch_incident_counts(), {"a.py": 2})
 
-    def test_audit_approval_is_material(self):
-        self_review.monthly_audit()
-        self.assertTrue(any(a["kind"] == "material" for a in _approvals))
+    def test_missing_tables_score_nothing_rather_than_raising(self):
+        # Fail-soft is the documented contract: a table that does not exist yet must
+        # mean "no evidence", not an exception out of a scheduled job.
+        def _boom(*a, **k):
+            raise RuntimeError("relation does not exist")
+        with unittest.mock.patch.object(self_review.db, "select", _boom):
+            self.assertEqual(self_review._fetch_kpi_contributions(), {})
+            self.assertEqual(self_review._fetch_incident_counts(), {})
 
-    def test_bottom_decile_excludes_protected(self):
-        r = self_review.monthly_audit()
-        for j in r["bottom_decile"]:
-            self.assertNotIn(j["id"], self_review._PROTECTED_JOBS)
-            self.assertNotIn(j["script"], self_review._PROTECTED_JOBS)
 
-    def test_total_jobs_count(self):
-        r = self_review.monthly_audit()
-        self.assertGreater(r["total_jobs"], 50)
+class TestAuditSubsystemJobs(unittest.TestCase):
+    def setUp(self):
+        _db_data.clear()
+        del _approvals[:]
 
-    def test_protected_jobs_counted(self):
-        r = self_review.monthly_audit()
-        self.assertGreater(r["protected_jobs"], 0)
+    def _run(self, schedule):
+        stub = types.ModuleType("runner")
+        stub._SCHEDULE = schedule
+        with unittest.mock.patch.dict(sys.modules, {"runner": stub}):
+            return self_review.audit_subsystem_jobs()
 
-    def test_bottom_decile_size(self):
-        r = self_review.monthly_audit()
-        expected = max(1, math.ceil(r["scored_jobs"] * 0.1))
-        self.assertEqual(r["bottom_decile_count"], expected)
+    def test_empty_schedule_produces_no_records(self):
+        self.assertEqual(self._run([]), [])
 
-    def test_all_scores_has_all_jobs(self):
-        r = self_review.monthly_audit()
-        self.assertEqual(len(r["all_scores"]), r["total_jobs"])
+    def test_every_scheduled_job_gets_exactly_one_record(self):
+        records = self._run(_schedule(20))
+        self.assertEqual(len(records), 20)
+        self.assertEqual(len({r["key"] for r in records}), 20)
 
-    def test_protected_in_all_scores(self):
-        r = self_review.monthly_audit()
-        protected = [s for s in r["all_scores"] if s["score"] == "protected"]
-        self.assertGreater(len(protected), 0)
+    def test_value_is_kpi_minus_weighted_incidents(self):
+        _db_data["outcomes"] = [{"source": "job_1.py", "tests_passed": True}] * 5
+        _db_data["incidents"] = [{"source": "job_1.py", "severity": "low"}] * 2
+        record = next(r for r in self._run(_schedule(20)) if r["job"] == "job_1.py")
+        self.assertEqual(record["kpi_contribution"], 5.0)
+        self.assertEqual(record["incident_count"], 2)
+        self.assertEqual(record["value"],
+                         5.0 - 2 * self_review.INCIDENT_PENALTY_WEIGHT)
 
-    def test_audit_approval_detail_is_json(self):
-        self_review.monthly_audit()
-        material = [a for a in _approvals if a.get("kind") == "material"]
-        if material:
-            detail = json.loads(material[0]["detail"])
-            self.assertIn("bottom_decile", detail)
+    def test_rank_one_is_the_most_valuable_job(self):
+        _db_data["outcomes"] = [{"source": "job_7.py", "tests_passed": True}] * 9
+        records = self._run(_schedule(20))
+        self.assertEqual(records[0]["job"], "job_7.py")
+        self.assertEqual(records[0]["rank"], 1)
+        self.assertEqual([r["rank"] for r in records], list(range(1, 21)))
+
+    def test_bottom_decile_is_flagged_for_disable_review(self):
+        records = self._run(_schedule(20))
+        flagged = [r for r in records if r["disable_recommendation"]]
+        self.assertEqual(len(flagged), max(1, 20 // 10))
+        self.assertTrue(all(r["rank"] > 20 - len(flagged) for r in flagged))
+
+    def test_a_short_schedule_recommends_disabling_nothing(self):
+        # Under ten jobs there is no meaningful decile; recommending a disable from a
+        # sample that small is noise with consequences.
+        records = self._run(_schedule(9))
+        self.assertEqual([r for r in records if r["disable_recommendation"]], [])
+
+    def test_infrastructure_is_never_recommended_for_disable(self):
+        infra = sorted(self_review._INFRASTRUCTURE_JOBS)[:3]
+        schedule = _schedule(20) + [(f"infra-{i}", job, "interval", {})
+                                    for i, job in enumerate(infra)]
+        # Give every non-infrastructure job value so the infra jobs sink to the bottom.
+        _db_data["outcomes"] = [{"source": f"job_{i}.py", "tests_passed": True}
+                                for i in range(20)]
+        records = self._run(schedule)
+        for rec in records:
+            if rec["job"] in self_review._INFRASTRUCTURE_JOBS:
+                self.assertTrue(rec["is_infrastructure"], rec["job"])
+                self.assertFalse(rec["disable_recommendation"],
+                                 f"{rec['job']} is infrastructure and must never be proposed for disable")
+
+
+class TestRunMonthlyAudit(unittest.TestCase):
+    def setUp(self):
+        _db_data.clear()
+        del _approvals[:]
+
+    def _run(self, schedule):
+        stub = types.ModuleType("runner")
+        stub._SCHEDULE = schedule
+        with unittest.mock.patch.dict(sys.modules, {"runner": stub}):
+            return self_review.run_monthly_audit()
+
+    def test_persists_one_row_per_job(self):
+        records = self._run(_schedule(20))
+        rows = _db_data.get("subsystem_audits", [])
+        self.assertEqual(len(rows), len(records))
+        self.assertEqual({r["job"] for r in rows}, {r["job"] for r in records})
+
+    def test_persisted_row_carries_the_decision_fields(self):
+        self._run(_schedule(20))
+        row = _db_data["subsystem_audits"][0]
+        for field in ("key", "job", "schedule_type", "kpi_contribution",
+                      "incident_count", "value", "rank", "is_infrastructure",
+                      "disable_recommendation"):
+            self.assertIn(field, row)
+
+    def test_writes_nothing_when_there_is_no_schedule(self):
+        self.assertEqual(self._run([]), [])
+        self.assertEqual(_db_data.get("subsystem_audits", []), [])
+
+    def test_a_failing_write_does_not_abort_the_audit(self):
+        # One bad row must not cost the other nineteen: this runs on a schedule and a
+        # half-written audit that raised would look identical to one that never ran.
+        calls = {"n": 0}
+        real_insert = self_review.db.insert
+
+        def flaky(table, row, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient write failure")
+            return real_insert(table, row, **kw)
+
+        with unittest.mock.patch.object(self_review.db, "insert", flaky):
+            records = self._run(_schedule(20))
+        self.assertEqual(len(records), 20)
+        self.assertEqual(len(_db_data.get("subsystem_audits", [])), 19)
 
 
 class TestStatsFunction(unittest.TestCase):

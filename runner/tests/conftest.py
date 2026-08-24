@@ -74,9 +74,24 @@ def _reset_tdd_gate_cache():
     _real_tdd_gate.invalidate_cache()
 
 
-# Every control-plane module any test replaces via sys.modules[...] = ModuleType(...)
-# must be listed here, or it leaks into every module imported afterwards.
-# Keep in sync with:  grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py
+# Control-plane modules a test replaced via sys.modules[...] = ModuleType(...).
+#
+# This used to be a hand-written list with the instruction "keep in sync with
+# grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py". It was not in sync,
+# and a list maintained by grep never will be: the five names below were registered
+# and twelve more were not. test_monthly_audit.py alone installs empty stubs for
+# model_policy, model_gateway, claude_cli, queue_counters and prompt_assembler at
+# IMPORT time and never removes them, so every test module collected after it saw a
+# `model_policy` with nothing in it — which is why ~35 files passed alone and failed
+# in-suite with errors like "cannot import name revenue_keywords".
+#
+# So the registry learns instead. Any module that lives under runner/ and is real
+# (has a __file__) gets remembered the first time we see it; if a later test swaps it
+# for a stub, the real one goes back before the next module is imported. Nothing has
+# to be listed by hand, and a new polluting test cannot silently widen the blast
+# radius.
+_RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 _REAL_MODULES = {
     "db": _real_db,
     "kill_switch": _real_kill_switch,
@@ -86,8 +101,54 @@ _REAL_MODULES = {
 }
 
 
+def _is_real_runner_module(module):
+    """True for an imported module whose source file lives in runner/."""
+    path = getattr(module, "__file__", None)
+    if not path:
+        return False
+    try:
+        return os.path.dirname(os.path.abspath(path)) == _RUNNER_DIR
+    except Exception:
+        return False
+
+
+def _remember_real_modules():
+    for name, module in list(sys.modules.items()):
+        if "." in name or name in _REAL_MODULES:
+            continue
+        if _is_real_runner_module(module):
+            _REAL_MODULES[name] = module
+
+
+def _evict_stub_shadows():
+    """Drop synthetic stand-ins that shadow a real runner/ module.
+
+    Remembering is not enough on its own: a test that stubs a module the suite has
+    never imported (test_monthly_audit stubs model_policy at import time, and nothing
+    before it imports model_policy) leaves nothing to restore. Here the stub — a bare
+    ModuleType with no __file__, for a name that has a real runner/<name>.py behind it
+    — is simply evicted, so the next `import <name>` loads the real source. Stubs for
+    modules that do NOT live in runner/ (a fake `requests`, say) are left alone; they
+    shadow nothing this suite owns.
+    """
+    for name, module in list(sys.modules.items()):
+        if "." in name or module is None:
+            continue
+        if getattr(module, "__file__", None):
+            continue
+        if not os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py")):
+            continue
+        real = _REAL_MODULES.get(name)
+        if real is not None:
+            sys.modules[name] = real
+        else:
+            del sys.modules[name]
+
+
 def _restore_real_modules():
+    _remember_real_modules()
     sys.modules.update(_REAL_MODULES)
+    _evict_stub_shadows()
 
 
 @pytest.hookimpl(hookwrapper=True)
