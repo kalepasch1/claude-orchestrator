@@ -129,9 +129,16 @@ class TestMergeCommitPattern:
 
 class TestNormalizeProjectPath:
     def test_normalize_project_path_with_beethoven(self):
+        # "beethoven", not "claude-orchestrator". The repo answers to both names,
+        # so this is decided by what the FLEET calls the project: the projects
+        # table maps repo_path /Users/kpasch/Documents/beethoven/claude-orchestrator
+        # to name "beethoven", and outcomes rows are written under that name. The
+        # memory files this module writes live at ~/.claude/projects/<project>/,
+        # so they have to key on the same identifier or they land somewhere
+        # nothing else looks. The module was right; this assertion was not.
         path = "/Users/kpasch/Documents/beethoven/claude-orchestrator"
         result = mdm._normalize_project_path(path)
-        assert result == "claude-orchestrator"
+        assert result == "beethoven"
 
     def test_normalize_project_path_with_documents(self):
         path = "/Users/kpasch/Documents/apparently"

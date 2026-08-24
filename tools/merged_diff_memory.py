@@ -26,13 +26,43 @@ SECRET_PATTERNS = [
     re.compile(r"(algorithm|credential):", re.IGNORECASE),
 ]
 
+# Patterns that are decisive ON THEIR OWN, with no value-delimiter required.
+#
+# A PEM armour line is not a word that might appear in prose; it is the opening of a
+# key block and nothing else. `-----BEGIN PRIVATE KEY-----` contains neither ':' nor
+# '=', so the delimiter heuristic below vetoed the match, `_has_secrets` returned
+# False, and because `_sanitize_diff` is only called WHEN `_has_secrets` is true
+# (see capture_merged_diffs), nothing redacted it — the key was written into the
+# memory file verbatim, under a module docstring promising "No secrets/credentials
+# are extracted". Verified before the fix: a diff whose only content was an RSA
+# private key round-tripped with its key material intact.
+DECISIVE_SECRET_PATTERNS = [
+    re.compile(r"-----(BEGIN|END)[A-Z ]*(PRIVATE KEY|RSA|DSA|EC|OPENSSH|PGP|CERTIFICATE)", re.IGNORECASE),
+    re.compile(r"-----(BEGIN|END) ", re.IGNORECASE),
+]
+
 
 def _has_secrets(text: str) -> bool:
-    """Check if text contains likely secrets/credentials."""
+    """Check if text contains likely secrets/credentials.
+
+    Two tiers, because they answer different questions:
+
+      * DECISIVE_SECRET_PATTERNS are structural markers. A PEM header means a key
+        block, full stop, and requiring a ':' or '=' on the same line only
+        guaranteed the most recognisable secret form was the one that slipped
+        through.
+      * SECRET_PATTERNS are KEYWORDS, and a keyword alone is weak evidence — a
+        changelog line saying "reset your password" is not a leak. For those the
+        ':'/'=' heuristic stays, because it is what distinguishes an assignment
+        from prose, and dropping it would make every diff mentioning "token"
+        redact itself.
+    """
     if not text:
         return False
     lines = str(text)[:10000].split("\n")
     for line in lines:
+        if any(pat.search(line) for pat in DECISIVE_SECRET_PATTERNS):
+            return True
         if any(pat.search(line) for pat in SECRET_PATTERNS):
             # Heuristic: if the suspicious line has a value after ':' or '=', it's suspicious
             if ":" in line or "=" in line:
@@ -188,7 +218,15 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
     # Compute project memory path
     home = Path.home()
     memory_dir = home / ".claude" / "projects" / f"-{os.path.expanduser('~').lstrip('/')}-{project.replace('/', '-')}" / "memory"
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        memory_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # Documented contract: "Returns path to written file, or None on failure."
+        # mkdir sat outside the try, so an unwritable memory directory raised out of
+        # this function instead — and this runs from a periodic job, where an
+        # uncaught error takes down the whole capture rather than skipping one write.
+        print(f"failed to create memory dir {memory_dir}: {e}", file=sys.stderr)
+        return None
 
     memory_file = memory_dir / "merged_changes.md"
 
@@ -197,11 +235,20 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
     if memory_file.exists():
         try:
             content = memory_file.read_text(errors="replace")
-            # Extract all commit hashes already recorded
-            for match in re.finditer(r"commit_hash: ([a-f0-9]+)", content):
+            # Extract all commit hashes already recorded.
+            #
+            # The optional `**` is why this module was not idempotent. Entries were
+            # written as `- **commit_hash**: abc`, and this pattern looked for
+            # `commit_hash: abc` — the bold markers sit between the key and the
+            # colon, so it never matched, `existing_hashes` was always empty, every
+            # entry counted as new, and the file re-appended its entire contents on
+            # every run. Entries are written unbolted below; the `\*{0,2}` keeps
+            # files ALREADY on disk in the bold format readable, so the fix does not
+            # start by duplicating everything one last time.
+            for match in re.finditer(r"\*{0,2}commit_hash\*{0,2}:\s*([a-f0-9]+)", content):
                 existing_hashes.add(match.group(1))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"could not read existing memory file {memory_file}: {e}", file=sys.stderr)
 
     # Filter to new entries only
     new_diffs = [d for d in merged_diffs if d["commit_hash"] not in existing_hashes]
@@ -222,13 +269,18 @@ metadata:
     # Append new entries
     entries = []
     for diff_info in new_diffs:
+        # Plain `key: value`, deliberately not `**key**: value`. These lines are
+        # READ BACK — the dedup scan above parses commit_hash out of them — so they
+        # are a data format that happens to render as markdown, not decoration.
+        # Bolding them put `**` between the key and the colon and silently broke
+        # the only thing that made this module idempotent.
         entry = f"""## {diff_info['branch_name']} ({diff_info['commit_hash'][:8]})
 
-- **author_date**: {diff_info['author_date']}
-- **commit_hash**: {diff_info['commit_hash']}
-- **merge_message**: {diff_info['merge_message']}
-- **files_changed**: {len(diff_info['files'])}
-- **extracted_at**: {diff_info['extracted_at']}
+- author_date: {diff_info['author_date']}
+- commit_hash: {diff_info['commit_hash']}
+- merge_message: {diff_info['merge_message']}
+- files_changed: {len(diff_info['files'])}
+- extracted_at: {diff_info['extracted_at']}
 
 ### Changed files
 {chr(10).join(f"- {f}" for f in diff_info['files'][:50])}
