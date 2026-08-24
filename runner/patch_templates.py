@@ -29,8 +29,49 @@ def _words(text):
     return sorted({w.lower() for w in WORD.findall(str(text or "")) if len(w) > 4})[:80]
 
 
+#: The orchestration pipeline contract is stapled onto every prompt by the router, and its
+#: cross-learning block changes on EVERY run — model names, "recent outcome signal: 1/12
+#: merged", learned routes. It is metadata about the fleet, not about the request.
+_CONTRACT_BLOCK_RE = re.compile(
+    r"##\s*ORCHESTRATION PIPELINE CONTRACT.*?##\s*END ORCHESTRATION PIPELINE CONTRACT",
+    re.S | re.I)
+
+#: Other volatile preambles the pipeline prepends. Same reasoning: they describe the run,
+#: not the work, so hashing them makes the id a function of when it was computed.
+_VOLATILE_PREFIX_RE = re.compile(
+    r"^(?:MERGED-DIFF LIBRARY:|REUSE FIRST:|SOURCE\s|SUMMARY:|PREFLIGHT DIRECTIVE).*?$",
+    re.M | re.I)
+
+
+def _request_text(task):
+    """The part of the prompt that describes the WORK, with fleet metadata removed.
+
+    WHY. `_id()` hashes the whole prompt, so the same request produced a DIFFERENT
+    template id on every rebuild — the orchestration contract carries a cross-learning
+    block ("recent outcome signal: 1/12 merged, models claude-fable-5, learned route: ...")
+    that is regenerated per run. Measured: one identical request, two runs, ids
+    9fcaa09b35f9 and 11647833df90.
+
+    That defeats the entire reuse-first mechanism this module exists for. Templates never
+    dedupe, so every rebuild stores a new one, and a recovery pass looking up the prior id
+    always misses and reconstructs work that already exists — the most expensive failure
+    mode in this fleet.
+
+    Fail-soft, and never returns empty: if stripping would leave nothing (a prompt that is
+    ONLY a contract block) the original text is kept, because an id derived from the empty
+    string would collide across every such task.
+    """
+    raw = str((task or {}).get("prompt") or "") if isinstance(task, dict) else ""
+    try:
+        stripped = _CONTRACT_BLOCK_RE.sub(" ", raw)
+        stripped = _VOLATILE_PREFIX_RE.sub(" ", stripped)
+        return stripped if stripped.strip() else raw
+    except Exception:
+        return raw
+
+
 def _intent(task):
-    prompt = str((task or {}).get("prompt") or "")
+    prompt = _request_text(task)
     return {"words": _words(prompt), "hints": sorted(set(m.group(0).lower() for m in SYMBOL_HINT.finditer(prompt)))}
 
 
