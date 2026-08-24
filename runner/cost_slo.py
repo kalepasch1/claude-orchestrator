@@ -10,24 +10,69 @@ $/merge and drives the knobs to hold it, escalating to you only on a hard breach
 Reads outcomes for actual $/merge; writes a per-project `cost_bias` (0=normal,1=cheap,2=cheapest)
 that model_router/model_policy can honor to bias toward cheaper tiers. Bounded + logged. ~hourly.
 """
-import os, sys
+import datetime, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-WINDOW = int(os.environ.get("SLO_WINDOW", "300"))
+#: Safety bound on rows fetched. NOT the measurement window — see SLO_WINDOW_HOURS.
+#: PostgREST caps a response at 1000 rows regardless, so anything above that is fiction.
+WINDOW = min(int(os.environ.get("SLO_WINDOW", "300")), 1000)
+
+#: The measurement window, in HOURS. This is the fix: SLO_WINDOW was a ROW COUNT, so
+#: "the last 300 outcomes" meant about an hour on a busy project and several months on a
+#: quiet one. The same target_usd_per_merge therefore meant different things per project,
+#: and the loop tightened or relaxed cost_bias by comparing incomparable windows. Worse,
+#: the read was saturating in production (merge-train logs show repeated
+#: "TRUNCATED SCAN cost_slo.py:22 -> outcomes returned exactly its limit (300)"), so on
+#: the busiest projects — the ones whose cost actually matters — the window silently
+#: shrank to whatever the most recent 300 rows happened to cover.
+WINDOW_HOURS = float(os.environ.get("SLO_WINDOW_HOURS", "168"))
+
 DEFAULT_TARGET = float(os.environ.get("SLO_DEFAULT_TARGET", "1.0"))
 
 
-def _actual_cpm(name):
-    rows = db.select("outcomes", {"select": "integrated,usd", "project": f"eq.{name}",
-                                  "order": "created_at.desc", "limit": str(WINDOW)}) or []
+def _cutoff_iso(hours=None):
+    """Start of the measurement window, as an ISO timestamp. Never raises."""
+    try:
+        span = float(WINDOW_HOURS if hours is None else hours)
+    except (TypeError, ValueError):
+        span = 168.0
+    if span <= 0:
+        span = 168.0
+    return (datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=span)).isoformat()
+
+
+def _actual_cpm(name, hours=None):
+    """$/merge for one app over an explicit TIME window.
+
+    Returns None when there is no signal at all, so the caller skips the app rather than
+    acting on an empty sample. `truncated` is reported rather than hidden: if the window
+    hit the row cap the figure is computed over less time than requested, and a cost
+    decision taken on a silently-shortened window is the failure this reports.
+    """
+    cutoff = _cutoff_iso(hours)
+    rows = db.select("outcomes", {"select": "integrated,usd,created_at",
+                                  "project": f"eq.{name}",
+                                  "created_at": f"gte.{cutoff}",
+                                  "order": "created_at.desc",
+                                  "limit": str(WINDOW)}) or []
     if not rows:
         return None
     merges = sum(1 for r in rows if r.get("integrated"))
     spend = sum(float(r.get("usd") or 0) for r in rows)
-    if merges == 0:
-        return {"cpm": None, "spend": round(spend, 2), "merges": 0}
-    return {"cpm": round(spend / merges, 4), "spend": round(spend, 2), "merges": merges}
+    stamps = sorted(str(r.get("created_at") or "") for r in rows if r.get("created_at"))
+    measured = {
+        "spend": round(spend, 2),
+        "merges": merges,
+        "samples": len(rows),
+        "window_hours": float(WINDOW_HOURS if hours is None else hours),
+        "since": stamps[0] if stamps else None,
+        # The caller must be able to see that it is deciding on a partial window.
+        "truncated": len(rows) >= WINDOW,
+    }
+    measured["cpm"] = None if merges == 0 else round(spend / merges, 4)
+    return measured
 
 
 def _slo(name):
@@ -63,8 +108,17 @@ def run(apply=True):
         if new_bias != cur_bias and apply:
             db.update("projects", {"id": p["id"]}, {"cost_bias": new_bias})
         if new_bias != cur_bias:
-            actions.append({"app": p["name"], "bias": f"{cur_bias}->{new_bias}", "why": reason})
-            print(f"cost_slo: {p['name']} bias {cur_bias}->{new_bias} ({reason})")
+            # Carry the measured window with the decision. A cost_bias change is only
+            # reviewable if you can see what it was computed over — and if `truncated`
+            # is true it was computed over LESS time than requested, which is the
+            # difference between "this app got expensive" and "this app got busy".
+            actions.append({"app": p["name"], "bias": f"{cur_bias}->{new_bias}",
+                            "why": reason, "window_hours": a.get("window_hours"),
+                            "samples": a.get("samples"), "since": a.get("since"),
+                            "truncated": a.get("truncated", False)})
+            note = " [PARTIAL WINDOW: row cap hit]" if a.get("truncated") else ""
+            print(f"cost_slo: {p['name']} bias {cur_bias}->{new_bias} ({reason}; "
+                  f"{a.get('samples')} outcomes over {a.get('window_hours')}h){note}")
         # hard ceiling breach -> escalate
         if ceiling and cpm is not None and cpm > float(ceiling):
             db.insert("approvals", {"project": p["name"], "kind": "material",
