@@ -393,7 +393,69 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
     # GOLDEN PATHS + STRATEGY-AWARE GENERATION (Wave C, Part 4, compounding half).
     tasks = _apply_golden_path(tasks, project=project, repo=repo)
 
+    # CROSS-PROJECT DEPS: settle every `deps` entry into a form the enqueue side can
+    # resolve, before the plan leaves the planner. See normalize_plan_deps.
+    tasks = normalize_plan_deps(tasks, project=project)
+
     return tasks
+
+
+def normalize_plan_deps(tasks, project=None):
+    """Settle every `deps` entry into a resolvable form. Returns the same task list.
+
+    A dep may be a BARE local id (`contracts`) or a GLOBAL ref (`tomorrow:contracts`).
+    Both were already accepted downstream — enqueue_task.parse_cross_project_dep has
+    understood `project:slug` for a while — but the planner emitted whatever the model
+    produced and never settled the ambiguous middle case: a bare id naming a task that is
+    NOT in this plan.
+
+    THE RULE, AND WHY IT IS NOT "DROP IT". A bare dep with no matching sibling is not
+    noise; it is usually a real reference to work that already exists in this project's
+    queue. Dropping it would let a task run before the thing it depends on, which is
+    exactly the failure a DAG exists to prevent — and it would do so SILENTLY. So an
+    unrecognised bare dep is QUALIFIED to `<project>:<slug>` instead, which makes it a
+    global identity the enqueue side can resolve against the tasks table. Nothing is ever
+    pruned for being unknown.
+
+    Backward compatible by construction:
+      * a bare dep that DOES name a sibling in this plan stays bare — intra-plan chaining
+        is unchanged, and that is the overwhelmingly common case;
+      * an already-global `project:slug` dep is left exactly as written;
+      * with no `project` known, a bare dep stays bare rather than being guessed at.
+
+    Self-deps are removed: a task that depends on itself can never start, and a plan is
+    the last place that can be caught cheaply. Order is preserved and duplicates are
+    collapsed, so the emitted DAG is stable.
+
+    Fail-soft: any error returns the tasks untouched. A dependency-normalisation bug must
+    not be able to destroy a plan.
+    """
+    try:
+        rows = [t for t in (tasks or []) if isinstance(t, dict)]
+        local = {str(t.get("slug") or "").strip() for t in rows}
+        local.discard("")
+
+        for t in rows:
+            raw = t.get("deps") or []
+            if isinstance(raw, str):
+                raw = [d.strip() for d in raw.split(",") if d.strip()]
+            slug = str(t.get("slug") or "").strip()
+
+            settled, seen = [], set()
+            for dep in raw:
+                entry = str(dep or "").strip()
+                if not entry or entry == slug:
+                    continue  # self-dep can never be satisfied
+                if ":" not in entry and entry not in local and project:
+                    entry = f"{project}:{entry}"
+                if entry not in seen:
+                    seen.add(entry)
+                    settled.append(entry)
+            t["deps"] = settled
+        return tasks
+    except Exception as e:
+        sys.stderr.write(f"[planner] dep normalisation failed ({e}); plan unchanged\n")
+        return tasks
 
 
 #: Sentinel that makes golden-path injection idempotent across re-plans. A task that is
