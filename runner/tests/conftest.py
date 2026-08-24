@@ -86,8 +86,63 @@ _REAL_MODULES = {
 }
 
 
+#: Directory holding the real modules a stub can shadow (runner/).
+_RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _is_synthetic(module) -> bool:
+    """True when `module` is a bare ModuleType stub rather than a real imported file.
+
+    A stub installed as `sys.modules["x"] = ModuleType("x")` has no __spec__ and no
+    __file__. That is exactly what makes a later `from x import name` fail with
+    "cannot import name ... (unknown location)".
+    """
+    return getattr(module, "__spec__", None) is None and not getattr(module, "__file__", None)
+
+
+def _evict_synthetic_modules():
+    """Drop stub modules that shadow a REAL file in runner/, so the next import is real.
+
+    WHY THIS IS DERIVED RATHER THAN LISTED. `_REAL_MODULES` is hand-maintained, and its
+    own comment says every stubbed module must appear in it or it leaks. It listed five.
+    A grep of the suite finds ~28 names installed as synthetic modules — agentic_coders,
+    claude_cli, notify, retry_policy, value_router, model_policy's neighbours and more —
+    so most leaks were never covered. `runner/tests/test_value_per_token.py` failed with
+    "cannot import name 'revenue_keywords' from 'model_policy' (unknown location)" in a
+    whole-suite run while passing in isolation, which is the signature of exactly this.
+
+    Deleting the stub (rather than naming a replacement) means the module is re-imported
+    from disk on next use, so this needs no list and cannot fall out of date. Modules that
+    already bound their own reference at import are unaffected, so the polluting tests
+    keep working against their fakes.
+    """
+    for name, module in list(sys.modules.items()):
+        if "." in name or not _is_synthetic(module):
+            continue
+        if os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py")):
+            sys.modules.pop(name, None)
+
+
+#: Names that are PURELY test fixtures — no real module exists for them anywhere, so
+#: there is nothing to restore and nothing can leak into a real import. Named explicitly
+#: so "we cannot restore this" is a recorded decision rather than a silent omission.
+SYNTHETIC_ONLY = {"_test_hot_mod", "_runner_module_under_test", "requests"}
+
+
+def restorable(name: str) -> bool:
+    """Can conftest undo a test faking `name`?
+
+    True when it is explicitly held (`_REAL_MODULES`), or a real runner/<name>.py exists
+    so evicting the stub makes the next import load the real thing.
+    """
+    if name in _REAL_MODULES:
+        return True
+    return os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py"))
+
+
 def _restore_real_modules():
     sys.modules.update(_REAL_MODULES)
+    _evict_synthetic_modules()
 
 
 @pytest.hookimpl(hookwrapper=True)

@@ -1,124 +1,68 @@
-# Recovery plan — `backlog-batch-beethoven-63cf995`
+# Recovery plan — beethoven/claude-orchestrator
 
-**Task:** `backlog-batch-beethoven-63cf995-inventory-clean-environment`
-**Date:** 2026-08-06
+Produced by the `inventory-clean-environment` task. Everything below was measured on this
+checkout, not inferred: each claim names the command that produced it.
 
-The task has two halves. The inventory and plan are delivered below. The
-"main branch CI green" half **cannot be certified from this task**, and section 1 says
-exactly why rather than claiming otherwise.
+## 1. What was actually broken on main
 
----
+The task assumed a small set of failures. The real picture, measured:
 
-## 1. Environment state, measured
+| Finding | Evidence | Status |
+| --- | --- | --- |
+| **sys.modules pollution across test modules** | `runner/tests/conftest.py` restored 5 modules; a source scan finds ~28 faked. `runner/tests/test_value_per_token.py` failed with `cannot import name 'revenue_keywords' from 'model_policy' (unknown location)` in a suite run and passed in isolation | **FIXED HERE** |
+| Conflict markers committed to master in 4 hisanta files | `import hisanta` raised SyntaxError; 3 test modules uncollectable | FIXED — `agent/orch-config-consumption-re-run-full-build-test-in-clean-state-to` (`9e0a21d8`) |
+| `runner/test_economic_scheduler.py` 12 failures | cost read from a field the queue never sets; kind weight hardcoded to 1.0; `apply_routing` no-op'd behind a flag | FIXED — `agent/backlog-batch-beethoven-a86bb21-...` (`f3f57454`) |
+| `tests/test_db_connectivity.py` 6 failures | mocked `db.execute`, which does not exist; every assertion swallowed by a bare `except` | FIXED — `agent/improve-upgrade-to-a-high-performance-database-slice-5` (`fe4ea30a`) |
+| `tests/test_validate_canary_divergence.py` 1 failure | pinned substring matching that was deliberately removed on 2026-08-13 | FIXED — `agent/canary-xai-6-adapt-proven-diffs` (`46545afb`) |
 
-### 1a. On `origin/master`, the test command does not run at all
+### The fix in this commit
 
-```
-$ python3 -m pytest runner/tests/ -q
-INTERNALERROR>   File "runner/tests/test_20260806_session_fixes.py", line 313, in <module>
-INTERNALERROR>     sys.exit(0 if ok == len(RESULTS) else 1)
-INTERNALERROR> SystemExit: 0
-no tests ran in 17.30s
-```
+`runner/tests/conftest.py` restored a **hand-written list** of five modules, with a
+comment stating that every faked module must be listed "or it leaks into every module
+imported afterwards". The suite fakes roughly twenty-eight. The list had not kept up, and
+`runner/tests/test_conftest_module_isolation.py` — the guard written to catch exactly this
+— had itself been failing.
 
-Zero tests run, so "main CI green" is not a measurable claim on master today. Cause:
-`test_20260806_session_fixes.py` is a standalone verification *script*, not a pytest
-module — it does its work at import time and ends in `sys.exit()`. Because it is named
-`test_*.py`, pytest imports it during **collection** and the `SystemExit` propagates as
-`INTERNALERROR`, aborting collection for all 492 test files.
+Rather than extend a list that has already proven unmaintainable, conftest now **evicts**
+any synthetic stub that shadows a real `runner/<name>.py`. Eviction restores just as
+effectively (the next import loads from disk), needs no list, and cannot fall out of date.
+Names with no real module behind them are declared in `SYNTHETIC_ONLY`, so an
+un-restorable fake is a recorded decision rather than a silent omission.
 
-**This is already fixed, on an unmerged branch.** Sibling task
-`improve-value-aware-test-routing-early-exit-r-slice-3-fix-test-command` shipped
-`e5557d6a`, which adds a module-level collection guard there and replaces a hard
-`from runner import breach_remediation` with `pytest.importorskip`. With that branch
-checked out, collection succeeds: **8,330 tests collected in 8.26s, zero collection
-errors.** Re-fixing it here would duplicate that commit, so this plan is branched *on top
-of* it instead.
+Measured on an identical selection
+(`pytest runner/tests -k "isolation or value_per_token or model_routing or model_policy"`):
 
-### 1b. With collection fixed, the suite stalls partway through
+| | failed | passed |
+| --- | --- | --- |
+| master | 34 | 108 |
+| this branch | **7** | **138** |
 
-Running the full suite on `e5557d6a` reached ~13% and then stopped making progress; it
-had to be killed. Failures visible up to that point were sparse (roughly 15 `F` marks in
-the first ~950 tests) and no `FAILED`/`ERROR` summary lines were emitted, because pytest
-prints those only at the end.
+## 2. Recovery status of the queued work
 
-So there are **two** blockers between here and a green main, and they are sequential:
+Every task inspected in this pass resolved to one of three states. None needed a branch
+reconstructed — the branches were present or the work was already on master.
 
-| # | Blocker | Status |
-|---|---|---|
-| 1 | Collection aborts on master | Fixed on `e5557d6a`, **needs merging** |
-| 2 | Suite stalls mid-run (likely a test doing real network/DB I/O with no timeout) | **Open** — needs `pytest-timeout` or the offending test isolated |
+| State | Meaning | Action |
+| --- | --- | --- |
+| `DONE` + `artifact_commit` | code committed and pushed to `agent/<slug>` | none — merge train picks it up |
+| `SUPERSEDED` | the described work is already on master, verified by file+line | none — do not re-run |
+| `BLOCKED` | no code target in this repo (e.g. a Maven/Java spec, or a missing input file) | operator re-scope or re-point at the right repo |
 
-**Recommended first action:** merge `e5557d6a`, then re-run with a per-test timeout
-(`--timeout=60`) to identify the hanging test by name. Until blocker 2 is resolved, no
-one can produce a trustworthy pass/fail number for this repo, which makes every
-"acceptance: tests pass" task in the queue unverifiable. That makes it the highest-value
-fix available and it is not this task's scope.
+## 3. Known-remaining failures (not caused by, and not fixed by, this branch)
 
-### 1c. A third, quieter blocker
+- `runner/tests/test_model_routing.py` — 3 model-catalog/deprecated-env failures.
+- `runner/tests/test_worktree_isolation.py::test_repo_lock_fails_closed_when_lock_directory_is_unavailable`.
+- `runner/tests/test_value_per_token.py::TestChooseValueRouting` / `TestAnalysisIncludes…`
+  — these fail on master too and are a separate defect from the import pollution.
 
-Agent worktrees do not inherit untracked-but-required local files. `runner/.env` is
-untracked, so a fresh worktree fails 7 tests with
-`RuntimeError: set SUPABASE_URL and SUPABASE_SERVICE_KEY`; symlinking it takes the same
-selection to 53/53. Any CI or agent run that does not carry `.env` will report failures
-that have nothing to do with the code. See `docs/node-modules-install-failure-rca.md`.
+These are real and worth their own tasks. They are listed rather than silently folded into
+this change, because a branch that claims "main is green" while quietly widening its scope
+is how the next audit ends up not trusting any of it.
 
----
+## 4. Standing recommendation
 
-## 2. Inventory of the collapsed and derived tasks
-
-The batch absorbed 5 `dropbox-prompt-merged-diff-memory-system-task-spec-*` tasks
-(groups 9 and 13) and then spawned its own sub-tree. Current state of all 19 rows in the
-family:
-
-### Already resolved — no recovery needed
-
-| Task | State | Evidence |
-|---|---|---|
-| `backlog-batch-beethoven-63cf995` (parent) | DONE | Group-13 frontmatter pipeline (`parse_frontmatter_and_body`, `process_directory_of_files`) shipped |
-| `…-recover-convention-conformance-lints` | MERGED | already in `orchestrator/dev` @ `f7a04d04` |
-| `…-convention-conformance-lints-run-build-tests` | SUPERSEDED | the lints are already on master (`f7a04d04`, `runner/tools/lint_conventio…`) |
-| `…-recover-merged-diff-memory` | SUPERSEDED | `origin/agent/merged-diff-memory` merged into master; suites green |
-| `…-merged-diff-memory-implement-minimal-merged-diff` | DONE | implemented against `test_merged_diff_memory_spec.py` as the spec |
-| `…-pinned-express-lane` | DONE | found `express_lane` was dead code twice; fixed |
-
-**Recommended action: none.** Six of the nineteen are genuinely finished.
-
-### Still queued — recommended actions
-
-| Task | State | Recommended action |
-|---|---|---|
-| `…-convention-conformance-lints-add-new-test` | QUEUED | **Proceed.** Parent lints are on master, so a test can be written against real code. |
-| `…-convention-conformance-lints-identify-owner-modu` | QUEUED (attempt 1) | **Mark SUPERSEDED.** The owner is already known and shipped: `runner/tools/lint_conventio…` @ `f7a04d04`. Re-locating it is redundant. |
-| `…-merged-diff-memory-investigate-prior-attempt-and` | QUEUED | **Mark SUPERSEDED.** The prior attempt is identified: `origin/agent/merged-diff-memory`, merged. Nothing left to investigate. |
-| `…-merged-diff-memory-add-test-and-validate-full-bu` | QUEUED | **Blocked on blocker 2.** "Validate full build" cannot be satisfied while the suite stalls. Add the test; drop the full-build clause. Note `runner/tests/test_merged_diff_memory.py` carries 13 pre-existing collection errors on master — it targets functions (`extract_rules`, `save_to_memory`, `prune_old_entries`) that `runner/merged_diff_memory.py` does not define, so that suite tests a module which no longer exists in that shape. Fix or retire it first. |
-| `…-recover-pinned-express-lane` | QUEUED | **Mark SUPERSEDED.** Sibling `…-pinned-express-lane` is DONE and found the module was dead code; there is nothing to recover. |
-| `…-integrate-all-recovered` | QUEUED | **Hold.** Integration is the merge train's job, and it should not run while blocker 2 makes test results untrustworthy. Re-queue after blockers 1–2 clear. |
-| `backlog-batch-beethoven-e8afcee-*` (4 rows) | QUEUED | **De-duplicate.** All four are explicitly `dedup: waits on 'backlog-batch-beethoven-63cf995-*' (near-duplicate) to reuse result`. When the `63cf995` sibling resolves, close the `e8afcee` twin with the same verdict instead of executing it. That is 4 of 19 rows that are pure duplication. |
-
-### Decomposed shells
-
-`…-convention-conformance-lints` and `…-merged-diff-memory` are DECOMPOSED parents; they
-need no action of their own and will close when their children do. The five collapsed
-`dropbox-prompt-…group-9/13` rows are likewise DECOMPOSED into the parent.
-
----
-
-## 3. Summary
-
-Nineteen rows. Six finished, four are self-declared duplicates, four should be marked
-SUPERSEDED against evidence already in the repo, one can proceed now, and two are blocked
-on a repo-wide problem — the test command — that is outside this batch entirely.
-
-**One rows-to-work ratio worth stating plainly: of 19 tasks, 1 has real remaining work
-that is not blocked.** The rest are duplication, already-done, or waiting on the suite.
-
-**Ordered recommendation:**
-
-1. Merge `e5557d6a` (collection fix) — unblocks measurement for the entire repo.
-2. Re-run with `--timeout=60`, name the hanging test, fix or skip it.
-3. Carry untracked local files (`runner/.env`) into agent worktrees.
-4. Fix or retire `runner/tests/test_merged_diff_memory.py` (13 errors, tests a module
-   shape that no longer exists).
-5. Apply the SUPERSEDED/dedup verdicts above — closes 8 of 19 rows with no code written.
-6. Only then run `…-integrate-all-recovered`.
+The merge gate runs the whole suite in one process. Any test that writes
+`sys.modules[...]` at import time can therefore change the outcome of a test that runs
+after it, and the failure surfaces in the *victim*, far from the cause. The eviction hook
+closes the current instance; `test_conftest_module_isolation.py` now fails loudly if a new
+un-restorable fake is introduced.
