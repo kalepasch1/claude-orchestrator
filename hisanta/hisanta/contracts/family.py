@@ -1,23 +1,3 @@
-<<<<<<< HEAD
-"""Re-export shim: the canonical family contracts live at hisanta/contracts/family.py.
-
-This file used to be a second, independently-maintained copy of the same domain.
-The two drifted: the nested copy grew the quest/grandma/gifting/school types
-while the top-level one grew the approval/kindness types, and because every
-consumer imports `hisanta.contracts.family` (absolute), the nested definitions
-were unreachable dead code that still had to be kept in sync by hand.
-
-The canonical module was already written to be the *union* — every symbol either
-file ever exported is defined there, with a shape that satisfies both sets of
-callers. So this module is now a pure re-export. Behaviour is preserved exactly:
-`hisanta.hisanta.contracts.family.X is hisanta.contracts.family.X` for every X,
-which means an isinstance check or an enum identity comparison cannot fail just
-because a caller reached the domain by the nested path.
-
-Same convention as the root `merged_diff_library.py` shim over
-`runner/merged_diff_library.py`. Do not add definitions here — add them to
-hisanta/contracts/family.py and extend the re-export list below.
-=======
 """Shared interfaces/types for the hisanta family domain — the ONE definition.
 
 This module is the single source of truth for the mastery + gifting stack.
@@ -33,38 +13,10 @@ hisanta/tests/* could not even be collected (ImportError: cannot import name
 'Quest') while tests/* imported the other shape. Both sets of names now live
 HERE, and hisanta/contracts/family.py is a re-export shim of this file, so
 every consumer sees the same objects no matter how it is imported.
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
 """
 
 from __future__ import annotations
 
-<<<<<<< HEAD
-from hisanta.contracts.family import (  # noqa: F401  (re-export)
-    ApprovalStatus,
-    ClassroomCohort,
-    ConstitutionAction,
-    ConstitutionVerdict,
-    CoppaConsent,
-    DENY_ACTIONS,
-    ESCALATE_ACTIONS,
-    GiftLane,
-    GrandmaStorySlot,
-    MasteryEfficacyMetric,
-    MatchJar,
-    MilestoneReaction,
-    PII_FREE_FIELDS,
-    ParentApproval,
-    ParentVerificationReceipt,
-    Quest,
-    QuestKind,
-    RewardCoin,
-    RewardCoins,
-    RewardSchedule,
-    SchoolQuest,
-    constitution_check,
-)
-
-=======
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -264,7 +216,6 @@ class CoppaConsent:
     timestamp: float = field(default_factory=time.time)
 
 
->>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2
 __all__ = [
     "ApprovalStatus",
     "ClassroomCohort",
