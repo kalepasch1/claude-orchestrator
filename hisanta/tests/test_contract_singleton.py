@@ -15,12 +15,24 @@ import pytest
 import hisanta.contracts.family as family
 
 
-def test_the_shim_points_at_the_canonical_file():
-    """hisanta/contracts/family.py must re-export, never re-declare."""
+def test_there_is_exactly_one_definition_site():
+    """The definitions live in hisanta/contracts/family.py; the NESTED copy is
+    the shim.
+
+    That direction, and not the reverse, because every consumer imports the
+    absolute path `hisanta.contracts.family`, and `hisanta/__init__.py` appends
+    the nested tree to `__path__` rather than prepending it — so this file is
+    the one that spelling can ever resolve to.
+    """
+    nested = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert family.CANONICAL_MODULE is family
     assert family.CANONICAL_PATH.replace("\\", "/").endswith(
+        "hisanta/contracts/family.py"
+    )
+    assert not family.CANONICAL_PATH.replace("\\", "/").endswith(
         "hisanta/hisanta/contracts/family.py"
     )
-    assert family.CANONICAL_MODULE is not None
+    assert nested.CANONICAL_MODULE is family
 
 
 def test_every_public_name_is_the_canonical_object():
