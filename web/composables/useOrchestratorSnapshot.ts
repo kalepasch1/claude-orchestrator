@@ -17,6 +17,9 @@ export interface OrchestratorSnapshot {
     state: string
     updated_at: string
     cost_usd: number | null
+    kind: string | null
+    project_id: string | null
+    artifact_commit: string | null
   }>
   total_queued: number
   total_running: number
