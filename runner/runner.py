@@ -1637,7 +1637,7 @@ def run_task(t):
             # ── REMAINING PRE-HOOKS (parallelized, all skipped when fast-path L4 skip_all) ──
             _pipeline_cost = 0
             if not _fast.get("skip_all"):
-                from concurrent.futures import ThreadPoolExecutor, as_completed
+                # (fan-out moved to prehook_pool.run_hooks — see below)
                 _uk_has_matches = bool(_uk and _uk.get("matches"))
 
                 # ── TIER 0: read-only hooks (parallel, no prompt mutation) ──────────
@@ -1727,30 +1727,28 @@ def run_task(t):
                         _log.debug("hook session_cache failed: %s", e)
                     return None
 
-                # Run Tier 0 + Tier 1 queries concurrently
-                _hook_workers = int(os.environ.get("ORCH_HOOK_WORKERS", "6"))
-                _enrichments = []
-                with ThreadPoolExecutor(max_workers=_hook_workers) as _pool:
-                    _futures = {
-                        # Tier 0 (fire-and-forget, no return value needed)
-                        _pool.submit(_hook_cade): "cade",
-                        _pool.submit(_hook_slashing): "slashing",
-                        _pool.submit(_hook_budget): "budget",
-                        # Tier 1 (collect results for serial apply)
-                        _pool.submit(_query_recycling): "recycling",
-                        _pool.submit(_query_transfer): "transfer",
-                        _pool.submit(_query_distillation): "distillation",
-                        _pool.submit(_query_debate): "debate",
-                        _pool.submit(_query_cross_templates): "cross_templates",
-                        _pool.submit(_query_session_cache): "session_cache",
-                    }
-                    for fut in as_completed(_futures):
-                        try:
-                            result = fut.result()
-                            if result and isinstance(result, dict) and result.get("hook"):
-                                _enrichments.append(result)
-                        except Exception as e:
-                            _log.debug("hook %s future failed: %s", _futures[fut], e)
+                # Run Tier 0 + Tier 1 queries concurrently.
+                # Fan-out lives in prehook_pool.run_hooks so the parallelism is
+                # assertable (runner/tests/test_prehook_pool.py) and so total wall
+                # time is LOGGED — that is the number ORCH_PREHOOK_MAX_S is judged
+                # against, and nothing used to emit it.
+                import prehook_pool
+                _pool_out = prehook_pool.run_hooks({
+                    # Tier 0 (fire-and-forget, no return value needed)
+                    "cade": _hook_cade,
+                    "slashing": _hook_slashing,
+                    "budget": _hook_budget,
+                    # Tier 1 (collect results for serial apply)
+                    "recycling": _query_recycling,
+                    "transfer": _query_transfer,
+                    "distillation": _query_distillation,
+                    "debate": _query_debate,
+                    "cross_templates": _query_cross_templates,
+                    "session_cache": _query_session_cache,
+                }, label=f"pre-hooks[{t.get('slug', '?')}]")
+                _enrichments = [r for r in _pool_out["results"]
+                                if isinstance(r, dict) and r.get("hook")]
+                _prehook_pool_wall_s = _pool_out["wall_s"]
 
                 # ── Apply Tier 1 enrichment results serially (prompt mutation) ──────
                 for _enr in _enrichments:
