@@ -5,7 +5,14 @@ BASE_URL          ?= http://localhost:3000
 E2E_SUPABASE_URL  ?=
 E2E_SESSION_JSON  ?=
 
-.PHONY: test-e2e install-e2e lock lock-check install-deps install-all-deps verify-deps
+.PHONY: test-e2e install-e2e lock lock-check install-deps install-all-deps verify-deps lint check
+
+## lint: run the repo quality gates (syntax + conflict markers hard; conventions advisory)
+lint:
+	python3 tools/quality_check.py
+
+## check: alias for lint, for muscle memory
+check: lint
 
 ## install-deps: install the exact locked Python dependency set
 install-deps:
