@@ -58,6 +58,13 @@ INTEGRAL_MAX = _env_int("ORCH_QV_INTEGRAL_MAX", 3 * INTEGRAL_SHELVE_THRESHOLD)
 SHELVE_CONSECUTIVE_REQUIRED = _env_int("ORCH_QV_SHELVE_CONSECUTIVE", 2)
 # Zero-spend recovery check before shelving a task (see _shelve_lowest_ev)
 RECOVERY_ENABLED = os.environ.get("ORCH_QV_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+# A task the queue has already attempted this many times is never shelved. Shelving is
+# supposed to discard the CHEAPEST work; a task at attempt 22 is the most expensive thing
+# in the queue, and shelving it throws away 22 attempts of spend while a never-attempted
+# task sits beside it. Repeatedly shelving the same high-attempt task also demonstrably
+# does not drain the queue — it recovers, gets re-selected, and churns. See the ordering
+# note in _shelve_lowest_ev for why this guard is needed rather than implied by the sort.
+SHELVE_ATTEMPT_CEILING = _env_int("ORCH_QV_SHELVE_ATTEMPT_CEILING", 3)
 
 # Last run's decision, exposed so tests/operators can observe why the controller
 # did (or did not) act. Updated atomically at the end of run().
@@ -183,19 +190,44 @@ def _shelve_lowest_ev(count):
         # a backlog drove the integral over threshold, the I-action fired, and the express work
         # itself got shelved. Pinning is an explicit operator instruction; the PID does not get
         # to override it. Low confidence is not a reason to drop pinned work.
-        tasks = db.select("tasks", {"select": "id,slug,confidence,project_id,pinned",
+        # ORDERING IS THE WHOLE CONTROLLER, and confidence alone was not ordering anything.
+        # Measured on the live queue: `confidence` is NULL for the entire head of the
+        # QUEUED set, so under `confidence.asc.nullsfirst` every candidate TIED and the
+        # server broke the tie arbitrarily. "Shelve the lowest-EV work" was in practice
+        # "shelve an arbitrary slice", which is how a task reached attempt 22 while
+        # never-attempted tasks sat beside it untouched.
+        #
+        # `attempt.asc` is the tie-break because attempt count is the one EV signal that
+        # is always populated: it is exactly what the queue has ALREADY spent, so the
+        # least-attempted task is the cheapest thing to discard and the most-attempted is
+        # the dearest. Confidence still leads when it is present — this only decides the
+        # NULL block, where there was previously no decision at all.
+        tasks = db.select("tasks", {"select": "id,slug,confidence,project_id,pinned,attempt",
                                      "state": "eq.QUEUED",
                                      "pinned": "not.is.true",
-                                     "order": "confidence.asc.nullsfirst",
+                                     "order": "confidence.asc.nullsfirst,attempt.asc",
                                      "limit": str(count)}) or []
         shelved = 0
         recovered = 0
         skipped_infra = 0
+        skipped_attempts = 0
         for t in tasks:
             # Defence in depth. db.py documents deployments where pinned/pin_rank predate their
             # migration, so the server-side filter can be silently dropped; never rely on it alone.
             if t.get("pinned"):
                 print(f"[queue-velocity] refusing to shelve pinned task {t.get('slug')}")
+                continue
+            # Defence in depth again: the ORDER above makes high-attempt tasks last, but
+            # "last" still gets shelved once the cheap candidates run out, and a deployment
+            # whose `attempt` column predates its migration would drop the sort key
+            # silently. The ceiling is the check that actually holds. Checked BEFORE the
+            # recovery probe so a task we will not shelve costs no git work at all.
+            attempts = t.get("attempt")
+            if isinstance(attempts, int) and attempts > SHELVE_ATTEMPT_CEILING:
+                skipped_attempts += 1
+                print(f"[queue-velocity] refusing to shelve {t.get('slug')}: "
+                      f"attempt {attempts} > ceiling {SHELVE_ATTEMPT_CEILING} — "
+                      "shelving the queue's most-spent work is not draining it")
                 continue
             action, detail = _recovery_action(t)
             if action == "recovered":
@@ -212,13 +244,18 @@ def _shelve_lowest_ev(count):
                           {"state": "SHELVED",
                            "note": f"shelved by queue-velocity PID (low EV, integral too high)"})
                 shelved += 1
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - fail-soft, but never silent
+                # A bare `pass` here made a failing shelve indistinguishable from a
+                # successful one in the logs, so the I-action could report progress it had
+                # not made. Swallowing is the convention; swallowing WITHOUT a diagnostic
+                # is the defect (see CLAUDE.md on broad excepts).
+                print(f"[queue-velocity] shelve of {t.get('slug')} failed ({exc}); "
+                      "fail-soft NOT SHELVED")
         if shelved:
             print(f"[queue-velocity] shelved {shelved} lowest-EV tasks to drain backlog")
-        if recovered or skipped_infra:
+        if recovered or skipped_infra or skipped_attempts:
             print(f"[queue-velocity] shelve pass: recovered={recovered} "
-                  f"infra_skipped={skipped_infra}")
+                  f"infra_skipped={skipped_infra} attempt_ceiling_skipped={skipped_attempts}")
         return shelved
     except Exception as e:
         print(f"[queue-velocity] shelve error: {e}")
