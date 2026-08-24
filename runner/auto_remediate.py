@@ -17,7 +17,7 @@ Remediation by cause (tasks.remediation_count changes strategy; it does not punt
 
 Runs every couple minutes; also callable. This is the "self-remedy everything" loop.
 """
-import os, sys, re
+import os, sys, re, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import legal_filter
@@ -203,6 +203,17 @@ def run(limit=120):
                 directive=f"Remediation cap {CAP} reached. Do not buffer this task; complete the implementation through the agentic coder and make the checks green.")
             db.update("tasks", {"id": t["id"]}, upd)
             reclaimed += 1; agentic_repairs += 1
+            continue
+
+        # MISSING-BRANCH OWNER PATH: a branch that is already on origin is NOT missing.
+        # Recovering it forks one change into two and hands the merge train a conflict.
+        if _MISSING_BRANCH.search(signal) and branch_already_shared(t):
+            db.update("tasks", {"id": t["id"]}, {
+                "state": "BLOCKED", "account": None, "updated_at": "now()",
+                "note": (f"missing-branch: agent/{t.get('slug')} IS on origin — not missing. "
+                         f"Left for the merge train; recreating it would fork the same change "
+                         f"into two branches.")[:900]})
+            left += 1
             continue
 
         if rc == 0 and (_TRANSIENT.search(signal) or _CONFLICT.search(signal) or _MISSING_BRANCH.search(signal)):
@@ -445,6 +456,50 @@ def _close_review_card(card, reason):
               {"status": "approved", "decided_by": RECOVERY_MARK,
                "decision_type": "approve",
                "decision_text": f"Auto-reclaimed: {reason}. Work is back in the task queue."})
+
+
+def _repo_for(task):
+    """Repo path for a task's project, or "" when unknown. Fail-soft."""
+    try:
+        rows = db.select("projects", {"select": "repo_path", "limit": "1",
+                                      "id": f"eq.{(task or {}).get('project_id')}"}) or []
+        repo = (rows[0].get("repo_path") or "") if rows else ""
+        return repo if repo and os.path.isdir(repo) else ""
+    except Exception:
+        return ""
+
+
+def branch_already_shared(task, repo=None):
+    """True when agent/<slug> exists on a REMOTE, i.e. the branch is not missing at all.
+
+    WHY THE OWNER PATH NEEDS THIS. The fleet's documented lifecycle removes the worktree
+    after pushing while "the agent/{slug} branch persists for merge-train pickup"
+    (CLAUDE.md). A local ref pruned after a successful push therefore looks exactly like a
+    lost branch, and the missing-branch handler would "recover" work that is sitting on
+    origin waiting to be merged — forking one change into two and handing the train the
+    conflict that the reconciliation contract exists to prevent. Two such false positives
+    were confirmed by hand in one executor run.
+
+    Checked against remote-tracking refs specifically: a LOCAL agent/<slug> proves nothing
+    about whether the work is shared, and that is the question the owner path is asking.
+
+    Fail-soft: returns False when the repo or git is unreadable, so an unanswerable check
+    can never suppress a genuine recovery.
+    """
+    slug = str((task or {}).get("slug") or "").strip()
+    if not slug:
+        return False
+    repo = repo if repo is not None else _repo_for(task)
+    if not repo:
+        return False
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo, "for-each-ref", "--format=%(refname)",
+             f"refs/remotes/*/agent/{slug}"],
+            capture_output=True, text=True, timeout=60)
+        return r.returncode == 0 and bool((r.stdout or "").strip())
+    except Exception:
+        return False
 
 
 def _requires_human_hold(task, note):
