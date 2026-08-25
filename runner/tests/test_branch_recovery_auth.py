@@ -13,6 +13,8 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+from env_during_import import import_with_env  # noqa: E402
+
 
 class TestGitAuthModule:
     """Test git_auth module functionality."""
@@ -20,19 +22,17 @@ class TestGitAuthModule:
     def test_pat_available_when_configured(self):
         """pat_available returns True when ORCH_GIT_PAT is set."""
         import git_auth
-        with patch.dict(os.environ, {"ORCH_GIT_PAT": "ghp_test123456"}):
-            # Need to reload module to pick up env var
-            import importlib
-            importlib.reload(git_auth)
-            assert git_auth.pat_available() is True
+        # importlib.reload here rebound git_auth._PAT to the fake token for every
+        # holder of the module, for the rest of the process. import_with_env
+        # scopes it to a private copy instead.
+        fresh = import_with_env("git_auth", ORCH_GIT_PAT="ghp_test123456")
+        assert fresh.pat_available() is True
+        assert git_auth._PAT != "ghp_test123456"
 
     def test_pat_unavailable_when_not_configured(self):
         """pat_available returns False when ORCH_GIT_PAT is not set."""
-        import git_auth
-        with patch.dict(os.environ, {}, clear=True):
-            import importlib
-            importlib.reload(git_auth)
-            assert git_auth.pat_available() is False
+        fresh = import_with_env("git_auth", ORCH_GIT_PAT="")
+        assert fresh.pat_available() is False
 
     def test_run_git_with_missing_repo(self):
         """run_git returns error when repo doesn't exist."""
@@ -198,21 +198,30 @@ class TestBranchFleetRecoveryWithAuth:
             "base_branch": "master",
         }
 
-        with patch.dict(os.environ, {"ORCH_FLEET_RECOVERY_DRY_RUN": "true"}):
-            import importlib
-            importlib.reload(branch_fleet_recovery)
+        # DRY_RUN is bound from the environment at import time, so this test has
+        # to import the module with the flag set. It used to do that with
+        # patch.dict + importlib.reload — but reload mutates the module object IN
+        # PLACE, and nothing reloaded it back, so DRY_RUN stayed True for the rest
+        # of the process. test_no_recovery_without_pat_and_no_remote and
+        # test_recovery_continues_on_db_error below then returned "dry_run" and
+        # failed, while passing in isolation. import_with_env is the project
+        # helper for exactly this (see runner/env_during_import.py): it hands back
+        # a PRIVATE copy, so nothing outside this test can see the flag.
+        fresh = import_with_env("branch_fleet_recovery", ORCH_FLEET_RECOVERY_DRY_RUN="true")
+        assert fresh.DRY_RUN is True
 
-            with patch("branch_fleet_recovery.git_auth.fetch_branch") as mock_fetch:
-                with patch("branch_fleet_recovery._branch_exists_local") as mock_local:
-                    with patch("branch_fleet_recovery._branch_exists_remote") as mock_remote:
-                        mock_local.return_value = False
-                        mock_remote.return_value = True
+        with patch.object(fresh.git_auth, "fetch_branch") as mock_fetch:
+            with patch.object(fresh, "_branch_exists_local", return_value=False):
+                with patch.object(fresh, "_branch_exists_remote", return_value=True):
+                    result = fresh.recover_branch(task, "/tmp")
 
-                        result = recover_branch(task, "/tmp")
+                    # In dry-run, should not attempt fetch
+                    assert mock_fetch.call_count == 0
+                    assert result["strategy"] == "dry_run"
 
-                        # In dry-run, should not attempt fetch
-                        assert mock_fetch.call_count == 0
-                        assert result["strategy"] == "dry_run"
+        # the shared module the rest of this file uses is untouched
+        assert branch_fleet_recovery.DRY_RUN is False
+        assert recover_branch is branch_fleet_recovery.recover_branch
 
     def test_branch_exists_remote_uses_git_auth(self):
         """_branch_exists_remote delegates to git_auth.branch_exists_remote."""
