@@ -3425,17 +3425,34 @@ def _is_still_running(job):
     so with a 60s scheduler tick they were guaranteed to overlap and accumulate. Any interval
     job whose runtime can exceed its own interval has this same latent bug. Fix: don't launch a
     new instance while the last one is still alive; let it finish (or let the properly-scaled
-    reaper below kill it if it's truly stuck) instead of stacking duplicates."""
+    reaper below kill it if it's truly stuck) instead of stacking duplicates.
+
+    THE RESTART HOLE (2026-08-25). This used to consult only _PERIODIC_PIDS,
+    which records what THIS process launched. A runner restart empties it, so
+    every job left running by the previous runner was invisible and a duplicate
+    was launched on the next tick -- the regression that produced 14 concurrent
+    legal_docket.py copies.
+
+    _external_instance_running() was written to close exactly that hole, and
+    `grep -n _external_instance_running runner/runner.py` found its definition
+    and NO CALLER. The launcher below only ever asks _is_still_running, so the
+    check has to be reachable from here or it is decoration. It also adopts the
+    orphan into _PERIODIC_PIDS, which is what lets _reap_stale_periodic give it
+    a proper lease instead of an instant kill.
+
+    Both no-record paths fall through to it: a dead tracked pid alongside a live
+    external copy is still a duplicate waiting to happen.
+    """
     info = _PERIODIC_PIDS.get(job)
     if not info:
-        return False
+        return _external_instance_running(job)
     pid, _launch_t = info
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         del _PERIODIC_PIDS[job]
-        return False
+        return _external_instance_running(job)
 
 
 def _external_instance_running(job):
