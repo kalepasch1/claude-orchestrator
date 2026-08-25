@@ -1845,9 +1845,18 @@ def _done_slugs():
         # all completions were invisible to dependency resolution. Tasks queued 2026-08-02
         # sat untouched for four days. Paging to exhaustion is the fix; raising the limit
         # would not have moved the ceiling at all.
+        # DEPLOYED_AND_VERIFIED counts as satisfied. It is strictly STRONGER than
+        # DONE — shipped and verified in production, the state the whole delivery
+        # ladder aims at — and leaving it out meant a dependent of fully delivered
+        # work was held as blocked by its own success. Measured against the live
+        # queue on 2026-08-25 this releases nothing today (0 of the 322 dependency
+        # edges point at a DEPLOYED_AND_VERIFIED task), so it is a correctness fix
+        # and NOT a remedy for the current deadlock — worth stating plainly,
+        # because "add a state to the allowlist" is the shape of change most
+        # likely to be mistaken for one.
         rows = select_all("tasks", {
             "select": "slug,project_id",
-            "state": "in.(DONE,MERGED)",
+            "state": "in.(DONE,MERGED,DEPLOYED_AND_VERIFIED)",
         }, order="id.asc") or []
         slugs = set()
         # Build project_id -> name map for cross-project qualified entries
@@ -2061,6 +2070,43 @@ def _claim_via_rpc(runner_id):
     if isinstance(rows, dict):
         return rows
     return rows[0] or None
+
+
+#: Why the last claim_task() call came back empty. Read it with why_no_claim().
+_LAST_CLAIM_DIAGNOSTIC = {"considered": 0, "claimed": None, "reasons": {}}
+
+
+def why_no_claim():
+    """Why the most recent claim_task() returned None. Never raises.
+
+    THE FALSE-SUCCESS SIGNAL. claim_task() returns None both when the queue is
+    empty and when it is full of work that nothing can claim, and every caller
+    reads None as "no work, we are done". On 2026-08-25 a scheduled executor run
+    found 317 QUEUED tasks of which ZERO were claimable — every one of them
+    blocked by a dependency on a task in a terminal state that can never become
+    DONE or MERGED — and reported a clean run, as sixteen executors had been
+    doing since 2026-07-15. Verified independently against the live database:
+    317 queued, 0 with an empty deps array, 322 dependency edges, 3 satisfied.
+
+    A dependency-starved queue and a finished queue must not produce the same
+    signal. This records the difference:
+
+        {"considered": <rows the claim scan looked at>,
+         "claimed": <task id or None>,
+         "reasons": {"deps_unmet": n, "lane_limit": n, "cooling": n,
+                     "skip_note": n, "claim_lost": n}}
+
+    `considered > 0` with `claimed is None` is a STALL, not an empty queue, and a
+    caller that treats it as "work complete" is reporting success for a fleet
+    that has not moved. claim_task() also prints it, once per empty scan, so it
+    reaches a log even where nobody calls this.
+    """
+    # dict() alone is a SHALLOW copy: the nested "reasons" dict would still be
+    # the module's own, so a caller that adjusted a count while acting on it
+    # would rewrite the record of the scan it was reading.
+    out = dict(_LAST_CLAIM_DIAGNOSTIC)
+    out["reasons"] = dict(out.get("reasons") or {})
+    return out
 
 
 def claim_task(runner_id):
@@ -2722,11 +2768,18 @@ def claim_task(runner_id):
         _skip_note = lambda n: any(pat in n for pat in _SKIP_NOTE_PATTERNS)
 
     done = _done_slugs()
+    # Why each row was passed over. A queue that is full but unclaimable has to
+    # be distinguishable from an empty one — see why_no_claim().
+    _reasons = {"cooling": 0, "skip_note": 0, "lane_limit": 0,
+                "deps_unmet": 0, "claim_lost": 0}
+    _considered = len(queued or [])
     for t in queued or []:
         if _cooling_down(t):
+            _reasons["cooling"] += 1
             continue
         # Skip recycled/garbage tasks before claiming
         if _skip_note(str(t.get("note") or "")):
+            _reasons["skip_note"] += 1
             continue
         pid = t.get("project_id")
         if pid:
@@ -2737,6 +2790,7 @@ def claim_task(runner_id):
             else:
                 occupied = active_by_project.get(pid, 0)
             if occupied >= _project_lane_limit(t):
+                _reasons["lane_limit"] += 1
                 continue
         # SOFT-DEP SPECULATION: if deps aren't all done, check if file scopes
         # are disjoint — if so, start the task speculatively instead of waiting.
@@ -2750,6 +2804,8 @@ def claim_task(runner_id):
                     soft_dep_spec.register(t, _pending)
             except Exception:
                 pass
+        if not _deps_all_done:
+            _reasons["deps_unmet"] += 1
         if _deps_all_done:
             # Optimistic claim from the exact observed state preserves the
             # cross-runner single-claim guarantee for QUEUED and TESTING alike.
@@ -2776,7 +2832,22 @@ def claim_task(runner_id):
                 except Exception:
                     pass
                 invalidate_done_cache()
+                _LAST_CLAIM_DIAGNOSTIC.update(
+                    {"considered": _considered, "claimed": t.get("id"),
+                     "reasons": dict(_reasons)})
                 return res[0]
+            _reasons["claim_lost"] += 1
+    _LAST_CLAIM_DIAGNOSTIC.update(
+        {"considered": _considered, "claimed": None, "reasons": dict(_reasons)})
+    if _considered:
+        # NOT the same event as an empty queue, and it must not print like one.
+        print("[claim] STALLED: %d queued task(s) scanned, 0 claimable (%s). "
+              "This is a blocked queue, not an empty one — a caller that exits "
+              "here reports success for a fleet that has not moved."
+              % (_considered,
+                 ", ".join("%s=%d" % (k, v) for k, v in sorted(_reasons.items()) if v)
+                 or "no reason recorded"),
+              flush=True)
     return None
 
 
