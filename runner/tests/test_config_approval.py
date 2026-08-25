@@ -94,6 +94,64 @@ class TestAssess(unittest.TestCase):
         self.assertEqual(risk, "high")
         self.assertIn("URL", reason)
 
+    def test_credential_keys_are_gated_not_routine(self):
+        # The 2026-08-02 incident class: every one of these used to assess as
+        # "routine change within safe operating envelope".
+        for key, value in [
+            ("GITHUB_PAT", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"),
+            ("VERCEL_TOKEN", "2f8Kq9WxLm3PzT7bR4nHvC1d"),
+            ("ANTHROPIC_API_KEY", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"),
+            ("SLACK_BOT_TOKEN", "xoxb-2334-4444-abcdefghijklmnop"),
+            ("DB_PASSWORD", "hunter2correcthorsebattery"),
+            ("SUPABASE_SERVICE_SECRET", "abcdefghijklmnopqrstuvwxyz"),
+        ]:
+            with self.subTest(key=key):
+                risk, reason = ca._assess(key, value)
+                self.assertEqual(risk, "high")
+                self.assertIn("credential material", reason)
+
+    def test_credential_shape_is_gated_under_an_innocent_key_name(self):
+        for value in [
+            "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+            "AKIAIOSFODNN7EXAMPLE",
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r",
+        ]:
+            with self.subTest(value=value[:20]):
+                risk, reason = ca._assess("ORCH_HARMLESS_LOOKING_FLAG", value)
+                self.assertEqual(risk, "high")
+                self.assertIn("credential material", reason)
+
+    def test_secret_value_is_never_echoed_into_the_card_reason(self):
+        token = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        _, reason = ca._assess("GITHUB_PAT", token)
+        self.assertNotIn(token, reason)
+        self.assertIn("redacted", reason)
+        self.assertIn(str(len(token)), reason)
+
+    def test_secret_reason_distinguishes_two_different_pushes(self):
+        _, a = ca._assess("GITHUB_PAT", "ghp_" + "a" * 36)
+        _, b = ca._assess("GITHUB_PAT", "ghp_" + "b" * 36)
+        self.assertNotEqual(a, b)
+
+    def test_secret_reference_is_not_gated(self):
+        # Pointing at a secret is the correct pattern and must stay frictionless.
+        for value in ["env:GITHUB_PAT", "${GITHUB_PAT}", "op://fleet/github/pat", ""]:
+            with self.subTest(value=value):
+                risk, _ = ca._assess("GITHUB_PAT", value)
+                self.assertEqual(risk, "low")
+
+    def test_ordinary_keys_are_not_swept_up_by_the_secret_rule(self):
+        for key, value in [
+            ("MAX_PARALLEL", "4"),
+            ("ORCH_SOME_NEW_FLAG", "enabled"),
+            ("ORCH_PASSTHROUGH_MODE", "on"),
+            ("SOME_KEY", "plainvalue"),
+        ]:
+            with self.subTest(key=key):
+                risk, _ = ca._assess(key, value)
+                self.assertEqual(risk, "low")
+
     def test_orch_auto_pull_disabled(self):
         risk, reason = ca._assess("ORCH_AUTO_PULL", "false")
         self.assertEqual(risk, "high")
