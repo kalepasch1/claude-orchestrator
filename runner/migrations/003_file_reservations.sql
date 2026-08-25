@@ -31,16 +31,30 @@
 -- against the live schema on 2026-08-25 — `file_reservations` is not among the
 -- project's tables.
 --
--- APPLYING THIS IS A BEHAVIOUR CHANGE. It switches on a guard that has been
--- inert for the whole life of the fleet: tasks that currently start immediately
--- will begin to be re-queued with "file-reservation-held: <file> (held by
--- <task>)" when they collide. That is the intended behaviour and is presumably
--- why the module was written, but it should be a deliberate act, not a side
--- effect of a test-suite repair — so this file is checked in and NOT applied.
--- ORCH_FILE_RESERVATION_ENABLED=false remains the kill switch either way.
+-- APPLIED 2026-08-25, deliberately, at the operator's instruction.
 --
--- Until it is applied, file_reservation now says so once per process instead of
--- reporting success.
+-- THIS SWITCHED ON A GUARD THAT HAD BEEN INERT FOR THE WHOLE LIFE OF THE FLEET.
+-- Tasks that previously started immediately are now re-queued with
+-- "file-reservation-held: <file> (held by <task>)" when they collide on a
+-- declared file. That is the module's documented purpose and runner.py:1205
+-- already handles the re-queue; it is not a failure mode.
+--
+-- Verified end to end against the live table before this note was written:
+-- task A reserves two files; B is blocked and told which task holds them; A's
+-- re-entry is not a conflict; A's own files do not block A; release frees them
+-- and B is then clear. All four are the contract reserve()/blocked_by() promise
+-- and none of them could hold before, because the relation did not exist.
+--
+-- Blast radius, in order of what actually contains it:
+--   * ORCH_FILE_RESERVATION_ENABLED=false is the kill switch and takes effect
+--     without a schema change.
+--   * A reservation is only taken when a task has a non-empty file scope
+--     (declared, or computed by static_file_scope). No scope, no row.
+--   * A collision RE-QUEUES; it never fails or drops a task.
+--   * A crashed worker is covered by reserved_at + ttl_seconds (2h default),
+--     swept client-side by _clean_expired().
+--   * release() runs from set_state() on every terminal transition
+--     (QUEUED/DONE/MERGED/BLOCKED/QUARANTINED) and from continuous_merger.
 
 CREATE TABLE IF NOT EXISTS public.file_reservations (
     id          uuid        DEFAULT gen_random_uuid() PRIMARY KEY,

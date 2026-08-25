@@ -191,14 +191,24 @@ class TestMetricsIntegration(unittest.TestCase):
         ]
 
         db_mock = MagicMock()
-        def select_side_effect(table, params=None):
+
+        # select_all, not select. stage_metrics() reads both tables through
+        # db.select_all with a server-side created_at window, because
+        # db.select() returns ONE PostgREST page (1,000 rows, unordered) and
+        # against 4,534 MERGED tasks it returned a page containing nothing
+        # inside the cutoff -- a run that reported "0 written, no errors" while
+        # measuring nothing at all.
+        def select_all_side_effect(table, params=None, **kw):
+            assert (params or {}).get("created_at", "").startswith("gte."), (
+                "%s must be windowed server-side, not scanned client-side: %s"
+                % (table, params))
             if table == "tasks":
                 return tasks
             if table == "outcomes":
                 return outcomes
             return []
 
-        db_mock.select.side_effect = select_side_effect
+        db_mock.select_all.side_effect = select_all_side_effect
         db_mock.insert.return_value = None
 
         with patch.object(im, "db", db_mock):
@@ -233,14 +243,24 @@ class TestMetricsIntegration(unittest.TestCase):
         ]
 
         db_mock = MagicMock()
-        def select_side_effect(table, params=None):
+
+        # select_all, not select. stage_metrics() reads both tables through
+        # db.select_all with a server-side created_at window, because
+        # db.select() returns ONE PostgREST page (1,000 rows, unordered) and
+        # against 4,534 MERGED tasks it returned a page containing nothing
+        # inside the cutoff -- a run that reported "0 written, no errors" while
+        # measuring nothing at all.
+        def select_all_side_effect(table, params=None, **kw):
+            assert (params or {}).get("created_at", "").startswith("gte."), (
+                "%s must be windowed server-side, not scanned client-side: %s"
+                % (table, params))
             if table == "tasks":
                 return tasks
             if table == "outcomes":
                 return outcomes
             return []
 
-        db_mock.select.side_effect = select_side_effect
+        db_mock.select_all.side_effect = select_all_side_effect
         db_mock.insert.return_value = None
 
         with patch.object(im, "db", db_mock):

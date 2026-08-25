@@ -84,13 +84,15 @@ def _table_present():
     channel at all, so the call raised AttributeError.  And the handler
     swallowed it and returned True anyway — "Table might already exist — try to
     proceed anyway" — so the caller was told the table was ready no matter what
-    happened.  The table has in fact never existed on this fleet (checked
-    against the live schema, 2026-08-25: `file_reservations` is not among the
-    project's tables).  Creating it is a MIGRATION, not something a runtime
-    hot path can do: see runner/migrations/003_file_reservations.sql.
+    happened.  The table did not exist on this fleet until
+    runner/migrations/003_file_reservations.sql was applied on 2026-08-25, so
+    for the whole life of the fleet before that, blocked_by() read an absent
+    relation and answered "nothing is held" every time.
 
+    Creating it is a MIGRATION, not something a runtime hot path can do.
     Absence is now reported once, loudly, instead of being reported as success
-    forever.
+    forever — which still matters: a host whose credentials cannot see the table
+    must not silently fall back to running every task unguarded.
     """
     if not db:
         return False

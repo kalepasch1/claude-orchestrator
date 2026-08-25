@@ -1,6 +1,6 @@
 -- 004_stage_metrics.sql — the table meta_loop's pipeline auto-tuner reads.
 --
--- NOT APPLIED. Written 2026-08-25; an operator applies it deliberately.
+-- APPLIED 2026-08-25.
 --
 -- WHY IT IS NEEDED
 --
@@ -18,9 +18,16 @@
 -- it never entered, and the pipeline auto-tuner has never emitted a decision.
 --
 -- runner/improvement_measure.stage_metrics() is the producer, added in the same
--- commit as this file. It is fail-soft against the missing relation: until this
--- migration is applied it reports stage_metrics_written = 0 and names the error,
--- rather than pretending to have written.
+-- commit as this file. With the table present it wrote 48 rows on its first real
+-- run and meta_loop._stage_metrics_summary() went from {} to 46 (project, kind)
+-- groups -- the auto-tuner has input for the first time. It stays fail-soft: if
+-- the relation is ever absent it reports stage_metrics_written = 0 WITH the
+-- error named, because "0 written, no errors" is also what a correct run over an
+-- empty window looks like.
+--
+-- Applying this does NOT switch the auto-tuner on. ORCH_AUTO_TUNE_ENABLE
+-- defaults false and is unset on this fleet, so meta_loop plans and records
+-- decisions without applying them until an operator opts in.
 --
 -- SHAPE
 --

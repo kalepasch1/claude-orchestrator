@@ -180,13 +180,19 @@ def first_try_yield(days: int = 30) -> dict:
 STAGE_METRIC_WINDOWS = (5, 30)   # meta_loop reads eq.30 for baselines, eq.5 for regressions
 
 
+def _iso_cutoff(days):
+    """The ISO-8601 instant `days` ago, as PostgREST wants it in a gte. filter."""
+    return (datetime.datetime.utcnow()
+            - datetime.timedelta(days=days)).isoformat()
+
+
 def _write_stage_metric(row):
     """Upsert one stage_metrics row. Returns None on success, else the error text.
 
-    Fail-soft with the reason kept: the relation does not exist yet (see
-    runner/migrations/004_stage_metrics.sql), and "wrote 0 rows" without saying
-    why is how a producer that cannot work looks exactly like one with nothing
-    to say.
+    Fail-soft with the reason kept. The relation is created by
+    runner/migrations/004_stage_metrics.sql (applied 2026-08-25); if it is ever
+    unreachable again, "wrote 0 rows" without saying why is exactly how a
+    producer that CANNOT work looks like one with nothing to say.
     """
     try:
         db.insert("stage_metrics", row, upsert=True)
@@ -217,17 +223,41 @@ def stage_metrics(windows=STAGE_METRIC_WINDOWS) -> dict:
     delivery (a note, a state fix, a janitor sweep) and would quietly inflate
     every window.
 
-    NOTE: the `stage_metrics` relation does not exist in the control plane yet
-    -- see runner/migrations/004_stage_metrics.sql, which is deliberately NOT
-    applied. Until an operator applies it, db.insert raises MissingRelationError
-    and this returns a written count of 0 with the error named, rather than
-    pretending it wrote.
+    The `stage_metrics` relation is created by
+    runner/migrations/004_stage_metrics.sql, applied 2026-08-25. If it is ever
+    absent, _write_stage_metric() returns the error text and this reports a
+    written count of 0 WITH the reason named, rather than pretending it wrote --
+    a distinction that matters, because "0 written, no errors" is also what a
+    correct run over an empty window looks like.
     """
-    tasks = db.select("tasks", {
+    # WINDOW SERVER-SIDE, AND PAGE THE REST.
+    #
+    # The first version of this used db.select() with no limit and no order for
+    # both reads. PostgREST caps a single response at 1,000 rows, so against
+    # 4,534 MERGED tasks (oldest 2020-01-01) it returned an arbitrary page that
+    # happened to contain nothing inside the 30-day cutoff -- and the function
+    # reported "stage_metrics_written: 0, errors: []", i.e. a clean run that
+    # measured nothing. db.py's own comment above select() lists four
+    # outage-class failures from exactly this; this was very nearly a fifth.
+    #
+    # Both reads now filter on created_at server-side over the WIDEST window and
+    # page to exhaustion, and the narrower windows are cut from that one fetch.
+    widest = max(windows) if windows else 0
+    if not widest:
+        return {"stage_metrics_written": 0, "windows": list(windows), "errors": []}
+    horizon = _iso_cutoff(widest)
+
+    tasks = db.select_all("tasks", {
         "select": "id,project_id,kind,created_at,remediation_count,state",
         "state": "eq.MERGED",
+        "created_at": f"gte.{horizon}",
     }) or []
-    outcomes = db.select("outcomes", {"select": "task_id,created_at"}) or []
+    # An outcome is recorded at or after its task's creation, so the same horizon
+    # bounds it: anything older cannot belong to a task inside any window.
+    outcomes = db.select_all("outcomes", {
+        "select": "task_id,created_at",
+        "created_at": f"gte.{horizon}",
+    }) or []
 
     finished = {}
     for row in outcomes:
@@ -238,7 +268,7 @@ def stage_metrics(windows=STAGE_METRIC_WINDOWS) -> dict:
 
     written, errors = 0, []
     for window in windows:
-        cutoff = time.time() - window * 86400
+        cutoff = _parse_ts(_iso_cutoff(window))
         groups = {}
         for task in tasks:
             created = _parse_ts(task.get("created_at") or "")
