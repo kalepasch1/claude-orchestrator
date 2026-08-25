@@ -36,6 +36,29 @@ SAFE_PREFIXES = (
     "SEMANTIC_DEDUPE", "SWARM_", "CADE_",
 )
 
+# Suffixes whose keys name a MODEL, not a credential. Added 2026-08-24.
+#
+# Model-selection keys are spelled per provider — GEMINI_MODEL, OPENAI_STRONG_MODEL,
+# CLAUDE_MODEL, XAI_MODEL, DEEPSEEK_CHEAP_MODEL — so no prefix covers them, and
+# fleet_control.py's own notes list GEMINI_MODEL, GEMINI_CHEAP_MODEL,
+# OPENAI_STRONG_MODEL, OPENAI_FAST_MODEL and OPENAI_CHEAP_MODEL among the keys
+# "stored and ignored": the row exists, the dashboard shows it, nothing happens.
+#
+# That gap has a cost on record. On 2026-08-24 the default agentic coder was pinned
+# to `gemini-2.5-pro`, which Google retired ("no longer available to new users"), and
+# every task routed to it failed 404. runner/agentic_coders.py picks that model from
+# os.environ["GEMINI_MODEL"] — a key fleet_config could store but never deliver — so
+# the one knob that would have re-pointed the whole fleet in a single row was the one
+# knob the loader dropped. The alternative was editing and redeploying every machine.
+#
+# A name ending in _MODEL/_MODELS holds a model identifier. It is not a credential,
+# and it cannot become one: DENY_MARKERS is evaluated FIRST, so GEMINI_API_KEY_MODEL
+# or OPENAI_MODEL_TOKEN are still refused. Deliberately a narrow suffix rule and not
+# a "GEMINI_"/"OPENAI_" prefix — widening to whole provider families would admit
+# every future key those vendors' integrations invent, which is the blast radius the
+# 2026-08-02 plaintext-credential incident argues against.
+SAFE_SUFFIXES = ("_MODEL", "_MODELS")
+
 # The declarative schema. `FLEET_CONFIG_SCHEMA` is the contract other modules and
 # tests assert against, so a change to the policy is a change to one literal.
 FLEET_CONFIG_SCHEMA = {
@@ -46,6 +69,7 @@ FLEET_CONFIG_SCHEMA = {
         "Credentials are per-machine environment only and MUST NOT be stored here."
     ),
     "safe_prefixes": SAFE_PREFIXES,
+    "safe_suffixes": SAFE_SUFFIXES,
     "deny_markers": DENY_MARKERS,
     "fail_closed": True,
     # Named explicitly so the exclusion is documented rather than folklore: the
@@ -72,7 +96,11 @@ def is_safe_config_key(key) -> bool:
             return False
         if any(marker in upper for marker in DENY_MARKERS):
             return False
-        return any(upper.startswith(prefix) for prefix in SAFE_PREFIXES)
+        if any(upper.startswith(prefix) for prefix in SAFE_PREFIXES):
+            return True
+        # Suffix rule runs only after every deny check, so it can widen the
+        # allowlist but never override a refusal.
+        return any(upper.endswith(suffix) for suffix in SAFE_SUFFIXES)
     except Exception:
         # An exception while deciding is not permission.
         return False

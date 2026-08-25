@@ -71,6 +71,10 @@ _SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_"
                   # anything key/token-shaped regardless of prefix.
                   "OLLAMA_", "COMMITTEE_", "LEGAL_DOCKET", "SEMANTIC_DEDUPE", "SWARM_", "CADE_")
 _DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT")
+# Suffix families. Model-selection keys are spelled per provider (GEMINI_MODEL,
+# OPENAI_STRONG_MODEL, CLAUDE_MODEL...) so no prefix reaches them. See
+# fleet_contracts.SAFE_SUFFIXES for why, and for the retired-model outage that gap cost.
+_SAFE_SUFFIXES = ("_MODEL", "_MODELS")
 
 
 def _safe_key(k):
@@ -90,7 +94,9 @@ def _safe_key(k):
         return False
     if any(m in ku for m in _DENY_MARKERS):
         return False
-    return any(ku.startswith(p) for p in _SAFE_PREFIXES)
+    if any(ku.startswith(p) for p in _SAFE_PREFIXES):
+        return True
+    return any(ku.endswith(s) for s in _SAFE_SUFFIXES)
 
 
 # CONFIG PRECEDENCE (2026-08-03). fleet_config (the DB) is the fleet-wide SOURCE OF TRUTH and
@@ -121,6 +127,14 @@ _applied_config = {}
 # GEMINI_CHEAP_MODEL, OPENAI_STRONG_MODEL, OPENAI_FAST_MODEL, OPENAI_CHEAP_MODEL,
 # PROMOTION_STATE, PREWARM_N and PREVIEW_FEATURE_X all match no safe prefix and are
 # therefore stored and ignored.
+#
+# RESOLVED for the *_MODEL family, 2026-08-24. Those five model keys are now consumed
+# via fleet_contracts.SAFE_SUFFIXES — see there for why a suffix and not a provider
+# prefix. The gap was not theoretical: the fleet's default agentic coder was pinned to
+# a model Google had retired, agentic_coders.py reads that pin from GEMINI_MODEL, and
+# the single row that would have re-pointed every machine was one this loader dropped.
+# The rest of the list above stands, and stands for the same reason: which of them are
+# safe is a policy question for the owner, not something to widen quietly.
 #
 # The fix is reporting, not widening the allowlist: which keys are unsafe is a policy
 # question for the owner, and quietly applying them would be the security regression the
