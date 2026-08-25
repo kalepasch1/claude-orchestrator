@@ -41,6 +41,19 @@ import stderr_digest
 # cowork 2026-08-02: floor lowered 10->1 so recovery mode (RELEASE_MIN_BATCH=1) can flush small batches
 MIN_BATCH = max(1, int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10"))))
 RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "6"))))
+#: "cadence" (default) is the behaviour this module has always had: amortize
+#: merges into batches of MIN_BATCH and flush on RELEASE_INTERVAL_HOURS.
+#: "capacity" is the operator's ask — ship whenever there is capacity and
+#: something to ship — with concurrency, not a clock, as the throttle.
+#: Default is unchanged, so setting nothing changes nothing.
+RELEASE_MODE = os.environ.get("ORCH_RELEASE_MODE", "cadence").strip().lower()
+
+#: Capacity mode only. Coalesces a burst of merges into one release instead of
+#: paying a production build per commit. This is the cost control that replaces
+#: MIN_BATCH when the batch threshold drops to 1 — deleting the batch gate
+#: without it trades a starved release train for a Vercel build per merge.
+RELEASE_DEBOUNCE_S = float(os.environ.get("ORCH_RELEASE_DEBOUNCE_S", "120"))
+
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
@@ -68,6 +81,134 @@ def _release_decision(ahead, due, minimum=None):
     if ahead >= minimum or due:
         return "release"
     return "hold"
+
+
+def _capacity_mode():
+    """True when releases are throttled by capacity rather than by a clock."""
+    return RELEASE_MODE == "capacity"
+
+
+def _effective_min_batch(project):
+    """Staged changes needed before a release is considered.
+
+    Capacity mode lowers this to 1: MIN_BATCH=10 is precisely what makes a
+    project with three finished changes wait for seven more that may never come.
+    Cadence mode returns MIN_BATCH unchanged.
+    """
+    return 1 if _capacity_mode() else MIN_BATCH
+
+
+def _release_in_flight(project):
+    """(True, note) when a release for *project* is already pending or building.
+
+    Concurrency IS the capacity signal in capacity mode: one release in flight
+    per project, and the next one starts when that one lands.
+
+    FAILS CLOSED. If the check itself cannot be answered, this reports "in
+    flight" and the pass is skipped. Shipping a second concurrent release is the
+    expensive mistake — two Vercel builds racing to the same production branch —
+    and skipping a pass costs one cycle.
+    """
+    try:
+        rows = db.select("releases", {
+            "select": "id,deploy_status,created_at",
+            "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building)",
+            "order": "created_at.desc",
+            "limit": "1",
+        }) or []
+    except Exception as exc:
+        return True, f"in-flight check failed, fail-closed: {exc}"
+    if rows:
+        status = str(rows[0].get("deploy_status") or "unknown").lower()
+        return True, f"release already {status}"
+    return False, "no release in flight"
+
+
+def _release_debounced(project):
+    """(True, note) when the last release is younger than RELEASE_DEBOUNCE_S.
+
+    FAILS OPEN, unlike the in-flight check. An unreadable or missing timestamp
+    must not wedge a project's releases forever; the in-flight check above is
+    the hard bound on concurrency, and this one is only a coalescing window.
+    """
+    if RELEASE_DEBOUNCE_S <= 0:
+        return False, "debounce disabled"
+    try:
+        rows = db.select("releases", {
+            "select": "id,deploy_status,created_at",
+            "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building,success)",
+            "order": "created_at.desc",
+            "limit": "1",
+        }) or []
+    except Exception as exc:
+        return False, f"debounce check failed, fail-open: {exc}"
+    if not rows:
+        return False, "no prior release"
+    try:
+        last = datetime.datetime.fromisoformat(
+            str(rows[0].get("created_at") or "").replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return False, "release timestamp unreadable, fail-open"
+    age = (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds()
+    if age < RELEASE_DEBOUNCE_S:
+        return True, f"debounce ({age:.0f}/{RELEASE_DEBOUNCE_S:.0f}s since last release)"
+    return False, f"debounce elapsed ({age:.0f}s)"
+
+
+def _release_rate_per_hour(project):
+    """Releases started for *project* in the last hour, or None if unreadable.
+
+    Capacity mode removes the batch gate, so the cost it was standing in for has
+    to stay visible: this is the number that shows a regression into a build per
+    commit. None means "not measured", never 0 — a failed read must not be
+    reported as a quiet hour.
+    """
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    try:
+        rows = db.select("releases", {
+            "select": "id,created_at",
+            "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building,success,failed,rolled_back)",
+            "created_at": f"gte.{cutoff}",
+            "limit": "1000",
+        }) or []
+    except Exception:
+        return None
+    return len(rows)
+
+
+def _capacity_release_decision(project, ahead):
+    """Release / hold / up-to-date for capacity mode: is there work, and is there room.
+
+    Deliberately narrow. The RED-project back-pressure, open-release-fix holds
+    and recent-failed-gate cooldown live in the caller and are not overridden
+    here — this function only ever answers "is there something staged and is
+    there capacity to ship it". Making it authoritative would let a capacity
+    signal ship a project the gates are holding shut.
+
+    The two halves are paired on purpose. It is easy to "fix" a starved release
+    train by deleting the batch and interval gates, which buys a Vercel build per
+    commit; so every path that returns "release" is guarded by an in-flight check
+    (hard, fail-closed) and a debounce window (soft, fail-open).
+    """
+    ahead = int(ahead or 0)
+    if ahead <= 0:
+        return "up-to-date", "nothing staged"
+
+    in_flight, note = _release_in_flight(project)
+    if in_flight:
+        return "hold", note
+
+    debounced, note = _release_debounced(project)
+    if debounced:
+        return "hold", note
+
+    return "release", f"{ahead} change(s) staged, no release in flight"
 
 
 def _candidate_state_filter():
@@ -1271,16 +1412,29 @@ def _run_for_unlocked(project, repo_override=None):
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
-    if int(ahead) < MIN_BATCH:
-        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": "below batch size"}
-    due, due_note = _release_due(project)
-    # Amortize normal traffic into batches, but never strand low-volume projects
-    # forever below MIN_BATCH: cadence expiry flushes whatever is ready.
-    if _release_decision(ahead, due) == "hold":
-        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged,
-                             ahead=int(ahead), note=due_note)
+    if _capacity_mode():
+        decision, decision_note = _capacity_release_decision(project, ahead)
+    else:
+        due, decision_note = _release_due(project)
+        # Amortize normal traffic into batches, but never strand low-volume
+        # projects forever below MIN_BATCH: cadence expiry flushes whatever is
+        # ready. That was the stated intent and it was not what happened. An
+        # `if int(ahead) < MIN_BATCH: return "below batch size"` stood HERE,
+        # ahead of this call, so the `due` arm of _release_decision could never
+        # be reached: below the batch you returned before asking, and at or above
+        # it the decision is "release" whether or not the interval elapsed. A
+        # project with three finished changes waited for seven more indefinitely.
+        # _release_decision now governs, with the batch floor passed as its
+        # `minimum`, which is what makes the cadence flush real.
+        decision = _release_decision(ahead, due, minimum=_effective_min_batch(project))
+    if decision == "up-to-date":
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
-                "note": f"below batch size; {due_note}"}
+                "note": decision_note}
+    if decision == "hold":
+        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged,
+                             ahead=int(ahead), note=decision_note)
+        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
+                "note": decision_note}
     # Freeze the exact candidate, commands, dependency graph, and file set
     # before any expensive gate runs. This manifest is the release identity.
     det_cmd, has_real_tests = _detect_test_cmd(repo)
@@ -1632,8 +1786,10 @@ def _next_version():
 
 
 def _release_due(project):
-    if RELEASE_INTERVAL_HOURS <= 0:
-        return True, "release interval disabled"
+    # The `if RELEASE_INTERVAL_HOURS <= 0: return True, "release interval
+    # disabled"` branch that used to open this function was unreachable:
+    # RELEASE_INTERVAL_HOURS is `max(6.0, ...)`, so it can never be <= 0. A knob
+    # that reads as a kill switch and is not one is worse than no knob.
     rows = db.select("releases", {"select": "created_at,project,deploy_status", "project": f"eq.{project}",
                                   "deploy_status": "in.(pending,building,success)",
                                   "order": "created_at.desc", "limit": "1"}) or []
