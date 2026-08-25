@@ -145,11 +145,26 @@ def promote_preview_to_prod(preview_db_config):
                 }),
             })
 
-            # Apply config overrides
+            # Apply config overrides.
+            #
+            # THE KEY WAS f"PREVIEW_{k}". This function is promote_preview_to_prod
+            # and the whole of step 3 is "apply preview config to production", but
+            # a PREVIEW_-prefixed key is not the production key: FEATURE_X was
+            # left exactly as it was and a PREVIEW_FEATURE_X appeared beside it
+            # that nothing in the fleet reads. Every promotion this module has
+            # ever been able to perform was therefore a no-op plus litter.
+            #
+            # It also broke the rollback contract. rollback_promotion() restores
+            # the snapshot's keys under their PLAIN names, and
+            # _snapshot_prod_state() captures the caller's config dict with plain
+            # names too — so the promotion wrote one key space and its own
+            # rollback repaired a different one. Whichever half you trust, they
+            # could not both be right; the two that agree with each other, and
+            # with the function's name, are the plain ones.
             overrides = preview_db_config.get("config_overrides", {})
             for k, v in overrides.items():
                 db.upsert("fleet_config", {
-                    "key": f"PREVIEW_{k}",
+                    "key": k,
                     "value": str(v),
                 })
 
