@@ -72,7 +72,10 @@ KNOWN_BROKEN = {
     # query does not, so pointing the API at it is a behaviour decision, not a
     # translation.
     ("runner/alert_rules_engine.py", 129),
-    ("runner/config_sync.py", 233),
+    # config_sync.report_sync_status is FIXED (2026-08-25) — it now calls
+    # db.upsert("fleet_config", ...) instead of db.sql, so it writes the
+    # monitoring row it has always claimed to write. Removed from the inventory
+    # rather than renumbered.
     ("runner/dynamic_tier_marginal_quality.py", 33),
     ("runner/fleet_health.py", 50),
     ("runner/investor_metrics_dashboard.py", 23),

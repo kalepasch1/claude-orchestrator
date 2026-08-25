@@ -239,20 +239,36 @@ def sync(apply_env: bool = True, dry_run: bool = False) -> dict:
 
 
 def report_sync_status(account: str) -> None:
-    """Write sync status to fleet_config for monitoring."""
+    """Write sync status to fleet_config for monitoring.
+
+    THIS FUNCTION HAS NEVER WRITTEN ANYTHING (fixed 2026-08-25). It called
+    `db.sql(...)`. db is a PostgREST client — select/select_all/count/insert/
+    upsert/update/delete/rpc/claim_task/heartbeat, and no raw-SQL channel has ever
+    existed. So every call raised AttributeError, and the bare `except Exception:
+    pass` around it made that indistinguishable from success: the monitoring row
+    this function exists to produce was simply never there, on any host, ever.
+
+    runner/tests/test_db_api_surface.py carried this call site in its KNOWN_BROKEN
+    inventory, whose own message says the list is "an inventory of remaining work,
+    not a tolerance budget". This is that work.
+
+    db.upsert is the supported spelling of INSERT ... ON CONFLICT DO UPDATE, and
+    it also removes an f-string that interpolated `account` and a JSON blob
+    straight into SQL text.
+    """
     status = {
         "hash": _state.hash,
         "last_sync": _state.last_sync,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     try:
-        db.sql(
-            f"INSERT INTO fleet_config (key, value) "
-            f"VALUES ('{account}_CONFIG_SYNC', '{json.dumps(status)}'::jsonb) "
-            f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
-        )
-    except Exception:
-        pass
+        db.upsert("fleet_config", {"key": f"{account}_CONFIG_SYNC",
+                                   "value": json.dumps(status)})
+    except Exception as exc:
+        # Still fail-soft — a monitoring write must not break a config sync — but
+        # no longer silent, because silence is what hid this for the whole life of
+        # the function.
+        sys.stderr.write(f"[config_sync] status report for {account} failed: {exc}\n")
 
 
 def _get_fleet_config():

@@ -107,6 +107,28 @@ def _reset_projects_cache():
 
 
 @pytest.fixture(autouse=True)
+def _db_breaker_starts_closed():
+    """No test inherits another test's opinion that the control plane is down.
+
+    db's circuit breaker is process-global on purpose: one thread discovering the
+    origin is unreachable spares every other thread the full timeout. Inside a test
+    session that reach makes any test which touches the real origin a trap for every
+    test after it — ten consecutive unreachable calls open the breaker for its whole
+    cooldown, and from then on db._req raises ControlPlaneDown before reaching the
+    code under test.
+
+    Seen twice in one session: test_db_retries::test_get_retries_transient_dns_failure
+    never got to count its retries, and test_crash_loop_detector's task write died on
+    a breaker someone else had opened. Both pass alone.
+
+    Reset BEFORE the test, not after, so a test that deliberately opens the breaker
+    (test_db_breaker_writes) still owns its own state while it runs.
+    """
+    _real_db.reset_breaker()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _evict_leaked_module_doubles():
     """Put back any real runner module a test swapped for a Mock and did not restore.
 

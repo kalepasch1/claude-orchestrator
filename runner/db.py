@@ -344,6 +344,29 @@ def breaker_state():
     return dict(_BREAKER)
 
 
+def reset_breaker():
+    """Close the breaker and forget the failure streak. For tests and operators.
+
+    The breaker is process-global by design — that is what lets one thread's
+    discovery that the control plane is down spare every other thread the full
+    timeout. In a test session that same reach turns any test which touches the
+    real origin into a trap for every test that runs after it: ten consecutive
+    unreachable calls open the breaker for DB_BREAKER_COOLDOWN_S, and from then on
+    _req fails fast with ControlPlaneDown before it reaches the code under test.
+    Both halves of that are silent — the tripping test usually passes, and the
+    victim reports something unrelated.
+
+    Exposed rather than left to `db._BREAKER.clear()` at each call site so the
+    reset stays correct if the dict grows a field, and so conftest can hold it
+    open with one named call.
+    """
+    with _BREAKER_LOCK:
+        _BREAKER["consecutive"] = 0
+        _BREAKER["open_until"] = 0.0
+        _BREAKER["probing"] = False
+    return dict(_BREAKER)
+
+
 def _breaker_blocks():
     """True while the breaker is open AND this caller is not the elected half-open prober.
 
