@@ -425,8 +425,10 @@ def _insert_release(row):
     path that happened to leak into the note ("/Users/mandypa..."). A failure that
     flips a project RED fleet-wide should not be attributable only by accident.
 
-    Retries without `host` if the column is not present yet: code and migrations
-    deploy independently, and a lagging DB must not take releases down entirely.
+    Retries without `host` ONLY if the column is not present yet: code and migrations
+    deploy independently, and a lagging DB must not take releases down entirely. Any
+    other failure — above all a paused-host guard refusal — propagates, because an
+    unconditional retry without `host` is indistinguishable from evading the fence.
     """
     # FENCE CHECK (2026-08-13): a releases row is the fleet's record of what shipped —
     # deploy_verify, back-pressure and the RED/GREEN project state all read it. A host
@@ -439,7 +441,27 @@ def _insert_release(row):
         f"record releases row for {row.get('project')}")
     try:
         return db.insert("releases", dict(row, host=paused_host_guard.HOST))
-    except Exception:
+    except Exception as exc:
+        # RECOVERED 2026-08-24 from refs/orch-rescue/20260813T034449-…-7ba40cac.
+        # The compatibility retry has to be NARROW. A blanket `except Exception: insert(row)`
+        # re-submitted the identical row without `host`, and the DB fence
+        # (trg_paused_host_release_guard) only fires `when (NEW.host is not null and
+        # NEW.host <> '')` — so the retry walked straight through the guard that had just
+        # refused the write, anonymously, which is the one thing `host` was added to stop.
+        # Retry ONLY for a DB that genuinely lacks the column yet; re-raise everything else.
+        message = str(exc).lower()
+        missing_host_column = (
+            'column "host"' in message
+            and ("does not exist" in message or "schema cache" in message)
+        ) or ("could not find the 'host' column" in message and "releases" in message)
+        if "paused-host guard" in message:
+            # The trigger's own INSERT into runner_alerts rolls back with its RAISE, so the
+            # durable record is the caller's job, in this separate transaction. See the
+            # v2 migration comment.
+            paused_host_guard.record_rejection(
+                "release_insert", str(exc), project=row.get("project"))
+        if not missing_host_column:
+            raise
         return db.insert("releases", row)
 
 
