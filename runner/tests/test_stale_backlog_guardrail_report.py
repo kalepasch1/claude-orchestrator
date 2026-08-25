@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from stale_backlog_guardrail_report import (  # noqa: E402
     HELD_STEPS,
+    build_bypass_reviews,
     evaluate_guardrail8,
     parse_backlog_log,
 )
@@ -176,3 +177,56 @@ def test_gating_is_fail_soft_on_empty_input():
         decision = evaluate_guardrail8(junk)
         assert decision["guardrail8"]["should_block"] is False
         assert decision["planned_subtasks"] == []
+
+
+def _reviews_for_sample():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    return parsed, build_bypass_reviews(parsed, evaluate_guardrail8(parsed))
+
+
+def test_both_pending_bypasses_get_a_review_instruction():
+    _, result = _reviews_for_sample()
+    assert len(result["bypass_reviews"]) == 2
+    assert result["instructions_complete"] is True
+
+
+def test_both_sample_bypasses_need_more_info():
+    # ~26.0h is over the threshold; the truncated one has no measurable age.
+    _, result = _reviews_for_sample()
+    actions = [review["action"] for review in result["bypass_reviews"]]
+    assert actions == ["request_more_info", "request_more_info"]
+
+
+def test_every_message_names_the_escalation():
+    _, result = _reviews_for_sample()
+    for review in result["bypass_reviews"]:
+        assert ESCALATION_ID in review["suggested_message"]
+
+
+def test_a_fresh_bypass_is_confirmed_rather_than_queried():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    parsed["pending_human_bypass"][0]["age_hours"] = 3.0
+    result = build_bypass_reviews(parsed, evaluate_guardrail8(parsed))
+    assert result["bypass_reviews"][0]["action"] == "confirm"
+
+
+def test_unknown_age_is_never_auto_confirmed():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    for report in parsed["pending_human_bypass"]:
+        report["age_hours"] = None
+    result = build_bypass_reviews(parsed, evaluate_guardrail8(parsed))
+    assert {r["action"] for r in result["bypass_reviews"]} == {"request_more_info"}
+
+
+def test_no_reviews_are_raised_when_nothing_is_blocked():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    parsed["guardrail8"]["state"] = "DONE"
+    result = build_bypass_reviews(parsed, evaluate_guardrail8(parsed))
+    assert result["bypass_reviews"] == []
+    assert result["instructions_complete"] is True
+
+
+def test_bypass_builder_is_fail_soft():
+    result = build_bypass_reviews(None, None)
+    assert result["bypass_reviews"] == []
+    assert result["instructions_complete"] is True

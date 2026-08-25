@@ -236,3 +236,64 @@ def evaluate_guardrail8(parsed: Optional[Dict]) -> Dict:
         },
         "planned_subtasks": [],
     }
+
+
+# A bypass report older than this has sat long enough that the reviewer should
+# be asked for context rather than nodded through.
+BYPASS_STALE_HOURS = 24.0
+
+
+def _bypass_action(age_hours: Optional[float]) -> str:
+    """Choose a review action for one pending bypass report.
+
+    Unknown age is treated the same as stale, not the same as fresh. The
+    compactor truncates the age suffix often enough that defaulting an
+    unmeasurable report to "confirm" would auto-approve bypasses of a standing
+    halt purely because the log got cut off mid-line.
+    """
+    if age_hours is None:
+        return "request_more_info"
+    return "request_more_info" if age_hours > BYPASS_STALE_HOURS else "confirm"
+
+
+def build_bypass_reviews(parsed: Optional[Dict], decision: Optional[Dict]) -> Dict:
+    """Turn pending human bypass reports into actionable review instructions.
+
+    Only produces instructions while the guardrail decision is blocking — if
+    nothing is being held, there is no bypass left to review.
+    """
+    parsed = parsed or {}
+    decision = decision or {}
+    blocking = bool((decision.get("guardrail8") or {}).get("should_block"))
+    if not blocking:
+        return {"bypass_reviews": [], "instructions_complete": True}
+
+    escalation = (
+        (decision.get("guardrail8") or {}).get("escalation_id")
+        or (parsed.get("guardrail8") or {}).get("escalation_id")
+        or "unknown escalation"
+    )
+
+    reviews = []
+    for report in parsed.get("pending_human_bypass") or []:
+        age = report.get("age_hours")
+        action = _bypass_action(age)
+        age_text = "age unknown" if age is None else "{0:.1f}h old".format(age)
+        reviews.append({
+            "id": report.get("id"),
+            "age_hours": age,
+            "action": action,
+            "suggested_message": (
+                "Bypass report {0} ({1}) is still unreviewed while Guardrail 8 "
+                "escalation {2} remains QUEUED and unapproved. {3}".format(
+                    report.get("id"),
+                    age_text,
+                    escalation,
+                    "Please confirm the bypass or withdraw it."
+                    if action == "confirm"
+                    else "Please supply the justification and current status before it is actioned.",
+                )
+            ),
+        })
+
+    return {"bypass_reviews": reviews, "instructions_complete": True}
