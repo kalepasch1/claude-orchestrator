@@ -54,7 +54,7 @@ DB_PY = os.path.join(ROOT, "runner", "db.py")
 #: Call sites still reaching for a db API that does not exist, with what breaks.
 #: Fix one -> delete its line here.  Add one -> this test fails.
 KNOWN_BROKEN = {
-    # db.query — raw SQL, 16 sites (config_drift's was the 17th and is fixed).  None of these modules is imported by
+    # db.query — raw SQL, 14 sites (config_drift's and metaopt's two are fixed).  None of these modules is imported by
     # runner.py or any live loop; all are entered only by their own __main__.
     ("runner/bots/de_chancery.py", 72), ("runner/bots/de_chancery.py", 130),
     ("runner/continuous_test.py", 152),
@@ -64,7 +64,6 @@ KNOWN_BROKEN = {
     ("runner/error_pattern_analyzer.py", 147), ("runner/error_pattern_analyzer.py", 153),
     ("runner/fleet_topology.py", 86),
     ("runner/kpi_regression_watchdog.py", 72),
-    ("runner/metaopt.py", 29), ("runner/metaopt.py", 52),
     # db.sql — raw SQL, 9 remaining sites.  orchestration_api's four are
     # reimplementations of db.claim_task / db.heartbeat / db.count in SQL that
     # has never run; the real functions carry the economic ordering, host
