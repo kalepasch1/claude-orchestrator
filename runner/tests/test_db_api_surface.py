@@ -135,6 +135,18 @@ def _db_surface():
     return surface, sigs
 
 
+def _parse(path):
+    """AST for *path*, or None if it will not parse.
+
+    Stated once, with a returned default, rather than a `continue` inside an
+    except arm in each caller — which is what the convention lint objects to.
+    """
+    try:
+        return ast.parse(open(path, encoding="utf-8", errors="replace").read())
+    except (SyntaxError, OSError):
+        return None
+
+
 def _locally_shadowed_lines(tree):
     """Lines inside a function that binds its own local named `db`.
 
@@ -167,10 +179,8 @@ def _module_db_accesses():
     for rel in _tracked_py():
         if _is_test(rel):
             continue
-        path = os.path.join(ROOT, rel)
-        try:
-            tree = ast.parse(open(path, encoding="utf-8", errors="replace").read())
-        except (SyntaxError, OSError):
+        tree = _parse(os.path.join(ROOT, rel))
+        if tree is None:
             continue
         skip = _locally_shadowed_lines(tree)
         calls = {}

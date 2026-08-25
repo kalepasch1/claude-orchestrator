@@ -63,6 +63,20 @@ MARK = "train"                                   # decided_by prefix => handled 
 SKIP_PREFIXES = ("merge-handler", "train", "auto-policy")
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
+HEALTH_LOOKBACK_MINUTES = 60
+
+
+def _test_pipeline_health(metrics, lookback_minutes=HEALTH_LOOKBACK_MINUTES):
+    """Pass-rate / gate-decision block for the run summary, or None if unavailable.
+
+    None keeps the key out of the summary entirely, which is what the previous
+    fail-soft did — a partially-populated health block would be read as real.
+    """
+    try:
+        return metrics.get_health(lookback_minutes=lookback_minutes)
+    except Exception:
+        return None
+
 
 def _test_timeout():
     """Read at call time so fleet_config changes take effect without restart."""
@@ -2514,10 +2528,9 @@ def _train_run_unleased(report=None):
     # runner/tests/test_pipeline_observability.py has been red on the missing
     # summary key since.
     if _pm:
-        try:
-            summary["test_pipeline"] = _pm.get_health(lookback_minutes=60)
-        except Exception:
-            pass
+        _health = _test_pipeline_health(_pm)
+        if _health is not None:
+            summary["test_pipeline"] = _health
 
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "

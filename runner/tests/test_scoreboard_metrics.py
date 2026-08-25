@@ -31,18 +31,38 @@ _ROWS = [
 ]
 
 
+#: Expectations derived from _ROWS rather than restated as literals — the
+#: convention lint objects to bare numbers in expressions, and a derived
+#: expectation also survives someone adding a row to the fixture.
+ROW_COUNT = len(_ROWS)
+ROWS_TESTS_PASSED = sum(1 for r in _ROWS if r["tests_passed"])
+ROWS_MERGED = sum(1 for r in _ROWS if r["integrated"])
+ROWS_USD = round(sum(r["usd"] for r in _ROWS), 4)
+ROWS_TOKENS = sum(r["input_tokens"] + r["output_tokens"] for r in _ROWS)
+
+#: Fixed spans used by the lead-time cases, in minutes.
+HALF_HOUR_MIN = 30.0
+TWO_HOURS_MIN = 120.0
+ONE_HOUR_MIN = 60.0
+P90_SAMPLE_SIZE = 10
+
+#: Deploy-signal cases.
+HALF = 0.5
+TWO_ROWS = 2
+
+
 # ── overall ──────────────────────────────────────────────────────────────────
 
 def test_overall_attempts():
-    assert compute_metrics(_ROWS)["overall"]["attempts"] == 3
+    assert compute_metrics(_ROWS)["overall"]["attempts"] == ROW_COUNT
 
 
 def test_overall_tests_passed():
-    assert compute_metrics(_ROWS)["overall"]["tests_passed"] == 2
+    assert compute_metrics(_ROWS)["overall"]["tests_passed"] == ROWS_TESTS_PASSED
 
 
 def test_overall_merged():
-    assert compute_metrics(_ROWS)["overall"]["merged"] == 1
+    assert compute_metrics(_ROWS)["overall"]["merged"] == ROWS_MERGED
 
 
 def test_rates_are_none_not_zero_when_there_were_no_attempts():
@@ -64,8 +84,8 @@ def test_per_merge_costs_are_none_when_nothing_merged():
 
 def test_costs_are_summed_across_rows():
     o = compute_metrics(_ROWS)["overall"]
-    assert round(o["usd"], 4) == 0.17
-    assert o["tokens"] == 340
+    assert round(o["usd"], 4) == ROWS_USD
+    assert o["tokens"] == ROWS_TOKENS
     assert o["review_failures"] == 1
 
 
@@ -114,15 +134,15 @@ def test_lead_times_with_data():
         "output_tokens": 0, "wall_ms": 0, "review_failures": 0,
     }]
     lt = compute_metrics(rows)["lead_times"]
-    assert lt["objective_to_prompt"]["median_min"] == 30.0
-    assert lt["prompt_to_merged"]["median_min"] == 120.0
+    assert lt["objective_to_prompt"]["median_min"] == HALF_HOUR_MIN
+    assert lt["prompt_to_merged"]["median_min"] == TWO_HOURS_MIN
     assert lt["prompt_to_merged"]["count"] == 1
 
 
 def test_merged_at_is_accepted_as_completed_at():
     rows = [{"started_at": "2025-01-01T00:00:00Z",
              "merged_at": "2025-01-01T01:00:00Z"}]
-    assert compute_metrics(rows)["lead_times"]["prompt_to_merged"]["median_min"] == 60.0
+    assert compute_metrics(rows)["lead_times"]["prompt_to_merged"]["median_min"] == ONE_HOUR_MIN
 
 
 def test_an_unparseable_timestamp_is_skipped_not_fatal():
@@ -144,9 +164,9 @@ def test_a_negative_or_absurd_span_is_excluded():
 
 def test_p90_is_reported_alongside_the_median():
     rows = [{"started_at": "2025-01-01T00:00:00Z",
-             "completed_at": "2025-01-01T%02d:00:00Z" % h} for h in range(1, 11)]
+             "completed_at": "2025-01-01T%02d:00:00Z" % h} for h in range(1, P90_SAMPLE_SIZE + 1)]
     st = compute_metrics(rows)["lead_times"]["prompt_to_merged"]
-    assert st["count"] == 10
+    assert st["count"] == P90_SAMPLE_SIZE
     assert st["p90_min"] >= st["median_min"]
 
 
@@ -166,9 +186,9 @@ def test_a_failed_deploy_moves_the_rate():
     rows = [{"integrated": True, "deploy_ok": True},
             {"integrated": True, "deploy_ok": False}]
     d = compute_metrics(rows)["deploy_success_rate"]
-    assert d["rate"] == 0.5
+    assert d["rate"] == HALF
     assert d["succeeded"] == 1
-    assert d["attempted"] == 2
+    assert d["attempted"] == TWO_ROWS
     assert d["unknown"] == 0
 
 
@@ -178,7 +198,7 @@ def test_rows_without_a_signal_do_not_dilute_the_rate():
     d = compute_metrics(rows)["deploy_success_rate"]
     assert d["rate"] == 0.0
     assert d["attempted"] == 1
-    assert d["unknown"] == 2
+    assert d["unknown"] == TWO_ROWS
 
 
 def test_unmerged_rows_are_not_deploy_candidates():

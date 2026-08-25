@@ -51,11 +51,18 @@ def _age_seconds(stored_ts, updated_at):
     """
     import datetime
     now = time.time()
-    try:
-        if stored_ts is not None:
-            return max(0.0, now - float(stored_ts))
-    except (TypeError, ValueError):
-        pass
+
+    def _from_epoch(value):
+        """Age from the epoch float store() writes, or None if it is not one."""
+        try:
+            return max(0.0, now - float(value))
+        except (TypeError, ValueError):
+            return None
+
+    if stored_ts is not None:
+        epoch_age = _from_epoch(stored_ts)
+        if epoch_age is not None:
+            return epoch_age
     raw = str(updated_at or "").strip()
     if not raw:
         return None

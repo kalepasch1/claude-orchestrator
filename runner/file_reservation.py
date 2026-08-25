@@ -149,23 +149,49 @@ def _clean_expired():
     except Exception as e:
         _log.debug("file_reservation: cleanup read failed: %s", e)
         return 0
-    for r in rows:
-        raw = str(r.get("reserved_at") or "")
+
+    def _is_expired(row):
+        """True once this row's TTL has passed.
+
+        False for an unparseable reserved_at or ttl_seconds, which leaves the row
+        alone — see the docstring above on which direction of that mistake hurts.
+        """
+        raw = str(row.get("reserved_at") or "")
         try:
             stamp = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
             if stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=_dt.timezone.utc)
-            ttl = int(r.get("ttl_seconds") or DEFAULT_TTL)
+            ttl = int(row.get("ttl_seconds") or DEFAULT_TTL)
         except (TypeError, ValueError):
-            continue
-        if (now - stamp).total_seconds() <= ttl:
-            continue
+            return False
+        return (now - stamp).total_seconds() > ttl
+
+    def _delete_expired(row_id):
+        """Delete one expired row. Returns how many actually went (1 or 0)."""
         try:
-            db.delete(TABLE, {"id": r["id"]})
-            removed += 1
+            db.delete(TABLE, {"id": row_id})
+            return 1
         except Exception as e:
             _log.debug("file_reservation: cleanup delete failed: %s", e)
+            return 0
+
+    for r in rows:
+        if _is_expired(r):
+            removed += _delete_expired(r["id"])
     return removed
+
+
+def _holder_rows(repo: str, filepath: str):
+    """Rows currently holding (repo, filepath), or None if the read itself failed.
+
+    None and [] mean different things to the caller: [] is "nobody holds it any
+    more", None is "we could not find out", and only the second one has to be
+    treated as still-blocked.
+    """
+    try:
+        return db.select(TABLE, {"repo": f"eq.{repo}", "filepath": f"eq.{filepath}"}) or []
+    except Exception:
+        return None
 
 
 def reserve(task: dict, repo: str, files: list[str]) -> dict:
@@ -242,9 +268,10 @@ def reserve(task: dict, repo: str, files: list[str]) -> dict:
 
         # 409: somebody holds (repo, filepath).  Name them — unless it is this
         # same task, which is a re-entry and not a conflict.
-        try:
-            rows = db.select(TABLE, {"repo": f"eq.{repo}", "filepath": f"eq.{filepath}"}) or []
-        except Exception:
+        rows = _holder_rows(repo, filepath)
+        if rows is None:
+            # Could not read who holds it.  Blocked is the safe answer: the
+            # INSERT already told us the file is taken.
             result["blocked"].append((filepath, "unknown"))
             continue
         if not rows:

@@ -88,11 +88,33 @@ def _exists_outside_runner(name):
     """True when the name resolves to a real module that is not ours."""
     if _is_runner_module(name):
         return False
+    return _resolves_to_a_real_module(name)
+
+
+def _parse(path):
+    """AST for *path*, or None if it will not parse.
+
+    A helper rather than a try/except around ast.parse inside the loop: the
+    convention lint asks a handler to return a sensible default rather than
+    swallow, and "None means unparseable" is that default stated once.
+    """
     try:
-        spec = importlib.util.find_spec(name)
+        return ast.parse(open(path, encoding="utf-8").read())
+    except (SyntaxError, OSError):
+        return None
+
+
+def _resolves_to_a_real_module(name):
+    """True when *name* imports to something. False for a synthetic name.
+
+    find_spec raises for some malformed names and returns None for absent ones;
+    both mean "not a real module", so the handler returns that rather than
+    passing.
+    """
+    try:
+        return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError, AttributeError):
         return False
-    return spec is not None
 
 
 def _unconditional_module_scope_fakes():
@@ -104,9 +126,8 @@ def _unconditional_module_scope_fakes():
     """
     offenders = []
     for path in _test_files():
-        try:
-            tree = ast.parse(open(path, encoding="utf-8").read())
-        except SyntaxError:
+        tree = _parse(path)
+        if tree is None:
             continue
         for node in tree.body:  # module scope only
             if not isinstance(node, ast.Assign):
@@ -201,12 +222,10 @@ class TestConftestRestoresEveryFake(unittest.TestCase):
         for name in synthetic:
             saved = sys.modules.pop(name, None)
             try:
-                self.assertIsNone(
-                    importlib.util.find_spec(name),
+                self.assertFalse(
+                    _resolves_to_a_real_module(name),
                     f"{name} resolves to a real module — it is no longer synthetic",
                 )
-            except (ImportError, ValueError):
-                pass
             finally:
                 if saved is not None:
                     sys.modules[name] = saved

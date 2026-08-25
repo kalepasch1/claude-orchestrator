@@ -169,11 +169,11 @@ class TestSecretsManagerProjectScoping(unittest.TestCase):
         with patch.object(secrets_manager, "db") as mock_db:
             # Return both project-specific and global
             mock_db.select.return_value = [
-                {"store": "env", "ref": "GLOBAL_KEY", "provider": "test", "name": "api_key", "project": None},
-                {"store": "env", "ref": "PROJ_KEY", "provider": "test", "name": "api_key", "project": "proj-x"}
+                {"store": "env", "ref": "GLOBAL_REF", "provider": "test", "name": "api_key", "project": None},
+                {"store": "env", "ref": "PROJ_REF", "provider": "test", "name": "api_key", "project": "proj-x"}
             ]
-            os.environ["GLOBAL_KEY"] = "global-secret"
-            os.environ["PROJ_KEY"] = "project-secret"
+            os.environ["GLOBAL_REF"] = "global-secret"
+            os.environ["PROJ_REF"] = "project-secret"
 
             result = secrets_manager.resolve("test", "api_key", project="proj-x")
 
@@ -192,14 +192,14 @@ class TestSecretsManagerProjectScoping(unittest.TestCase):
         """
         with patch.object(secrets_manager, "db") as mock_db:
             mock_db.select.return_value = [
-                {"store": "env", "ref": "OTHER_PROJECT_KEY", "provider": "test",
+                {"store": "env", "ref": "OTHER_PROJECT_REF", "provider": "test",
                  "name": "api_key", "project": "proj-other"}
             ]
-            os.environ["OTHER_PROJECT_KEY"] = "not-yours"
+            os.environ["OTHER_PROJECT_REF"] = "not-yours"
             try:
                 result = secrets_manager.resolve("test", "api_key", project="proj-mine")
             finally:
-                os.environ.pop("OTHER_PROJECT_KEY", None)
+                os.environ.pop("OTHER_PROJECT_REF", None)
 
         self.assertIsNone(result)
 
@@ -210,12 +210,12 @@ class TestSecretsManagerProjectScoping(unittest.TestCase):
         the database happened to return first, so the same task could get the global
         credential on one run and the project one on the next. Assert both orderings.
         """
-        proj_row = {"store": "env", "ref": "PROJ_KEY", "provider": "test",
+        proj_row = {"store": "env", "ref": "PROJ_REF", "provider": "test",
                     "name": "api_key", "project": "proj-x"}
-        global_row = {"store": "env", "ref": "GLOBAL_KEY", "provider": "test",
+        global_row = {"store": "env", "ref": "GLOBAL_REF", "provider": "test",
                       "name": "api_key", "project": None}
-        os.environ["GLOBAL_KEY"] = "global-secret"
-        os.environ["PROJ_KEY"] = "project-secret"
+        os.environ["GLOBAL_REF"] = "global-secret"
+        os.environ["PROJ_REF"] = "project-secret"
         try:
             for ordering in ([proj_row, global_row], [global_row, proj_row]):
                 with self.subTest(order=[r["ref"] for r in ordering]):
@@ -224,21 +224,21 @@ class TestSecretsManagerProjectScoping(unittest.TestCase):
                         result = secrets_manager.resolve("test", "api_key", project="proj-x")
                     self.assertEqual(result, "project-secret")
         finally:
-            os.environ.pop("GLOBAL_KEY", None)
-            os.environ.pop("PROJ_KEY", None)
+            os.environ.pop("GLOBAL_REF", None)
+            os.environ.pop("PROJ_REF", None)
 
     def test_resolve_falls_back_to_global_when_project_has_no_row(self):
         """A global (project=None) row is still the right answer when no override exists."""
         with patch.object(secrets_manager, "db") as mock_db:
             mock_db.select.return_value = [
-                {"store": "env", "ref": "GLOBAL_ONLY_KEY", "provider": "test",
+                {"store": "env", "ref": "GLOBAL_ONLY_REF", "provider": "test",
                  "name": "api_key", "project": None}
             ]
-            os.environ["GLOBAL_ONLY_KEY"] = "global-secret"
+            os.environ["GLOBAL_ONLY_REF"] = "global-secret"
             try:
                 result = secrets_manager.resolve("test", "api_key", project="proj-x")
             finally:
-                os.environ.pop("GLOBAL_ONLY_KEY", None)
+                os.environ.pop("GLOBAL_ONLY_REF", None)
 
         self.assertEqual(result, "global-secret")
 

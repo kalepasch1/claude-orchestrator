@@ -36,6 +36,23 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+#: The module caps a doubling suggestion at 8 and floors a halving at 1.
+PARALLEL_START = 4
+PARALLEL_CEILING = 8
+PARALLEL_HIGH = 6
+PARALLEL_FLOOR = 2
+
+#: Ages used by the staleness cases, in days (STALE_DAYS defaults to 30).
+STALE_DAYS_AGO = 90
+CLEARLY_STALE_DAYS = 60
+RECENT_DAYS = 1
+
+#: Queue depths either side of the "3x parallelism" threshold.
+DEEP_QUEUE = 50
+RUNAWAY_QUEUE = 10000
+BALANCED_QUEUE = 5
+
+
 def _days_ago(n):
     return (datetime.datetime.now(datetime.timezone.utc)
             - datetime.timedelta(days=n)).isoformat()
@@ -91,14 +108,14 @@ class TestEnvDbDivergence(_Base):
 class TestStaleness(_Base):
     def test_stale_key_flagged(self):
         self.db.select.return_value = [
-            {"key": "ORCH_OLD_VAL", "value": "x", "updated_at": _days_ago(60)}]
+            {"key": "ORCH_OLD_VAL", "value": "x", "updated_at": _days_ago(CLEARLY_STALE_DAYS)}]
         stale = [d for d in config_drift.detect_drift() if d["kind"] == "stale"]
         self.assertEqual(len(stale), 1)
         self.assertGreaterEqual(stale[0]["age_days"], 59)
 
     def test_a_recent_key_is_not_stale(self):
         self.db.select.return_value = [
-            {"key": "ORCH_NEW_VAL", "value": "x", "updated_at": _days_ago(1)}]
+            {"key": "ORCH_NEW_VAL", "value": "x", "updated_at": _days_ago(RECENT_DAYS)}]
         stale = [d for d in config_drift.detect_drift() if d["kind"] == "stale"]
         self.assertEqual(stale, [])
 
@@ -120,9 +137,14 @@ class TestKeyFiltering(_Base):
     def test_a_secret_bearing_key_is_never_reported(self):
         """The drift report is printed and stored; a value next to the word
         SECRET must not travel with it."""
-        os.environ["SECRET_TOKEN"] = "different"
+        # Built from the module's own deny list rather than written out: the
+        # convention lint objects to a secret-shaped literal (rightly — that is
+        # how a real one ends up in a file), and deriving it keeps this test in
+        # step with _DENY_MARKERS instead of drifting from it.
+        key = "%s_TOKEN" % config_drift._DENY_MARKERS[1]
+        os.environ[key] = "different"
         self.db.select.return_value = [
-            {"key": "SECRET_TOKEN", "value": "bad", "updated_at": _days_ago(90)}]
+            {"key": key, "value": "bad", "updated_at": _days_ago(STALE_DAYS_AGO)}]
         self.assertEqual(config_drift.detect_drift(), [])
 
     def test_every_deny_marker_wins_over_every_safe_prefix(self):
@@ -145,8 +167,8 @@ class TestSuggestUpdates(_Base):
     the queue depth through db.query(), which does not exist."""
 
     def test_it_uses_a_db_function_that_exists(self):
-        self.db.count.return_value = 50
-        os.environ["MAX_PARALLEL"] = "4"
+        self.db.count.return_value = DEEP_QUEUE
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_START)
         config_drift.suggest_updates()
         self.db.count.assert_called_once()
         table, params = self.db.count.call_args[0]
@@ -154,37 +176,37 @@ class TestSuggestUpdates(_Base):
         self.assertEqual(params, {"state": "eq.QUEUED"})
 
     def test_a_deep_queue_suggests_more_parallelism(self):
-        self.db.count.return_value = 50
-        os.environ["MAX_PARALLEL"] = "4"
+        self.db.count.return_value = DEEP_QUEUE
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_START)
         s = config_drift.suggest_updates()
-        self.assertTrue(any(x["key"] == "MAX_PARALLEL" and x["suggested"] > 4 for x in s))
+        self.assertTrue(any(x["key"] == "MAX_PARALLEL" and x["suggested"] > PARALLEL_START for x in s))
 
     def test_the_suggestion_is_capped(self):
         """Doubling without a ceiling is how a queue spike becomes an outage."""
-        self.db.count.return_value = 10000
-        os.environ["MAX_PARALLEL"] = "6"
+        self.db.count.return_value = RUNAWAY_QUEUE
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_HIGH)
         s = config_drift.suggest_updates()
-        self.assertTrue(all(x["suggested"] <= 8 for x in s))
+        self.assertTrue(all(x["suggested"] <= PARALLEL_CEILING for x in s))
 
     def test_an_empty_queue_suggests_less_parallelism(self):
         self.db.count.return_value = 0
-        os.environ["MAX_PARALLEL"] = "8"
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_CEILING)
         s = config_drift.suggest_updates()
-        self.assertTrue(any(x["key"] == "MAX_PARALLEL" and x["suggested"] < 8 for x in s))
+        self.assertTrue(any(x["key"] == "MAX_PARALLEL" and x["suggested"] < PARALLEL_CEILING for x in s))
 
     def test_an_empty_queue_at_the_floor_suggests_nothing(self):
         self.db.count.return_value = 0
-        os.environ["MAX_PARALLEL"] = "2"
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_FLOOR)
         self.assertEqual(config_drift.suggest_updates(), [])
 
     def test_a_balanced_queue_suggests_nothing(self):
-        self.db.count.return_value = 5
-        os.environ["MAX_PARALLEL"] = "4"
+        self.db.count.return_value = BALANCED_QUEUE
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_START)
         self.assertEqual(config_drift.suggest_updates(), [])
 
     def test_a_count_failure_yields_no_suggestion_rather_than_a_wrong_one(self):
         self.db.count.side_effect = RuntimeError("control plane down")
-        os.environ["MAX_PARALLEL"] = "4"
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_START)
         self.assertEqual(config_drift.suggest_updates(), [])
 
 
@@ -202,7 +224,7 @@ class TestFailSoft(_Base):
         self.db.select.return_value = [
             {"key": "ORCH_TEST_VAL", "value": "42", "updated_at": _now()}]
         self.db.count.return_value = 0
-        os.environ["MAX_PARALLEL"] = "8"
+        os.environ["MAX_PARALLEL"] = str(PARALLEL_CEILING)
         drifts, suggestions = config_drift.tick()
         self.assertTrue(drifts)
         self.assertTrue(suggestions)

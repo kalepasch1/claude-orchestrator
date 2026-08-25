@@ -438,10 +438,7 @@ class _dedup_lock:
         # Clean up to prevent memory leak (only if no one else is waiting).
         with _DEDUP_LOCKS_LOCK:
             if self.key in _DEDUP_LOCKS and not _DEDUP_LOCKS[self.key].locked():
-                try:
-                    del _DEDUP_LOCKS[self.key]
-                except KeyError:
-                    pass
+                _DEDUP_LOCKS.pop(self.key, None)
 
 
 RECOVERY_PREFIX = "recover-missing-branch-"
@@ -1511,30 +1508,32 @@ def insert(table, row, upsert=False):
         _dedup_key = f"{row['project_id']}:{row['slug']}"
 
         def _existing_row():
-            return select("tasks", {
-                "select": "id,slug,state",
-                "project_id": f"eq.{row['project_id']}",
-                "slug": f"eq.{row['slug']}",
-                "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
-                "limit": "1"}) or []
+            """Rows already holding this (project_id, slug), or [] if the read failed.
 
-        try:
-            existing = _existing_row()
-            if existing:
-                return existing
-        except Exception:
-            pass  # fail-soft: never let the guard block a legitimate insert
+            Fail-soft on purpose: the dedup guard exists to stop duplicates, and a
+            database hiccup here must never block a legitimate insert.
+            """
+            try:
+                return select("tasks", {
+                    "select": "id,slug,state",
+                    "project_id": f"eq.{row['project_id']}",
+                    "slug": f"eq.{row['slug']}",
+                    "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
+                    "limit": "1"}) or []
+            except Exception:
+                return []
+
+        existing = _existing_row()
+        if existing:
+            return existing
 
         _dedup_stack.enter_context(_dedup_lock(_dedup_key))
-        try:
-            # Re-check under the lock: another thread on this machine may have
-            # inserted while we waited for it.
-            existing = _existing_row()
-            if existing:
-                _dedup_stack.close()
-                return existing
-        except Exception:
-            pass
+        # Re-check under the lock: another thread on this machine may have
+        # inserted while we waited for it.
+        existing = _existing_row()
+        if existing:
+            _dedup_stack.close()
+            return existing
     try:
         # Inside the try so that the `finally` below releases the dedup lock on
         # every path. A per-slug lock leaked here would deadlock every future
@@ -2045,20 +2044,24 @@ def _claim_via_rpc(runner_id):
     if not _claim_rpc_enabled():
         return None
 
-    runnable = None
-    try:
-        # Deliberately the live read rather than _cached_projects_list: this
-        # runs at most once per claim on an opt-in path, and a stale cache here
-        # would hand the RPC a project set that disagrees with the one the scan
-        # path uses a few lines below — two different answers to "can this host
-        # run it" is worse than one extra query.
-        projs = select("projects", {"select": "id,repo_path"}) or []
-        runnable = [p["id"] for p in projs if repo_runnable_here(p.get("repo_path"))]
-    except Exception:
-        # Could not determine affinity. NULL means "no host restriction" in the
-        # SQL, which is the same fail-open the scan path uses when
-        # local_repo_pids cannot be computed.
-        runnable = None
+    def _runnable_project_ids():
+        """Projects whose repo is checked out here, or None if that is unknowable.
+
+        None means "no host restriction" to the SQL, the same fail-open the scan
+        path takes when local_repo_pids cannot be computed.
+
+        Deliberately the live read rather than _cached_projects_list: this runs at
+        most once per claim on an opt-in path, and a stale cache here would hand
+        the RPC a project set that disagrees with the one the scan path uses — two
+        different answers to "can this host run it" is worse than one extra query.
+        """
+        try:
+            projs = select("projects", {"select": "id,repo_path"}) or []
+            return [p["id"] for p in projs if repo_runnable_here(p.get("repo_path"))]
+        except Exception:
+            return None
+
+    runnable = _runnable_project_ids()
 
     try:
         rows = rpc("claim_next", {"p_runner_id": runner_id,
