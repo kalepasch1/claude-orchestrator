@@ -56,21 +56,35 @@ def recover_branch(task, repo_path, base_branch="master"):
         _log.warning("fetch failed for %s (auth may be required)", branch)
     if DRY_RUN:
         return {"recovered": False, "strategy": "dry_run"}
-    # Check if PAT is configured
-    if not git_auth.pat_available():
-        _log.info("skipping recovery for %s (PAT unavailable)", slug)
-        return {"recovered": False, "strategy": "pat_unavailable"}
+    # NO PAT GATE HERE. Everything below is a database write — select, insert,
+    # update — and a PAT is a *git* credential. Gating the requeue on it (added
+    # in 9d400d9b, a commit about pricing integration) meant that on any host
+    # without ORCH_GIT_PAT, a DONE task whose branch had vanished everywhere was
+    # returned as "pat_unavailable" and then dropped: no requeue, no note, no
+    # trace. This module's own docstring promises the opposite — "If missing
+    # everywhere or auth fails, requeue task for re-execution" — and public
+    # repos, which need no PAT at all, were refused just as hard.
+    #
+    # The real concern inside that gate was narrower and is kept: without
+    # credentials, branch_exists_remote() cannot tell "origin says no" from
+    # "origin would not talk to me", so the requeue may duplicate work that is
+    # still sitting on the remote. That belongs in the note, where a human
+    # reading the recovery task can see it, not in a silent refusal.
     recovery_slug = f"recover-{slug}"
     try:
         existing = db.select("tasks", {"select": "id", "slug": f"eq.{recovery_slug}",
                    "project_id": f"eq.{task.get('project_id')}", "limit": "1"}) or []
         if existing:
             return {"recovered": False, "strategy": "already_requeued"}
+        note = f"fleet-recovery: branch {branch} missing everywhere"
+        if not git_auth.pat_available():
+            note += (" (no ORCH_GIT_PAT on this host, so origin's answer is not "
+                     "authoritative — the branch may still exist there)")
         row = {"project_id": task.get("project_id"), "slug": recovery_slug,
                "prompt": f"Re-execute (branch lost fleet-wide): {(task.get('prompt') or '')[:500]}",
                "deps": [], "kind": task.get("kind", "build"), "state": "QUEUED",
                "base_branch": task.get("base_branch", base_branch),
-               "note": f"fleet-recovery: branch {branch} missing everywhere"}
+               "note": note}
         db.insert("tasks", row, upsert=True)
         db.update("tasks", task["id"], {"note": f"fleet-recovery: requeued as {recovery_slug}"})
         _log.info("requeued %s as %s", slug, recovery_slug)
