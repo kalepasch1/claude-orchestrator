@@ -169,6 +169,87 @@ def _remote_agent_branch_maybe(repo, branch):
     return True if names is None else (branch in names)
 
 
+#: Parsed `git worktree list` per repo: {repo: (expires_monotonic, {branch: sha})}.
+#: One listing answers the question for every card in a pass, the same way
+#: _REMOTE_AGENT_REFS does for origin. A worktree created mid-pass is picked up on
+#: the next pass, which can defer a recovery by one cycle and never skips one.
+_WORKTREE_BRANCHES = {}
+_WORKTREE_LOCK = threading.Lock()
+WORKTREE_LIST_TTL_S = int(os.environ.get("ORCH_MERGE_WORKTREE_TTL_S", "30"))
+
+
+def _worktree_branch_map(repo):
+    """{branch: commit} for every branch a worktree of `repo` has checked out.
+
+    Parses `git worktree list --porcelain`, whose records are
+
+        worktree /path/to/wt
+        HEAD <sha>
+        branch refs/heads/<name>
+
+    so the HEAD line has to be remembered until the branch line identifies the
+    record. Fail-soft: any error yields {}, i.e. "no worktree holds anything",
+    which sends the caller on to the remote path it would have taken anyway.
+    """
+    now = time.monotonic()
+    with _WORKTREE_LOCK:
+        entry = _WORKTREE_BRANCHES.get(repo)
+        if entry and entry[0] > now:
+            return entry[1]
+    found = {}
+    try:
+        out = _git(repo, "worktree", "list", "--porcelain", timeout=30)
+        if out.returncode == 0:
+            head = ""
+            for line in (out.stdout or "").splitlines():
+                line = line.strip()
+                if line.startswith("HEAD "):
+                    head = line[len("HEAD "):].strip()
+                elif line.startswith("branch refs/heads/"):
+                    name = line[len("branch refs/heads/"):].strip()
+                    if head:
+                        found[name] = head
+                    head = ""
+                elif not line:
+                    head = ""
+    except Exception:
+        found = {}
+    with _WORKTREE_LOCK:
+        _WORKTREE_BRANCHES[repo] = (time.monotonic() + WORKTREE_LIST_TTL_S, found)
+    return found
+
+
+def _worktree_commit_for(repo, branch):
+    """The commit a worktree has checked out for `branch`, or "" if none does."""
+    return _worktree_branch_map(repo).get(branch, "")
+
+
+def _recover_branch_from_worktree(repo, branch):
+    """Re-create a missing local ref from a worktree that still holds the commit.
+
+    STEP 2 WAS DOCUMENTED AND MISSING (restored 2026-08-25). The docstring below
+    has always listed worktree recovery as the middle step of the resolution
+    order, and runner/tests/test_materialize_branch_worktree.py has always
+    asserted it. There was no such code: the function went straight from the
+    local-ref check to the remote path.
+
+    That is not a cosmetic gap. The remote path begins with the agent/* ls-remote
+    short-circuit, which returns False for any branch origin does not have — and
+    a branch that lives only in a local worktree is exactly such a branch. So a
+    commit sitting on this machine, reachable with no network at all, produced
+    `return False` and the card waited forever for a push that had already been
+    superseded by the work being local.
+    """
+    commit = _worktree_commit_for(repo, branch)
+    if not commit:
+        return False
+    try:
+        _git(repo, "branch", branch, commit, timeout=30)
+    except Exception:
+        return False
+    return _branch_exists(repo, branch)
+
+
 def _materialize_branch(repo, branch):
     """Fleet-aware branch lookup with worktree recovery.
 
@@ -182,6 +263,11 @@ def _materialize_branch(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
         return False
+    # Step 2, and it must run BEFORE the agent/* remote short-circuit below:
+    # a worktree-held branch that was never pushed is precisely what that
+    # short-circuit rejects, and it costs no network to check.
+    if _recover_branch_from_worktree(repo, branch):
+        return True
     # THE TRAIN'S REAL WALL-CLOCK SINK (measured 2026-08-06).
     #
     # Cards get filed by ensure_integration_card as soon as work is approved, which is often

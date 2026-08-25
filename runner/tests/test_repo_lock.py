@@ -24,6 +24,33 @@ def _hold_and_record(lock_dir, repo, out_path, hold_seconds):
             f.write(f"end {time.time()}\n")
 
 
+def _wait_until_held(out_path, deadline_s=30.0):
+    """Block until the holder subprocess has actually taken the lock.
+
+    The contention tests used to do `holder.start(); time.sleep(0.1)` and assume
+    the child had the lock by then. On macOS the default start method is spawn:
+    the child is a fresh interpreter that re-imports the whole module graph
+    before it reaches rl.hold(), which takes well over 100ms on a machine that
+    is also running the rest of the suite. When it lost that race the parent
+    acquired an uncontended lock and the assertions described nothing —
+    test_no_timeout_blocks_until_acquired measured 0.0012s of "blocking" and
+    failed in-suite while passing alone.
+
+    _hold_and_record writes "start" the moment it holds the lock, so waiting for
+    that line is a real handshake rather than a guess about scheduling.
+    """
+    deadline = time.time() + deadline_s
+    while time.time() < deadline:
+        try:
+            with open(out_path) as fh:
+                if "start" in fh.read():
+                    return True
+        except FileNotFoundError:
+            pass
+        time.sleep(0.02)
+    raise AssertionError(f"holder never acquired the lock within {deadline_s}s")
+
+
 class TestRepoLock(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -63,7 +90,7 @@ class TestRepoLock(unittest.TestCase):
         holder = multiprocessing.Process(
             target=_hold_and_record, args=(self.lock_dir, "/contended/repo", out_path, 2.0))
         holder.start()
-        time.sleep(0.4)  # let the holder acquire first
+        _wait_until_held(out_path)
         got_it = None
         with repo_lock.hold("/contended/repo", timeout=0.5) as got:
             got_it = got
@@ -75,7 +102,7 @@ class TestRepoLock(unittest.TestCase):
         holder = multiprocessing.Process(
             target=_hold_and_record, args=(self.lock_dir, "/contended/repo2", out_path, 0.5))
         holder.start()
-        time.sleep(0.1)
+        _wait_until_held(out_path)
         with repo_lock.hold("/contended/repo2", timeout=5) as got:
             self.assertTrue(got, "caller should acquire once the holder releases within the timeout")
         holder.join(timeout=5)
@@ -83,9 +110,13 @@ class TestRepoLock(unittest.TestCase):
     def test_no_timeout_blocks_until_acquired(self):
         out_path = os.path.join(self.lock_dir, "out3.txt")
         holder = multiprocessing.Process(
-            target=_hold_and_record, args=(self.lock_dir, "/contended/repo3", out_path, 0.5))
+            target=_hold_and_record, args=(self.lock_dir, "/contended/repo3", out_path, 1.0))
         holder.start()
-        time.sleep(0.1)
+        # The clock starts only once the lock is demonstrably held, so `elapsed`
+        # measures blocking rather than however long spawn happened to take. The
+        # hold is 1.0s against a 0.3s floor, which leaves room for the handshake
+        # poll without making the assertion depend on it.
+        _wait_until_held(out_path)
         start = time.time()
         with repo_lock.hold("/contended/repo3") as got:
             elapsed = time.time() - start

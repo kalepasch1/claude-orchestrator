@@ -100,6 +100,10 @@ def get_vercel_config():
     except Exception as e:
         _log.debug("fleet_config vercel lookup failed: %s", e)
 
+    # The empty token is the point, not an oversight: see the docstring. `token`
+    # is still resolved above so the fleet_config loop can tell "already set from
+    # env" from "not set", and so a future caller that IS allowed to see it has
+    # one place to read it from — but it does not leave this function.
     return {"token": "", "team_id": team_id, "project_map": project_map}
 
 
