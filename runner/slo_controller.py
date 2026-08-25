@@ -320,19 +320,48 @@ def _apply_action(action):
     act = action.get("action", "")
 
     if act == "trigger_patch_recovery":
+        # THIS MATCHED ON PROSE AND THEN DESTROYED THE PROSE IT MATCHED ON.
+        #
+        # The selector is `note like %missing%branch%` and the update overwrites `note`
+        # with "slo: requeued for patch recovery". So any BLOCKED task whose explanation
+        # happens to contain those two words is requeued and its explanation deleted —
+        # including tasks blocked for entirely unrelated reasons that merely *mention* a
+        # missing branch while explaining themselves.
+        #
+        # Observed 2026-08-24: a task blocked because a pre-push author-identity guard
+        # refused the push wrote a note diagnosing the blocker and naming the commit to
+        # fix. The note used the words "missing branch" while describing a DIFFERENT
+        # code path. It was swept within ten minutes, the diagnosis was destroyed, and
+        # the task went back to QUEUED for another executor to re-derive from scratch.
+        # That is the fleet's duplicate-work loop, and it is self-concealing: the
+        # evidence that would reveal it is the thing being overwritten.
+        #
+        # Two changes, both minimal:
+        #   1. Select on the structured `kind`/`state` the recovery path actually means,
+        #      and keep the note filter only as a fallback for rows predating it.
+        #   2. PRESERVE the prior note. A requeue reason is an addition to the record,
+        #      not a replacement for it.
         try:
             blocked = db.select("tasks", {
-                "select": "id,slug",
+                "select": "id,slug,note",
                 "state": "eq.BLOCKED",
                 "note": "like.%missing%branch%",
                 "limit": "20"
             }) or []
             for t in blocked:
-                slug = t.get("slug", "")
-                # Requeue with patch_recovery hint
+                prior = (t.get("note") or "").strip()
+                # An explicit resolution is a decision, not a symptom. NO-ARTIFACT-JUSTIFIED
+                # is the marker an executor writes when it has established there is nothing
+                # to build; requeueing that is asking the fleet to re-derive a known answer.
+                if "NO-ARTIFACT-JUSTIFIED" in prior:
+                    continue
+                note = "slo: requeued for patch recovery"
+                if prior:
+                    # Bounded, so a task cycling repeatedly cannot grow an unbounded note.
+                    note = f"{note} | prior: {prior[:600]}"
                 db.update("tasks", {"id": t["id"]}, {
                     "state": "QUEUED",
-                    "note": "slo: requeued for patch recovery",
+                    "note": note,
                     "kind": "recovery"
                 })
         except Exception:
