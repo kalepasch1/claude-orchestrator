@@ -131,6 +131,60 @@ def _is_block_comment_body(raw):
     return bool(_block_comment_mask([raw, ""])[1])
 
 
+_STYLE_OPEN_RE = re.compile(r"<style\b[^>]*>", re.I)
+_STYLE_CLOSE_RE = re.compile(r"</style\s*>", re.I)
+
+
+def _style_block_mask(lines):
+    """Which of `lines` sit inside a <style> body. Returns a list of bool.
+
+    A stylesheet is never display copy, but the guard read it as such: it scans
+    the raw line, so a CSS *selector* named after an internal concept matched a
+    mechanism rule. `.cade-rail{...}` — a class name a reader never sees — was
+    reported as published disclosure.
+
+    That is two of the three findings that turned the gate RED on the
+    landing-legora-refresh release (24cfb48f). The one real finding on that diff
+    was the rendered "CADE shows the evidence..." paragraph, and it has since
+    been rewritten in value-level language; the selector noise had not been, so
+    the same CSS keeps failing releases that disclose nothing.
+
+    <script> is deliberately NOT masked: a Vue/JSX component routinely holds
+    user-facing strings in its script block, so masking it would lose real
+    findings. Only CSS is exempt.
+
+    Like _block_comment_mask, state is tracked only across the supplied lines,
+    so an opener outside the window leaves its lines scanned — fail-open toward
+    MORE scanning, never less.
+    """
+    mask, inside = [], False
+    for raw in lines:
+        text = str(raw or "")
+        if inside:
+            mask.append(True)
+            if _STYLE_CLOSE_RE.search(text):
+                inside = False
+            continue
+        opener = _STYLE_OPEN_RE.search(text)
+        mask.append(False)
+        if opener and not _STYLE_CLOSE_RE.search(text[opener.end():]):
+            inside = True
+    return mask
+
+
+_SELECTORISH_ATTR_RE = re.compile(r"\b(?:class|className)\s*=\s*(['\"])(?:(?!\1).)*\1", re.I)
+
+
+def _strip_selectorish(raw):
+    """Drop class/className attribute values before rule matching.
+
+    _clean() already strips these, but the rules are matched against
+    `raw + clean`, so the stripping had no effect: `class="cade-rail"` still
+    matched through the raw half. A class name is a selector, not copy.
+    """
+    return _SELECTORISH_ATTR_RE.sub(" ", str(raw or ""))
+
+
 def _looks_displayish(raw):
     text = (raw or "").strip()
     if not text:
@@ -163,15 +217,17 @@ def scan_lines(path, lines):
     # A block comment's middle lines start with prose, so they must be masked
     # by position, not by how the individual line begins (see _block_comment_mask).
     in_comment = _block_comment_mask([raw for _, raw in lines])
+    # CSS selectors are not copy either; see _style_block_mask.
+    in_style = _style_block_mask([raw for _, raw in lines])
     for index, (line_no, raw) in enumerate(lines):
-        if in_comment[index]:
+        if in_comment[index] or in_style[index]:
             continue
         if not _looks_displayish(raw):
             continue
         text = _clean(raw)
         if not text:
             continue
-        haystack = f"{raw}\n{text}"
+        haystack = f"{_strip_selectorish(raw)}\n{text}"
         for rule, pattern, guidance in RULES:
             if pattern.search(haystack):
                 findings.append({

@@ -55,6 +55,47 @@ class TestPublicCopyGuard(unittest.TestCase):
         ])
         self.assertEqual(findings, [])
 
+    def test_css_selectors_in_a_style_block_are_not_copy(self):
+        # Two of the three findings that turned the gate RED on 24cfb48f were
+        # CSS rules whose selector happened to be named after the engine.
+        findings = public_copy_guard.scan_lines("web/components/LegoraLanding.vue", [
+            (248, "<style scoped>"),
+            (249, ".cade-rail{display:flex;flex-direction:column;padding:18px 14px}"),
+            (250, ".cade-rail>header b{color:#24563e}.cade-rail h3{margin:8px 0}"),
+            (251, "</style>"),
+        ])
+        self.assertEqual(findings, [])
+
+    def test_class_attribute_is_a_selector_not_copy(self):
+        findings = public_copy_guard.scan_lines("web/components/LegoraLanding.vue", [
+            (34, '<aside class="cade-rail"><p>Clear decisions, prepared.</p></aside>'),
+        ])
+        self.assertEqual(findings, [])
+
+    def test_rendered_text_beside_a_selector_is_still_blocked(self):
+        # The exemption must not swallow the one real finding on that diff.
+        findings = public_copy_guard.scan_lines("web/components/LegoraLanding.vue", [
+            (38, '<aside class="cade-rail"><p>CADE shows the evidence, affected '
+                 'systems, tradeoffs, and the exact action.</p></aside>'),
+        ])
+        self.assertEqual(findings[0]["rule"], "proprietary_mechanism")
+
+    def test_script_block_strings_are_still_scanned(self):
+        # <script> is not exempt: components keep user-facing copy in there.
+        findings = public_copy_guard.scan_lines("web/components/LegoraLanding.vue", [
+            (1, "<script setup lang=\"ts\">"),
+            (2, "const panels = [{ title: 'CADE common brain', body: 'x' }]"),
+            (3, "</script>"),
+        ])
+        self.assertEqual(findings[0]["rule"], "proprietary_mechanism")
+
+    def test_unclosed_style_opener_outside_the_window_fails_open(self):
+        # Only the supplied lines are tracked, so an orphan CSS line is scanned.
+        findings = public_copy_guard.scan_lines("web/components/LegoraLanding.vue", [
+            (300, ".cade-rail dt{color:#7b7d76}"),
+        ])
+        self.assertEqual(findings[0]["rule"], "proprietary_mechanism")
+
 
 class TestReleaseTrainPublicCopyGate(unittest.TestCase):
     def test_public_copy_self_heal_queues_copyfix(self):
