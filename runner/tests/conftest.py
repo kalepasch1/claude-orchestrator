@@ -121,6 +121,41 @@ def _evict_leaked_module_doubles():
     """
     yield
     _evict_stub_shadows()
+    _reinstate_missing_real_modules()
+
+
+def _reinstate_missing_real_modules():
+    """Put back a remembered module that a test DELETED from sys.modules.
+
+    THE DUPLICATE-MODULE LEAK (2026-08-25). _evict_stub_shadows above handles a
+    real module replaced by a double. It does nothing for a real module simply
+    removed, and removal is the more damaging of the two, because Python does not
+    leave a hole: the next `import db` anywhere builds a SECOND module object from
+    the same source, and from then on the session has two live copies of the
+    control-plane client.
+
+    Every module that imported db earlier keeps copy A -- including this
+    conftest's own _REAL_MODULES registry and every test file's module-level
+    `import db`. Any code that does `import db` INSIDE a function then resolves
+    copy B. A test that patches db.select on the object it holds is patching A
+    while the code under test reads B, so the patch silently does nothing and the
+    product runs against the real client. It passes alone and fails in suite, and
+    the failure lands on whichever file happens to come later.
+
+    Found via runner/tests/test_db_env_interlock.py, which popped "db" and
+    "subscription_guard" to import throwaway copies and never put the originals
+    back -- 20 failures across two unrelated files. That file is fixed, but a
+    hole in sys.modules is never something a test wants left behind, so it is
+    also closed here rather than only at its one known source.
+
+    Deliberately narrow: only names already in _REAL_MODULES (so it can only ever
+    restore something this session actually had) and only when the name is ABSENT
+    (a test that installed its own double keeps it; that is _evict_stub_shadows'
+    job, on its own rules).
+    """
+    for name, module in _REAL_MODULES.items():
+        if name not in sys.modules:
+            sys.modules[name] = module
 
 
 @pytest.fixture(autouse=True)

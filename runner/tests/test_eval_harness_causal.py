@@ -139,6 +139,14 @@ class TestCausalAttribution(unittest.TestCase):
         ]
         r = eval_harness._try_causal_attribution(0.5, 0.7, context=None)
         self.assertAlmostEqual(r["noise_delta"], 0.1)
+        # The failure this file spent a session chasing was not in the arithmetic:
+        # `db` here and sys.modules["db"] had become two different module objects,
+        # so setUpModule patched one while _try_causal_attribution's runtime
+        # `import db` read the other. Asserting the identity turns that into a
+        # one-line diagnosis instead of a wrong number.
+        self.assertIs(db, sys.modules.get("db"),
+                      "sys.modules['db'] is a different object than this module "
+                      "patched — an earlier test left a duplicate db behind")
 
     def test_experiment_with_none_lift_skipped(self):
         """Experiments without a lift value are skipped."""
