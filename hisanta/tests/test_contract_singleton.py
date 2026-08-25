@@ -6,6 +6,17 @@ CoppaConsent and constitution_check. Which one a caller got depended on which
 directory happened to be on sys.path, so an isinstance check or an enum
 comparison could fail across the seam, and hisanta/tests/* could not even be
 collected. These tests fail the moment the duplicate starts growing back.
+
+DIRECTION (settled 2026-08-24). This file used to assert that
+`hisanta/contracts/family.py` was the SHIM and the nested file was canonical, while
+`test_family_contract_single_source.py` asserted the exact opposite. Both were
+committed; they cannot both pass, and the merge that left four files full of conflict
+markers was the symptom, not the cause. The direction below is the one the rest of the
+tree already states: `hisanta/__init__.py` appends the nested path and says in so many
+words that it is "never prepended: hisanta/contracts stays the canonical
+hisanta.contracts". So the top-level file holds the definitions and the NESTED file is
+the shim. What these tests actually guard — one definition, same objects by either
+spelling — is unchanged and still enforced.
 """
 
 import importlib
@@ -13,21 +24,21 @@ import importlib
 import pytest
 
 import hisanta.contracts.family as family
+import hisanta.hisanta.contracts.family as nested
 
 
 def test_the_shim_points_at_the_canonical_file():
-    """hisanta/contracts/family.py must re-export, never re-declare."""
-    assert family.CANONICAL_PATH.replace("\\", "/").endswith(
-        "hisanta/hisanta/contracts/family.py"
+    """hisanta/hisanta/contracts/family.py must re-export, never re-declare."""
+    assert nested.CANONICAL_PATH.replace("\\", "/").endswith(
+        "hisanta/contracts/family.py"
     )
-    assert family.CANONICAL_MODULE is not None
+    assert nested.CANONICAL_MODULE is family
 
 
 def test_every_public_name_is_the_canonical_object():
-    canonical = family.CANONICAL_MODULE
-    assert family.__all__, "the shim must export something"
+    assert family.__all__, "the canonical module must export something"
     for name in family.__all__:
-        assert getattr(family, name) is getattr(canonical, name), (
+        assert getattr(nested, name) is getattr(family, name), (
             f"{name} is a SECOND definition, not the canonical one"
         )
 
