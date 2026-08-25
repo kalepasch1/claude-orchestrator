@@ -6,7 +6,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 The .env file in runner/ is auto-loaded at import time by the _load_env() helper below.
 """
-import os, re, sys, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
+import contextlib, os, re, sys, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
 
 # ── DB failover detection ────────────────────────────────────────────────────
@@ -396,6 +396,54 @@ CORE_RETRY_RPCS = {
     "execute_task", "complete_task", "claim_task", "mark_done",
     "record_attempt", "update_task_state", "insert_outcome",
 }
+#: Thread-safe per-slug dedup lock pool: serializes same-machine inserts of the
+#: same (project_id, slug) so two threads cannot both pass the existence check
+#: and both INSERT.
+#:
+#: RESTORED 2026-08-25. This was added in 387c6c6b and disappeared in 4acfd817,
+#: "fix: restore db.py truncated by bad merge bb641954" — collateral damage from
+#: a truncation rather than a decision. What was left behind was the shape of a
+#: guard with nothing inside it: insert()'s comment still described three steps
+#: ("check, lock, re-check under the lock"), only the first was implemented, and
+#: the `_dedup_key` the lock used to take was computed and then never read.
+#: runner/tests/test_task_lifecycle.py has been red on `module 'db' has no
+#: attribute '_dedup_lock'` since.
+#:
+#: One correction on the way back in. The original released the lock BEFORE the
+#: POST — the `with` block covered only the re-check — so two threads could both
+#: re-check empty, both exit, and both insert, which is the race it existed to
+#: close. The lock is now held across the insert itself. Contention is only
+#: between threads inserting the SAME slug, which is precisely the case that must
+#: be serialized, so the cost is a lock nobody else is waiting on.
+_DEDUP_LOCKS = {}
+_DEDUP_LOCKS_LOCK = threading.Lock()
+
+
+class _dedup_lock:
+    """Per-key lock for serializing task inserts with the same slug."""
+
+    def __init__(self, key):
+        self.key = key
+
+    def __enter__(self):
+        with _DEDUP_LOCKS_LOCK:
+            if self.key not in _DEDUP_LOCKS:
+                _DEDUP_LOCKS[self.key] = threading.Lock()
+            self._lock = _DEDUP_LOCKS[self.key]
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self._lock.release()
+        # Clean up to prevent memory leak (only if no one else is waiting).
+        with _DEDUP_LOCKS_LOCK:
+            if self.key in _DEDUP_LOCKS and not _DEDUP_LOCKS[self.key].locked():
+                try:
+                    del _DEDUP_LOCKS[self.key]
+                except KeyError:
+                    pass
+
+
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
@@ -1447,6 +1495,7 @@ def insert(table, row, upsert=False):
             _record_refusal(row, "prompt_gate", _reject_reason)
             return None  # rejected — now RECORDED (see _record_refusal), not vanished
 
+    _dedup_stack = contextlib.ExitStack()
     if (table == "tasks" and isinstance(row, dict) and not upsert
             and row.get("slug") and row.get("project_id") and not row.pop("_allow_dup", False)):
         # ATOMIC DEDUP (2026-07-14): the old SELECT-then-INSERT raced across two Macs,
@@ -1454,25 +1503,48 @@ def insert(table, row, upsert=False):
         # 1. Check for existing (fast path, catches most dupes)
         # 2. Use a process-level lock to serialize concurrent inserts on the same machine
         # 3. Re-check after acquiring the lock (double-checked locking)
+        #
+        # Steps 2 and 3 were lost in the truncation described on _dedup_lock above
+        # and are back. The lock is entered on a stack so it stays held through the
+        # POST below rather than being released before it, which is what made the
+        # original re-check ineffective.
         _dedup_key = f"{row['project_id']}:{row['slug']}"
-        try:
-            existing = select("tasks", {
+
+        def _existing_row():
+            return select("tasks", {
                 "select": "id,slug,state",
                 "project_id": f"eq.{row['project_id']}",
                 "slug": f"eq.{row['slug']}",
                 "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
                 "limit": "1"}) or []
+
+        try:
+            existing = _existing_row()
             if existing:
                 return existing
         except Exception:
             pass  # fail-soft: never let the guard block a legitimate insert
-    # SECRET HYGIENE: redact secrets from sensitive fields on task insert.
-    if table == "tasks" and isinstance(row, dict):
-        for field in _TASK_SENSITIVE_FIELDS:
-            if field in row and isinstance(row[field], str):
-                row[field] = redact_secrets(row[field])
-    h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
+
+        _dedup_stack.enter_context(_dedup_lock(_dedup_key))
+        try:
+            # Re-check under the lock: another thread on this machine may have
+            # inserted while we waited for it.
+            existing = _existing_row()
+            if existing:
+                _dedup_stack.close()
+                return existing
+        except Exception:
+            pass
     try:
+        # Inside the try so that the `finally` below releases the dedup lock on
+        # every path. A per-slug lock leaked here would deadlock every future
+        # insert of that slug for the life of the process.
+        # SECRET HYGIENE: redact secrets from sensitive fields on task insert.
+        if table == "tasks" and isinstance(row, dict):
+            for field in _TASK_SENSITIVE_FIELDS:
+                if field in row and isinstance(row[field], str):
+                    row[field] = redact_secrets(row[field])
+        h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
         result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
     except ControlPlaneDown:
         # NOT a 409. The breaker refused before touching the network, so nothing satisfied
@@ -1491,6 +1563,12 @@ def insert(table, row, upsert=False):
                         body=row, headers={"Prefer": "return=representation,resolution=merge-duplicates"})
         except Exception:
             return None
+    finally:
+        # Released here rather than around the re-check alone: the whole point is
+        # that no other thread on this machine inserts the same slug between our
+        # re-check and our POST. ExitStack.close() is idempotent and a `finally`
+        # runs through the `return`s above, so every path releases exactly once.
+        _dedup_stack.close()
 
     # POST-INSERT DEDUP RECONCILIATION (2026-07-15): the SELECT-then-INSERT guard above
     # prevents same-machine duplicates via _dedup_lock, but two Macs can still race past
