@@ -17,18 +17,29 @@ def _fake_insert(table, row, **kw):
 _db_mod.select = _fake_select
 _db_mod.insert = _fake_insert
 _db_mod.update = lambda *a, **k: None
-sys.modules["db"] = _db_mod
+# WAS `sys.modules["db"] = _db_mod` plus a loop installing five more stubs, all
+# at module scope and none of them removed. pytest imports every test module
+# during COLLECTION, so the real database client -- and model_policy,
+# model_gateway, claude_cli, queue_counters and prompt_assembler -- were replaced
+# for every test that ran afterwards in the same process.
+#
+# db is the one that mattered: the other five are only shadowed here because
+# self_review imports them, and none of them existed as real modules under those
+# names for the rest of the run either. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
 
-# Stub model deps
+_model_stubs = {}
 for mod_name in ["model_policy", "model_gateway", "claude_cli", "queue_counters", "prompt_assembler"]:
     m = types.ModuleType(mod_name)
     if mod_name == "queue_counters":
         m.exact_counts = lambda **kw: {"queued": 0, "running": 0}
     if mod_name == "prompt_assembler":
         m.stats = lambda **kw: {"count": 0, "avg_tokens": 0}
-    sys.modules[mod_name] = m
+    _model_stubs[mod_name] = m
 
-import self_review
+with modules_during_import(db=_db_mod, **_model_stubs):
+    import self_review
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -20,6 +20,8 @@ Test coverage areas:
 import sys
 import os
 import types
+
+import pytest
 from typing import Dict, Any, List
 from unittest.mock import Mock, patch, MagicMock, call
 
@@ -33,9 +35,55 @@ mock_db = types.ModuleType("db")
 mock_db.select = Mock(return_value=[])
 mock_db.update = Mock(return_value=0)
 mock_db.insert = Mock(return_value=None)
-sys.modules["db"] = mock_db
+# WAS a bare `sys.modules["db"] = ...` at module scope. pytest imports every
+# test module during COLLECTION, so it was not scoped to this file -- the real
+# database client was replaced for every test that ran afterwards in the same
+# process, with no way to put it back. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import import_with_stubs
 
-import coordination_rules
+def _reset_mock_db():
+    """Put every method of the db stub back to its module-scope defaults."""
+    for name in ("select", "update", "insert"):
+        getattr(mock_db, name).reset_mock(side_effect=True, return_value=True)
+    mock_db.select.return_value = []
+    mock_db.update.return_value = 0
+    mock_db.insert.return_value = None
+
+
+# mock_db is a types.ModuleType, not a Mock, so `mock_db.reset_mock()` -- which
+# three tests below call -- raised AttributeError: "module 'db' has no attribute
+# 'reset_mock'". Giving the stub the method its callers already assume is more
+# honest than editing three call sites to work around a stub that lied about its
+# shape.
+mock_db.reset_mock = lambda *a, **kw: _reset_mock_db()
+
+# import_with_stubs, not a plain import under a context manager: something
+# earlier in the run has usually imported coordination_rules already, so
+# `import coordination_rules` is a no-op that hands back the copy bound to the
+# REAL db. A private copy is the only way to guarantee the stub is what the
+# module under test bound.
+coordination_rules = import_with_stubs("coordination_rules", db=mock_db)
+
+
+@pytest.fixture(autouse=True)
+def _mock_db_starts_clean():
+    """Reset the shared db mock between tests.
+
+    mock_db is created once at module scope and every test configures the same
+    Mock. test_check_queued_improvements_db_error sets
+
+        mock_db.select.side_effect = Exception("DB connection failed")
+
+    and nothing ever cleared it. side_effect takes precedence over return_value,
+    so from that test onward EVERY later test's `mock_db.select.return_value =
+    [...]` was ignored, the exception was raised into coordination_rules'
+    fail-soft handler, and eight tests asserted on empty results they could not
+    have produced. They failed identically before this file stopped shadowing
+    sys.modules["db"], so the shadow was never what made them pass or fail.
+    """
+    _reset_mock_db()
+    yield
 
 
 class TestActiveLoopWorkDetection:

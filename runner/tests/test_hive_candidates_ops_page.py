@@ -9,16 +9,18 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Mock db module
-_db_mock = types.ModuleType("db")
-_db_mock.select = MagicMock(return_value=[])
-_db_mock.localize_repo_path = lambda p: p
-sys.modules["db"] = _db_mock
-
-# Mock log module
-_log_mock = types.ModuleType("log")
-_log_mock.get = lambda x: MagicMock()
-sys.modules["log"] = _log_mock
+# NO STUBS HERE ANY MORE, BECAUSE NOTHING IN THIS FILE USED THEM.
+#
+# There used to be a `sys.modules["db"] = _db_mock` and a matching one for `log`,
+# installed at module scope and never removed. This file imports no module under
+# test -- every test below builds its own data and asserts on it -- so the two
+# stubs were referenced exactly twice each: once to create them, once to install
+# them. They did nothing for this file and replaced the real database client and
+# logger for every test collected after it in the same process.
+#
+# Deleting them is the whole fix. If a test here ever does need a db double, use
+# env_during_import.modules_during_import so it is scoped to the import that
+# needs it. See runner/tests/test_sys_modules_shadowing.py.
 
 
 class TestDiffusionForecastsDataLogic(unittest.TestCase):

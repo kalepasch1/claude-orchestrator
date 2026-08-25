@@ -51,27 +51,25 @@ _RUNNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TESTS = os.path.join(_RUNNER, "tests")
 
 #: (module path relative to runner/, shadowed module name) -- known, and may only shrink.
-KNOWN_MODULE_SHADOWS = {
-    ("test_agent_coordination_behavior.py", "db"),
-    ("test_brand_exam_ap_contracts.py", "runner"),
-    ("test_brand_exam_contracts_pmi.py", "runner"),
-    ("test_config_event_publisher.py", "db"),
-    ("test_zombie_reaper_simple.py", "runner"),
-    (os.path.join("tests", "test_convergence_and_bulk_guard.py"), "db"),
-    (os.path.join("tests", "test_hive_candidates_ops_page.py"), "db"),
-    (os.path.join("tests", "test_hive_candidates_ops_page.py"), "log"),
-    (os.path.join("tests", "test_monthly_audit.py"), "db"),
-    (os.path.join("tests", "test_objective_intake.py"), "db"),
-    (os.path.join("tests", "test_pause_arbiter.py"), "db"),
-    (os.path.join("tests", "test_pause_arbiter.py"), "kill_switch"),
-    (os.path.join("tests", "test_pause_arbiter.py"), "subscription_guard"),
-    (os.path.join("tests", "test_queue_groom.py"), "db"),
-    (os.path.join("tests", "test_source_config_validator.py"), "db"),
-    (os.path.join("tests", "test_source_config_validator.py"), "log"),
-    (os.path.join("tests", "test_test_automation.py"), "db"),
-    (os.path.join("tests", "test_twin_qa.py"), "db"),
-    (os.path.join("tests", "test_twin_qa.py"), "log"),
-}
+#: EMPTY, and it must stay that way.
+#:
+#: All 23 sites were drained on 2026-08-25. Four different shapes needed four
+#: different fixes, which is why this was not one sweep:
+#:
+#:   * most were `sys.modules["db"] = stub` before an import -> wrapped in
+#:     env_during_import.modules_during_import(), which restores what was there;
+#:   * two files guarded with `if "db" not in sys.modules:`, which under pytest
+#:     SKIPPED (conftest imports db first) so the module under test bound the real
+#:     client, and standalone installed a stub that was never removed -- wrong in
+#:     both directions, and the guard had to go, not just move;
+#:   * two files needed import_with_stubs() instead, because something earlier in
+#:     the run had already imported the module under test and a plain import was a
+#:     no-op that handed back the copy bound to the real db;
+#:   * three loaded runner.py as `sys.modules["runner"]`, replacing the PACKAGE --
+#:     the very thing conftest's _runner_stays_a_package fixture exists to undo --
+#:     and now load under a private name;
+#:   * one file's stubs were referenced nowhere at all and were simply deleted.
+KNOWN_MODULE_SHADOWS = set()
 
 
 def _real_module_names():

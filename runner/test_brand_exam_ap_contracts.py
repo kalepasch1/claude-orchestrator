@@ -40,12 +40,20 @@ os.environ["ORCH_DB_URL"] = ""
 
 # Import runner module
 import importlib.util
-_spec = importlib.util.spec_from_file_location(
-    "runner",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py")
-)
+# LOADED UNDER A PRIVATE NAME, NOT "runner".
+#
+# This used to be `spec_from_file_location("runner", .../runner.py)` followed by
+# `sys.modules["runner"] = runner`, at module scope and never undone. runner/ is
+# BOTH a package and a directory containing runner.py, so installing the
+# entrypoint under the bare name replaced the PACKAGE for every test collected
+# afterwards -- and `from runner.X import Y` then fails with "runner is not a
+# package". runner/tests/conftest.py carries a per-test fixture
+# (_runner_stays_a_package) whose entire job is to undo this; the fix is to stop
+# doing it. Same pattern as runner/tests/test_run_task_safe.py.
+_ENTRYPOINT = "runner_entrypoint_brand_exam_ap"
+_spec = importlib.util.spec_from_file_location(_ENTRYPOINT, os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py"))
 runner = importlib.util.module_from_spec(_spec)
-sys.modules["runner"] = runner
+sys.modules[_ENTRYPOINT] = runner
 _spec.loader.exec_module(runner)
 
 

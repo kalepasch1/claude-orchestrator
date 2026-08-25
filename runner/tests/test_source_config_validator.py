@@ -14,14 +14,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 _db_mock = types.ModuleType("db")
 _db_mock.select = MagicMock(return_value=[])
 _db_mock.localize_repo_path = lambda p: p
-sys.modules["db"] = _db_mock
 
 # Mock log module
 _log_mock = types.ModuleType("log")
 _log_mock.get = lambda x: MagicMock()
-sys.modules["log"] = _log_mock
+# WAS bare `sys.modules[...] = ...` assignments at module scope. pytest imports
+# every test module during COLLECTION, so they were not scoped to this file: the
+# real database client and logger were replaced for every test that ran
+# afterwards in the same process, with no way to put them back. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
 
-import source_config_test_validator as scv
+with modules_during_import(db=_db_mock, log=_log_mock):
+    import source_config_test_validator as scv
 
 
 class TestValidateProjectBasics(unittest.TestCase):

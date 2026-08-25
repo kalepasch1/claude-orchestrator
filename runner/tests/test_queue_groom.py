@@ -64,9 +64,17 @@ class _StrictDbStub(types.ModuleType):
 
 
 db_stub = _StrictDbStub()
-sys.modules['db'] = db_stub
 
-import queue_groom  # noqa: E402  (must follow the sys.modules install)
+# WAS a bare `sys.modules['db'] = db_stub` here. pytest imports every test module
+# during COLLECTION, so it was not scoped to this file: the strict stub below --
+# which deliberately raises AttributeError for anything the real db lacks --
+# became the database client for every test collected afterwards. A stub whose
+# whole job is to refuse unknown attributes is a particularly bad thing to leave
+# lying around. See runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
+
+with modules_during_import(db=db_stub):
+    import queue_groom  # noqa: E402  (must follow the stub install)
 
 
 class TestTheStubItself(unittest.TestCase):
