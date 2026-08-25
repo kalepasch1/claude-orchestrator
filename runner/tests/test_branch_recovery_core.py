@@ -462,7 +462,18 @@ class TestRecoveryResponseStructure(unittest.TestCase):
             self.assertIsInstance(result, list)
 
     def test_stats_response_is_dict_with_all_keys(self):
-        """stats() returns dict with all expected keys."""
+        """stats() reports at least the counters callers read by name.
+
+        Subset, not equality. `_stats` is a counter dict that is open for
+        extension by design -- every new recovery strategy adds one, and six
+        arrived after this test was written (recover_archive,
+        recover_repo_unreachable, batch_reviewed, batch_merged,
+        batch_quarantined, batch_skipped). Under equality, adding a counter
+        broke a test that has no opinion about that counter, which taught the
+        wrong lesson: the contract is that these keys EXIST, not that no other
+        key may. Pinning absence here also duplicated the real guard --
+        test_stats_counters_are_all_ints below covers whatever the dict holds.
+        """
         result = branch_recovery.stats()
 
         self.assertIsInstance(result, dict)
@@ -471,7 +482,30 @@ class TestRecoveryResponseStructure(unittest.TestCase):
             "recover_unrecoverable", "recover_errors",
             "detect_calls", "detect_missing_found"
         }
-        self.assertEqual(set(result.keys()), expected_keys)
+        self.assertLessEqual(expected_keys, set(result.keys()))
+
+    def test_stats_counters_are_all_ints(self):
+        """Whatever the dict holds, a counter is a number that starts at zero.
+
+        This is the check that generalises: it covers counters added after
+        this file was written, which is precisely what the equality assertion
+        above could not do.
+        """
+        result = branch_recovery.stats()
+
+        self.assertTrue(result, "stats() returned no counters at all")
+        for key, value in result.items():
+            self.assertIsInstance(value, int, f"{key} is not an int")
+            self.assertGreaterEqual(value, 0, f"{key} is negative")
+
+    def test_stats_returns_a_snapshot_not_the_live_dict(self):
+        """A caller mutating the result must not corrupt module state."""
+        result = branch_recovery.stats()
+        before = branch_recovery.stats()["recover_attempts"]
+
+        result["recover_attempts"] = before + 1000
+
+        self.assertEqual(branch_recovery.stats()["recover_attempts"], before)
 
 
 if __name__ == "__main__":
