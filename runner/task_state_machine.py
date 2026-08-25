@@ -69,7 +69,12 @@ def transition(task_id, to_state, note_suffix=None, force=False):
         patch["note"] = f"{existing_note} | {note_suffix}" if existing_note else note_suffix
 
     try:
-        db.update("tasks", patch, id=task_id)
+        # Was `db.update("tasks", patch, id=task_id)`: the patch was passed as the
+        # MATCH and `id` as a keyword the function does not take, so this raised
+        # TypeError on every call and the transition below was never written.
+        # Signature is update(table, match, patch); the match takes a bare value
+        # and db.update turns it into `eq.`.
+        db.update("tasks", {"id": task_id}, patch)
         log.info("task_state_machine: %s -> %s for %s", from_state, to_state, task.get("slug"))
         return True, f"{from_state} -> {to_state}"
     except Exception as e:

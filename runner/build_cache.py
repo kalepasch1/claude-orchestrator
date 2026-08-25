@@ -74,9 +74,17 @@ def store(repo, sha, build_cmd, ok, log):
     key = _cache_key(repo, sha, build_cmd)
     value = json.dumps({"ok": ok, "log": (log or "")[-2000:], "ts": time.time()})
     try:
-        db.upsert("controls",
-                   {"key": f"build_cache_{key}"},
-                   {"key": f"build_cache_{key}", "value": value, "updated_at": "now()"})
+        # upsert(table, row) takes TWO arguments — it is insert(..., upsert=True)
+        # and PostgREST resolves the conflict on the primary key.  This was
+        # calling it with a separate match dict, so it raised TypeError and no
+        # build result was ever cached; `store()` is fail-soft, so the miss was
+        # invisible and every build re-ran from scratch.
+        #
+        # "updated_at": "now()" is dropped with it: that is a SQL expression sent
+        # as a JSON string, which PostgREST stores or rejects as the literal text
+        # "now()" — it is never evaluated.  The column's own DEFAULT is the thing
+        # that was wanted.  (runner/agent_market.py:467 still has this.)
+        db.upsert("controls", {"key": f"build_cache_{key}", "value": value})
     except Exception:
         pass  # fail-soft: cache miss is better than crash
 

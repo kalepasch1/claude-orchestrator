@@ -73,10 +73,15 @@ def _record_hash(task_id, h):
         prior = _get_prior_hashes(task_id)
         prior.append(h)
         # Keep last 10
-        db.insert("fleet_config", {
+        # No on_conflict=/merge_patch= on db.insert -> TypeError, swallowed by the
+        # handler below. So the failure-hash history this module writes was never
+        # persisted, _get_prior_hashes always read back nothing, and is_flake()
+        # ("different hash from prior runs") had no prior runs to compare against:
+        # every repeat failure looked like a first one.
+        db.upsert("fleet_config", {
             "key": f"quarantine_hashes:{task_id}",
             "value": ",".join(prior[-10:]),
-        }, on_conflict="key", merge_patch={"value": "EXCLUDED.value"})
+        })
     except Exception:
         pass
 
