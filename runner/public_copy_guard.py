@@ -47,7 +47,19 @@ RULES = [
             r"unauthorized practice|privilege guard|attorney[- ]client privilege|"
             r"work[- ]product strategy|avoid(?:s|ing)?\s+(?:CFTC|SEC|money transmission|"
             r"broker[- ]dealer|investment adviser|DCM|SEF|legal advice|custody)|"
-            r"not\s+(?:custody|money transmission|legal advice|securities|broker[- ]dealer))\b",
+            # "not legal advice" is DELIBERATELY absent from this alternation.
+            # The others — not custody / not money transmission / not securities /
+            # not broker-dealer — are regulatory POSTURE CLAIMS, and publishing them
+            # does reveal the playbook. "Not legal advice." is the opposite: the
+            # standard protective disclaimer, rendered to users precisely so
+            # automated output cannot be read as advice. Flagging it told the
+            # remediation step to DELETE a legal notice, which is the exact exposure
+            # this guard exists to prevent. See test_public_copy_guard_disclaimers.
+            # `(?:an?\s+)?` closes a pre-existing hole: "not A broker-dealer" and
+            # "not A custody service" are the natural English phrasings and neither
+            # matched, so the most likely wording of the claim walked straight past
+            # the rule.
+            r"not\s+(?:an?\s+)?(?:custody|money transmission|securities|broker[- ]dealer))\b",
             re.I,
         ),
         "Describe compliance value generally; do not publish the legal/regulatory playbook.",
@@ -145,6 +157,21 @@ def _looks_displayish(raw):
     return True
 
 
+#: Quoted strings that are code paths, not prose: API routes, import specifiers,
+#: aliased module paths. A component calling its own endpoint is not "publishing"
+#: anything — the path is already visible in any user's network tab, and the only
+#: way to "redact" it is to delete the call and break the feature. Blanked before
+#: matching so a route like "/api/cade/explain" cannot trip the CADE term.
+_CODE_PATH_RE = re.compile(
+    r"""(['"`])\s*(?:/api/|/_nuxt/|~/|@/|\.{1,2}/)[^'"`]*\1""",
+)
+
+
+def _mask_code_paths(text):
+    """Blank code-path string literals so their contents are not scanned as copy."""
+    return _CODE_PATH_RE.sub(" ", str(text or ""))
+
+
 def _clean(raw):
     text = str(raw or "")
     text = re.sub(r"\b(class(Name)?|style|href|src|to|key|id)=['\"][^'\"]*['\"]", " ", text)
@@ -168,10 +195,13 @@ def scan_lines(path, lines):
             continue
         if not _looks_displayish(raw):
             continue
-        text = _clean(raw)
+        # Mask BEFORE cleaning. _clean strips quotes, so a route masked only in the
+        # raw half would reappear unquoted in the cleaned half and still match.
+        masked = _mask_code_paths(raw)
+        text = _clean(masked)
         if not text:
             continue
-        haystack = f"{raw}\n{text}"
+        haystack = f"{masked}\n{text}"
         for rule, pattern, guidance in RULES:
             if pattern.search(haystack):
                 findings.append({
