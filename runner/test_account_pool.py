@@ -39,19 +39,67 @@ import json
 import time
 import tempfile
 import shutil
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Disable DB for tests
-os.environ["ORCH_DB_ENABLED"] = "false"
-os.environ["SUPABASE_URL"] = "http://localhost"
-os.environ["SUPABASE_SERVICE_KEY"] = "test"
+import pytest
 
 import account_pool
 import notify
 import db
 import subscription_guard
+
+
+@pytest.fixture(autouse=True)
+def _account_pool_reaches_no_control_plane(monkeypatch):
+    """Point db at a dead endpoint FOR THIS FILE'S TESTS ONLY.
+
+    WAS three bare module-scope assignments:
+
+        os.environ["ORCH_DB_ENABLED"] = "false"
+        os.environ["SUPABASE_URL"] = "http://localhost"
+        os.environ["SUPABASE_SERVICE_KEY"] = "test"
+
+    pytest imports every test module during COLLECTION, before a single fixture
+    runs, so those were not scoped to this file. SUPABASE_URL became
+    "http://localhost" for the whole process, and every test collected after this
+    one ran against a control plane pointed at localhost.
+    runner/tests/test_env_import_side_effects.py exists to catch exactly that --
+    its docstring names the Supabase credentials as one of the three leaks that
+    cost a full session on 2026-08-18 -- and it had been failing on this file in
+    the two tests that refuse to baseline control-plane credentials.
+
+    ORCH_DB_ENABLED was cargo: nothing outside tests reads it, and
+    account_pool._load_cfg() calls db.select("accounts", ...) unconditionally.
+    What actually kept these tests off the database was the bogus URL, so that is
+    what this fixture reproduces -- per test, undone after.
+
+    env_during_import.during_import() is the right tool when a module binds a
+    flag at import; it does not help here, because conftest has already imported
+    db by the time this module is collected, so `import db` under it is a no-op
+    returning the module with the real credentials already bound.
+
+    The fallback list is cleared too. db's transport failover reads
+    ORCH_SUPABASE_FALLBACK_URLS at call time, and runner/.env supplies the
+    operator's real relay endpoints -- so patching URL alone would fail over to
+    production on the first refused connection.
+    """
+    monkeypatch.setattr(db, "URL", "http://127.0.0.1:1", raising=False)
+    monkeypatch.setattr(db, "KEY", "test-key-not-real", raising=False)
+    monkeypatch.setenv("ORCH_SUPABASE_FALLBACK_URLS", "")
+
+    # ...and do not spend a socket, a retry ladder and a circuit-breaker cooldown
+    # per test to arrive at the answer we already know. Refusing at the client is
+    # what an unreachable control plane produces anyway, and it takes this file
+    # from ~130s back to a couple of seconds. MagicMock rather than a bare raise
+    # so a test that wants to inspect the call still can.
+    unreachable = MagicMock(
+        side_effect=db.TransientDBError("control plane disabled for these tests"))
+    monkeypatch.setattr(db, "select", unreachable, raising=False)
+    monkeypatch.setattr(db, "update", unreachable, raising=False)
+    monkeypatch.setattr(db, "insert", unreachable, raising=False)
+    yield
 
 
 class _TempPaths:
