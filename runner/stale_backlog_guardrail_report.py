@@ -21,6 +21,7 @@ triages dead weight — those are exactly the steps Guardrail 8 exists to hold.
 from __future__ import annotations
 
 import re
+import sys
 from typing import Dict, List, Optional
 
 # Guardrail 8 facts. The escalation id appears as either "id=<uuid>" or
@@ -342,3 +343,70 @@ def assess_queue_velocity(parsed: Optional[Dict]) -> Dict:
         # changes throughput, concurrency or priority.
         "safety": {"does_not_change_throughput_or_priority": True},
     }
+
+
+_NEXT_STEP_BLOCKED = (
+    "await operator approval / resolve the queued Guardrail 8 escalation {0} "
+    "before any queue-clearance step is planned"
+)
+_NEXT_STEP_CLEAR = (
+    "no standing Guardrail 8 halt; a queue-clearance pass may be planned normally"
+)
+
+
+def build_consolidated_report(text: Optional[str]) -> Dict:
+    """Run the whole pipeline over raw log text and return one report.
+
+    Parse, gate on Guardrail 8, raise bypass reviews, note queue-velocity
+    shelving. When the halt is standing the only next step this will ever emit
+    is to wait for the operator — it will not recommend dead-weight triage, a
+    throughput raise, or re-prioritization.
+    """
+    parsed = parse_backlog_log(text)
+    decision = evaluate_guardrail8(parsed)
+    bypass = build_bypass_reviews(parsed, decision)
+    velocity = assess_queue_velocity(parsed)
+
+    blocking = bool(decision["guardrail8"]["should_block"])
+    escalation = parsed["guardrail8"].get("escalation_id") or "unknown escalation"
+
+    return {
+        "summary": {
+            "guardrail8_blocking": blocking,
+            "pending_human_bypass_count": len(parsed.get("pending_human_bypass") or []),
+            "shelved_queue_velocity_count": len(velocity["queue_velocity"]["shelved_runs"]),
+        },
+        "guardrail_decision": decision,
+        "bypass_review_tasks": bypass["bypass_reviews"],
+        "queue_velocity": velocity,
+        "next_step": (
+            _NEXT_STEP_BLOCKED.format(escalation) if blocking else _NEXT_STEP_CLEAR
+        ),
+    }
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Read a consolidated log on stdin (or from a file) and print the report."""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="log file to read; reads stdin when omitted",
+    )
+    args = parser.parse_args(argv)
+
+    if args.path:
+        with open(args.path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    else:
+        text = sys.stdin.read()
+
+    print(json.dumps(build_consolidated_report(text), indent=2))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

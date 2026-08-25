@@ -14,8 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from stale_backlog_guardrail_report import (  # noqa: E402
     HELD_STEPS,
     assess_queue_velocity,
+    build_consolidated_report,
     build_bypass_reviews,
     evaluate_guardrail8,
+    main,
     parse_backlog_log,
 )
 
@@ -288,3 +290,63 @@ def test_queue_velocity_is_fail_soft():
     result = assess_queue_velocity(None)
     assert result["queue_velocity"]["observed"] is False
     assert result["safety"]["does_not_change_throughput_or_priority"] is True
+
+
+def test_consolidated_summary_matches_the_batch_acceptance_criteria():
+    report = build_consolidated_report(SAMPLE_LOG)
+    summary = report["summary"]
+    assert summary["guardrail8_blocking"] is True
+    assert summary["pending_human_bypass_count"] == 2
+    assert summary["shelved_queue_velocity_count"] == 1
+
+
+def test_next_step_is_to_wait_for_the_operator():
+    report = build_consolidated_report(SAMPLE_LOG)
+    assert "await operator approval" in report["next_step"]
+    assert ESCALATION_ID in report["next_step"]
+
+
+def test_next_step_never_proposes_a_held_step():
+    text = build_consolidated_report(SAMPLE_LOG)["next_step"].lower()
+    for phrase in ("dead-weight", "throughput", "concurrency", "prioritiz"):
+        assert phrase not in text
+
+
+def test_report_carries_every_section():
+    report = build_consolidated_report(SAMPLE_LOG)
+    assert report["guardrail_decision"]["guardrail8"]["should_block"] is True
+    assert len(report["bypass_review_tasks"]) == 2
+    assert report["queue_velocity"]["safety"]["does_not_change_throughput_or_priority"] is True
+
+
+def test_report_is_json_serialisable():
+    import json
+
+    payload = json.loads(json.dumps(build_consolidated_report(SAMPLE_LOG)))
+    assert payload["summary"]["pending_human_bypass_count"] == 2
+
+
+def test_clean_log_reports_no_block_and_a_clear_next_step():
+    report = build_consolidated_report("nothing of interest happened today")
+    assert report["summary"]["guardrail8_blocking"] is False
+    assert report["summary"]["pending_human_bypass_count"] == 0
+    assert report["summary"]["shelved_queue_velocity_count"] == 0
+    assert "await operator approval" not in report["next_step"]
+
+
+def test_orchestrator_is_fail_soft_on_empty_input():
+    for junk in (None, ""):
+        report = build_consolidated_report(junk)
+        assert report["summary"]["guardrail8_blocking"] is False
+        assert report["bypass_review_tasks"] == []
+
+
+def test_cli_prints_the_report_as_json(tmp_path, capsys):
+    import json
+
+    log_file = tmp_path / "backlog.log"
+    log_file.write_text(SAMPLE_LOG, encoding="utf-8")
+    assert main([str(log_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["guardrail8_blocking"] is True
+    assert "await operator approval" in payload["next_step"]
