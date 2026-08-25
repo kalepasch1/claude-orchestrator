@@ -54,10 +54,9 @@ DB_PY = os.path.join(ROOT, "runner", "db.py")
 #: Call sites still reaching for a db API that does not exist, with what breaks.
 #: Fix one -> delete its line here.  Add one -> this test fails.
 KNOWN_BROKEN = {
-    # db.query — raw SQL, 17 sites.  None of these modules is imported by
+    # db.query — raw SQL, 16 sites (config_drift's was the 17th and is fixed).  None of these modules is imported by
     # runner.py or any live loop; all are entered only by their own __main__.
     ("runner/bots/de_chancery.py", 72), ("runner/bots/de_chancery.py", 130),
-    ("runner/config_drift.py", 92),
     ("runner/continuous_test.py", 152),
     ("runner/cx_determination_bundling.py", 107),
     ("runner/cx_tribunal_model.py", 99),

@@ -1929,6 +1929,62 @@ def is_operator_decision_slug(slug) -> bool:
     return str(slug or "").startswith(OPERATOR_DECISION_SLUG_PREFIXES)
 
 
+#: Feature flag for the server-side claim. Default OFF: the scan path below is
+#: what has been running, and runner/migrations/001_claim_next_rpc.sql says
+#: "Enable via fleet_config after one observed clean day."
+def _claim_rpc_enabled():
+    return os.environ.get("ORCH_CLAIM_RPC", "false").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _claim_via_rpc(runner_id):
+    """Claim one task through the `claim_next` Postgres function, or None.
+
+    runner/migrations/001_claim_next_rpc.sql has been in the repository with the
+    whole ordering ladder encoded in SQL — release-fix, recovery, rework,
+    improvement, kind weight, confidence, portfolio rank, ROI, FIFO — selecting
+    FOR UPDATE SKIP LOCKED so two runners cannot double-claim. The client half
+    was never written. runner/tests/test_claim_next_rpc.py has been red on
+    `module 'db' has no attribute '_claim_via_rpc'` ever since.
+
+    Returns None for every reason a caller should fall back on rather than fail:
+    the flag is off, the function is not deployed, the RPC errored, or the queue
+    had nothing. Returning None is not "no work" — it is "the scan path decides",
+    and claim_task treats it that way.
+
+    Host affinity is computed here rather than in SQL because whether a repo is
+    checked out is a property of THIS machine, which the database cannot see.
+    """
+    if not _claim_rpc_enabled():
+        return None
+
+    runnable = None
+    try:
+        # Deliberately the live read rather than _cached_projects_list: this
+        # runs at most once per claim on an opt-in path, and a stale cache here
+        # would hand the RPC a project set that disagrees with the one the scan
+        # path uses a few lines below — two different answers to "can this host
+        # run it" is worse than one extra query.
+        projs = select("projects", {"select": "id,repo_path"}) or []
+        runnable = [p["id"] for p in projs if repo_runnable_here(p.get("repo_path"))]
+    except Exception:
+        # Could not determine affinity. NULL means "no host restriction" in the
+        # SQL, which is the same fail-open the scan path uses when
+        # local_repo_pids cannot be computed.
+        runnable = None
+
+    try:
+        rows = rpc("claim_next", {"p_runner_id": runner_id,
+                                  "p_runnable_projects": runnable})
+    except Exception:
+        return None
+    if not rows:
+        return None
+    if isinstance(rows, dict):
+        return rows
+    return rows[0] or None
+
+
 def claim_task(runner_id):
     """Atomically claim one QUEUED task whose dependencies are satisfied.
 
@@ -1953,6 +2009,12 @@ def claim_task(runner_id):
                 return task
         except Exception:
             pass
+    # Server-side claim first when ORCH_CLAIM_RPC is on. None means "not taken",
+    # for any reason — flag off, function absent, RPC error, empty queue — and
+    # the scan path below then runs exactly as it always has.
+    _rpc_task = _claim_via_rpc(runner_id)
+    if _rpc_task:
+        return _rpc_task
     prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
         # OPTIMIZATION: use cached projects (refreshed once per 300s) instead of querying per claim
