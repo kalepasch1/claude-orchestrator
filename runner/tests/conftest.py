@@ -17,6 +17,13 @@ _PROVIDER_DEFAULTS = {
 
 
 @pytest.fixture(autouse=True)
+def _runner_stays_a_package():
+    """See _keep_runner_importable_as_a_package. Runs before every test."""
+    _keep_runner_importable_as_a_package()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _restore_environment_after_test():
     """A test's routing/config overrides must never affect later tests."""
     before = dict(os.environ)
@@ -188,11 +195,74 @@ def _restore_real_modules():
     _evict_stub_shadows()
 
 
+#: The repository root, which must stay AHEAD of runner/ on sys.path.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_RUNNER_DIR = os.path.join(_REPO_ROOT, "runner")
+
+
+def _keep_runner_importable_as_a_package():
+    """Ensure `runner` still names the PACKAGE, not runner/runner.py.
+
+    Both spellings are in use across this suite. A test that does
+    `import task_state_machine` needs runner/ on sys.path; a test that does
+    `from runner.task_state_machine import ...` needs the repo root on it. Both
+    can be present — what decides which module the name `runner` resolves to is
+    which comes FIRST.
+
+    Nearly every test file does a `sys.path.insert(0, ...)` at module scope and
+    none of them undo it, so the winner is simply whichever file was imported
+    most recently. runner/tests/test_python39_compat.py inserted runner/ at
+    position 0 and sorts late in the collection order, so from that point on
+    `runner` resolved to runner/runner.py — a module with no __path__ — and
+    every later `from runner.X import Y` died with
+
+        ModuleNotFoundError: No module named 'runner.X'; 'runner' is not a package
+
+    That is 35 failures across six files, every one of which passes in
+    isolation: test_done_to_merged_conversion, test_route_consolidation,
+    test_branch_recovery_validate_repository, test_task_state_machine,
+    test_repo_access_healer and test_train_status_backfill.
+
+    Rather than police 700 files' sys.path edits, restore the ORDER here, before
+    each TEST runs. runner/ is left in place, so the bare-name imports keep
+    working; only the precedence is asserted.
+
+    Per test, not per module: the victims' `from runner.X import Y` sits inside
+    the test methods, and test_python39_compat's damage is done in its own test
+    body — it imports all ~910 runner modules, dozens of which insert runner/ at
+    sys.path[0] at their own import time. A collection-time repair is undone
+    before the first victim runs.
+    """
+    if not os.path.isdir(_RUNNER_DIR):
+        return
+
+    # 1. Precedence on sys.path.
+    if _RUNNER_DIR in sys.path:
+        runner_at = sys.path.index(_RUNNER_DIR)
+        if _REPO_ROOT not in sys.path[:runner_at]:
+            while _REPO_ROOT in sys.path:
+                sys.path.remove(_REPO_ROOT)
+            sys.path.insert(sys.path.index(_RUNNER_DIR), _REPO_ROOT)
+
+    # 2. Evict a `runner` already bound to runner/runner.py.
+    #
+    # Fixing the path alone is not enough, and this is the half that is easy to
+    # miss: once sys.modules["runner"] holds the MODULE runner/runner.py, the
+    # import system finds it there and never consults sys.path again, so
+    # `import runner.X` keeps failing with a corrected path. It is also invisible
+    # to _evict_stub_shadows(), which looks for fakes without a __file__ — this
+    # entry is a real module, just the wrong one for the name.
+    bad = sys.modules.get("runner")
+    if bad is not None and not hasattr(bad, "__path__"):
+        del sys.modules["runner"]
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_pycollect_makemodule(module_path, parent):
     """Prevent synthetic control-plane modules from leaking into later modules."""
     yield
     _restore_real_modules()
+    _keep_runner_importable_as_a_package()
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -214,6 +284,7 @@ def pytest_collectstart(collector):
     """
     if isinstance(collector, pytest.Module):
         _restore_real_modules()
+        _keep_runner_importable_as_a_package()
     yield
 
 
