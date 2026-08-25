@@ -36,9 +36,14 @@ class TestSignificantWords:
     """Tests for significant words extraction."""
 
     def test_significant_words_basic(self):
-        words = session_proof._significant_words("hello world testing")
-        assert "hello" in words
-        assert "world" in words
+        # "hello" and "world" are 5 letters, and _significant_words() keeps words of
+        # SIG_WORD_MIN_LEN (6) or more — the same threshold the sibling
+        # test_significant_words_filters_short pins explicitly. This test asserted the
+        # opposite of that one; it was the assertion that was wrong, not the threshold,
+        # which exists so that prompt-echo cannot be satisfied by "the", "with" and "this".
+        words = session_proof._significant_words("greeting planet testing")
+        assert "greeting" in words
+        assert "planet" in words
         assert "testing" in words
 
     def test_significant_words_filters_short(self):
@@ -446,6 +451,79 @@ class TestTimeoutScenario:
         elapsed = time.time() - start
         # 10 verifications should still be quick (<2 seconds)
         assert elapsed < 2.0, f"10 verifications took {elapsed}s"
+
+
+class TestStallPhraseCoverage:
+    """The stall detector has to catch the reply the CLI actually sends."""
+
+    def test_what_would_you_like_me_to_work_on_is_a_stall(self):
+        """Regression: the pattern listed "what would you like to work on" literally, so the
+        far commoner "what would you like ME to work on" was not a stall at all — the single
+        most frequent no-instructions reply walked straight past the check and the session was
+        recorded as completed work."""
+        result = session_proof.verify_session(
+            task={"prompt": "do something", "base_branch": "main"},
+            output_text="What would you like me to work on?",
+            repo="/tmp/nonexistent",
+            branch="agent/test",
+        )
+        assert result["ok"] is False
+        assert any("stall phrase" in r for r in result["reasons"])
+
+    def test_stall_variants_all_match(self):
+        for text in ("What would you like me to work on?",
+                     "What would you like us to work on next?",
+                     "What would you like me to do?",
+                     "What would you like me to help with?",
+                     "What would you like to work on?",
+                     "I'm ready to help.",
+                     "I\u2019m ready to help.",
+                     "I don't have a specific task."):
+            assert session_proof.STALL_RX.search(text), text
+
+    def test_ordinary_work_output_is_not_a_stall(self):
+        """Guard against overcorrecting: a widened pattern must not flag real reports."""
+        for text in ("I updated runner/db.py and re-ran the suite; 210 passed.",
+                     "Working on the pagination bug now.",
+                     "The failing assertion was in test_ledger.py line 44."):
+            assert session_proof.STALL_RX.search(text) is None, text
+
+
+class TestNestedNoisePaths:
+    """Agent scratch is scratch wherever in the tree it lives."""
+
+    def test_nested_claude_dir_is_noise(self):
+        """Regression: _is_noise() used startswith() alone, so `.claude/` counted as scratch
+        only at the repo root. In a monorepo the agent's own settings sit at
+        apps/web/.claude/settings.json, which made a session that touched nothing else look
+        like one file of genuine work product."""
+        assert session_proof._is_noise("apps/web/.claude/settings.json")
+        assert session_proof._is_noise("packages/core/.claude/commands/foo.md")
+
+    def test_session_touching_only_nested_scratch_is_not_certified(self):
+        """End-to-end: the whole verdict, not just the helper."""
+        rows = [(3, 1, "apps/web/.claude/settings.local.json"),
+                (12, 0, "apps/web/.claude/commands/deploy.md")]
+        original = session_proof._diff_numstat
+        session_proof._diff_numstat = lambda repo, branch, base: rows
+        try:
+            result = session_proof.verify_session(
+                task={"prompt": "", "base_branch": "main"},
+                output_text="Adjusted my settings.",
+                repo="/tmp/nonexistent",
+                branch="agent/test",
+            )
+        finally:
+            session_proof._diff_numstat = original
+
+        assert result["diff_files"] == 0
+        assert result["ok"] is False
+        assert any("no non-noise diff" in r for r in result["reasons"])
+
+    def test_a_path_that_merely_contains_the_word_claude_is_not_noise(self):
+        """Guard against overcorrecting: the match is on a path COMPONENT, not a substring."""
+        assert not session_proof._is_noise("src/myclaude/handler.py")
+        assert not session_proof._is_noise("docs/claude/README.md")
 
 
 if __name__ == "__main__":

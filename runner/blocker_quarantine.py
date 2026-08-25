@@ -67,6 +67,26 @@ _SECRET_EXPLICIT = re.compile(
     re.I,
 )
 
+# A literal credential PREFIX in the evidence is a different class of signal from the word
+# "token", and has to be treated that way. _SECRET_TERM + _SECRET_VIOLATION_CONTEXT are built
+# to be deliberately reluctant, because this fleet's own subject matter is credential-pool
+# management and the bare words token/credential/secret are everyday vocabulary here (see
+# test_domain_vocab_token_credential_mention_is_not_secret). But "xoxb-" is not vocabulary:
+# nothing writes that string except a Slack bot token, and it showed up in the blocker log of
+# cont-801b8665 ("Await user-supplied Slack credentials (Bot Token xoxb-…, Signing Secret)")
+# with no violation word anywhere near it, so the reluctant path scored it "rework" and the
+# task got a generic rework prompt instead of the secret directive that tells the agent to wire
+# the value through env vars rather than commit it. A recognisable credential shape is evidence
+# on its own and needs no corroborating adjective.
+_SECRET_LITERAL = re.compile(
+    r"\bxox[abeprs]-|"                      # Slack bot/user/app/legacy tokens
+    r"\bgh[pousr]_[A-Za-z0-9]{6,}|"         # GitHub personal/OAuth/server/user/refresh tokens
+    r"\bAKIA[0-9A-Z]{8,}|"                  # AWS access key id
+    r"\bsk-(?:ant-|proj-|live-|test-)|"     # Anthropic / OpenAI / Stripe-style secret keys
+    r"\b-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    re.I,
+)
+
 
 # 2026-07-11: _SECRET_TERM matches the bare word "token" (routine in any auth-related codebase --
 # JWT/CSRF/session tokens) and _SECRET_VIOLATION_CONTEXT matches generic words like "detected" or
@@ -82,7 +102,7 @@ _SECRET_PROXIMITY_CHARS = 80
 
 
 def _is_secret(evidence):
-    if _SECRET_EXPLICIT.search(evidence):
+    if _SECRET_EXPLICIT.search(evidence) or _SECRET_LITERAL.search(evidence):
         return True
     for term_match in _SECRET_TERM.finditer(evidence):
         start = max(0, term_match.start() - _SECRET_PROXIMITY_CHARS)
@@ -149,12 +169,30 @@ def _clean_note_for_classification(note):
     return text
 
 
-_REWORK_PREFIX = re.compile(r"^(?:rework-[a-z]+-)+", re.I)
+# The category segment after "rework-" is OPTIONAL, and that matters at the end of a chain.
+# The pipeline builds slugs as rework-<category>-<original>, so a task that has been round-
+# tripped five times reads rework-legal-rework-legal-…-rework-<hash>: every hop but the last
+# carries its category, and the last hop is a bare "rework-" in front of the original hash.
+# `^(?:rework-[a-z]+-)+` alone stopped one hop short of the original name and left "rework-"
+# glued to it, so the "what was this task actually called" question never got a clean answer.
+_REWORK_PREFIX = re.compile(r"^(?:rework-(?:[a-z]+-)?)+", re.I)
+
+
+def _strip_rework_noise(slug):
+    """Return *slug* with the pipeline's own rework prefixes removed.
+
+    The prefixes are bookkeeping this module wrote itself; they are not part of what the task
+    is. Feeding them back into the classifier is the self-reference loop the rest of this file
+    keeps guarding against — "rework-secret-canary-ollama-5" contains the literal word "secret"
+    purely because a previous pass decided so, and matching on it re-decides the same thing
+    forever. Accepts None/"" so callers do not each have to coerce.
+    """
+    return _REWORK_PREFIX.sub("", str(slug or ""))
 
 
 def _blocker_signal(task):
     raw_slug = str(task.get("slug") or "")
-    slug = _REWORK_PREFIX.sub("", raw_slug)
+    slug = _strip_rework_noise(raw_slug)
     note = _clean_note_for_classification(task.get("note"))
     log_tail = str(task.get("log_tail") or "")
     # strip the task's own full slug from evidence so the quarantine history embedded in branch
@@ -230,6 +268,18 @@ def _identity_only_category(task, category):
     stripped = dict(task)
     stripped["note"] = ""
     stripped["log_tail"] = ""
+    # `state` is EVIDENCE and has to be blanked with the rest of it. It is a recorded outcome
+    # of the run — the runner set it to TESTFAIL because the tests actually failed — not part
+    # of the task's identity the way its slug, prompt and kind are.
+    #
+    # Leaving it behind made this probe answer "yes, identity-only" for every testfail in the
+    # fleet: _classify_raw has a literal `state == "TESTFAIL"` branch, so with note and
+    # log_tail blank the re-classification still landed on "testfail", classify() read that as
+    # a self-referential verdict and downgraded it to generic "rework". The category-specific
+    # repair directive (run the failing tests, fix them, don't touch anything else) was
+    # discarded for a vague rework prompt on every one of them — the exact opposite of what
+    # this guard exists to do, since the testfail verdict came from the run, not from the name.
+    stripped["state"] = ""
     try:
         return _classify_raw(stripped) == category
     except Exception:

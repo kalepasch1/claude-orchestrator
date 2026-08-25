@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import blocker_quarantine
 import agentic_repair
+import quarantine_triage
 
 
 class BlockerQuarantineTest(unittest.TestCase):
@@ -404,6 +405,112 @@ class BlockerQuarantineTest(unittest.TestCase):
         }
         self.assertNotEqual(blocker_quarantine.classify(task), "secret")
         self.assertEqual(blocker_quarantine.classify(task), "testfail")
+
+    def test_testfail_state_is_evidence_not_identity(self):
+        """A TESTFAIL state must not make classify() treat "testfail" as a self-referential
+        verdict.
+
+        _identity_only_category() re-runs the classifier with the failure evidence blanked to
+        ask "did this category come only from the task's NAME?". It blanked note and log_tail
+        but left `state` in place, and _classify_raw() has a literal `state == "TESTFAIL"`
+        branch — so the answer was "yes, identity-only" for every testfail in the fleet, and
+        every one of them was downgraded to generic "rework", throwing away the testfail repair
+        directive. The runner sets state from what the run DID; that is evidence.
+        """
+        task = {
+            "id": "t-state-evidence",
+            "slug": "ordinary-feature-slug",
+            "state": "TESTFAIL",
+            "kind": "bugfix",
+            "prompt": "Add pagination to the ledger view.",
+            "note": "train: tests failed on rebased agent/ordinary-feature-slug",
+            "log_tail": "7 failed | 210 passed",
+        }
+        self.assertEqual(blocker_quarantine.classify(task), "testfail")
+
+    def test_identity_only_guard_still_downgrades_a_name_only_verdict(self):
+        """Guard against overcorrecting: with no evidence at all, a category reached purely
+        from the slug must still be refused. Only `state` moved to the evidence side."""
+        task = {
+            "id": "t-identity-only",
+            "slug": "recover-missing-branch-widget-sync",
+            "state": "BLOCKED",
+            "kind": "build",
+            "prompt": "Recover the missing branch for widget-sync.",
+            "note": "",
+            "log_tail": "",
+        }
+        self.assertNotEqual(blocker_quarantine.classify(task), "missing-branch")
+
+
+class QuarantineTriageInfraPatternTest(unittest.TestCase):
+    """The tier-2 infra matcher must not fire on the letters "oom" inside ordinary words."""
+
+    def test_groomed_note_is_not_an_oom_infra_failure(self):
+        """Regression: `OOM|oom-kill` was unanchored under re.I, so it matched "groomed".
+
+        queue_groom.py parks duplicate slugs with the note "groomed: duplicate queued slug",
+        and blocker_quarantine.run() hands note+log_tail to triage() BEFORE it ever calls
+        classify(). Every groomed task therefore came back tier-2 "infra failure: oom" and was
+        reset to QUEUED with a runner-restart recommendation instead of being classified —
+        after which it groomed again on the next pass.
+        """
+        infra, detail = quarantine_triage.is_infra_failure("groomed: duplicate queued slug")
+        self.assertFalse(infra, f"matched on {detail!r}")
+
+    def test_ordinary_words_containing_oom_are_not_infra_failures(self):
+        """room/zoom/bloom/boom/broom/mushroom all appear in real build and test output."""
+        for text in ("the room fixture timed out of scope",
+                     "zoom integration test assertion failed",
+                     "bloom filter returned a false positive",
+                     "boom: expected 3 got 4",
+                     "mushroom-cli exited 1"):
+            with self.subTest(text=text):
+                infra, detail = quarantine_triage.is_infra_failure(text)
+                self.assertFalse(infra, f"matched on {detail!r}")
+
+    def test_real_oom_output_is_still_an_infra_failure(self):
+        """Guard against overcorrecting: the genuine forms must all still match."""
+        for text in ("Out of memory: Killed process 4211",
+                     "OOM killed the worker",
+                     "oom-killed after 12s",
+                     "oom_kill event on cgroup",
+                     "cannot allocate memory"):
+            with self.subTest(text=text):
+                infra, _detail = quarantine_triage.is_infra_failure(text)
+                self.assertTrue(infra)
+
+    def test_groomed_task_is_not_triaged_into_a_restart_retry(self):
+        """End-to-end through triage(): the groomed note must not produce restart+retry.
+
+        db is stubbed out because triage()'s tier-1 flake check reads and writes the hash
+        history in fleet_config; this test is about tier 2, not about the flake ledger.
+        """
+        fake_db = MagicMock()
+        fake_db.select.return_value = []
+        task = {"id": "t-groomed", "note": "groomed: duplicate queued slug",
+                "remediation_count": 0}
+        with patch.object(quarantine_triage, "db", fake_db):
+            verdict = quarantine_triage.triage(task, "groomed: duplicate queued slug")
+
+        self.assertNotEqual(verdict["category"], "infra")
+        self.assertNotEqual(verdict["action"], "restart+retry")
+
+
+class StripReworkNoiseTest(unittest.TestCase):
+
+    def test_trailing_bare_rework_prefix_is_stripped(self):
+        """The last hop of a rework chain has no category segment ("…-rework-<hash>")."""
+        self.assertEqual(
+            blocker_quarantine._strip_rework_noise("rework-legal-rework-0d98862"),
+            "0d98862",
+        )
+
+    def test_slug_without_a_rework_prefix_is_untouched(self):
+        self.assertEqual(
+            blocker_quarantine._strip_rework_noise("reworked-payments-api"),
+            "reworked-payments-api",
+        )
 
 
 if __name__ == "__main__":

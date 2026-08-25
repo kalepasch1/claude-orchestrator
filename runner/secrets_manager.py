@@ -43,13 +43,45 @@ def _read(store, ref):
 
 
 def resolve(provider, name, project=None):
-    """Return the secret VALUE for injection, or None. Never logs it."""
+    """Return the secret VALUE for injection, or None. Never logs it.
+
+    Precedence is EXPLICIT and the fallback is None:
+
+        1. the row registered to this exact project  (an override, and it must win)
+        2. the row registered globally (project is None)
+        3. nothing — fail closed
+
+    The previous selection was a single filter followed by rows[0]:
+
+        rows = [r for r in rows if r.get("project") in (project, None)] or rows
+        return _read(rows[0]["store"], rows[0]["ref"])
+
+    which had two defects, both reachable on the hot path (runner.py builds every task's
+    env through inject_env/resolve, so this runs for every task the fleet starts):
+
+      (a) No precedence. The project row and the global row BOTH satisfy
+          `in (project, None)`, so rows[0] took whichever PostgREST happened to return
+          first. A project override therefore applied or did not apply depending on row
+          order — the same task could pick up the global credential on one run and the
+          project one on the next, with nothing in the logs to say which.
+
+      (b) `or rows` leaked ACROSS projects. When this project has no row and there is no
+          global row either, the comprehension yields [] — which is falsy — and the
+          fallback restored the ENTIRE unfiltered result set, including secrets
+          registered to a DIFFERENT project. That value was then read out of the store
+          and injected into this project's task env: one project's credential handed to
+          another project's agent. A missing secret must be a missing secret.
+    """
     q = {"select": "*", "provider": f"eq.{provider}", "name": f"eq.{name}", "status": "eq.active"}
     rows = db.select("secrets", q) or []
-    rows = [r for r in rows if r.get("project") in (project, None)] or rows
-    if not rows:
+    row = None
+    if project is not None:
+        row = next((r for r in rows if r.get("project") == project), None)
+    if row is None:
+        row = next((r for r in rows if r.get("project") is None), None)
+    if row is None:
         return None
-    return _read(rows[0]["store"], rows[0]["ref"])
+    return _read(row.get("store"), row.get("ref"))
 
 
 def inject_env(project):
