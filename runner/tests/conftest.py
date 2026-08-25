@@ -16,6 +16,46 @@ _PROVIDER_DEFAULTS = {
 }
 
 
+#: Gate kill-switches. Every one exists to turn a guard OFF, so inheriting one
+#: from the machine means testing a system with that guard already disabled.
+_GATE_KILL_SWITCHES = (
+    "ORCH_DISABLE_TOOLCHAIN_GATE",
+    "ORCH_DISABLE_MEM_GATE",
+    "ORCH_DISABLE_LOCAL_MODELS",
+    "ORCH_DISABLE_VERCEL_CHECKS_CACHE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _gates_are_on_unless_a_test_says_otherwise(monkeypatch):
+    """A gate must not be off just because this machine has it off.
+
+    Importing almost anything under runner/ pulls in db, whose _load_env() reads
+    runner/.env into os.environ. That file is gitignored and machine-local: 260
+    keys, 230 of them read by tracked product code, and only 30 also set by a
+    test. So roughly two hundred configuration values that no reviewer sees can
+    decide a test's verdict.
+
+    Found the concrete way: runner/.env line 520 sets
+    ORCH_DISABLE_TOOLCHAIN_GATE=1, so toolchain_gate.is_ready_cached() returned
+    True for everything and the two tests in test_toolchain_gate.py that expected
+    a BLOCK had been failing. The ones expecting True kept passing, which is why
+    it read as a logic bug rather than an environment one — every assertion was
+    satisfied by "always returns True".
+
+    Only the DISABLE switches are cleared, and only these four: their whole
+    purpose is to turn a guard off, so a suite that inherits one is testing a
+    system with that guard already gone. Everything else in .env is left alone —
+    neutralising 230 keys would break tests that legitimately depend on the
+    machine's configuration, and this is a guard, not a sandbox. A test that
+    wants the disabled path sets the variable itself with patch.dict, which
+    takes effect after this fixture and wins.
+    """
+    for name in _GATE_KILL_SWITCHES:
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _runner_stays_a_package():
     """See _keep_runner_importable_as_a_package. Runs before every test."""
