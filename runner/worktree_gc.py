@@ -342,15 +342,31 @@ def gc_repo(repo):
             if path and branch and branch.startswith("agent/"):
                 slug = branch[len("agent/"):]
                 if slug not in protected and os.path.abspath(path) != main_worktree:
-                    # Recency guard: skip worktrees touched recently — the task row may not
-                    # have flipped to RUNNING yet.
-                    try:
-                        mtime = os.path.getmtime(path)
-                        if (time.time() - mtime) < MIN_AGE_MIN * 60:
-                            path = branch = None
-                            continue
-                    except OSError:
-                        pass
+                    # RECENCY GUARD. Was an inline os.path.getmtime(path) on the
+                    # working directory alone, which misses the case
+                    # _recently_active() was written for: an executor working in
+                    # a slot touches .git/index and the admin dir, not
+                    # necessarily the worktree directory itself. _recently_active
+                    # checks all four and fails CLOSED when it cannot stat them;
+                    # the inline version fell THROUGH to removal on OSError.
+                    if _recently_active(path):
+                        path = branch = None
+                        locked = False
+                        continue
+                    # DIRTY GUARD. This did not exist. _is_dirty() has been in
+                    # this module, documented "fail closed (dirty)", with no
+                    # caller anywhere in the product -- while the comment below
+                    # claimed "All guards passed (task terminal, clean, aged)".
+                    # "clean" was never checked, and the removal three lines down
+                    # is `git worktree remove --force`, which discards
+                    # uncommitted and untracked work without asking. An agent's
+                    # in-progress edits in a slot whose task row had already gone
+                    # terminal were deleted with no record that they existed.
+                    if _is_dirty(path):
+                        print(f"worktree_gc: keeping {path} — uncommitted changes")
+                        path = branch = None
+                        locked = False
+                        continue
                     # DURABILITY: push the branch to origin before reclaiming the worktree, so the
                     # work survives on the remote even if the runner's fail-soft share push never
                     # landed. This is what stops the recover-missing-branch churn at the source —
