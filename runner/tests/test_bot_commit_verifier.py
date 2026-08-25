@@ -111,7 +111,15 @@ class BotCommitVerifierTest(unittest.TestCase):
             # No working tsc here: the file must be UNCHECKED, and an unchecked file must never
             # earn a cached clean proof (see KIND = "bot-commit-syntax-v2").
             self.assertGreaterEqual(result["unchecked"], 1, result)
-            self.assertIn("could not run", result["problems"][0]["skipped"])
+            # Asserted on substance, not on wording. This required the literal
+            # "could not run"; the module says "no local typescript; parse check
+            # unavailable", which is the clearer message — so the test was red for
+            # a phrasing change while the fail-open behaviour it guards was intact.
+            # What matters is that the reason is present, non-empty, and names the
+            # toolchain that was missing.
+            reason = result["problems"][0]["skipped"]
+            self.assertTrue(reason.strip(), result)
+            self.assertIn("typescript", reason.lower(), result)
             return
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["unchecked"], 0, result)

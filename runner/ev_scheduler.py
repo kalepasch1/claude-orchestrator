@@ -293,6 +293,18 @@ def score(task, ctx):
     if int(task.get("transient_retries") or 0) >= 2:
         s *= 0.3
 
+    # OUTCOME WEIGHTING HAD NO CALLER (wired up 2026-08-25). outcome_weight() was
+    # written, documented and covered by runner/tests/test_ev_outcome_weighting.py
+    # -- and `grep -n outcome_weight runner/*.py` found its definition and no call
+    # site, so ctx["family_outcomes"] was a key nothing read and two kinds with
+    # 90% and 20% realized merge rates scored identically to the last decimal.
+    # Placed with the other multiplicative task-quality terms and BEFORE the
+    # orchestrator-first floor below, which is deliberately the last word: a
+    # family's realized success reorders self-improvement tasks among themselves
+    # only if the floor does not already pin them, and it can never push one
+    # behind an app task.
+    s *= outcome_weight(task, ctx)
+
     # App-signal adjustments from telemetry_ingest: error spikes boost fix-kind tasks,
     # rising usage boosts feature tasks, dead apps sink. Missing signal = neutral.
     app_signals = (ctx.get("app_signals") or {}).get(project, {})
@@ -381,6 +393,7 @@ def load_ctx():
                 }
     except Exception:
         pass
+    ctx["family_outcomes"] = _family_outcomes() if OUTCOME_WEIGHTING_ENABLED else {}
     try:
         import economic_scheduler
         # Same FULL SCAN as the ranking sweep: economic signals computed for only the
@@ -389,6 +402,49 @@ def load_ctx():
     except Exception:
         pass
     return ctx
+
+
+#: States that count as a family's work having actually landed and stayed landed.
+FAMILY_LANDED_STATES = ("MERGED", "DEPLOYED_AND_VERIFIED")
+#: States that count as the family's work having been thrown away.
+FAMILY_REJECTED_STATES = ("CLOSED", "SUPERSEDED", "QUARANTINED", "PHANTOM_UNVERIFIED")
+
+
+def _family_outcomes(limit=OUTCOME_SAMPLE):
+    """Realized per-kind outcomes for outcome_weight, or {} when unavailable.
+
+    Only called when ORCH_EV_OUTCOME_WEIGHTING is on, so the default path pays
+    nothing for a signal it would not read. Without this, the flag could be
+    turned on and still change nothing: outcome_weight reads
+    ctx["family_outcomes"] and load_ctx never wrote that key, so every family
+    fell through its `no data => neutral` branch.
+
+    Same recent, ORDERED window as the outcomes sample above — PostgREST caps a
+    response at 1,000 rows whatever the limit says, so an unordered read would be
+    an arbitrary 1,000 tasks and the weights would not be reproducible.
+    """
+    out = {}
+    try:
+        rows = db.select("tasks", {"select": "kind,state,transient_retries,created_at",
+                                   "order": "created_at.desc",
+                                   "limit": str(limit)}) or []
+    except Exception:
+        return {}
+    for r in rows:
+        kind = (r.get("kind") or "build").lower()
+        stats = out.setdefault(kind, {"merged_green": 0, "total": 0,
+                                      "retries": 0, "rejected": 0})
+        state = (r.get("state") or "").upper()
+        stats["total"] += 1
+        if state in FAMILY_LANDED_STATES:
+            stats["merged_green"] += 1
+        elif state in FAMILY_REJECTED_STATES:
+            stats["rejected"] += 1
+        try:
+            stats["retries"] += int(r.get("transient_retries") or 0)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 #: Deterministic scan order for the QUEUED sweep. Oldest-first matters twice over: offset

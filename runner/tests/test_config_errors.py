@@ -149,7 +149,12 @@ class TestIncorrectPropertySettings(unittest.TestCase):
             {"key": "SOME_RANDOM", "value": "nope"},
             {"key": "DEPLOY_STRATEGY", "value": "blue-green"},
         ]
-        with patch.object(fleet_control, "db", fake_db):
+        # Pin nothing: load_config reads ORCH_CONFIG_ENV_PINS out of os.environ,
+        # and this operator's runner/.env pins MAX_PARALLEL, so "3 safe keys
+        # applied" came back as 2 on this machine and 3 on a clean one. What the
+        # test is about is the safe/unsafe classification, not pinning.
+        with patch.object(fleet_control, "db", fake_db), \
+                patch.dict(os.environ, {"ORCH_CONFIG_ENV_PINS": ""}, clear=False):
             to_clean = ["ORCH_BUILD_MANDATE", "MAX_PARALLEL", "DEPLOY_STRATEGY",
                         "SUPABASE_SERVICE_KEY", "SOME_RANDOM"]
             saved = {k: os.environ.pop(k, None) for k in to_clean}

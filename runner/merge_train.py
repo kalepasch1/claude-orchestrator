@@ -213,7 +213,11 @@ def _worktree_branch_map(repo):
                 elif not line:
                     head = ""
     except Exception:
-        found = {}
+        # Cache the empty answer as well: a repo whose worktree listing errors
+        # would otherwise re-run the subprocess for every card in the pass.
+        with _WORKTREE_LOCK:
+            _WORKTREE_BRANCHES[repo] = (time.monotonic() + WORKTREE_LIST_TTL_S, {})
+        return {}
     with _WORKTREE_LOCK:
         _WORKTREE_BRANCHES[repo] = (time.monotonic() + WORKTREE_LIST_TTL_S, found)
     return found

@@ -139,6 +139,22 @@ class ConfigState:
 _state = ConfigState()
 
 
+def on_change(callback: Callable[[str, str, str], None]):
+    """Register a hot-reload callback: callback(key, old_value, new_value).
+
+    The module header advertises "Change detection with callback hooks" and
+    _state._notify fires on every applied key, but the only way to register was
+    `config_sync._state.on_change(...)` — reaching through a private
+    module-level singleton into a method. Nothing outside this file did, which
+    is why the hook shipped with no subscribers: the public spelling every
+    caller (and runner/tests/test_config_sync.py) reaches for did not exist.
+
+    Delegating rather than re-implementing keeps one callback list, so a
+    subscriber registered either way is notified exactly once.
+    """
+    return _state.on_change(callback)
+
+
 def current_hash() -> str:
     """Compute hash of current fleet_config state."""
     try:

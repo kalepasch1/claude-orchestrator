@@ -575,6 +575,36 @@ def _branch_exists(repo, branch):
         return False
 
 
+def _already_on_origin(repo, branch):
+    """True when origin's copy of `branch` already contains this clone's tip.
+
+    Pure check — it reads refs/remotes/origin/<branch> and does NOT fetch. The
+    caller fetches first, deliberately: the fetch has to be visible at the push
+    site (that is the thing that was missing), and doing it here as well would
+    pay for the same round trip twice per attempt.
+
+    "origin already has our commits" is a SUCCESS. The branch-share loop used to
+    treat it as a failed push and replay the push twice more, which is a third
+    of the 710/709 failure record this exists to fix: two Macs share one queue,
+    so the other one having already pushed our ref is the normal case, not an
+    error.
+    """
+    if not repo or not branch:
+        return False
+    try:
+        head = subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
+                              capture_output=True, text=True, timeout=30)
+        if head.returncode != 0 or not head.stdout.strip():
+            return False
+        anc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", head.stdout.strip(),
+             f"refs/remotes/origin/{branch}"],
+            cwd=repo, capture_output=True, text=True, timeout=30)
+        return anc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _localize_repo_path(proj, db_path):
     """Translate a repo path stored in the DB to a path that exists on THIS machine.
 
@@ -2495,10 +2525,33 @@ def run_task(t):
                 # cause of local-only branches that later got GC'd → recover-missing-branch churn).
                 # Verify the ref actually landed on origin; if it never does, leave a durable marker
                 # so the branch is NOT eligible for local GC (governor now refuses to delete unshared).
+                # FETCH FIRST, EVERY ATTEMPT (2026-08-16 measurement, fixed 2026-08-25).
+                # 710 branch-share pushes on the live fleet, 709 failures. 374 were
+                # non-fast-forward and 333 were refused by author_identity_guard, and both
+                # are the same missing fetch: this clone's remote-tracking refs predate the
+                # other Mac's push, so the push is rejected as diverged, and the guard's
+                # `<local> --not --remotes` scope reads commits ALREADY on origin as newly
+                # pushed. The loop then replayed the IDENTICAL command twice more, which
+                # cannot succeed — nothing about the rejection changes by repeating it.
+                #
+                # Now each attempt refreshes the ref before deciding, so a retry is a
+                # genuinely different attempt, and "origin already has our tip" is
+                # recognised as success instead of being retried into the failure log.
+                # The push stays non-forcing on purpose: a diverged ref means another
+                # writer has work here, and overwriting it is the one outcome worse than
+                # a failed push. test_source_does_fetch_before_pushing pins that too, by
+                # scanning this block for the forcing flag.
                 _shared = False
+                _share_branch = f"agent/{slug}"
                 for _attempt in range(3):
                     try:
-                        _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
+                        subprocess.run(["git", "fetch", "origin",
+                                        f"+refs/heads/{_share_branch}:refs/remotes/origin/{_share_branch}"],
+                                       cwd=repo, capture_output=True, text=True, timeout=120)
+                        if _already_on_origin(repo, _share_branch):
+                            _shared = True
+                            break
+                        _pr = subprocess.run(["git", "push", "-u", "origin", _share_branch],
                                              cwd=repo, capture_output=True, text=True, timeout=180)
                         if _pr.returncode == 0:
                             _shared = True
@@ -2507,10 +2560,10 @@ def run_task(t):
                         if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
                             _shared = True
                             break
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: "
+                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} failed: "
                               f"{stderr_digest.digest(_pr.stderr, 160)}")
                     except Exception as _pe:
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
+                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} error: {_pe}")
                     time.sleep(2 * (_attempt + 1))
                 if not _shared:
                     print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
