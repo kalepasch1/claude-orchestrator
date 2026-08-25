@@ -12,6 +12,7 @@ Covers deferred PLOEH_S2S pricing integration:
 7. Error handling and graceful fallback
 """
 
+import importlib.util
 import os
 import pytest
 import sys
@@ -24,8 +25,18 @@ import logging
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Mock requests module for tests if not installed
-if "requests" not in sys.modules:
+# Stand in for `requests` ONLY when it is genuinely not installed.
+#
+# The guard used to be `if "requests" not in sys.modules`, which asks a different
+# question: whether anything has imported requests YET. requests is installed on
+# this fleet, but nothing in the suite imports it eagerly, so on most runs the
+# guard was true and this module scope replaced the real, installed library with
+# a MagicMock -- permanently, for every test collected after this file. conftest
+# restores control-plane modules that live under runner/; a third-party name is
+# deliberately outside what it owns, so nothing ever put requests back.
+#
+# find_spec asks the question that was meant: is there a real requests to use?
+if importlib.util.find_spec("requests") is None:      # pragma: no cover - CI has requests
     mock_requests = MagicMock()
     mock_requests.exceptions.ConnectionError = ConnectionError
     mock_requests.exceptions.Timeout = TimeoutError

@@ -105,16 +105,37 @@ def _parse(path):
 
 
 def _resolves_to_a_real_module(name):
-    """True when *name* imports to something. False for a synthetic name.
+    """True when *name* is importable from disk. False for a synthetic name.
 
     find_spec raises for some malformed names and returns None for absent ones;
     both mean "not a real module", so the handler returns that rather than
     passing.
+
+    THE SYS.MODULES SHORT-CIRCUIT. find_spec checks sys.modules first and
+    returns whatever __spec__ it finds there, so this used to answer a question
+    about the CURRENT RUN rather than about the tree. Two ways that broke a
+    static guard:
+
+      * a name no file defines -- `_runner_module_under_test`, loaded by path in
+        test_sched_no_duplicate_jobs -- reads as REAL once that file has run,
+        because its hand-built spec is sitting in sys.modules. Alone, the same
+        name reads as synthetic.
+      * a real installed package that some earlier test replaced with a
+        ModuleType stub reads as SYNTHETIC, because a stub's __spec__ is None.
+
+    Both make this file pass alone and fail in-suite -- exactly the class of bug
+    it exists to catch, which is a poor property for the detector itself to
+    have. Asking the finders directly, with the name lifted out of sys.modules,
+    gives the same answer in either order.
     """
+    saved = sys.modules.pop(name, None)
     try:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError, AttributeError):
         return False
+    finally:
+        if saved is not None:
+            sys.modules[name] = saved
 
 
 def _unconditional_module_scope_fakes():
@@ -176,14 +197,27 @@ class TestConftestRestoresEveryFake(unittest.TestCase):
         test_monthly_audit stubs model_policy at import time and nothing before
         it imports model_policy, so there is no real module to put back — the
         stub has to be evicted instead.
+
+        The unseeded state is now CONSTRUCTED rather than scavenged. This used
+        to scan the suite for a faked runner module that happened to be missing
+        from conftest._REAL_MODULES, which only exists early in a run: by the
+        time the whole suite has been collected the registry has learned every
+        one of them, the list came back empty, and the test failed on its own
+        setup assertion — passing alone, failing in-suite. The behaviour under
+        test does not depend on which module is unseeded, so the test picks one
+        and takes it out of the registry itself.
         """
-        victims = [n for n in sorted(_faked_modules())
-                   if _is_runner_module(n) and n not in conftest._REAL_MODULES]
-        self.assertTrue(victims, "expected at least one learned-not-seeded fake")
-        name = victims[0]
-        saved = sys.modules.get(name)
+        names = [n for n in sorted(_faked_modules()) if _is_runner_module(n)]
+        self.assertTrue(names, "expected the suite to fake at least one runner module")
+        name = names[0]
+
+        saved_module = sys.modules.get(name)
+        was_registered = name in conftest._REAL_MODULES
+        saved_real = conftest._REAL_MODULES.pop(name, None)
         try:
             sys.modules[name] = types.ModuleType(name)  # no __file__ -> a stand-in
+            self.assertNotIn(name, conftest._REAL_MODULES,
+                             "setup failed: the name must be unseeded for this path")
             conftest._restore_real_modules()
             still_fake = sys.modules.get(name)
             self.assertTrue(
@@ -191,10 +225,14 @@ class TestConftestRestoresEveryFake(unittest.TestCase):
                 f"{name} is still a stand-in after restore",
             )
         finally:
-            if saved is None:
+            if was_registered:
+                conftest._REAL_MODULES[name] = saved_real
+            else:
+                conftest._REAL_MODULES.pop(name, None)
+            if saved_module is None:
                 sys.modules.pop(name, None)
             else:
-                sys.modules[name] = saved
+                sys.modules[name] = saved_module
 
     def test_a_fake_for_a_module_outside_runner_is_never_unconditional(self):
         """Category C: conftest deliberately does not own these, so the test must.

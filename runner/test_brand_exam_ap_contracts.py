@@ -101,8 +101,17 @@ class MockAPContract:
         brand_tier="standard",
         updated_at_offset_min=0,
         updated_at_iso=None,
+        stage="initiation",
     ):
-        """Create a brand exam AP contract task."""
+        """Create a brand exam AP contract task.
+
+        `stage` is a real parameter, not decoration: seven callers below build a
+        task at a named point in the initiation -> brand_exam -> validation ->
+        think_tank_setup -> launch progression and then assert task["stage"] is
+        that point. The factory used to hardcode "initiation" and accept no
+        override, so every one of those calls raised TypeError before it could
+        assert anything.
+        """
         if updated_at_iso is None:
             now = datetime.datetime.now(datetime.timezone.utc)
             updated_at = (now - datetime.timedelta(minutes=updated_at_offset_min)).isoformat()
@@ -119,7 +128,7 @@ class MockAPContract:
             "exam_type": "brand_exam_ap",
             "dropbox_pmi_think_tank": True,
             "updated_at": updated_at,
-            "stage": "initiation",
+            "stage": stage,
         }
 
     @staticmethod

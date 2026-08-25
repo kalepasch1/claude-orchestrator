@@ -113,6 +113,33 @@ def _names_a_secret(name: str) -> bool:
     return bool(words & {'api', 'private', 'access', 'signing', 'encryption'})
 
 
+#: A PEM header for a PRIVATE key. Matches the RSA/EC/OPENSSH/DSA variants and the bare
+#: PKCS#8 spelling in one pattern, and only the PRIVATE ones -- "BEGIN CERTIFICATE" and
+#: "BEGIN PUBLIC KEY" are meant to be committed.
+_PEM_PRIVATE_KEY_RE = re.compile(
+    r'-----BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY(?:\s+BLOCK)?-----')
+
+
+def _is_pem_private_key(value: str) -> bool:
+    """True when a literal carries a PEM private-key header.
+
+    Checked SEPARATELY from the generic value gate, which a PEM block fails for a
+    reason that is right in general and wrong here: `_looks_like_secret_value`
+    rejects anything containing whitespace as prose, and
+    "-----BEGIN PRIVATE KEY-----" contains spaces by definition (a real key body
+    contains newlines too). So the most unambiguous credential shape there is was
+    the one shape this rule could never report.
+
+    The NAME gate is not the problem -- `_names_a_secret("private_key")` already
+    returns True -- but a PEM literal is a credential whatever it is assigned to,
+    so this check does not consult the name at all.
+
+    runner/tools/lint_conventions.py already carries its own _is_pem_private_key;
+    this is the same check for the linter that owns check_directory.
+    """
+    return bool(_PEM_PRIVATE_KEY_RE.search(str(value or '')))
+
+
 def _looks_like_secret_value(value: str) -> bool:
     """True only when the assigned literal could plausibly BE a credential.
 
@@ -403,7 +430,16 @@ class ConventionChecker(ast.NodeVisitor):
 
         # The value gate runs first and rejects most of the tree, so a name that merely
         # mentions credentials costs nothing until something secret-shaped is assigned.
+        # A PEM private key is admitted whatever it is called: it is self-identifying,
+        # and the generic gate throws it out for containing spaces.
         value = node.value.value
+        if _is_pem_private_key(value):
+            self._record(ConventionViolation(
+                self.filepath, node.lineno, 'HARDCODED_SECRET',
+                'A PEM private key is embedded in the source; load it from a secret '
+                'store or the environment instead'
+            ))
+            return
         if not _looks_like_secret_value(value):
             return
 
