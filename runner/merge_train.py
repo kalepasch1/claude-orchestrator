@@ -56,6 +56,20 @@ try:
 except Exception:
     _pm = None
 
+def emit(kind, **fields):
+    """Public fail-soft event adapter used by integrations and diagnostics.
+
+    THE OTHER HALF OF A MIGRATION (added 2026-08-25). `import events` above has
+    been here without a single use, and runner/tests/test_event_stream.py's
+    TestMigratedEmitters expects merge_train.emit alongside sentinel.emit and
+    resource_governor.emit — both of which are exactly this two-line adapter.
+    The import landed and the adapter did not, so the train was the one migrated
+    emitter that could not emit, and anything reaching for merge_train.emit got
+    AttributeError.
+    """
+    return events.emit(kind, **fields)
+
+
 MARK = "train"                                   # decided_by prefix => handled by the train
 # Non-code policy decisions are terminal approval artifacts, not merge work.  If
 # they are re-read here, the no-slug fallback needlessly churns the queue and can

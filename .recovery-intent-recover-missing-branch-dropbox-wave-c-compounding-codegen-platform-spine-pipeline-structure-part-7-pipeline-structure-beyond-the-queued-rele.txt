@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-dropbox-wave-c-compounding-codegen-platform-spine-pipeline-structure-part-7-pipeline-structure-beyond-the-queued-rele
-template: 4c33b50213e3
-intent: 07130635 07190257 147304 14t04 20251001 active adapt advice after agent agentic already analysis approved architectural artifact artifacts author authoritative batch batches becomes beethoven before behavior being below beyond binding branch broad bugfix build build_fix built cache canonical capability carded category cause change changes changeset changing cheap checks claim class claud claude cleaned closure cloud codegen coder codestral coherent collapse commit commits completion compounding concern concrete config context continue continuously contract contracts convert coordination could cross custody debate_compress decisions dedupe deepseek
-base: master

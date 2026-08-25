@@ -43,4 +43,12 @@ def test_unproved_production_commit_is_blocked():
             with patch.object(production_push_guard.proof_graph, "reusable_verification", return_value=None):
                 ok, message = production_push_guard.verify(repo, "a" * 40)
     assert ok is False
-    assert "No green release-train proof" in message
+    # Asserted on substance, not on a sentence. The refusal used to read "No green
+    # release-train proof"; it now names the exact commit and the exact build
+    # command it wants proof for, which is strictly more useful and made the old
+    # substring assertion fail for an improvement. What must hold is that the push
+    # is refused, that the message says a green proof is missing, and that it
+    # identifies the commit — otherwise the operator cannot act on it.
+    assert "green build proof" in message.lower(), message
+    assert "a" * 12 in message, message
+    assert "npm run build" in message, message

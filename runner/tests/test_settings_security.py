@@ -49,12 +49,32 @@ class TestSettingsSecurity(unittest.TestCase):
             "destructive_git": ["Bash(git reset --hard"],
         }
 
+        # SETTINGS DATA, NOT EVERYTHING WITH "CONFIG" IN ITS PATH.
+        #
+        # The filter used to be the name keywords alone, so it read Python
+        # modules, markdown and ADRs as if they were permission allowlists. Two
+        # ways that was wrong, and both were live:
+        #
+        #   · fix_settings_tracking.py is the script that REMOVES dangerous
+        #     entries, so it necessarily contains "Bash(kill" as data. It failed
+        #     this test for doing its job.
+        #   · every tracked config*.py contains "db.select" — runner/config_sync.py
+        #     among them — so the database_access rule was one assertion order
+        #     away from firing on ordinary source code.
+        #
+        # A permission allowlist is a data file. Restricting to those keeps the
+        # rule exactly as strict where it means something and stops it firing
+        # where it never could.
+        settings_data_suffixes = (".json", ".yaml", ".yml", ".toml", ".ini")
+
         for tracked_file in tracked_files:
             if not tracked_file.strip():
                 continue
 
             # Only check settings and config files
             if not any(keyword in tracked_file.lower() for keyword in ["settings", "config", "allowlist"]):
+                continue
+            if not tracked_file.lower().endswith(settings_data_suffixes):
                 continue
 
             file_path = os.path.join(self.repo_root, tracked_file)
