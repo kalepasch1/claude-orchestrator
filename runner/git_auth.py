@@ -13,6 +13,7 @@ Env vars:
 Fail-soft pattern: always returns sensible defaults on error, never raises.
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -69,6 +70,44 @@ def pat_available():
     return bool(_PAT)
 
 
+# Credential shapes that must never reach a caller, a log line, or tasks.note.
+# git echoes the remote URL back in most failures, and a URL of the form
+# https://x-access-token:ghp_xxx@github.com/... carries the secret with it.
+_CRED_PATTERNS = (
+    # any userinfo in a URL: scheme://user:secret@host
+    re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"),
+    # bare provider tokens
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}\b"),
+    # a credential word and whatever value trails it. git's auth failures read
+    # "could not read Password for 'https://...'" / "authenticate with token",
+    # so the word itself is the marker that the rest of the line is sensitive.
+    re.compile(r"(?i)\b(?:token|password|passwd|secret|credentials?)\b(?:\s*[:=]\s*\S+)?"),
+)
+
+REDACTED = "[REDACTED]"
+
+
+def redact(text):
+    """Strip credentials out of git output before it is returned or logged.
+
+    Fail-soft like the rest of this module: on any error the text is dropped
+    entirely rather than passed through unredacted.
+    """
+    if not text:
+        return text
+    try:
+        out = str(text)
+        if _PAT and _PAT in out:
+            out = out.replace(_PAT, REDACTED)
+        out = _CRED_PATTERNS[0].sub(lambda m: f"{m.group('scheme')}{REDACTED}@", out)
+        for pattern in _CRED_PATTERNS[1:]:
+            out = pattern.sub(REDACTED, out)
+        return out
+    except Exception:
+        return REDACTED
+
+
 def run_git(args, repo, timeout=60):
     """Run a git command with PAT authentication.
 
@@ -93,13 +132,17 @@ def run_git(args, repo, timeout=60):
             timeout=timeout,
             env=env,
         )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+        # stdout is ref data that callers parse (ls_remote reads branch names
+        # out of it), so it is left alone; stderr is where git echoes remote
+        # URLs and credential prompts back, and that is the leak path.
+        return result.returncode, result.stdout.strip(), redact(result.stderr.strip())
     except subprocess.TimeoutExpired:
         return -1, "", "timeout"
     except Exception as e:
+        detail = redact(str(e))[:200]
         if _DEBUG:
-            _log.debug("Git command failed: %s", str(e)[:200])
-        return -1, "", str(e)[:200]
+            _log.debug("Git command failed: %s", detail)
+        return -1, "", detail
 
 
 def branch_exists_remote(repo, branch, remote="origin"):
