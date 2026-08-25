@@ -64,18 +64,20 @@ KNOWN_BROKEN = {
     ("runner/error_pattern_analyzer.py", 147), ("runner/error_pattern_analyzer.py", 153),
     ("runner/fleet_topology.py", 86),
     ("runner/kpi_regression_watchdog.py", 72),
-    # db.sql — raw SQL, 9 remaining sites.  orchestration_api's four are
-    # reimplementations of db.claim_task / db.heartbeat / db.count in SQL that
-    # has never run; the real functions carry the economic ordering, host
-    # affinity and schema-shape work these do not.
+    # db.sql — raw SQL, 6 remaining sites.  orchestration_api's queue_stats,
+    # project_stats and heartbeat are fixed; what remains there is claim_tasks,
+    # a SELECT FOR UPDATE SKIP LOCKED reimplementation of db.claim_task that has
+    # never run.  Replacing it is not a mechanical swap: the real claim_task
+    # carries the economic ordering, host affinity and dependency predicate this
+    # query does not, so pointing the API at it is a behaviour decision, not a
+    # translation.
     ("runner/alert_rules_engine.py", 129),
     ("runner/config_sync.py", 233),
     ("runner/dynamic_tier_marginal_quality.py", 33),
     ("runner/fleet_health.py", 50),
     ("runner/investor_metrics_dashboard.py", 23),
     ("runner/metric_history.py", 211),
-    ("runner/orchestration_api.py", 125), ("runner/orchestration_api.py", 133),
-    ("runner/orchestration_api.py", 144), ("runner/orchestration_api.py", 159),
+    ("runner/orchestration_api.py", 125),
     ("runner/realtime_monitor.py", 30), ("runner/realtime_monitor.py", 81),
     # db.execute — raw SQL against a preview/prod promotion path.  Worth naming
     # separately: promote_preview_to_prod() and promote_or_rollback() have never
