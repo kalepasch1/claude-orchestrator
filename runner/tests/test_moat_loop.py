@@ -13,16 +13,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Stub db before importing modules under test
 # ---------------------------------------------------------------------------
 import types as _types
+from env_during_import import modules_during_import
+
 _fake_db = _types.ModuleType("db")
 _fake_db.select = lambda *a, **kw: []
 _fake_db.insert = lambda *a, **kw: None
 _fake_db.update = lambda *a, **kw: None
 _fake_db.upsert = lambda *a, **kw: None
-sys.modules["db"] = _fake_db
 
-import moat_loop
-import moat_activate
-import ingest_fulltext
+# WAS a bare `sys.modules["db"] = _fake_db` before these imports. pytest imports
+# every test module during COLLECTION, so that did not scope the stub to this
+# file -- it replaced the real database client for every test that ran afterwards
+# in the same process, with no way to put it back. See
+# runner/tests/test_sys_modules_shadowing.py for what that cost.
+#
+# The context manager is deliberate rather than import_with_stubs(): these three
+# modules import each other, and giving each its own private copy would hand
+# moat_activate a DIFFERENT moat_loop than the one these tests hold. They bind
+# the stub as before; sys.modules is left exactly as it was found.
+with modules_during_import(db=_fake_db):
+    import moat_loop
+    import moat_activate
+    import ingest_fulltext
 
 
 # ── moat_loop tests ──────────────────────────────────────────────────────────

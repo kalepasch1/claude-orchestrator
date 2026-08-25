@@ -63,7 +63,6 @@ KNOWN_MODULE_SHADOWS = {
     (os.path.join("tests", "test_hive_candidates_ops_page.py"), "db"),
     (os.path.join("tests", "test_hive_candidates_ops_page.py"), "log"),
     (os.path.join("tests", "test_hot_config_reload.py"), "db"),
-    (os.path.join("tests", "test_moat_loop.py"), "db"),
     (os.path.join("tests", "test_monthly_audit.py"), "db"),
     (os.path.join("tests", "test_objective_intake.py"), "db"),
     (os.path.join("tests", "test_pause_arbiter.py"), "db"),
