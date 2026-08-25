@@ -529,6 +529,22 @@ def merge_backlog(project_id: str = ""):
     This catches tasks that completed while the merger was down, or that
     failed on first attempt but may now be mergeable (because other branches
     merged, advancing the base).
+
+    It is the safety net under the immediate on_task_done path, which is exactly why
+    it must see EVERY DONE row. It used to call db.select with no limit and no order.
+    PostgREST caps a response at 1,000 rows, so with more DONE tasks than that (1,135
+    at the time of writing) the sweep silently saw a 1,000-row slice in server-chosen
+    order — and a branch outside that slice was never swept at all, however long it
+    waited. The safety net had a hole in it, in the one direction that matters: the
+    rows most likely to be missed are the ones an arbitrary order happens to exclude,
+    and nothing reported a difference between "swept and unmergeable" and "never
+    looked at".
+
+    This is the same defect, and the same fix, as db._done_slugs: `limit: "10000"`
+    looked generous there too, and 74% of completions were invisible to dependency
+    resolution until it paged to exhaustion. select_all pages; the explicit
+    created_at.asc makes the sweep FIFO and deterministic, so the longest-waiting
+    branch is attempted first instead of whichever the server returned.
     """
     if not ENABLED or not db:
         return {"swept": 0, "merged": 0}
@@ -538,16 +554,20 @@ def merge_backlog(project_id: str = ""):
         filters["project_id"] = f"eq.{project_id}"
 
     try:
-        tasks = db.select("tasks", filters) or []
-    except Exception:
-        return {"swept": 0, "merged": 0, "error": "db query failed"}
+        tasks = db.select_all("tasks", filters, order="created_at.asc") or []
+    except Exception as exc:
+        # Named, not swallowed: a sweep that returns 0 because the query failed must
+        # not be mistaken for a sweep that found nothing to merge.
+        _log.error("continuous_merger: backlog query failed: %s", exc)
+        return {"swept": 0, "merged": 0, "error": f"db query failed: {exc}"}
 
     swept = 0
-    merged = 0
     for t in tasks:
         swept += 1
         on_task_done(t)
 
+    _log.info("continuous_merger: backlog sweep submitted %d DONE task(s)%s",
+              swept, f" for project {project_id}" if project_id else "")
     return {"swept": swept, "submitted": swept}
 
 
