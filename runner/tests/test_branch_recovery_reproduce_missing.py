@@ -408,14 +408,30 @@ class TestStatisticsTracking(unittest.TestCase):
     setUp = zero_the_module_counters
 
     def test_stats_initial_state(self):
-        """Stats start at zero."""
-        stats = branch_recovery.stats()
+        """Every counter starts at zero on a freshly loaded module.
 
-        self.assertEqual(stats["recover_attempts"], 0)
-        self.assertEqual(stats["recover_fetched"], 0)
-        self.assertEqual(stats["recover_reflog"], 0)
-        self.assertEqual(stats["recover_unrecoverable"], 0)
-        self.assertEqual(stats["detect_calls"], 0)
+        `_stats` is module-global, so "stats start at zero" is only true at
+        import. Read mid-session it reflects whatever the tests before it did,
+        which made this assertion pass or fail on test ORDER rather than on
+        anything about the module -- the sibling test below gets this right by
+        capturing `initial` and asserting a delta. Reloading is what actually
+        asks the question this test is named for.
+        """
+        import importlib
+
+        reloaded = importlib.reload(branch_recovery)
+        try:
+            stats = reloaded.stats()
+
+            self.assertEqual(stats["recover_attempts"], 0)
+            self.assertEqual(stats["recover_fetched"], 0)
+            self.assertEqual(stats["recover_reflog"], 0)
+            self.assertEqual(stats["recover_unrecoverable"], 0)
+            self.assertEqual(stats["detect_calls"], 0)
+            # Counters added after this test was written must start at zero too.
+            self.assertEqual(sorted(set(stats.values())), [0])
+        finally:
+            importlib.reload(branch_recovery)
 
     def test_stats_count_recovery_attempts(self):
         """recover_attempts incremented on each call."""
@@ -639,7 +655,13 @@ class TestRecoveryResponseFormat(unittest.TestCase):
                 self.assertIsInstance(item, str)
 
     def test_stats_returns_dict_with_required_keys(self):
-        """stats() returns dict with all required statistics keys."""
+        """stats() reports at least the required keys.
+
+        Subset, not equality -- see the same fix in
+        test_branch_recovery_core.py. `_stats` grows a counter per recovery
+        strategy, and equality made every such addition break a test that has
+        no opinion about the new counter.
+        """
         result = branch_recovery.stats()
 
         self.assertIsInstance(result, dict)
@@ -662,7 +684,18 @@ class TestIntegrationWorkflows(unittest.TestCase):
     """End-to-end workflows: detect → recover → verify."""
 
     def test_workflow_detect_and_recover_single_branch(self):
-        """Complete workflow: detect missing → recover → verify."""
+        """Complete workflow: detect missing → recover → verify.
+
+        The mock models WHICH branches exist, not how many times the module
+        asks. It used to be `side_effect = [False, False, True]`, a fixture of
+        exactly three answers written against the assumption that detect makes
+        one call. detect makes one call PER BRANCH, so the three names here
+        drained the list and `recover_branch` raised StopIteration -- a test
+        failure that says nothing about branch recovery and everything about
+        the fixture. Keying on the branch name means the test survives the
+        module asking a different number of times, which is not part of any
+        contract it is trying to pin.
+        """
         with patch.object(branch_recovery, "ENABLED", True), \
              patch.object(branch_recovery, "_is_git_repo", return_value=True), \
              patch.object(branch_recovery, "_branch_exists_local") as mock_exists, \
@@ -691,10 +724,21 @@ class TestIntegrationWorkflows(unittest.TestCase):
                 "/repo",
                 ["main", "feature-x", "develop"]
             )
-            self.assertIn("feature-x", missing)
+            self.assertEqual(missing, ["feature-x"])
 
             result = branch_recovery.recover_branch("/repo", "feature-x")
             self.assertEqual(result["status"], "recovered")
+
+            # ...and it is actually recovered afterwards, which is the "verify"
+            # the test name promises and the old fixture never reached. Asserted
+            # against the module's own view rather than the fetch mock: recovery
+            # legitimately short-circuits when the branch is already back, so
+            # "was _fetch_branch called" tests the fixture, not the contract.
+            self.assertEqual(
+                branch_recovery.detect_missing_branches(
+                    "/repo", ["main", "feature-x", "develop"]),
+                [],
+            )
 
     def test_workflow_multiple_branches_partial_recovery(self):
         """Workflow with multiple branches, some recovered, some fail."""
