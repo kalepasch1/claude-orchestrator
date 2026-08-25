@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
@@ -13,9 +14,10 @@ class RealtimeApprovalMonitorTest(unittest.TestCase):
     def setUp(self):
         realtime_approval_monitor._stats.update({
             "started": False, "polls": 0, "approvals_checked": 0,
-            "auto_approved": 0, "manual_flagged": 0, "errors": 0,
-            "last_poll": None, "realtime_events": 0,
+            "auto_approved": 0, "manual_flagged": 0, "manual_resurfaced": 0,
+            "errors": 0, "last_poll": None, "realtime_events": 0,
         })
+        realtime_approval_monitor._flagged_notes.clear()
         realtime_approval_monitor._stop_event.clear()
 
     def test_stats_returns_dict_copy(self):
@@ -110,6 +112,74 @@ class RealtimeApprovalMonitorTest(unittest.TestCase):
     def test_start_monitor_disabled(self):
         result = realtime_approval_monitor.start_monitor()
         self.assertFalse(result)
+
+    def test_undecided_card_is_flagged_once_not_once_per_poll(self):
+        card = {"id": "s1", "kind": "secret", "status": "pending",
+                "title": "rotate token", "why": "", "value": ""}
+        with mock.patch.object(realtime_approval_monitor.db, "select", return_value=[card]), \
+             mock.patch.object(realtime_approval_monitor.db, "update") as update_mock:
+            for _ in range(5):
+                realtime_approval_monitor.check_pending_approvals()
+        s = realtime_approval_monitor.stats()
+        self.assertEqual(update_mock.call_count, 1, "one card, one note")
+        self.assertEqual(s["manual_flagged"], 1)
+        self.assertEqual(s["manual_resurfaced"], 4)
+        self.assertEqual(s["approvals_checked"], 5)
+        self.assertEqual(s["manual_pending"], 1)
+
+    def test_flag_is_rewritten_when_the_reason_changes(self):
+        card = {"id": "s2", "kind": "secret", "status": "pending",
+                "title": "t", "why": "", "value": ""}
+        with mock.patch.object(realtime_approval_monitor.db, "update") as update_mock:
+            realtime_approval_monitor._process_approval(card)
+            realtime_approval_monitor._process_approval(
+                dict(card, kind="legal", legal_risk_level="novel"))
+        self.assertEqual(update_mock.call_count, 2)
+        self.assertEqual(realtime_approval_monitor.stats()["manual_flagged"], 2)
+
+    def test_failed_flag_write_is_retried_on_the_next_poll(self):
+        card = {"id": "s3", "kind": "secret", "status": "pending",
+                "title": "t", "why": "", "value": ""}
+        with mock.patch.object(realtime_approval_monitor.db, "update",
+                               side_effect=Exception("db down")) as update_mock:
+            realtime_approval_monitor._process_approval(card)
+            realtime_approval_monitor._process_approval(card)
+        self.assertEqual(update_mock.call_count, 2)
+        self.assertEqual(realtime_approval_monitor.stats()["manual_pending"], 0)
+
+    def test_decided_cards_are_forgotten_so_the_memo_cannot_grow(self):
+        card = {"id": "s4", "kind": "secret", "status": "pending",
+                "title": "t", "why": "", "value": ""}
+        with mock.patch.object(realtime_approval_monitor.db, "update"):
+            with mock.patch.object(realtime_approval_monitor.db, "select", return_value=[card]):
+                realtime_approval_monitor.check_pending_approvals()
+            self.assertEqual(realtime_approval_monitor.stats()["manual_pending"], 1)
+            with mock.patch.object(realtime_approval_monitor.db, "select", return_value=[]):
+                realtime_approval_monitor.check_pending_approvals()
+        self.assertEqual(realtime_approval_monitor.stats()["manual_pending"], 0)
+
+    def test_auto_approving_clears_an_earlier_flag(self):
+        card = {"id": "s5", "kind": "secret", "status": "pending",
+                "title": "t", "why": "", "value": ""}
+        with mock.patch.object(realtime_approval_monitor.db, "update"):
+            realtime_approval_monitor._process_approval(card)
+            self.assertEqual(realtime_approval_monitor.stats()["manual_pending"], 1)
+            realtime_approval_monitor._process_approval(dict(card, kind="merge"))
+        s = realtime_approval_monitor.stats()
+        self.assertEqual(s["auto_approved"], 1)
+        self.assertEqual(s["manual_pending"], 0)
+
+    def test_stats_survive_concurrent_poll_and_realtime_bumps(self):
+        def hammer():
+            for _ in range(500):
+                realtime_approval_monitor._bump("realtime_events")
+
+        threads = [threading.Thread(target=hammer) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(realtime_approval_monitor.stats()["realtime_events"], 2000)
 
 
 if __name__ == "__main__":
