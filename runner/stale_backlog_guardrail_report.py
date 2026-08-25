@@ -182,3 +182,57 @@ def parse_backlog_log(text: Optional[str]) -> Dict:
         "pending_human_bypass": _parse_pending_bypass(text),
         "p1_runs": _parse_p1_runs(text),
     }
+
+
+# The three steps Guardrail 8 exists to hold. A blocked decision may not plan
+# any of them, so they are named here rather than left to prose.
+HELD_STEPS = (
+    "dead-weight triage",
+    "throughput/concurrency raise",
+    "re-prioritization by value",
+)
+
+
+def _is_unapproved(value: Optional[str]) -> bool:
+    """True when operator_approved_at records no real approval timestamp."""
+    if value is None:
+        return True
+    return str(value).strip().upper() in {"", "NULL", "NONE"}
+
+
+def evaluate_guardrail8(parsed: Optional[Dict]) -> Dict:
+    """Decide whether Guardrail 8 blocks a queue-clearance pass.
+
+    The halt stands while the escalation is still QUEUED and no operator has
+    approved it. While it stands, ``planned_subtasks`` is empty by
+    construction: the only steps this pass could plan are the ones the
+    guardrail holds, so planning anything at all would route around it.
+    """
+    parsed = parsed or {}
+    guardrail = parsed.get("guardrail8") or {}
+    state = (guardrail.get("state") or "").strip().upper()
+    unapproved = _is_unapproved(guardrail.get("operator_approved_at"))
+
+    if state == "QUEUED" and unapproved:
+        escalation = guardrail.get("escalation_id") or "unknown escalation"
+        return {
+            "guardrail8": {
+                "should_block": True,
+                "reason": "escalation {0} is state=QUEUED with operator_approved_at unset".format(
+                    escalation
+                ),
+                "required_next_action": "await_operator_approval",
+            },
+            "planned_subtasks": [],
+        }
+
+    return {
+        "guardrail8": {
+            "should_block": False,
+            "reason": "no standing Guardrail 8 halt: state={0}, approved={1}".format(
+                state or "unknown", not unapproved
+            ),
+            "required_next_action": "proceed",
+        },
+        "planned_subtasks": [],
+    }

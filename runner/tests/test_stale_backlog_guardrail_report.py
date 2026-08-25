@@ -11,7 +11,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stale_backlog_guardrail_report import parse_backlog_log  # noqa: E402
+from stale_backlog_guardrail_report import (  # noqa: E402
+    HELD_STEPS,
+    evaluate_guardrail8,
+    parse_backlog_log,
+)
 
 ESCALATION_ID = "b78b7bdb-2f07-45e3-8ce6-66e23d0b923f"
 
@@ -123,3 +127,52 @@ def test_empty_and_junk_input_are_fail_soft():
         assert parsed["p1_runs"] == []
         assert parsed["guardrail8"]["escalation_id"] is None
         assert parsed["guardrail8"]["priority"] == 0
+
+
+def test_standing_halt_blocks_and_plans_nothing():
+    decision = evaluate_guardrail8(parse_backlog_log(SAMPLE_LOG))
+    assert decision["guardrail8"]["should_block"] is True
+    assert decision["guardrail8"]["required_next_action"] != "proceed"
+    assert decision["planned_subtasks"] == []
+
+
+def test_blocked_decision_names_the_escalation():
+    decision = evaluate_guardrail8(parse_backlog_log(SAMPLE_LOG))
+    assert ESCALATION_ID in decision["guardrail8"]["reason"]
+
+
+def test_approved_escalation_lets_the_pass_proceed():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    parsed["guardrail8"]["operator_approved_at"] = "2026-08-13T09:00:00Z"
+    decision = evaluate_guardrail8(parsed)
+    assert decision["guardrail8"]["should_block"] is False
+    assert decision["guardrail8"]["required_next_action"] == "proceed"
+
+
+def test_resolved_escalation_lets_the_pass_proceed():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    parsed["guardrail8"]["state"] = "DONE"
+    decision = evaluate_guardrail8(parsed)
+    assert decision["guardrail8"]["should_block"] is False
+
+
+def test_null_spellings_all_count_as_unapproved():
+    for spelling in ("NULL", "null", "", "  ", None, "None"):
+        parsed = parse_backlog_log(SAMPLE_LOG)
+        parsed["guardrail8"]["operator_approved_at"] = spelling
+        decision = evaluate_guardrail8(parsed)
+        assert decision["guardrail8"]["should_block"] is True, spelling
+
+
+def test_blocked_decision_never_plans_a_held_step():
+    decision = evaluate_guardrail8(parse_backlog_log(SAMPLE_LOG))
+    planned = " ".join(decision["planned_subtasks"]).lower()
+    for step in HELD_STEPS:
+        assert step.lower() not in planned
+
+
+def test_gating_is_fail_soft_on_empty_input():
+    for junk in (None, {}, {"guardrail8": {}}):
+        decision = evaluate_guardrail8(junk)
+        assert decision["guardrail8"]["should_block"] is False
+        assert decision["planned_subtasks"] == []
