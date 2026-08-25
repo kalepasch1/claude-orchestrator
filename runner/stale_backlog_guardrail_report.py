@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""
+stale_backlog_guardrail_report.py — read consolidated P1 queue-clearance logs.
+
+The stale-backlog compactor collapses many P1-queue-clearance log entries into
+one free-text blob. Everything a recovery pass needs to decide whether it may
+act is in that blob as prose: whether the Guardrail 8 halt is still standing,
+which human bypass reports are still unreviewed, and which runs the
+queue-velocity PID shelved.
+
+Reading it by eye is how the same halt got re-litigated four times. This module
+turns the prose into structured facts so the decision is mechanical.
+
+Parsing is deliberately fail-soft: a missing or malformed field yields None or
+an empty list rather than raising, so a recovery pass can never wedge on a
+log entry whose shape drifted.
+
+This module only *reports*. It never raises throughput, re-prioritizes, or
+triages dead weight — those are exactly the steps Guardrail 8 exists to hold.
+"""
+from __future__ import annotations
+
+import re
+from typing import Dict, List, Optional
+
+# Guardrail 8 facts. The escalation id appears as either "id=<uuid>" or
+# "id <uuid>"; both spellings are in the wild in the same batch.
+_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_RE_ESCALATION_ID = re.compile(r"\bid[= ]\(?(" + _UUID + r")\)?")
+_RE_STATE = re.compile(r"\bstate\s*=\s*([A-Za-z_]+)")
+_RE_PRIORITY = re.compile(r"\bpriority\s*=\s*(\d+)")
+_RE_APPROVED_AT = re.compile(r"\boperator_approved_at\s*=\s*(NULL|[0-9T:\-\.\+Z ]+?)(?=[,\s]|$)")
+
+# "since tripped (2026-08-10 22:01:16 UTC)" and the older "filed 2026-08-10
+# 22:01:16 UTC" both name the moment the halt went up.
+_RE_TRIPPED = re.compile(r"tripped\s*\((\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s*UTC\)")
+_RE_FILED = re.compile(r"filed\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s*UTC")
+
+# Pending human bypass reports, with the optional "(~26.0h old)" age suffix.
+_RE_BYPASS = re.compile(r"(human-decision-p1-halt-bypassed[a-z0-9\-]*)")
+_RE_BYPASS_AGE = re.compile(r"^\s*\(~\s*([0-9]+(?:\.[0-9]+)?)\s*h")
+
+# P1 queue-clearance run ids and the run timestamp inside each entry.
+_RE_RUN_ID = re.compile(r"(log-p1-queue-clearance-\d{8}-[a-z0-9]+)")
+_RE_RUN_TS = re.compile(r"(\d{4}-\d{2}-\d{2})\s*~?\s*(\d{2}:\d{2})\s*UTC")
+
+# The queue-velocity PID records its shelve once per batch, in the footer.
+_RE_SHELVED = re.compile(r"shelved by queue-velocity PID\s*(?:\(([^)]*)\))?", re.IGNORECASE)
+
+_OUTCOME_NO_STEPS = (
+    "did NOT execute steps (a) dead-weight triage, "
+    "(b) throughput/concurrency, (c) prioritize-by-value"
+)
+_OUTCOME_SHELVED = "shelved by queue-velocity PID"
+
+
+def _iso(date_part: str, time_part: str) -> str:
+    """Render a "2026-08-10" + "22:01:16" pair as ISO8601 UTC."""
+    if len(time_part) == 5:  # HH:MM — the run entries omit seconds
+        time_part = time_part + ":00"
+    return "{0}T{1}Z".format(date_part, time_part)
+
+
+def _parse_guardrail8(text: str) -> Dict:
+    """Pull the Guardrail 8 halt status out of the consolidated log text."""
+    escalation = _RE_ESCALATION_ID.search(text)
+    state = _RE_STATE.search(text)
+    priority = _RE_PRIORITY.search(text)
+    approved = _RE_APPROVED_AT.search(text)
+
+    tripped = _RE_TRIPPED.search(text) or _RE_FILED.search(text)
+
+    priority_value = 0
+    if priority:
+        try:
+            priority_value = int(priority.group(1))
+        except (TypeError, ValueError):
+            priority_value = 0
+
+    return {
+        "escalation_id": escalation.group(1) if escalation else None,
+        "state": state.group(1) if state else None,
+        "priority": priority_value,
+        # "NULL" is carried through as the literal string the log uses, so the
+        # gating rule can tell "recorded as unapproved" from "never mentioned".
+        "operator_approved_at": approved.group(1).strip() if approved else None,
+        "tripped_at": _iso(tripped.group(1), tripped.group(2)) if tripped else None,
+    }
+
+
+def _parse_pending_bypass(text: str) -> List[Dict]:
+    """Collect unreviewed human bypass reports, first occurrence wins."""
+    found: List[Dict] = []
+    seen = set()
+    for match in _RE_BYPASS.finditer(text):
+        bypass_id = match.group(1).rstrip("-")
+        if bypass_id in seen:
+            continue
+        seen.add(bypass_id)
+        age_match = _RE_BYPASS_AGE.match(text[match.end():])
+        age = None
+        if age_match:
+            try:
+                age = float(age_match.group(1))
+            except (TypeError, ValueError):
+                age = None
+        found.append({"id": bypass_id, "age_hours": age})
+    return found
+
+
+def _run_blocks(text: str) -> List[Dict]:
+    """Split the log into one text block per distinct P1 run id."""
+    starts: List[Dict] = []
+    seen = set()
+    for match in _RE_RUN_ID.finditer(text):
+        run_id = match.group(1)
+        if run_id in seen:
+            continue
+        seen.add(run_id)
+        starts.append({"run_id": run_id, "start": match.start()})
+
+    blocks = []
+    for index, entry in enumerate(starts):
+        end = starts[index + 1]["start"] if index + 1 < len(starts) else len(text)
+        blocks.append({"run_id": entry["run_id"], "text": text[entry["start"]:end]})
+    return blocks
+
+
+def _parse_p1_runs(text: str) -> List[Dict]:
+    """Extract each P1 queue-clearance run with its timestamp and outcome.
+
+    The queue-velocity shelve is attributed to the single most recent run
+    rather than to whichever block happens to contain the footer text. The PID
+    shelves the run that was in flight, and the batch footer records that
+    shelve once — attributing per-block would double-count it whenever the
+    compactor repeats an entry, which it does.
+    """
+    runs: List[Dict] = []
+    for block in _run_blocks(text):
+        ts_match = _RE_RUN_TS.search(block["text"])
+        outcome = _OUTCOME_NO_STEPS if "did NOT execute steps" in block["text"] else None
+        runs.append({
+            "run_id": block["run_id"],
+            "timestamp_utc": _iso(ts_match.group(1), ts_match.group(2)) if ts_match else None,
+            "outcome": outcome,
+            "shelved_reason": None,
+        })
+
+    shelved = _RE_SHELVED.search(text)
+    if shelved and runs:
+        dated = [r for r in runs if r["timestamp_utc"]]
+        target = max(dated, key=lambda r: r["timestamp_utc"]) if dated else runs[-1]
+        reason = (shelved.group(1) or "").strip() or "queue-velocity PID"
+        target["shelved_reason"] = reason
+        target["outcome"] = _OUTCOME_SHELVED
+    return runs
+
+
+def parse_backlog_log(text: Optional[str]) -> Dict:
+    """Parse a consolidated stale-backlog recovery log into structured facts.
+
+    Returns a dict with three keys: ``guardrail8`` (halt status),
+    ``pending_human_bypass`` (unreviewed bypass reports) and ``p1_runs``
+    (queue-clearance runs). Empty input yields empty structures, never an
+    exception.
+    """
+    if not text:
+        return {
+            "guardrail8": {
+                "escalation_id": None,
+                "state": None,
+                "priority": 0,
+                "operator_approved_at": None,
+                "tripped_at": None,
+            },
+            "pending_human_bypass": [],
+            "p1_runs": [],
+        }
+
+    return {
+        "guardrail8": _parse_guardrail8(text),
+        "pending_human_bypass": _parse_pending_bypass(text),
+        "p1_runs": _parse_p1_runs(text),
+    }
