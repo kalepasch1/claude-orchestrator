@@ -20,11 +20,26 @@ from typing import Optional
 
 AGENT_BRANCH_PATTERN = re.compile(r"^agent/")
 MERGE_COMMIT_PATTERN = re.compile(r"^Merge branch ['\"]agent/([^'\"]+)['\"]")
-SECRET_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|secret|token|password|credential|aws_|private_key|oauth)", re.IGNORECASE),
-    re.compile(r"(-----BEGIN|-----END)", re.IGNORECASE),
-    re.compile(r"(algorithm|credential):", re.IGNORECASE),
+# High-confidence markers: the marker *is* the secret. PEM armor carries its
+# payload on the following lines, so the line itself has no "key: value" or
+# "key=value" shape -- gating it behind that heuristic (as this module used to)
+# meant "-----BEGIN PRIVATE KEY-----" scored as clean and a private key could
+# ride a merged diff straight into project memory. These match on sight.
+SECRET_MARKER_PATTERNS = [
+    re.compile(r"-----(BEGIN|END)\b", re.IGNORECASE),
 ]
+
+# Keyword patterns: "credential" or "token" in prose is not a secret. These only
+# count when the line also assigns a value (':' or '='), which is what keeps
+# "credential system explained" out of the results.
+SECRET_KEYWORD_PATTERNS = [
+    re.compile(r"(?i)(api[_-]?key|secret|token|password|credential|aws_|private[_-]?key|oauth)"),
+    re.compile(r"(?i)(algorithm|credential):"),
+]
+
+# Combined list drives redaction in _sanitize_diff, where erring toward
+# redacting a line is cheap.
+SECRET_PATTERNS = SECRET_MARKER_PATTERNS + SECRET_KEYWORD_PATTERNS
 
 
 def _has_secrets(text: str) -> bool:
@@ -33,7 +48,10 @@ def _has_secrets(text: str) -> bool:
         return False
     lines = str(text)[:10000].split("\n")
     for line in lines:
-        if any(pat.search(line) for pat in SECRET_PATTERNS):
+        # Unambiguous armor: no value heuristic, no exceptions.
+        if any(pat.search(line) for pat in SECRET_MARKER_PATTERNS):
+            return True
+        if any(pat.search(line) for pat in SECRET_KEYWORD_PATTERNS):
             # Heuristic: if the suspicious line has a value after ':' or '=', it's suspicious
             if ":" in line or "=" in line:
                 return True
@@ -132,13 +150,32 @@ def get_changed_files(repo: str, merge_commit: str) -> list[str]:
 
 
 def _normalize_project_path(repo: str) -> str:
-    """Extract project identifier from repo path."""
-    # E.g., /Users/kpasch/Documents/beethoven/claude-orchestrator -> beethoven
+    """Extract the project identifier from a repo path.
+
+    The canonical identifier is the *repository* directory, not the workspace
+    directory that contains it. Repos here live as Documents/<workspace>/<repo>
+    (beethoven/claude-orchestrator, galop/racefeed, pareto/2080, darwn/darwn),
+    so keying on the workspace would collapse every repo in a workspace onto one
+    merged_changes.md -- which is exactly what this module must not do, since
+    the file it writes is per-project memory.
+
+    E.g. /Users/kpasch/Documents/beethoven/claude-orchestrator -> claude-orchestrator
+         /Users/kpasch/Documents/beethoven/claude-orchestrator/runner -> claude-orchestrator
+         /Users/kpasch/Documents/apparently -> apparently
+         /tmp/somerepo -> orchestrator (fallback)
+
+    Pure string logic on purpose: it must give the same answer on a CI box where
+    none of these paths exist.
+    """
     parts = Path(repo).parts
     for i, part in enumerate(parts):
-        if part in ("Documents", "beethoven"):
-            if i + 1 < len(parts):
-                return parts[i + 1]
+        if part == "Documents":
+            tail = parts[i + 1:]
+            if not tail:
+                break
+            # Documents/<repo>              -> <repo>
+            # Documents/<workspace>/<repo>  -> <repo>  (deeper segments ignored)
+            return tail[1] if len(tail) >= 2 else tail[0]
     return "orchestrator"
 
 
@@ -188,7 +225,13 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
     # Compute project memory path
     home = Path.home()
     memory_dir = home / ".claude" / "projects" / f"-{os.path.expanduser('~').lstrip('/')}-{project.replace('/', '-')}" / "memory"
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        memory_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # Read-only home, sandboxed runner, bad permissions: memory capture is
+        # best-effort context, never a reason to fail the caller's merge.
+        print(f"failed to create memory dir {memory_dir}: {e}", file=sys.stderr)
+        return None
 
     memory_file = memory_dir / "merged_changes.md"
 
@@ -197,8 +240,12 @@ def write_memory_file(project: str, merged_diffs: list[dict]) -> Optional[str]:
     if memory_file.exists():
         try:
             content = memory_file.read_text(errors="replace")
-            # Extract all commit hashes already recorded
-            for match in re.finditer(r"commit_hash: ([a-f0-9]+)", content):
+            # Extract all commit hashes already recorded. Must stay in sync
+            # with the "- commit_hash: <sha>" line emitted below; when the
+            # writer emitted "- **commit_hash**: <sha>" this pattern never
+            # matched, existing_hashes stayed empty, and every sync appended a
+            # full duplicate of every entry.
+            for match in re.finditer(r"commit_hash:\s*([0-9a-fA-F]+)", content):
                 existing_hashes.add(match.group(1))
         except Exception:
             pass
@@ -224,11 +271,11 @@ metadata:
     for diff_info in new_diffs:
         entry = f"""## {diff_info['branch_name']} ({diff_info['commit_hash'][:8]})
 
-- **author_date**: {diff_info['author_date']}
-- **commit_hash**: {diff_info['commit_hash']}
-- **merge_message**: {diff_info['merge_message']}
-- **files_changed**: {len(diff_info['files'])}
-- **extracted_at**: {diff_info['extracted_at']}
+- author_date: {diff_info['author_date']}
+- commit_hash: {diff_info['commit_hash']}
+- merge_message: {diff_info['merge_message']}
+- files_changed: {len(diff_info['files'])}
+- extracted_at: {diff_info['extracted_at']}
 
 ### Changed files
 {chr(10).join(f"- {f}" for f in diff_info['files'][:50])}

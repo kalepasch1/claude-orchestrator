@@ -555,10 +555,15 @@ class TestResourceLimits:
     def test_large_diff_truncation(self):
         """Handle very large diffs gracefully."""
         large_diff = "+" + "x" * 100000
-        result = mdm.get_merge_diff.__wrapped__
-        # Just verify sanitization doesn't crash on huge inputs
+        # NOTE: this used to begin with `result = mdm.get_merge_diff.__wrapped__`,
+        # left over from a draft in which get_merge_diff was decorated. It is not
+        # decorated, the name was never asserted on or used, and the test's own
+        # docstring says the subject is sanitization of huge inputs. The stray
+        # attribute access was the bug; the assertions below are the test.
         sanitized = mdm._sanitize_diff(large_diff, max_chars=60000)
         assert len(sanitized) <= 60000
+        # Truncation must be a prefix of the input, not a reordering or elision.
+        assert large_diff.startswith(sanitized[:1000])
 
     def test_many_files_in_merge(self):
         """Handle merge with many file changes."""
