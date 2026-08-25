@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "python3 -m pytest runner/tests/ -x --tb=short -q 2>&1 || true",
+    "test": "python3 -m pytest runner/tests/test_ci_offline.py -q --no-header && python3 -m compileall -q runner > /dev/null",
+    "test:full": "python3 -m pytest runner/tests/ --tb=short -q",
     "rls-gate-check": "python3 runner/rls_guard.py"
   }
 }
