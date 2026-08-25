@@ -51,8 +51,19 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install pytest
-        run: pip install --quiet pytest
+      - name: Install test dependencies
+        # pytest-timeout, not just pytest. requirements-dev.txt exists precisely because
+        # the merge gate's `--timeout=60` died with "unrecognized arguments" on any
+        # machine that did not happen to have the plugin — and this step was still
+        # installing pytest alone, so CI was one of those machines. pytest.ini now sets a
+        # default timeout, and pytest ignores an unknown ini key without complaint: the
+        # bound would look configured and simply not exist.
+        #
+        # Named directly rather than `-r requirements-dev.txt`, because that file pulls in
+        # requirements.txt, and this job unsets SUPABASE_* on purpose to prove the tests
+        # are offline. Installing the runtime stack into it would widen a deliberately
+        # narrow, blocking job. Keep these two pinned in step with requirements-dev.txt.
+        run: pip install --quiet 'pytest>=8.0' 'pytest-timeout>=2.2'
 
       - name: Run offline guard tests
         working-directory: runner
