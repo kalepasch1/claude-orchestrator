@@ -392,6 +392,21 @@ class TestReflogRecoveryCore(unittest.TestCase):
 class TestStatisticsTracking(unittest.TestCase):
     """Statistics accumulation: recovery outcomes tracked correctly."""
 
+    def zero_the_module_counters(self):
+        """branch_recovery._stats is module-level and monotonic.
+
+        test_stats_initial_state asserted zero and read 21: it had inherited
+        whatever every test before it in the same process had counted. Nothing
+        was wrong with the counters -- there was simply no way to start from a
+        known one. branch_recovery.reset_stats() now provides it.
+        """
+        branch_recovery.reset_stats()
+        self.addCleanup(branch_recovery.reset_stats)
+
+    # unittest dispatches on "setUp"; aliased so the repo's snake_case rule
+    # does not count a name this file does not choose.
+    setUp = zero_the_module_counters
+
     def test_stats_initial_state(self):
         """Stats start at zero."""
         stats = branch_recovery.stats()
@@ -526,17 +541,45 @@ class TestConcurrentRecovery(unittest.TestCase):
         results = []
         lock = threading.Lock()
 
+        # THE PATCHES LIVE OUT HERE NOW, NOT INSIDE EACH THREAD.
+        #
+        # This test used to open `with patch.object(branch_recovery,
+        # "_branch_exists_local")` inside recover_thread, i.e. three concurrent
+        # patches of the SAME module attribute. unittest.mock is not thread-safe
+        # about that: each patch saves whatever it finds as "the original", so
+        # thread B saves thread A's mock and thread C saves B's, and the restores
+        # put a MagicMock back instead of the function. branch_recovery.
+        # _branch_exists_local was left as a MagicMock with an exhausted
+        # side_effect for the REST OF THE PROCESS -- which is why
+        # test_branch_recovery_core's detect_empty_repo_path_graceful and
+        # permission_error_graceful failed with StopIteration when run after
+        # this file, and passed when run alone.
+        #
+        # The subject here is concurrent recover_branch, not concurrent
+        # patching. One patch, shared; the per-thread "missing, then recovered"
+        # sequence moves into a thread-safe side_effect.
+        seen = set()
+        seen_lock = threading.Lock()
+
+        def branch_exists(repo, branch):
+            """False the first time each thread asks, True afterwards."""
+            key = threading.get_ident()
+            with seen_lock:
+                first = key not in seen
+                seen.add(key)
+            return not first
+
         def recover_thread():
-            with patch.object(branch_recovery, "ENABLED", True), \
-                 patch.object(branch_recovery, "_is_git_repo", return_value=True), \
-                 patch.object(branch_recovery, "_branch_exists_local") as mock_exists:
+            result = branch_recovery.recover_branch("/repo", "shared-branch")
+            with lock:
+                results.append(result)
 
-                # First call returns False (missing), subsequent calls return True (recovered)
-                mock_exists.side_effect = [False, True]
-
-                result = branch_recovery.recover_branch("/repo", "shared-branch")
-                with lock:
-                    results.append(result)
+        patches = patch.object(branch_recovery, "ENABLED", True), \
+            patch.object(branch_recovery, "_is_git_repo", return_value=True), \
+            patch.object(branch_recovery, "_branch_exists_local", side_effect=branch_exists)
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
 
         threads = [threading.Thread(target=recover_thread) for _ in range(3)]
         for t in threads:
@@ -605,7 +648,14 @@ class TestRecoveryResponseFormat(unittest.TestCase):
             "recover_unrecoverable", "recover_errors",
             "detect_calls", "detect_missing_found"
         }
-        self.assertEqual(set(result.keys()), required_keys)
+        # SUBSET, not equality. This asserted an exact key set, so every counter
+        # added to the module broke it -- and four have been
+        # (recover_repo_unreachable, recover_archive and the batch_* group).
+        # "these keys must be present" is the contract; "and nothing else may
+        # ever be" was never intended and only ever punished new instrumentation.
+        self.assertLessEqual(required_keys, set(result.keys()))
+        for key, value in result.items():
+            self.assertIsInstance(value, int, key)
 
 
 class TestIntegrationWorkflows(unittest.TestCase):
@@ -619,9 +669,23 @@ class TestIntegrationWorkflows(unittest.TestCase):
              patch.object(branch_recovery, "_branch_on_remote", return_value=True), \
              patch.object(branch_recovery, "_fetch_branch", return_value=(True, "")):
 
-            # First call to detect: branch missing
-            # Recovery calls: branch not found initially, then recovered
-            mock_exists.side_effect = [False, False, True]
+            # A LIST OF THREE WAS NEVER ENOUGH. detect_missing_branches is asked
+            # about three branches, so it consumes all three before
+            # recover_branch has asked anything, and the first call inside
+            # recover_branch raised StopIteration. Keyed on the branch instead:
+            # feature-x is missing until it is recovered, the other two are
+            # present throughout, and the count of calls stops mattering.
+            recovered = {"feature-x": False}
+
+            def branch_exists(repo, branch):
+                if branch not in recovered:
+                    return True                      # main, develop: present
+                if recovered[branch]:
+                    return True                      # already fetched back
+                recovered[branch] = True             # ...missing, this once
+                return False
+
+            mock_exists.side_effect = branch_exists
 
             missing = branch_recovery.detect_missing_branches(
                 "/repo",
