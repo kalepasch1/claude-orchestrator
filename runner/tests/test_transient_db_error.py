@@ -56,7 +56,15 @@ class TestTransientDBError(unittest.TestCase):
             self.assertIsNone(result)
 
     def test_update_swallows_transient_db_error(self):
-        """update() must catch TransientDBError on concurrent-write 409."""
+        """update() must catch TransientDBError on concurrent-write 409.
+
+        Was `update("tasks", {"state": "DONE"}, id="abc-123")`, which raised
+        TypeError: update() got an unexpected keyword argument 'id' before
+        reaching a single line of the behaviour it meant to test. The signature
+        is update(table, match, patch) -- three positionals, no kwargs -- and
+        getting those two dicts the wrong way round is a live defect class in
+        this repo, so the call is spelled out here with the match first.
+        """
         from runner.db import update, TransientDBError
 
         err = urllib.error.HTTPError(
@@ -67,8 +75,24 @@ class TestTransientDBError(unittest.TestCase):
             fp=None,
         )
         with patch("urllib.request.urlopen", side_effect=err):
-            result = update("tasks", {"state": "DONE"}, id="abc-123")
+            result = update("tasks", {"id": "abc-123"}, {"state": "DONE"})
             self.assertIsNone(result)
+
+    def test_update_rejects_the_swapped_argument_order(self):
+        """The mistake the old call made is worth failing loudly on.
+
+        update(table, match, patch) with the dicts reversed asks PostgREST to
+        SET id=<...> on every row whose state is DONE. It is the same swap this
+        cleanup has now found in branch_repair_bot and branch_repair_bot's
+        requeue path; here it is pinned as an arity/keyword fact.
+        """
+        from runner.db import update
+        import inspect
+
+        params = list(inspect.signature(update).parameters)
+        self.assertEqual(params, ["table", "match", "patch"])
+        with self.assertRaises(TypeError):
+            update("tasks", {"state": "DONE"}, id="abc-123")
 
 
 if __name__ == "__main__":
