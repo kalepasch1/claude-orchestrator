@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import merged_diff_library as mdl
 import patch_transplant
+import transplant_discipline
 import diff_compiler
 
 
@@ -573,9 +574,39 @@ class RecordTest(unittest.TestCase):
 # ── patch_transplant.hint ─────────────────────────────────────────────────────
 
 class PatchTransplantHintTest(unittest.TestCase):
+    """The similarity floor moved to 0.55 and these fixtures did not.
+
+    hint() used to gate on ORCH_PATCH_TRANSPLANT_MIN_SIM (default 0.18) while
+    find_transplant_source() carried a separate hardcoded 0.25 — two thresholds
+    drifting independently, neither of them the 0.55 the spec calls for. Both now
+    read transplant_discipline.MIN_TRANSPLANT_SIMILARITY. The reasoning is in
+    that module: at 0.18 the "proven patch" handed to a coder is barely related
+    to the task, which is where prompts like "adapt the proven patch
+    beethoven/deployfix-... similarity=0.309" came from, and adapting an
+    unrelated diff is worse than starting clean.
+
+    So a fixture at 0.5 is now correctly REFUSED, and these five tests had been
+    failing on an empty string. The hit is raised above the real floor, and the
+    floor itself is pinned below so a silent drop back toward 0.18 fails here.
+    """
+
     TASK = {"id": "t1", "prompt": "add stripe webhook verification handler"}
-    HIT = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": 0.5,
+    HIT = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": 0.72,
             "summary": "prior stripe hook", "diff": "+ old patch"}]
+
+    def test_the_floor_is_the_spec_value(self):
+        self.assertGreaterEqual(transplant_discipline.MIN_TRANSPLANT_SIMILARITY, 0.55)
+
+    def test_a_hit_just_below_the_floor_is_refused(self):
+        """0.5 is the value these fixtures used to carry — it must not pass."""
+        near = [{**self.HIT[0], "similarity": 0.5}]
+        with patch.object(patch_transplant.merged_diff_library, "find", return_value=near):
+            self.assertEqual(patch_transplant.hint(self.TASK), "")
+
+    def test_a_hit_missing_similarity_is_refused_rather_than_raising(self):
+        no_sim = [{k: v for k, v in self.HIT[0].items() if k != "similarity"}]
+        with patch.object(patch_transplant.merged_diff_library, "find", return_value=no_sim):
+            self.assertEqual(patch_transplant.hint(self.TASK), "")
 
     def test_returns_transplant_hint_when_hit(self):
         with patch.object(patch_transplant.merged_diff_library, "find", return_value=self.HIT):
@@ -589,9 +620,13 @@ class PatchTransplantHintTest(unittest.TestCase):
         self.assertEqual(result, "")
 
     def test_returns_empty_when_similarity_below_threshold(self):
+        # ORCH_PATCH_TRANSPLANT_MIN_SIM is no longer read by anything — the floor
+        # lives in transplant_discipline — so setting it here proved nothing; the
+        # test passed because 0.01 is below every candidate floor. Asserting the
+        # real knob is what makes this a threshold test rather than a tautology.
         low_hit = [{**self.HIT[0], "similarity": 0.01}]
         with patch.object(patch_transplant.merged_diff_library, "find", return_value=low_hit), \
-             patch.dict(os.environ, {"ORCH_PATCH_TRANSPLANT_MIN_SIM": "0.18"}):
+             patch.object(transplant_discipline, "MIN_TRANSPLANT_SIMILARITY", 0.55):
             result = patch_transplant.hint(self.TASK)
         self.assertEqual(result, "")
 
@@ -617,7 +652,9 @@ class PatchTransplantHintTest(unittest.TestCase):
 
 class PatchTransplantPreClaimHookTest(unittest.TestCase):
     TASK = {"id": "t1", "prompt": "add stripe webhook verification handler"}
-    HIT = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": 0.5,
+    # Above transplant_discipline.MIN_TRANSPLANT_SIMILARITY (0.55); see
+    # PatchTransplantHintTest for why the old 0.5 stopped qualifying.
+    HIT = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": 0.72,
             "summary": "prior stripe hook", "diff": "+ old patch"}]
 
     def test_prepends_hint_to_task_prompt(self):

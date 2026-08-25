@@ -191,6 +191,39 @@ async def _register(ws, hostname):
 
 
 class TestFleetWebSocketServer(unittest.IsolatedAsyncioTestCase):
+    """Transport behaviour of the fleet WebSocket server.
+
+    Marked `allow_network`, which is a claim that has to be justified rather than
+    reached for. runner/tests/test_web_console_config_routes.py hit the same
+    hermetic guard and deliberately did NOT take this route — "marking the class
+    allow_network would have been a lie about coverage — nothing here needs a
+    socket" — and drives its handler over in-memory byte streams instead.
+
+    These are the opposite case. What is under test IS the transport: that ten
+    simultaneous connections are each tracked, that the heartbeat's ping/pong
+    keeps a live connection registered, that a client whose transport dies
+    WITHOUT a close frame is detected and dropped, and that a reconnect within
+    the window reclaims its session. None of that survives being faked — an
+    in-memory stream has no half-open connection to detect. Five of these six
+    tests had been failing on the guard's ECONNREFUSED.
+
+    Every connection is to 127.0.0.1 on a port this test just bound, so nothing
+    here depends on a remote host — the thing the guard exists to prevent. The
+    test below pins that so the marker cannot quietly widen.
+    """
+
+    # Class-scoped, NOT module-level: a module-level pytestmark would disable
+    # the hermetic guard for all 48 tests in this file rather than the six that
+    # need a socket.
+    pytestmark = pytest.mark.allow_network
+
+    def test_every_connection_in_this_file_is_loopback(self):
+        """The marker disables the guard for this class; this keeps its scope."""
+        import re as _re
+        src = open(__file__, encoding="utf-8").read()
+        hosts = set(_re.findall(r"ws://([A-Za-z0-9_.\-]+):", src))
+        self.assertEqual(hosts, {"127.0.0.1"},
+                         "allow_network is justified only for loopback-to-self")
 
     async def test_start_and_stop(self):
         port = _free_port()
