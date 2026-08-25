@@ -462,16 +462,31 @@ class TestRecoveryResponseStructure(unittest.TestCase):
             self.assertIsInstance(result, list)
 
     def test_stats_response_is_dict_with_all_keys(self):
-        """stats() returns dict with all expected keys."""
+        """stats() always exposes the counters callers read.
+
+        This asserted an EXACT key set, so it went red the moment the module
+        gained recover_archive, recover_repo_unreachable and the four batch_*
+        counters — none of which broke anything. Adding a counter is not a
+        contract change; removing one a caller reads is. Assert the floor.
+        """
         result = branch_recovery.stats()
 
         self.assertIsInstance(result, dict)
-        expected_keys = {
+        required_keys = {
             "recover_attempts", "recover_fetched", "recover_reflog",
             "recover_unrecoverable", "recover_errors",
             "detect_calls", "detect_missing_found"
         }
-        self.assertEqual(set(result.keys()), expected_keys)
+        self.assertLessEqual(required_keys, set(result.keys()),
+                             f"stats() dropped {required_keys - set(result.keys())}")
+        for key, value in result.items():
+            self.assertIsInstance(value, int, f"counter {key} is not an int")
+
+    def test_stats_returns_a_snapshot_not_the_live_counters(self):
+        """Callers must not be able to mutate module state through stats()."""
+        snapshot = branch_recovery.stats()
+        snapshot["recover_attempts"] = 9999
+        self.assertNotEqual(branch_recovery.stats()["recover_attempts"], 9999)
 
 
 if __name__ == "__main__":
