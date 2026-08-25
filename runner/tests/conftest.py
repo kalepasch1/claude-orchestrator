@@ -349,6 +349,7 @@ def pytest_collectstart(collector):
 # a real socket. There is no opt-out for the missing-timeout guard: add the
 # timeout.
 # ─────────────────────────────────────────────────────────────────────────────
+import ipaddress as _ipaddress
 import socket as _socket
 import subprocess as _subprocess
 import warnings
@@ -378,6 +379,38 @@ class UnboundedSubprocessInTest(UserWarning):
     """A test spawned a subprocess with no timeout; one was supplied for it."""
 
 
+# Loopback is not "somebody else's uptime".
+#
+# A test that binds an ephemeral port on 127.0.0.1 and then talks to it — which
+# is the only honest way to test an HTTP handler end to end — depends on nothing
+# outside this process. Refusing it made the guard fail the exact tests it was
+# never aimed at (canary.start_metrics_server()'s five request tests), while the
+# remote hosts it does aim at are all off-box by definition.
+_LOOPBACK_HOSTS = ("localhost", "localhost.localdomain", "ip6-localhost")
+
+
+def _is_loopback(address):
+    """True when this address is this machine talking to itself.
+
+    ipaddress does the parsing rather than a prefix match, because a prefix
+    match says yes to "127.example.com" — a real remote host that would then
+    walk straight through the guard.
+    """
+    host = address[0] if isinstance(address, tuple) and address else address
+    if not isinstance(host, str):
+        return False
+    host = host.strip("[]").split("%", 1)[0].lower()   # strip v6 brackets/zone
+    if host in _LOOPBACK_HOSTS:
+        return True
+    try:
+        parsed = _ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # ::ffff:127.0.0.1 is loopback; IPv6Address.is_loopback alone says no.
+    return bool((parsed.ipv4_mapped if getattr(parsed, "ipv4_mapped", None)
+                 else parsed).is_loopback)
+
+
 # Long enough for a real local git or npm call, short enough that a wedged child
 # cannot hold the suite. Nothing legitimate in these tests takes this long.
 _DEFAULT_SUBPROCESS_TIMEOUT = 30
@@ -401,7 +434,7 @@ def _hermetic(request, monkeypatch):
     def _blocked_connect(self, address, *a, **kw):
         # AF_UNIX has no address family risk and is how local tooling talks to
         # itself; only IP sockets leave the machine.
-        if self.family in (_socket.AF_INET, _socket.AF_INET6):
+        if self.family in (_socket.AF_INET, _socket.AF_INET6) and not _is_loopback(address):
             raise NetworkAccessInTest(
                 111,  # ECONNREFUSED, so errno-inspecting callers behave normally
                 f"Connection refused by the test suite's hermetic guard: {address!r}. "
@@ -427,8 +460,13 @@ def _hermetic(request, monkeypatch):
     # when stdin is captured.
     for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
         monkeypatch.setenv(var, "http://127.0.0.1:9")
-    monkeypatch.setenv("no_proxy", "")
-    monkeypatch.setenv("NO_PROXY", "")
+    # ...but never for loopback. urllib in THIS process honours http_proxy too,
+    # so an empty no_proxy sent a test's request to its own ephemeral port
+    # through the discard-port proxy and got it refused. The proxy exists to
+    # short-circuit children reaching REMOTE hosts; exempting the local machine
+    # costs it nothing and stops it hijacking in-process loopback calls.
+    for var in ("no_proxy", "NO_PROXY"):
+        monkeypatch.setenv(var, "localhost,127.0.0.1,::1")
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     monkeypatch.setenv("GIT_ASKPASS", "/usr/bin/false")
     monkeypatch.setenv("SSH_ASKPASS", "/usr/bin/false")
