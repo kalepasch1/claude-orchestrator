@@ -15,7 +15,70 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
 
+import pytest
+
 import config_applier
+
+
+@pytest.fixture(autouse=True)
+def _fleet_config_stays_out_of_this(monkeypatch):
+    """apply_config PERSISTS. Not into the fleet's real configuration table.
+
+    config_applier.apply_config() ends with
+
+        db.insert("fleet_config", {"key": key, "value": str(value), ...},
+                  upsert=True)
+
+    and nothing in this file mocked db. These tests were writing their fixtures
+    into the live control plane, and four of them are still there:
+
+        ORCH_TEST_ENHANCED_SUITE_TEMP = 42        (2026-07-25, from this file)
+        ORCH_TEST_INTEGRATION         = 100
+        ORCH_CANARY_TEST              = test123
+        ORCH_OLD_VAL_TEST             = modified
+
+    None of the four is read by any code in the repository. They are test
+    fixtures that escaped into production configuration and stayed there for a
+    month.
+
+    The failures that led here were the second-order effect: with the suite's
+    hermetic guard refusing the socket, the write failed, apply_config correctly
+    reported "rolled_back", and two tests asserting "applied" went red. The
+    product was right both times -- the test was asking a question it had no
+    business asking of the real database.
+
+    An in-memory fleet_config keeps the persistence path exercised end to end,
+    so the assertions still mean something, without leaving anything behind.
+    """
+    written = {}
+
+    def fake_insert(table, row, **kw):
+        # NO `assert table == "fleet_config"` here. policy_compiler.
+        # authorize_config() -- which apply_config calls BEFORE persisting --
+        # inserts into its own policy table, so the assertion raised, was caught
+        # by config_applier's `except Exception` around the authorize call, and
+        # came back as {"outcome": "rejected", "reason": "policy_compiler:..."}.
+        # A mock that fails the code under test is indistinguishable from the
+        # code under test failing.
+        if table == "fleet_config" and isinstance(row, dict) and "key" in row:
+            written[row["key"]] = row.get("value")
+        return [row]
+
+    # WRITES ONLY. Stubbing select() as well made apply_config return
+    # "rejected" instead: policy_compiler.authorize_config() reads through db,
+    # and an empty answer fails authorization before the persistence path is
+    # reached -- so the test would have "passed" over a code path it never ran.
+    # Reads stay as they are; the suite's hermetic guard already keeps them off
+    # the network, and every one of them is fail-soft.
+    #
+    # config_applier does `import db` INSIDE its functions, so there is no
+    # config_applier.db attribute to patch; the real module is what the lazy
+    # import will find.
+    import db as real_db
+    monkeypatch.setattr(real_db, "insert", fake_insert)
+    monkeypatch.setattr(real_db, "update", lambda *a, **k: None)
+    monkeypatch.setattr(real_db, "delete", lambda *a, **k: 0, raising=False)
+    yield written
 
 
 # ---------------------------------------------------------------------------
