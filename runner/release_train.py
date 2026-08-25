@@ -69,6 +69,118 @@ def _release_decision(ahead, due, minimum=None):
     return "hold"
 
 
+# RELEASE ON CAPACITY, NOT ON A CLOCK.
+# runner/tests/test_release_on_capacity.py has pinned this contract since 2026-08-23 while
+# the implementation was never committed, so all 15 of its cases errored at collection on
+# `release_train.RELEASE_MODE`. The contract below is exactly what those tests assert.
+#
+# The mode defaults to "cadence" — the behaviour that is in production today. Flipping the
+# fleet's production deploy rhythm is an operator decision, not a side effect of landing the
+# implementation, so capacity mode is opt-in via ORCH_RELEASE_MODE=capacity.
+RELEASE_MODE = (os.environ.get("ORCH_RELEASE_MODE")
+                or os.environ.get("RELEASE_MODE") or "cadence").strip().lower()
+# Coalesce a burst of merges into one build. In-flight is the hard bound; this only stops
+# the train from queueing a second Vercel build seconds behind the first.
+RELEASE_DEBOUNCE_S = max(0.0, float(os.environ.get("ORCH_RELEASE_DEBOUNCE_S", "60")))
+
+
+def _capacity_mode():
+    return RELEASE_MODE == "capacity"
+
+
+def _effective_min_batch(project=None):
+    """One change is a releasable batch when we ship on capacity; MIN_BATCH otherwise."""
+    return 1 if _capacity_mode() else MIN_BATCH
+
+
+def _release_in_flight(project):
+    """Is a release already building for this project? Fails CLOSED.
+
+    Concurrency is the capacity signal. Shipping a second concurrent release is the
+    expensive mistake; skipping a pass costs one cycle, so an unreadable DB says yes.
+    """
+    try:
+        rows = db.select("releases", {
+            "select": "id,deploy_status,created_at", "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building)",
+            "order": "created_at.desc", "limit": "1"}) or []
+    except Exception as exc:
+        return True, f"in-flight check fail-closed ({exc})"
+    if not rows:
+        return False, "nothing in flight"
+    status = str(rows[0].get("deploy_status") or "unknown").lower()
+    return True, f"release already in flight ({status})"
+
+
+def _release_debounced(project):
+    """Was the last release too recent to justify another build? Fails OPEN.
+
+    An unreadable timestamp must not wedge releases forever — `_release_in_flight` is the
+    hard bound, this is only a cost smoother.
+    """
+    if RELEASE_DEBOUNCE_S <= 0:
+        return False, "debounce disabled"
+    try:
+        rows = db.select("releases", {
+            "select": "id,deploy_status,created_at", "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building,success)",
+            "order": "created_at.desc", "limit": "1"}) or []
+    except Exception:
+        return False, "debounce fail-open (release history unreadable)"
+    if not rows:
+        return False, "no prior release"
+    try:
+        last = datetime.datetime.fromisoformat(
+            str(rows[0]["created_at"]).replace("Z", "+00:00"))
+        elapsed = (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds()
+    except Exception:
+        return False, "debounce fail-open (timestamp unreadable)"
+    if elapsed < RELEASE_DEBOUNCE_S:
+        return True, f"debounce ({elapsed:.0f}s < {RELEASE_DEBOUNCE_S:.0f}s since last release)"
+    return False, f"debounce elapsed ({elapsed:.0f}s)"
+
+
+def _release_rate_per_hour(project):
+    """Releases recorded in the last hour, or None if unknown. Fail-soft, reporting only.
+
+    The cost regression that justified the clock has to stay visible after we stop
+    releasing on one.
+    """
+    try:
+        cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        rows = db.select("releases", {
+            "select": "id,deploy_status,created_at", "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building,success)",
+            "created_at": f"gte.{cutoff}", "order": "created_at.desc"}) or []
+    except Exception:
+        return None
+    return len(rows)
+
+
+def _capacity_release_decision(project, ahead):
+    """Ship when there is capacity and something to ship: release | hold | up-to-date.
+
+    Answers only "is there work, and is there room". Project back-pressure — RED deploy
+    health, open fix lineages, recent failed gates — lives in the caller and is
+    not overridden here; a "release" verdict from this function is a green light from
+    the capacity check alone, never a bypass of those gates.
+    """
+    ahead = int(ahead or 0)
+    if ahead <= 0:
+        return "up-to-date", "nothing staged"
+    in_flight, why = _release_in_flight(project)
+    if in_flight:
+        return "hold", why
+    debounced, why = _release_debounced(project)
+    if debounced:
+        return "hold", why
+    minimum = _effective_min_batch(project)
+    if ahead < minimum:
+        return "hold", f"{ahead} change(s) staged, below batch minimum {minimum}"
+    return "release", f"{ahead} change(s) staged and capacity is free"
+
+
 def _candidate_state_filter():
     """Keep integration in the canonical merge train unless legacy ingestion is explicitly enabled."""
     return "in.(DONE,MERGED)" if _truthy("ORCH_RELEASE_INGEST_DONE", False) else None
@@ -1566,8 +1678,9 @@ def _next_version():
 
 
 def _release_due(project):
-    if RELEASE_INTERVAL_HOURS <= 0:
-        return True, "release interval disabled"
+    # No `RELEASE_INTERVAL_HOURS <= 0` escape hatch: the module-level floor is
+    # max(6.0, ...), so that branch was unreachable and only advertised a way to
+    # disable the cost control that does not exist. Do not reintroduce it.
     rows = db.select("releases", {"select": "created_at,project,deploy_status", "project": f"eq.{project}",
                                   "deploy_status": "in.(pending,building,success)",
                                   "order": "created_at.desc", "limit": "1"}) or []
