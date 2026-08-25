@@ -61,11 +61,24 @@ def _repair_task(task, category, detail, prefer_non_claude=False):
         task, detail, category=category, directive=directive, prefer_non_claude=prefer_non_claude
     )
     if "transient_retries" in task and not agentic_repair.is_terminal(patch):
+        # THE INCREMENT LIVES HERE, AND ONLY HERE.
+        #
         # Was `= int(...or 0)` — it PRESERVED the counter instead of advancing it, so every
         # transient_retries-based cap elsewhere in the fleet stayed frozen at the same value no
         # matter how many times the janitor re-queued the row. Advancing it is the whole point of
         # writing the field back.
-        patch["transient_retries"] = int(task.get("transient_retries") or 0) + 1
+        #
+        # But the three below-cap call sites were ALREADY passing
+        # `{**t, "transient_retries": attempts + 1}`, so adding the increment
+        # here made every janitor pass count as two: a row at 1 went to 3, and
+        # REQUEUE_CAP (3) was reached in two sweeps instead of three. Those
+        # pre-increments are gone; the callers hand over the row as they read it.
+        #
+        # At or above the cap the counter HOLDS. The at-cap branch is the final
+        # same-task repair, not another retry, and letting it climb would make
+        # "how many times did the janitor retry this" unreadable after the fact.
+        attempts = int(task.get("transient_retries") or 0)
+        patch["transient_retries"] = attempts + 1 if attempts < REQUEUE_CAP else attempts
     db.update("tasks", {"id": task["id"]}, patch)
 
 
@@ -103,7 +116,7 @@ def requeue_stuck_running():
             )
         else:
             _repair_task(
-                {**t, "transient_retries": attempts + 1},
+                t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was stuck RUNNING >{STUCK_RUNNING_H}h; resume and complete, do not restart blindly.",
                 prefer_non_claude=True,
@@ -151,7 +164,7 @@ def release_orphaned_running():
             )
         else:
             _repair_task(
-                {**t, "transient_retries": attempts + 1},
+                t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m; resume existing work and finish.",
                 prefer_non_claude=True,
@@ -195,8 +208,7 @@ def requeue_empty_runs():
         if "[janitor-requeued]" in (t.get("note") or "") and int(t.get("transient_retries") or 0) >= REQUEUE_CAP:
             continue
         _repair_task(
-            {**t, "attempt": int(t.get("attempt") or 0) + 1,
-             "transient_retries": int(t.get("transient_retries") or 0) + 1},
+            {**t, "attempt": int(t.get("attempt") or 0) + 1},
             "noop",
             (t.get("note") or "") + "\nPrevious run produced no committable changes; make the smallest concrete implementation and commit.",
         )
