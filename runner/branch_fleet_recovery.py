@@ -53,7 +53,15 @@ def recover_branch(task, repo_path, base_branch="master"):
         if ok:
             _log.info("recovered %s from remote", branch)
             return {"recovered": True, "strategy": "fetched_remote"}
-        _log.warning("fetch failed for %s (auth may be required)", branch)
+        # The branch is NOT missing — it is on origin and only the fetch failed
+        # (transient auth/network). Falling through to the requeue path below
+        # would file a recover-{slug} task noting "missing everywhere", which is
+        # false, and would re-do work that already exists. That false-missing
+        # requeue is the same pathology tests/test_branch_durability.py pins.
+        _log.warning("fetch failed for %s but it exists on origin; not requeuing (%s)",
+                     branch, err)
+        return {"recovered": False, "strategy": "fetch_failed_branch_present",
+                "detail": err}
     if DRY_RUN:
         return {"recovered": False, "strategy": "dry_run"}
     # Check if PAT is configured
