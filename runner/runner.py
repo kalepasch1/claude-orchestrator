@@ -217,6 +217,40 @@ _projects = {}
 MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "36000"))
 
 
+TASK_TIMEOUT_DEFAULT = 3600
+
+
+def _task_timeout(default=TASK_TIMEOUT_DEFAULT):
+    """Seconds to allow one agent run, read fail-soft from TASK_TIMEOUT.
+
+    The three call sites that launch a coder used to inline the environment
+    read and the int() conversion directly. os.environ.get returns the
+    DEFAULT only when the key is absent; when the key is present and empty --
+    `TASK_TIMEOUT=` in a .env, or a fleet_config row whose value was blanked --
+    it returns "" and int("") raises ValueError. That exception is raised at the
+    moment of launching the agent subprocess, so a single blank config value
+    stops every task on the fleet from starting, and the traceback names int()
+    rather than the setting that caused it.
+
+    TASK_TIMEOUT is operator-tunable through the control plane
+    (config_applier, fleet_control, fleet_contracts all list it), so a value
+    this function cannot parse is a routine outcome, not a programming error.
+    Anything unparseable falls back to the default and says so once.
+    """
+    raw = os.environ.get("TASK_TIMEOUT", "")
+    if not str(raw).strip():
+        return default
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        _log.warning("TASK_TIMEOUT=%r is not an integer — using %ss", raw, default)
+        return default
+    if val <= 0:
+        _log.warning("TASK_TIMEOUT=%r is not positive — using %ss", raw, default)
+        return default
+    return val
+
+
 def projects(project_id=None):
     global _projects
     if not _projects or (project_id and project_id not in _projects):
@@ -1872,7 +1906,7 @@ def run_task(t):
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
                                 cwd=wt,
-                                timeout=int(os.environ.get("TASK_TIMEOUT", "3600")),
+                                timeout=_task_timeout(),
                                 mode=_swarm_mode,
                             )
                             r["coder"] = f"swarm:{_swarm_provider}"
@@ -1888,13 +1922,13 @@ def run_task(t):
                             r = agentic_coders.run(coder, draft_prompt, model,
                                                    cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
-                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
+                                                   timeout=_task_timeout())
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
                                                cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
-                                               timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
+                                               timeout=_task_timeout())
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 if _agentic_repair_continue(
