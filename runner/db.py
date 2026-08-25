@@ -2405,8 +2405,14 @@ def claim_task(runner_id):
         return 0 if (rework_backlog and _is_quarantine_rework_task(t)) else (1 if rework_backlog else 0)
 
     def _release_fix_rank(t):
-        # Red release gates are the only thing between completed work and Vercel review. Drain those
-        # before recovery so green staged batches can ship overnight.
+        # Red release gates are the only thing between completed work and Vercel review, so these
+        # drain ahead of everything below this line — recovery's _recovery_rank included.
+        #
+        # NOT ahead of _recovery_reserve_rank, which sits one line above this in the sort tuple.
+        # The comment here used to say "drain those before recovery" flatly, which stopped being
+        # true on 2026-07-15 when the recovery reserve was added above it, and the two lines have
+        # contradicted each other since. One reserved lane goes to recovery first; every other
+        # lane goes to release fixes first. See _recovery_reserve_rank.
         return 0 if (release_fix_backlog and _is_release_fix_task(t)) else (1 if release_fix_backlog else 0)
 
     def _evidence_reserve_rank(t):
@@ -2415,6 +2421,22 @@ def claim_task(runner_id):
         return 0 if (evidence_reserve_open and _is_evidence_task(t)) else (1 if evidence_reserve_open else 0)
 
     def _recovery_reserve_rank(t):
+        """Reserve ORCH_RECOVERY_RESERVED_LANES (default 1) lanes for missing-branch recovery.
+
+        The only entry in this sort tuple that carried no explanation, and the one that most
+        needs it, because it deliberately outranks _release_fix_rank on the line below.
+
+        Recovery turns already-completed work into a mergeable branch. The release-fix backlog
+        is effectively never empty at fleet volume, so without a reserved lane recovery loses
+        every claim to it indefinitely and the completed work is never harvested — the same
+        starvation _rework_rank was given its own tier to escape.
+
+        A reserve is not a priority: it applies only while FEWER than the reserved number of
+        recovery tasks are actually RUNNING. Once the lane is occupied, recovery_reserve_open
+        is False, this returns 0 for everything, and release fixes win on the next line as
+        their own comment describes. With the default of one lane that means exactly one
+        recovery task runs ahead of the release-fix backlog at a time.
+        """
         return 0 if (recovery_reserve_open and _is_recovery_task(t)) else (1 if recovery_reserve_open else 0)
 
     def _release_fix_urgency(t):
