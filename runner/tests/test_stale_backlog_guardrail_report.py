@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from stale_backlog_guardrail_report import (  # noqa: E402
     HELD_STEPS,
+    assess_queue_velocity,
     build_bypass_reviews,
     evaluate_guardrail8,
     parse_backlog_log,
@@ -230,3 +231,60 @@ def test_bypass_builder_is_fail_soft():
     result = build_bypass_reviews(None, None)
     assert result["bypass_reviews"] == []
     assert result["instructions_complete"] is True
+
+
+def test_queue_velocity_shelving_is_observed_in_the_sample():
+    result = assess_queue_velocity(parse_backlog_log(SAMPLE_LOG))
+    assert result["queue_velocity"]["observed"] is True
+
+
+def test_the_shelved_run_is_the_20260813_entry():
+    result = assess_queue_velocity(parse_backlog_log(SAMPLE_LOG))
+    shelved = result["queue_velocity"]["shelved_runs"]
+    assert len(shelved) == 1
+    assert shelved[0].startswith("log-p1-queue-clearance-20260813")
+
+
+def test_safety_flag_is_asserted():
+    result = assess_queue_velocity(parse_backlog_log(SAMPLE_LOG))
+    assert result["safety"]["does_not_change_throughput_or_priority"] is True
+
+
+def test_recommendation_stays_advisory_about_pid_tuning():
+    result = assess_queue_velocity(parse_backlog_log(SAMPLE_LOG))
+    text = result["queue_velocity"]["recommended_adjustment"].lower()
+    assert "pid" in text
+    assert "integral" in text
+    assert "operator approval" in text
+
+
+def test_recommendation_never_orders_a_held_step():
+    result = assess_queue_velocity(parse_backlog_log(SAMPLE_LOG))
+    text = result["queue_velocity"]["recommended_adjustment"].lower()
+    for verb in ("raise throughput", "increase concurrency", "reprioritize"):
+        assert verb not in text
+
+
+def test_low_ev_integral_reason_is_recognised_without_the_outcome_string():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    for run in parsed["p1_runs"]:
+        run["outcome"] = "something else"
+    result = assess_queue_velocity(parsed)
+    assert result["queue_velocity"]["observed"] is True
+
+
+def test_clean_log_reports_no_shelving():
+    parsed = parse_backlog_log(SAMPLE_LOG)
+    for run in parsed["p1_runs"]:
+        run["shelved_reason"] = None
+        run["outcome"] = "completed"
+    result = assess_queue_velocity(parsed)
+    assert result["queue_velocity"]["observed"] is False
+    assert result["queue_velocity"]["shelved_runs"] == []
+    assert result["safety"]["does_not_change_throughput_or_priority"] is True
+
+
+def test_queue_velocity_is_fail_soft():
+    result = assess_queue_velocity(None)
+    assert result["queue_velocity"]["observed"] is False
+    assert result["safety"]["does_not_change_throughput_or_priority"] is True

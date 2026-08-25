@@ -297,3 +297,48 @@ def build_bypass_reviews(parsed: Optional[Dict], decision: Optional[Dict]) -> Di
         })
 
     return {"bypass_reviews": reviews, "instructions_complete": True}
+
+
+_QUEUE_VELOCITY_RECOMMENDATION = (
+    "Revisit the queue-velocity PID tuning: review the low-EV threshold and "
+    "consider resetting the accumulated integral term, under operator approval. "
+    "Recommendation only — no throughput, concurrency or prioritization change "
+    "is applied here."
+)
+
+
+def _is_shelved_by_pid(run: Dict) -> bool:
+    """True when this run was shelved by the queue-velocity PID."""
+    reason = (run.get("shelved_reason") or "").lower()
+    outcome = (run.get("outcome") or "").lower()
+    if "shelved by queue-velocity pid" in outcome:
+        return True
+    return "low ev" in reason and "integral" in reason
+
+
+def assess_queue_velocity(parsed: Optional[Dict]) -> Dict:
+    """Report P1 runs the queue-velocity PID shelved, without acting on them.
+
+    A shelved run looks like a stalled queue, and the reflex is to raise
+    throughput or re-prioritize. Both are steps Guardrail 8 holds, so this
+    function deliberately stops at a recommendation and asserts that it made
+    no such change.
+    """
+    parsed = parsed or {}
+    runs = parsed.get("p1_runs") or []
+    shelved = [run.get("run_id") for run in runs if _is_shelved_by_pid(run)]
+
+    return {
+        "queue_velocity": {
+            "observed": bool(shelved),
+            "shelved_runs": shelved,
+            "recommended_adjustment": (
+                _QUEUE_VELOCITY_RECOMMENDATION
+                if shelved
+                else "No queue-velocity shelving observed; no adjustment recommended."
+            ),
+        },
+        # Asserted, not merely intended: this module has no code path that
+        # changes throughput, concurrency or priority.
+        "safety": {"does_not_change_throughput_or_priority": True},
+    }
