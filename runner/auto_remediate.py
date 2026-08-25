@@ -52,6 +52,53 @@ _ENV_BUILDFAIL = re.compile(r"integrate BUILDFAIL|production build red|build err
 _MISSING_BUILD_TOOL = re.compile(r"\b(yarn|pnpm|nuxt|nuxi|next|vite|prisma|vue-tsc):?\s*(command not found|not found)|cannot find module ['\"](@nuxt/|nuxt|nuxi|next|vite|prisma)", re.I)
 _QUOTED_SLUG = re.compile(r"'([^']+)'")
 
+#: An executor closure that says "there is nothing to build, and here is what is
+#: missing". This is NOT a failed run. It is a question for the operator, and it
+#: is the exact phrasing the database demands: enforce_evidence_on_closure()
+#: rejects a DONE with no artifact_commit and its HINT reads "or if this task
+#: genuinely produced no code, put NO-ARTIFACT-JUSTIFIED: <reason> in note".
+#:
+#: Measured on 2026-08-25, this module was deleting every one of those answers.
+#: The whole tasks table held ZERO rows in state BLOCKED -- not few, zero --
+#: while max(attempt) stood at 124. Five tasks closed BLOCKED with named
+#: evidence came back QUEUED within FOURTEEN SECONDS, attempt incremented and
+#: note overwritten with "agentic-repair:rework". So the DB insists an executor
+#: record why it stopped, and this loop erases that record before anyone reads
+#: it, then pays a coder to rediscover it. That is the burn the module's own
+#: docstring says it exists to prevent.
+#:
+#: One of those five is worth naming, because it shows why this gate must run
+#: BEFORE the category regexes rather than beside them. The closure explained
+#: that requirements.txt had "no duplicate package names and no CONFLICTING
+#: pins" -- evidence that nothing was wrong. `_CONFLICT` is r"conflict", so it
+#: matched, and the task was requeued as a merge-conflict repair. The
+#: classifiers read the evidence prose as failure signal, which means any
+#: sufficiently detailed explanation of why a task cannot proceed will
+#: eventually contain a word that sends it back around.
+#:
+#: Held, not shelved and not decomposed: the task is intact and one operator
+#: sentence -- the missing artifact, the real file to patch -- makes it
+#: runnable again. Deliberately narrow. It matches the prescribed marker and
+#: the executor's standard "no code target" phrasing, and nothing else; a run
+#: that failed for any other reason still falls through to remediation.
+_NO_ARTIFACT = re.compile(
+    r"no.?artifact.?justified|"
+    r"blocked\b[^.]{0,40}\bno code target|"
+    r"no code target[^.]{0,40}\bmissing\b",
+    re.I,
+)
+
+
+def is_terminal_closure(note):
+    """True when *note* is an answered question rather than a failed run.
+
+    Kept as a named predicate, not an inline regex, because the queue janitor
+    and any future sweep must be able to ask the same question and get the same
+    answer. A second copy of this rule would drift, and the failure mode when it
+    drifts is silent: tasks quietly resume being requeued.
+    """
+    return bool(_NO_ARTIFACT.search(str(note or "")))
+
 
 def run(limit=120):
     """Anti-burn remediation. NEVER blindly re-run the same failing task into a credit loop:
@@ -93,6 +140,19 @@ def run(limit=120):
         note = t.get("note") or ""
         signal = f"{note}\n{t.get('log_tail') or ''}"
         rc = int(t.get("remediation_count") or 0)
+
+        # An answered question, not a failed run. Checked FIRST -- ahead of the
+        # HARD_CAP decompose and every category regex below -- because those
+        # match on the evidence text itself, and a closure detailed enough to be
+        # useful will contain a word one of them wants. See _NO_ARTIFACT: a note
+        # reporting there were no conflicting pins was requeued by `_CONFLICT`.
+        #
+        # `note` only, never `signal`: log_tail is the failing run's output and
+        # may quote the phrase from a previous cycle. The closure is what the
+        # executor decided, and it lives in the note.
+        if is_terminal_closure(note):
+            left += 1
+            continue
 
         # HARD CAP: a task that has failed this many times is almost always TOO BIG, not impossible.
         # Instead of shelving it for a human (the old behavior — a manual bottleneck), auto-DECOMPOSE it

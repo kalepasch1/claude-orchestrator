@@ -49,7 +49,26 @@ EMPTY_RUN_MARKERS = ("no committable changes", "empty diff", "diff is empty",
 
 def _note_matches_empty(note):
     n = (note or "").lower()
-    return any(m in n for m in EMPTY_RUN_MARKERS)
+    if not any(m in n for m in EMPTY_RUN_MARKERS):
+        return False
+    # An empty diff because the agent produced nothing is a failed run and this
+    # module should repair it. An empty diff because the executor INSPECTED the
+    # repo and reported there is nothing to build is an answer, and requeueing
+    # it deletes the answer. The two look identical from the diff alone, which
+    # is why the marker exists and why the check has to live here rather than in
+    # EMPTY_RUN_MARKERS -- a NO-ARTIFACT-JUSTIFIED note routinely explains
+    # itself using the words "no committable changes".
+    #
+    # Imported from auto_remediate rather than re-stated so both requeue doors
+    # answer with one rule. A second copy would drift, and when it drifts these
+    # tasks quietly start looping again.
+    try:
+        import auto_remediate
+        if auto_remediate.is_terminal_closure(note):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _repair_task(task, category, detail, prefer_non_claude=False):
