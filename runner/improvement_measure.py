@@ -177,6 +177,107 @@ def first_try_yield(days: int = 30) -> dict:
     return result
 
 
+STAGE_METRIC_WINDOWS = (5, 30)   # meta_loop reads eq.30 for baselines, eq.5 for regressions
+
+
+def _write_stage_metric(row):
+    """Upsert one stage_metrics row. Returns None on success, else the error text.
+
+    Fail-soft with the reason kept: the relation does not exist yet (see
+    runner/migrations/004_stage_metrics.sql), and "wrote 0 rows" without saying
+    why is how a producer that cannot work looks exactly like one with nothing
+    to say.
+    """
+    try:
+        db.insert("stage_metrics", row, upsert=True)
+        return None
+    except Exception as exc:
+        return str(exc)[:200]
+
+
+def stage_metrics(windows=STAGE_METRIC_WINDOWS) -> dict:
+    """Populate the `stage_metrics` table meta_loop's auto-tuner reads.
+
+    NOBODY WROTE THIS TABLE. meta_loop._stage_metrics_summary() selects from
+    `stage_metrics` for window_days=30, and _plan_auto_tune_decisions() selects
+    it again for window_days=5 to detect cycle-time regressions -- and
+    `grep -rn '"stage_metrics"' runner` finds those two reads and no insert
+    anywhere in the repository. _stage_metrics_summary() therefore returned {}
+    on every call, the `for (proj_id, kind), data in metrics.items()` loop below
+    it never entered, and the pipeline auto-tuner has never emitted a single
+    decision in its life. It could not have: its input did not exist.
+
+    This module already computes both halves -- cycle_time_by_kind() and
+    first_try_yield() -- but keyed by kind and by model, not by the
+    (project_id, kind, window_days) triple the consumer selects on. This
+    function is that same arithmetic at the grain the consumer asks for.
+
+    Cycle time is task.created_at -> the task's LAST outcome.created_at rather
+    than tasks.updated_at, because updated_at moves for reasons that are not
+    delivery (a note, a state fix, a janitor sweep) and would quietly inflate
+    every window.
+
+    NOTE: the `stage_metrics` relation does not exist in the control plane yet
+    -- see runner/migrations/004_stage_metrics.sql, which is deliberately NOT
+    applied. Until an operator applies it, db.insert raises MissingRelationError
+    and this returns a written count of 0 with the error named, rather than
+    pretending it wrote.
+    """
+    tasks = db.select("tasks", {
+        "select": "id,project_id,kind,created_at,remediation_count,state",
+        "state": "eq.MERGED",
+    }) or []
+    outcomes = db.select("outcomes", {"select": "task_id,created_at"}) or []
+
+    finished = {}
+    for row in outcomes:
+        stamp = _parse_ts(row.get("created_at") or "")
+        task_id = row.get("task_id")
+        if task_id and stamp >= 0:
+            finished[task_id] = max(finished.get(task_id, stamp), stamp)
+
+    written, errors = 0, []
+    for window in windows:
+        cutoff = time.time() - window * 86400
+        groups = {}
+        for task in tasks:
+            created = _parse_ts(task.get("created_at") or "")
+            if created < 0 or created < cutoff:
+                continue
+            key = (task.get("project_id"), task.get("kind") or "build")
+            bucket = groups.setdefault(key, {"seconds": 0.0, "timed": 0,
+                                             "total": 0, "first_try": 0})
+            bucket["total"] += 1
+            if int(task.get("remediation_count") or 0) == 0:
+                bucket["first_try"] += 1
+            done = finished.get(task.get("id"))
+            if done is not None and done >= created:
+                bucket["seconds"] += done - created
+                bucket["timed"] += 1
+
+        for (project_id, kind), bucket in groups.items():
+            row = {
+                "project_id": project_id,
+                "kind": kind,
+                "window_days": window,
+                "avg_cycle_time_seconds": (round(bucket["seconds"] / bucket["timed"], 1)
+                                           if bucket["timed"] else 0.0),
+                "first_try_yield_pct": round(
+                    100.0 * bucket["first_try"] / bucket["total"], 1),
+                "sample_count": bucket["total"],
+                "computed_at": datetime.datetime.utcnow().isoformat(),
+            }
+            error = _write_stage_metric(row)
+            if error is None:
+                written += 1
+            else:
+                errors.append(error)
+
+    return {"stage_metrics_written": written,
+            "windows": list(windows),
+            "errors": errors[:3]}
+
+
 def load_tuning_state() -> dict:
     """Load persisted pipeline tuning state; return defaults if missing or corrupt."""
     try:
