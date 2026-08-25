@@ -211,7 +211,17 @@ def run():
         reason = drain_policy.skip_reason("predictive_scheduler.py")
         if reason:
             print(f"[predictive] skipped ({reason}; draining backlog first)")
-            return {"queued": 0, "reason": reason}
+            payload = {"queued": 0, "reason": reason}
+            try:
+                import skip_visibility
+                rec = skip_visibility.record("predictive_scheduler.py", reason)
+                if rec is not None:
+                    payload["skip"] = rec.as_dict()
+                    payload["skip_summary"] = skip_visibility.render_build_summary([rec])
+                    print(payload["skip_summary"])
+            except Exception:
+                pass
+            return payload
     except Exception:
         pass
     predictions = predict()
