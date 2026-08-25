@@ -12,6 +12,7 @@ whichever handler happens to own the stream is irrelevant to what was actually r
 
 Run: pytest runner/tests/test_validation.py
 """
+import importlib.util
 import logging
 import os
 import sys
@@ -19,10 +20,27 @@ import sys
 # Moved from the repo root into runner/tests/ (write_guard: tests do not live
 # at the root). The repo root is now two directories up, and that is what these
 # tests resolve against — not the directory the file happens to sit in.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))))
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _REPO)
 
-import canary
+# TWO FILES, ONE NAME. There is a canary.py at the repo root and another at
+# runner/canary.py, and half this suite puts <repo> on sys.path while the other
+# half puts <repo>/runner there — so whichever is imported FIRST in a session wins
+# the bare name `canary` for every later importer. This file used to do
+# `import canary`; alone it got the root module and passed, but
+# test_canary_cli_exit_code.py sorts earlier and binds sys.modules["canary"] to
+# runner/canary.py, whose main() is a different program. Both tests here then
+# failed in-suite and passed on their own.
+#
+# Loading the file we actually mean BY PATH is order-independent, and registering
+# it under a private name means this file neither depends on nor contributes to
+# the collision. Same fix, same reasoning, as
+# runner/tests/test_canary_gemini_response_parse.py.
+_spec = importlib.util.spec_from_file_location(
+    "_repo_root_canary_for_validation", os.path.join(_REPO, "canary.py"))
+canary = importlib.util.module_from_spec(_spec)
+sys.modules["_repo_root_canary_for_validation"] = canary
+_spec.loader.exec_module(canary)
 
 
 def test_marker_present_exits_zero_and_logs_success(caplog):
