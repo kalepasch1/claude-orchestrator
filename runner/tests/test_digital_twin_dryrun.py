@@ -9,9 +9,16 @@ _fake_db = types.ModuleType("db")
 _fake_db.select = lambda *a, **k: []
 _fake_db.insert = lambda *a, **k: None
 _fake_db.update = lambda *a, **k: None
-sys.modules["db"] = _fake_db
 
-import digital_twin_dryrun as dtd
+# WAS a bare `sys.modules["db"] = ...` before this import. pytest imports every
+# test module during COLLECTION, so it was not scoped to this file -- the real
+# database client was replaced for every test that ran afterwards in the same
+# process, with no way to put it back. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
+
+with modules_during_import(db=_fake_db):
+    import digital_twin_dryrun as dtd
 
 
 def _spec(**kw):

@@ -25,9 +25,16 @@ class MockDB:
 
 sys.modules.setdefault("db", MockDB())
 import db
-sys.modules["db"] = MockDB()
 
-import distill_lora
+# WAS a bare `sys.modules["db"] = ...` before this import. pytest imports every
+# test module during COLLECTION, so it was not scoped to this file -- the real
+# database client was replaced for every test that ran afterwards in the same
+# process, with no way to put it back. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
+
+with modules_during_import(db=MockDB()):
+    import distill_lora
 
 
 def _setup_corpus_env(tmpdir):
