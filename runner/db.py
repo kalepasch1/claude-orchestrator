@@ -1691,6 +1691,48 @@ _done_cache_lock = threading.Lock()
 _done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
 
 
+def pending_deps(task, done):
+    """Dependency ids of `task` that are NOT in the done set, in declaration order.
+
+    Fails CLOSED on anything it cannot read. A dependency list that is a string, a
+    dict, or otherwise not iterable-as-ids means we do not know what this task is
+    waiting for — and "unknown" must hold the task, never release it. Silently
+    treating an unreadable value as "no dependencies" would run work out of order
+    with no error anywhere.
+    """
+    deps = task.get("deps") if isinstance(task, dict) else None
+    if deps is None:
+        return []
+    if not isinstance(deps, (list, tuple, set)):
+        # Not a dependency list. Unreadable, so unsatisfied.
+        return [str(deps)]
+    done = done or ()
+    pending = []
+    for dep in deps:
+        if dep is None:
+            continue
+        dep = str(dep).strip()
+        if dep and dep not in done:
+            pending.append(dep)
+    return pending
+
+
+def deps_satisfied(task, done):
+    """True when every dependency of `task` is present in `done`.
+
+    Extracted from the claim path so it can be tested against the real rule. It was
+    inline as `all(d in done for d in (t.get("deps") or []))`, and the six tests in
+    runner/tests/test_cross_project_depends.py named after it re-implemented that
+    same expression over locally-built sets — they never imported the gate, so they
+    asserted that Python's `in` works and would have passed against any change to
+    the real one.
+
+    `done` holds both bare slugs and `project_name:slug` entries (see _done_slugs),
+    so bare ids and cross-project ids resolve through one membership test.
+    """
+    return not pending_deps(task, done)
+
+
 def _done_slugs():
     """Return cached set of DONE/MERGED slugs, refreshing every 60s.
 
@@ -2528,7 +2570,7 @@ def claim_task(runner_id):
                 continue
         # SOFT-DEP SPECULATION: if deps aren't all done, check if file scopes
         # are disjoint — if so, start the task speculatively instead of waiting.
-        _deps_all_done = all(d in done for d in (t.get("deps") or []))
+        _deps_all_done = deps_satisfied(t, done)
         if not _deps_all_done:
             try:
                 import soft_dep_spec
