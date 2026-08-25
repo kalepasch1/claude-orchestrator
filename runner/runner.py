@@ -3047,6 +3047,13 @@ _SCHEDULE = [
     # contention, exhausted retries, missing tests each get their targeted requeue automatically.
     # Deterministic classification only; max 2 requeues per task then human escalation.
     ("blockedtriage-600","blocked_triage.py","interval", 600),
+    # Integration-liveness alarm (CORE INTEGRITY AUDIT §2(d), 2026-07-29): fires when nothing
+    # has reached MERGED/DEPLOYED_AND_VERIFIED for ORCH_INTEGRATION_STALL_WINDOW_H (default 2h)
+    # WHILE agent/* branches keep growing — i.e. the fleet is building and the merge train has
+    # stopped. Every other monitor watches process health, so a merge train that is up and
+    # merging nothing looks identical to one with no work. Runs on the same 10-minute cadence as
+    # blocked_triage; read-only and fail-soft, and self-limits its notifications.
+    ("intliveness-600","integration_liveness.py","interval", 600),
     # Per-initiative progress rollup: strategy-round parts/subparts -> % progress, blockers,
     # deploy-readiness. Persists to coordination KV + .runtime artifact; every surface reads it.
     ("progressroll-300","progress_rollup.py","interval", 300),
