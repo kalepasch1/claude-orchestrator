@@ -178,10 +178,14 @@ class TestSatisfiedStates(unittest.TestCase):
         point at a DEPLOYED_AND_VERIFIED task, so this is correctness and not a
         remedy for the deadlock.
         """
-        seen = {}
+        # EVERY state filter, not just the last one. _done_slugs() now issues a
+        # second and third select_all to close decompositions, so recording only
+        # the most recent call captured "eq.DECOMPOSED" and the assertion below
+        # failed on a change that was not a regression.
+        seen = []
 
         def select_all(table, params=None, **kw):
-            seen["state"] = (params or {}).get("state")
+            seen.append((params or {}).get("state") or "")
             return []
 
         orig_all, orig_sel = db.select_all, db.select
@@ -194,9 +198,13 @@ class TestSatisfiedStates(unittest.TestCase):
             db.select_all, db.select = orig_all, orig_sel
             db.invalidate_done_cache()
 
-        self.assertIn("DEPLOYED_AND_VERIFIED", seen["state"] or "")
-        self.assertIn("DONE", seen["state"] or "")
-        self.assertIn("MERGED", seen["state"] or "")
+        satisfying = next((s for s in seen if "DONE" in s), "")
+        self.assertIn("DEPLOYED_AND_VERIFIED", satisfying)
+        self.assertIn("DONE", satisfying)
+        self.assertIn("MERGED", satisfying)
+        # ...and the decomposition closure really is part of the same refresh.
+        self.assertTrue(any("DECOMPOSED" in s for s in seen),
+                        "_done_slugs must also look for closable decompositions")
 
 
 if __name__ == "__main__":

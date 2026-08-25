@@ -302,6 +302,21 @@ def pre_agent_hook(task):
                "kind": task.get("kind") or "build", "state": "QUEUED",
                "prompt": part["prompt"] + f"\n\nParent task: {task.get('slug')}",
                "deps": part["deps"], "base_branch": task.get("base_branch"),
+               # THE LINK WAS PROSE ONLY. Until now the parent survived here as
+               # "parent=<slug>" in the note and "Parent task: <slug>" in the
+               # prompt, and nowhere in a column anything could join on.
+               # bankruptcy_decompose.py has always set parent_task_id and
+               # queue_materializer.py:228 calls it "authoritative" -- the
+               # slicer was the one decomposer that never wrote it.
+               #
+               # The cost was a queue that could not resolve its own
+               # dependencies. A task waiting on a DECOMPOSED parent is waiting
+               # for that parent's children, and with no FK there was no way to
+               # find them: measured on the live queue 2026-08-25, 10 of the 16
+               # decomposed dependencies that HAD children had them reachable
+               # only by slug prefix, and dependency resolution therefore
+               # treated every one as permanently unsatisfied.
+               "parent_task_id": task.get("id"),
                "note": f"{MARK}: parent={task.get('slug')}"}
         try:
             if _slice_exists(task, part["slug"]):
@@ -324,10 +339,17 @@ def pre_agent_hook(task):
 
 
 def _insert_task(row):
+    # The ladder exists for schemas that predate a column. parent_task_id is
+    # dropped LAST-BUT-ONE, after deps and base_branch: losing the parent link
+    # is worse than losing either of those, because it is what lets dependency
+    # resolution close a decomposition, and a slice that lands without it is
+    # invisible to its own parent forever.
     variants = [
         row,
         {k: v for k, v in row.items() if k != "deps"},
         {k: v for k, v in row.items() if k not in ("deps", "base_branch")},
+        {k: v for k, v in row.items()
+         if k not in ("deps", "base_branch", "parent_task_id")},
     ]
     for candidate in variants:
         try:

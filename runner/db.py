@@ -919,11 +919,31 @@ _scan_warned = set()
 _scan_warn_lock = threading.Lock()
 
 
+#: Non-zero while select_all() is paging on this thread. A full page inside a
+#: pager is the pager working, not a truncated scan.
+_paging_depth = threading.local()
+
+
 def _warn_if_truncated(table, params, rows):
     try:
         if os.environ.get("ORCH_SCAN_TRUNCATION_WARN", "true").lower() not in ("1", "true", "yes", "on"):
             return
         if not isinstance(rows, list) or not params:
+            return
+        # THE PAGER IS NOT A TRUNCATION.
+        #
+        # select_all() goes through select() by design ("one HTTP path, and any
+        # test double or instrumentation installed on select() automatically
+        # covers paging too"), and it asks for exactly PAGE_SIZE rows per page —
+        # so every full page tripped this warning. The one function written to
+        # make truncation impossible was the loudest reporter of it:
+        # queue_deadlock_report.py reads all 24,750 tasks correctly and opened
+        # with a TRUNCATED SCAN banner.
+        #
+        # A warning about silent data loss that fires when there is none is
+        # worse than no warning, because the next person learns to scroll past
+        # it — and the real ones look identical.
+        if getattr(_paging_depth, "n", 0) > 0:
             return
         order, limit = params.get("order"), params.get("limit")
         if not order or limit is None:
@@ -1016,23 +1036,34 @@ def select_all(table, params=None, page_size=PAGE_SIZE, max_rows=None, order=Non
     except (TypeError, ValueError):
         page_size = PAGE_SIZE
     rows, offset = [], 0
-    while True:
-        # Never ask for rows we are contractually going to throw away. The page size used
-        # to be fixed, so a select_all(max_rows=10) against a large table still pulled a
-        # full 1000-row page over the wire and then sliced 990 of them off in the return.
-        # Clamping to the remaining budget makes the last request exact.
-        want = min(page_size, cap - len(rows))
-        # Goes through select() rather than _req() on purpose: one HTTP path, and any test
-        # double or instrumentation installed on select() automatically covers paging too.
-        page = select(table, dict(q, limit=str(want), offset=str(offset))) or []
-        rows.extend(page)
-        if len(page) < want:
-            break
-        offset += want
-        if len(rows) >= cap:
-            print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
-                  f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
-            break
+    # Mark the thread as paging so select()'s truncation guard stays quiet for
+    # the pages below. A full page here is this loop doing its job; the guard
+    # exists for callers who asked for N and silently got N. Restored in a
+    # finally, and counted rather than set, so a nested select_all cannot clear
+    # the flag out from under its caller.
+    _paging_depth.n = getattr(_paging_depth, "n", 0) + 1
+    try:
+        while True:
+            # Never ask for rows we are contractually going to throw away. The page size used
+            # to be fixed, so a select_all(max_rows=10) against a large table still pulled a
+            # full 1000-row page over the wire and then sliced 990 of them off in the return.
+            # Clamping to the remaining budget makes the last request exact.
+            want = min(page_size, cap - len(rows))
+            # Goes through select() rather than _req() on purpose: one HTTP path, and any test
+            # double or instrumentation installed on select() automatically covers paging too.
+            page = select(table, dict(q, limit=str(want), offset=str(offset))) or []
+            rows.extend(page)
+            if len(page) < want:
+                break
+            offset += want
+            if len(rows) >= cap:
+                # THIS one is a real truncation and must stay loud: the caller
+                # asked to see everything and is not going to.
+                print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
+                      f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
+                break
+    finally:
+        _paging_depth.n = getattr(_paging_depth, "n", 1) - 1
     return rows[:cap]
 
 
@@ -1818,6 +1849,26 @@ _done_cache_lock = threading.Lock()
 _done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
 
 
+#: The states that satisfy a dependency directly. One definition, so the claim
+#: path, the decomposition closure and the stall diagnostic cannot drift apart.
+_DEP_SATISFYING_STATES = frozenset({"DONE", "MERGED", "DEPLOYED_AND_VERIFIED"})
+
+#: Terminal states a task can sit in forever without ever reaching a satisfying
+#: one. A dependency on one of these is not "not yet" — it is "never", and the
+#: difference is the whole of the diagnosis. Measured on the live queue
+#: 2026-08-25: 91 of 325 edges pointed at SUPERSEDED or CLOSED.
+_DEP_DEAD_END_STATES = frozenset({"SUPERSEDED", "CLOSED", "QUARANTINED",
+                                  "PHANTOM_UNVERIFIED"})
+
+
+def _dep_log(fmt, *args):
+    """Warn about dependency-resolution trouble without importing a logger here."""
+    try:
+        print("db: " + (fmt % args), flush=True)
+    except Exception:
+        return None
+
+
 def _done_slugs():
     """Return cached set of DONE/MERGED slugs, refreshing every 60s.
 
@@ -1875,9 +1926,187 @@ def _done_slugs():
             pname = _proj_names.get(pid)
             if pname:
                 slugs.add(f"{pname}:{s}")  # qualified cross-project entry
+
+        for parent_slug, parent_pid in _closed_decompositions(slugs):
+            slugs.add(parent_slug)
+            pname = _proj_names.get(parent_pid)
+            if pname:
+                slugs.add(f"{pname}:{parent_slug}")
+
         _done_cache["slugs"] = slugs
         _done_cache["ts"] = time.time()
         return _done_cache["slugs"]
+
+
+def _closed_decompositions(done_slugs):
+    """(slug, project_id) of DECOMPOSED tasks whose every child is finished.
+
+    A DECOMPOSED parent NEVER reaches DONE — that is what decomposing it means:
+    the work moved to its children and the parent is retired. But dependency
+    resolution only counted DONE/MERGED/DEPLOYED_AND_VERIFIED, so a task waiting
+    on a decomposed parent waited for a state that could not arrive. Measured on
+    the live queue 2026-08-25: of 325 dependency edges behind 321 QUEUED tasks,
+    105 pointed at a DECOMPOSED task. Not one of them could ever be satisfied.
+
+    "Its work is done" is exactly "all of its children are done", which is what
+    this computes. It is deliberately NOT "DECOMPOSED counts as done": a parent
+    whose children are still running has not delivered anything, and releasing
+    its dependents early would let them build on work that does not exist yet.
+
+    Children are found by parent_task_id. runner/task_slicer.py did not set it
+    until today (the link lived only in the note as "parent=<slug>"), so slices
+    created before the backfill are reachable only if that backfill ran — the
+    fallback is that the parent simply is not reported as closed, which is the
+    safe direction.
+
+    Returns nothing rather than raising on any failure: dependency resolution
+    running with a slightly smaller done-set delays work, while resolution
+    raising stops the fleet.
+    """
+    try:
+        parents = select_all("tasks", {
+            "select": "id,slug,project_id",
+            "state": "eq.DECOMPOSED",
+        }, order="id.asc") or []
+        if not parents:
+            return []
+        by_id = {p["id"]: p for p in parents if p.get("id") and p.get("slug")}
+        if not by_id:
+            return []
+
+        children = select_all("tasks", {
+            "select": "parent_task_id,slug,state",
+            "parent_task_id": "not.is.null",
+        }, order="id.asc") or []
+
+        seen_children = {}
+        for child in children:
+            parent_id = child.get("parent_task_id")
+            if parent_id not in by_id:
+                continue
+            bucket = seen_children.setdefault(parent_id, [0, 0])
+            bucket[0] += 1
+            if str(child.get("state") or "") in _DEP_SATISFYING_STATES:
+                bucket[1] += 1
+
+        closed = []
+        for parent_id, (total, finished) in seen_children.items():
+            # A childless parent is NOT closed. It is a decomposition that lost
+            # its children, which is a different defect and must not be papered
+            # over by treating "no children" as "all children done".
+            if total and total == finished:
+                parent = by_id[parent_id]
+                closed.append((parent["slug"], parent.get("project_id")))
+        return closed
+    except Exception as exc:
+        _dep_log("could not close decompositions: %s", exc)
+        return []
+
+
+_dead_end_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
+_dead_end_cache_lock = threading.Lock()
+
+
+def dead_end_slugs():
+    """Slugs a dependency can name and never be satisfied by. Cached 60s.
+
+    Three ways a dependency becomes permanently unsatisfiable, all of which look
+    identical to "not finished yet" from the claim loop:
+
+      * the target is in a terminal state that is not a satisfying one --
+        SUPERSEDED, CLOSED, QUARANTINED, PHANTOM_UNVERIFIED;
+      * the target was DECOMPOSED but has no children, so the work it was split
+        into does not exist and nothing will ever finish on its behalf;
+      * (handled by the caller, which cannot look it up here) the target names a
+        slug no task has.
+
+    A DECOMPOSED parent WITH children is deliberately absent: those resolve
+    through _closed_decompositions() as their children finish, and calling them
+    dead ends would be wrong the moment the last child lands.
+
+    Empty on any failure. This feeds a diagnostic, and a diagnostic that can
+    raise is worse than one that occasionally under-reports.
+    """
+    now = time.time()
+    if now - _dead_end_cache["ts"] < _dead_end_cache["ttl"]:
+        return _dead_end_cache["slugs"]
+    with _dead_end_cache_lock:
+        if now - _dead_end_cache["ts"] < _dead_end_cache["ttl"]:
+            return _dead_end_cache["slugs"]
+        slugs = set()
+        try:
+            terminal = select_all("tasks", {
+                "select": "slug",
+                "state": "in.(%s)" % ",".join(sorted(_DEP_DEAD_END_STATES)),
+            }, order="id.asc") or []
+            slugs.update(r["slug"] for r in terminal if r.get("slug"))
+
+            parents = select_all("tasks", {
+                "select": "id,slug",
+                "state": "eq.DECOMPOSED",
+            }, order="id.asc") or []
+            if parents:
+                with_children = set()
+                kids = select_all("tasks", {
+                    "select": "parent_task_id",
+                    "parent_task_id": "not.is.null",
+                }, order="id.asc") or []
+                for kid in kids:
+                    with_children.add(kid.get("parent_task_id"))
+                for parent in parents:
+                    if parent.get("slug") and parent.get("id") not in with_children:
+                        slugs.add(parent["slug"])
+        except Exception as exc:
+            _dep_log("could not compute dead-end slugs: %s", exc)
+            return _dead_end_cache["slugs"]
+        _dead_end_cache["slugs"] = slugs
+        _dead_end_cache["ts"] = time.time()
+        return slugs
+
+
+def _has_dead_end_dep(task, done):
+    """True when any UNMET dep of *task* can never be satisfied.
+
+    Deliberately checks only unmet deps: a task whose remaining blocker is real
+    pending work is waiting, not stuck, even if one of its finished deps happens
+    to name a superseded task.
+    """
+    try:
+        deps = task.get("deps") or []
+        unmet = [d for d in deps if d not in done]
+        if not unmet:
+            return False
+        dead = dead_end_slugs()
+        known = _all_task_slugs()
+        for dep in unmet:
+            bare = str(dep).split(":")[-1]
+            if bare in dead:
+                return True
+            # A dep naming a slug that has never existed is the third kind, and
+            # the only one visible without a state to look at.
+            if known and bare not in known:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+_all_slugs_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
+
+
+def _all_task_slugs():
+    """Every slug in `tasks`, cached 60s. Empty set means "could not tell"."""
+    now = time.time()
+    if now - _all_slugs_cache["ts"] < _all_slugs_cache["ttl"]:
+        return _all_slugs_cache["slugs"]
+    try:
+        rows = select_all("tasks", {"select": "slug"}, order="id.asc") or []
+    except Exception as exc:
+        _dep_log("could not list task slugs: %s", exc)
+        return _all_slugs_cache["slugs"]
+    _all_slugs_cache["slugs"] = {r["slug"] for r in rows if r.get("slug")}
+    _all_slugs_cache["ts"] = time.time()
+    return _all_slugs_cache["slugs"]
 
 
 def invalidate_done_cache():
@@ -1885,6 +2114,11 @@ def invalidate_done_cache():
     with _done_cache_lock:
         _done_cache["slugs"] = set()
         _done_cache["ts"] = 0.0
+    with _dead_end_cache_lock:
+        _dead_end_cache["slugs"] = set()
+        _dead_end_cache["ts"] = 0.0
+    _all_slugs_cache["slugs"] = set()
+    _all_slugs_cache["ts"] = 0.0
 
 
 def set_pin(slug, rank=1):
@@ -2773,7 +3007,7 @@ def claim_task(runner_id):
     done = _done_slugs()
     # Why each row was passed over. A queue that is full but unclaimable has to
     # be distinguishable from an empty one — see why_no_claim().
-    _reasons = {"cooling": 0, "skip_note": 0, "lane_limit": 0,
+    _reasons = {"cooling": 0, "skip_note": 0, "lane_limit": 0, "deps_dead_end": 0,
                 "deps_unmet": 0, "claim_lost": 0}
     _considered = len(queued or [])
     for t in queued or []:
@@ -2809,6 +3043,17 @@ def claim_task(runner_id):
                 pass
         if not _deps_all_done:
             _reasons["deps_unmet"] += 1
+            # "NOT YET" AND "NEVER" ARE DIFFERENT ANSWERS.
+            #
+            # deps_unmet alone counted a task waiting on work that is running
+            # exactly the same as one waiting on a task that was CLOSED weeks
+            # ago, and only the second is a defect anyone can act on. Measured
+            # on the live queue 2026-08-25: of 325 edges behind 321 QUEUED
+            # tasks, 204 pointed at something structurally unsatisfiable --
+            # terminal states, childless decompositions, and 8 deps naming a
+            # slug no task has ever had.
+            if _has_dead_end_dep(t, done):
+                _reasons["deps_dead_end"] += 1
         if _deps_all_done:
             # Optimistic claim from the exact observed state preserves the
             # cross-runner single-claim guarantee for QUEUED and TESTING alike.
@@ -2844,12 +3089,18 @@ def claim_task(runner_id):
         {"considered": _considered, "claimed": None, "reasons": dict(_reasons)})
     if _considered:
         # NOT the same event as an empty queue, and it must not print like one.
+        _dead = _reasons.get("deps_dead_end") or 0
         print("[claim] STALLED: %d queued task(s) scanned, 0 claimable (%s). "
               "This is a blocked queue, not an empty one — a caller that exits "
-              "here reports success for a fleet that has not moved."
+              "here reports success for a fleet that has not moved.%s"
               % (_considered,
                  ", ".join("%s=%d" % (k, v) for k, v in sorted(_reasons.items()) if v)
-                 or "no reason recorded"),
+                 or "no reason recorded",
+                 ("  %d of them depend on work that can NEVER complete "
+                  "(terminal state, childless decomposition, or a dep naming a "
+                  "slug no task has). Those will not clear on their own: run "
+                  "`python3 runner/queue_deadlock_report.py` for the list."
+                  % _dead) if _dead else ""),
               flush=True)
     return None
 
