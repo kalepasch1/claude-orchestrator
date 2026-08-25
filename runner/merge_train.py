@@ -2506,6 +2506,19 @@ def _train_run_unleased(report=None):
             print(f"merge_train: auto-conflict-resolver error: {e}")
     summary["auto_resolved"] = auto_resolved
 
+    # TEST-PIPELINE HEALTH. Restored 2026-08-25: added in 85f4aa95 and lost in a
+    # later merge, leaving pipeline_metrics.get_health() with no caller anywhere
+    # in the repository while _pm.record() kept feeding it. Every pass has been
+    # writing the samples and nothing has been reading them, so the pass-rate and
+    # gate-decision breakdown this module collects reached no one.
+    # runner/tests/test_pipeline_observability.py has been red on the missing
+    # summary key since.
+    if _pm:
+        try:
+            summary["test_pipeline"] = _pm.get_health(lookback_minutes=60)
+        except Exception:
+            pass
+
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['regressfail']} regressfail, "
