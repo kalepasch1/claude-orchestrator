@@ -148,6 +148,16 @@ class TestReleaseConflictDetection(unittest.TestCase):
 class TestSelfHealingDecomposition(unittest.TestCase):
     """Decompose conflicting branches into clean + repair sub-branches."""
 
+    # Every test below passes `self.repo` to heal(); the class never created one, so all
+    # five raised AttributeError before reaching a single assertion. Same fixture as
+    # TestReleaseConflictDetection — a real temp dir, so nothing can touch a live checkout.
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.repo = self.temp_dir.name
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
     @patch("self_healing_merge._git")
     @patch("self_healing_merge._classify_files")
     def test_heal_creates_clean_subbranch_when_partial_clean_exists(self, mock_classify, mock_git):

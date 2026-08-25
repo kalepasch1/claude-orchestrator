@@ -30,14 +30,42 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    import db as _db
+    # Bound to the module-level name `db`, deliberately, not to a private alias.
+    # `unittest.mock.patch("self_healing_merge.db")` can only reach a name that exists
+    # on this module; when this was `import db as _db`, every test that patched the DB
+    # raised "module ... does not have the attribute 'db'" and the call sites went on
+    # reading the real client. Same fix as 983dfd67 ("add module-level task_refs import
+    # for test patching"). Call sites below must reference `db`, not a captured local,
+    # so a patch actually takes effect.
+    import db
 except Exception:
-    _db = None
+    db = None
 
-ENABLED = os.environ.get("ORCH_SELF_HEALING_ENABLED", "true").lower() in (
-    "true", "1", "yes", "on"
-)
+#: Backwards-compatible alias for callers that imported the old private name.
+_db = db
+
+_TRUTHY = ("true", "1", "yes", "on")
+
+ENABLED = os.environ.get("ORCH_SELF_HEALING_ENABLED", "true").lower() in _TRUTHY
 MIN_FILES = int(os.environ.get("ORCH_SELF_HEALING_MIN_FILES", "2"))
+
+
+def _enabled() -> bool:
+    """Read the kill switch at call time, not at import time.
+
+    ORCH_SELF_HEALING_ENABLED is a safety switch: it exists so an operator can stop this
+    module from rewriting branches. Frozen into a module constant at import, flipping it
+    did nothing until every long-lived runner process was restarted — which is the one
+    thing you cannot count on during the incident that makes you reach for the switch.
+    The module constant stays as the default so an explicit `ENABLED = False` assignment
+    (and any importer reading it) still works.
+    """
+    raw = os.environ.get("ORCH_SELF_HEALING_ENABLED")
+    if raw is None:
+        return bool(ENABLED)
+    return raw.strip().lower() in _TRUTHY
+
+
 GIT_TIMEOUT = int(os.environ.get("ORCH_GIT_TIMEOUT", "90"))
 
 _lock = threading.Lock()
@@ -397,7 +425,7 @@ def _create_repair_tasks(
 
     Returns list of created task dicts.
     """
-    if not _db or not conflicting_files:
+    if not db or not conflicting_files:
         return []
 
     tasks = []
@@ -434,7 +462,7 @@ def _create_repair_tasks(
                 "model_hint": "sonnet",
                 "note": f"self-healing repair for {branch}",
             }
-            _db.insert("tasks", task_data)
+            db.insert("tasks", task_data)
             tasks.append(task_data)
         except Exception:
             pass
@@ -473,8 +501,8 @@ def heal(
         "repair_tasks": [],
     }
 
-    if not ENABLED:
-        result["reason"] = "self-healing disabled"
+    if not _enabled():
+        result["reason"] = "disabled"
         return result
 
     with _lock:
