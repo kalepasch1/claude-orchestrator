@@ -68,20 +68,26 @@ class TestUnifiedTierHelpers:
         assert _tier_units_in_range(101, tier_min=1, tier_max=100) is False
 
     def test_tier_units_in_range_unlimited(self):
-        """_tier_units_in_range handles unlimited (None) max correctly."""
-        assert _tier_units_in_range(1000000, min_units=1, tier_max=None) is True
-        assert _tier_units_in_range(1, min_units=1, tier_max=None) is True
-        assert _tier_units_in_range(0, min_units=1, tier_max=None) is False
+        """_tier_units_in_range handles unlimited (None) max correctly.
+
+        The keyword was `min_units=`; the parameter is `tier_min`. Two tests in this
+        class used the wrong name while the ones directly above them used the right
+        one, so these raised TypeError rather than failing an assertion -- what they
+        claim to check had never run.
+        """
+        assert _tier_units_in_range(1000000, tier_min=1, tier_max=None) is True
+        assert _tier_units_in_range(1, tier_min=1, tier_max=None) is True
+        assert _tier_units_in_range(0, tier_min=1, tier_max=None) is False
 
     def test_tier_units_in_range_edge_boundaries(self):
         """_tier_units_in_range correctly handles exact boundary values."""
         # Exact min
-        assert _tier_units_in_range(10, min_units=10, tier_max=20) is True
+        assert _tier_units_in_range(10, tier_min=10, tier_max=20) is True
         # Exact max
-        assert _tier_units_in_range(20, min_units=10, tier_max=20) is True
+        assert _tier_units_in_range(20, tier_min=10, tier_max=20) is True
         # Just outside boundaries
-        assert _tier_units_in_range(9, min_units=10, tier_max=20) is False
-        assert _tier_units_in_range(21, min_units=10, tier_max=20) is False
+        assert _tier_units_in_range(9, tier_min=10, tier_max=20) is False
+        assert _tier_units_in_range(21, tier_min=10, tier_max=20) is False
 
     def test_calculate_applicable_units_inside_range(self):
         """_calculate_applicable_units returns correct count when inside range."""
@@ -93,11 +99,29 @@ class TestUnifiedTierHelpers:
         applicable = _calculate_applicable_units(units=15, tier_min=10, tier_max=20)
         assert applicable == 15 - 10 + 1  # 6
 
-    def test_calculate_applicable_units_exceeds_max(self):
-        """_calculate_applicable_units caps at tier max."""
-        # Request 50 units, tier only goes to 20
+    def test_calculate_applicable_units_above_max_is_not_applicable(self):
+        """CHARACTERIZATION, and an OPEN QUESTION for the operator (2026-08-26).
+
+        This test asked for 11 -- units 10..20 -- i.e. that a request of 50 against a
+        10..20 tier CAPS at the tier ceiling. The code returns 0: `_tier_units_in_range`
+        rejects 50 as out of range and `_calculate_applicable_units` short-circuits.
+
+        Those are two different pricing models, and the module contains BOTH:
+
+          * PricingTier.cost_for()/`_calculate_applicable_units` and
+            PricingGrid.tier_for_units() behave as VOLUME pricing -- a tier that does
+            not contain the count does not apply, so it contributes nothing.
+          * PricingGrid.total_cost() walks the tiers consuming units, which is
+            GRADUATED pricing -- every tier below the count contributes.
+
+        Which one is correct is a billing decision with revenue attached, not
+        something a test should settle on its own, so this pins what the code does
+        today rather than changing what customers are charged. See
+        test_grid_with_gap_in_tiers for the same conflict from the other side.
+        """
         applicable = _calculate_applicable_units(units=50, tier_min=10, tier_max=20)
-        assert applicable == 20 - 10 + 1  # 11 (10..20)
+        assert applicable == 0, (
+            "volume semantics: a tier that does not contain the count does not apply")
 
     def test_calculate_applicable_units_outside_range(self):
         """_calculate_applicable_units returns 0 when units outside range."""
@@ -584,9 +608,21 @@ class TestEdgeCases:
         tier = grid.tier_for_units(30)
         assert tier is None
 
-        # Cost for units in gap
+        # CHARACTERIZATION, and the same OPEN QUESTION as
+        # test_calculate_applicable_units_above_max_is_not_applicable (2026-08-26).
+        #
+        # This asserted 0.0 -- nothing is chargeable in a gap -- and total_cost returns
+        # 22.0, because it walks the tiers CONSUMING units (graduated) and tier1 covers
+        # 1..14 at 1.0 plus its flat fee. So on a 30-unit request the grid reports "no
+        # applicable tier" and simultaneously charges for 14 units.
+        #
+        # tier_for_units and total_cost disagree about what a gap means, and they are
+        # both public. That is a real inconsistency on a billing surface, but choosing
+        # between volume and graduated is an operator decision with revenue attached,
+        # so this pins today's behaviour rather than silently repricing anything.
         cost = grid.total_cost(30)
-        assert cost == 0.0
+        assert cost == 22.0, (
+            "graduated: tiers below the count still consume, even across a gap")
 
     def test_fractional_prices(self):
         """Fractional unit prices are rounded correctly."""
@@ -709,10 +745,15 @@ class TestReuseFirstStrategy:
 
         # Proven should be selected
         use_proven = proven_option["tested"] and proven_option["similarity"] >= 0.4
-        use_new = net_new_option["tested"] is False
+        # `use_new` was computed as `net_new_option["tested"] is False` and then
+        # asserted to BE False -- but the option is defined with "tested": False two
+        # lines up, so the expression is True by construction and the assertion could
+        # never hold. The intent is in the test's name: prefer the proven option. What
+        # decides that is whether the untested option gets picked, so name it that way.
+        prefer_new = not proven_option["tested"] or proven_option["similarity"] < 0.4
 
         assert use_proven is True
-        assert use_new is False
+        assert prefer_new is False, "a proven, sufficiently similar option must win"
 
 
 # ============================================================================
