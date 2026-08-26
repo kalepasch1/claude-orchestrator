@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for repo_lock.py — the per-repo mutex fixing the 2026-07-08 merge-stall race."""
-import multiprocessing
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -11,17 +11,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import repo_lock
 
 
-def _hold_and_record(lock_dir, repo, out_path, hold_seconds):
-    os.environ["ORCH_REPO_LOCK_DIR"] = lock_dir
-    import importlib
-    import repo_lock as rl
-    importlib.reload(rl)
-    with rl.hold(repo):
-        with open(out_path, "a") as f:
-            f.write(f"start {time.time()}\n")
-        time.sleep(hold_seconds)
-        with open(out_path, "a") as f:
-            f.write(f"end {time.time()}\n")
+#: The holder's whole job, run in a FRESH interpreter via subprocess.
+#:
+#: This was a multiprocessing.Process targeting a module-level function, which on
+#: macOS (spawn) means the child unpickles the target BY MODULE PATH and must import
+#: `runner.tests.test_repo_lock` to do it. That import is not reliably available to
+#: the child, because this very file puts `runner/` on sys.path -- and `runner/`
+#: contains runner.py, so `import runner` resolves to the MODULE and shadows the
+#: PACKAGE:
+#:
+#:     >>> sys.path.insert(0, "runner"); import runner
+#:     runner/runner.py          # not a package -> runner.tests.* is unimportable
+#:
+#: Whether the child survives therefore depends on where `runner/` sits in sys.path
+#: relative to the repo root, which depends on which test files were imported first,
+#: which depends on what else is being collected. It works today. It is the exact
+#: shape of "green alone, red together", and the identical failure took down
+#: runner/test_repo_lock_holder.py — where it presented as "holder process never
+#: acquired the lock", pointing at repo_lock rather than at the import.
+#:
+#: A subprocess pickles nothing and imports no test module, so none of that applies.
+_HOLDER_SCRIPT = """
+import os, sys, time
+os.environ["ORCH_REPO_LOCK_DIR"] = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+import repo_lock as rl
+with rl.hold(sys.argv[3]):
+    with open(sys.argv[4], "a") as fh:
+        fh.write("start %f\\n" % time.time())
+    time.sleep(float(sys.argv[5]))
+    with open(sys.argv[4], "a") as fh:
+        fh.write("end %f\\n" % time.time())
+"""
+
+
+def _start_holder(lock_dir, repo, out_path, hold_seconds):
+    """Hold REPO's lock in another process for HOLD_SECONDS, recording to OUT_PATH."""
+    runner_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return subprocess.Popen(
+        [sys.executable, "-c", _HOLDER_SCRIPT, lock_dir, runner_dir, repo,
+         out_path, str(hold_seconds)])
 
 
 def _wait_until_held(out_path, deadline_s=30.0):
@@ -87,31 +116,25 @@ class TestRepoLock(unittest.TestCase):
 
     def test_timeout_returns_false_when_contended(self):
         out_path = os.path.join(self.lock_dir, "out.txt")
-        holder = multiprocessing.Process(
-            target=_hold_and_record, args=(self.lock_dir, "/contended/repo", out_path, 2.0))
-        holder.start()
+        holder = _start_holder(self.lock_dir, "/contended/repo", out_path, 2.0)
         _wait_until_held(out_path)
         got_it = None
         with repo_lock.hold("/contended/repo", timeout=0.5) as got:
             got_it = got
         self.assertFalse(got_it, "second caller should time out while the first holds the lock")
-        holder.join(timeout=5)
+        holder.wait(timeout=30)
 
     def test_sequential_after_release_succeeds(self):
         out_path = os.path.join(self.lock_dir, "out2.txt")
-        holder = multiprocessing.Process(
-            target=_hold_and_record, args=(self.lock_dir, "/contended/repo2", out_path, 0.5))
-        holder.start()
+        holder = _start_holder(self.lock_dir, "/contended/repo2", out_path, 0.5)
         _wait_until_held(out_path)
         with repo_lock.hold("/contended/repo2", timeout=5) as got:
             self.assertTrue(got, "caller should acquire once the holder releases within the timeout")
-        holder.join(timeout=5)
+        holder.wait(timeout=30)
 
     def test_no_timeout_blocks_until_acquired(self):
         out_path = os.path.join(self.lock_dir, "out3.txt")
-        holder = multiprocessing.Process(
-            target=_hold_and_record, args=(self.lock_dir, "/contended/repo3", out_path, 1.0))
-        holder.start()
+        holder = _start_holder(self.lock_dir, "/contended/repo3", out_path, 1.0)
         # The clock starts only once the lock is demonstrably held, so `elapsed`
         # measures blocking rather than however long spawn happened to take. The
         # hold is 1.0s against a 0.3s floor, which leaves room for the handshake
@@ -122,7 +145,7 @@ class TestRepoLock(unittest.TestCase):
             elapsed = time.time() - start
             self.assertTrue(got)
             self.assertGreaterEqual(elapsed, 0.3, "blocking hold() should wait for the holder to release")
-        holder.join(timeout=5)
+        holder.wait(timeout=30)
 
     def test_refuses_the_lock_when_dir_uncreatable(self):
         """REVERSED 2026-08-24. This asserted the opposite — that broken lock infra
