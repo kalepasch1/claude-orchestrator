@@ -158,6 +158,66 @@ def _load_merge_train():
 train = _load_merge_train()
 
 
+class FlakeReportTest(unittest.TestCase):
+    """A push allowed on the re-run must say WHAT flaked."""
+
+    def test_failing_ids_are_extracted_from_a_pytest_summary(self):
+        output = ("....F...\n"
+                  "FAILED runner/tests/test_a.py::Case::test_x - AssertionError: nope\n"
+                  "FAILED runner/tests/test_b.py::test_y\n"
+                  "ERROR runner/tests/test_c.py\n"
+                  "3 failed, 10 passed\n")
+        self.assertEqual(
+            guard._failing_tests(output),
+            ["runner/tests/test_a.py::Case::test_x",
+             "runner/tests/test_b.py::test_y",
+             "runner/tests/test_c.py"])
+
+    def test_a_repeated_id_is_named_once(self):
+        output = "FAILED t.py::a\nFAILED t.py::a\nFAILED t.py::b\n"
+        self.assertEqual(guard._failing_tests(output), ["t.py::a", "t.py::b"])
+
+    def test_unparseable_output_falls_back_to_the_tail(self):
+        """A non-pytest runner still has to tell the operator something."""
+        report = guard._flake_report("make: *** [test] Error 1\nsome other line\n")
+        self.assertIn("Error 1", report)
+
+    def test_empty_output_says_so_rather_than_nothing(self):
+        self.assertIn("no parseable failures", guard._flake_report(""))
+
+    def test_a_long_flake_list_is_capped_and_counted(self):
+        output = "\n".join("FAILED t.py::t%d" % i for i in range(guard._MAX_NAMED_FLAKES + 5))
+        report = guard._flake_report(output)
+        self.assertIn("... and 5 more", report)
+        self.assertEqual(report.count("FAILED"), 0, "the ids are listed, not the raw lines")
+
+    def test_the_rerun_verdict_names_the_flaked_tests(self):
+        """The whole point: "worth a look" needs something to look at.
+
+        The first attempt's output used to be discarded on this path, so the operator
+        was told the failures were environmental and given nothing to check.
+        """
+        red = type("Proc", (), {
+            "returncode": 1,
+            "stdout": "FAILED runner/tests/test_flaky.py::test_under_load\n",
+            "stderr": ""})()
+        green = type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        results = [red, green]
+
+        with patch.object(guard, "detect_test_cmd", lambda repo: "npm run test"), \
+                patch.object(guard.proof_graph, "reusable_verification", lambda *a, **k: False), \
+                patch.object(guard, "_tree_is_exactly", lambda *a, **k: True), \
+                patch.object(guard, "_tracked_content_still_matches", lambda *a, **k: True), \
+                patch.object(guard.proof_graph, "record_verification", lambda *a, **k: None), \
+                patch.object(guard, "_wait_for_quiet_machine", lambda *a, **k: 0.0), \
+                patch.object(guard, "_run_suite", lambda repo, cmd: results.pop(0)):
+            ok, log = guard.verify_tests("/repo", "d2b3a549b9fd")
+
+        self.assertTrue(ok, log)
+        self.assertIn("ON RE-RUN", log)
+        self.assertIn("runner/tests/test_flaky.py::test_under_load", log)
+
+
 class TreeDriftTest(unittest.TestCase):
     """A suite only attests the tree it ran against — at BOTH ends of the run."""
 

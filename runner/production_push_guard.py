@@ -14,6 +14,7 @@ So the gate now requires both. See verify_tests().
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -336,6 +337,49 @@ def _tree_drifted_verdict(commit):
     )
 
 
+#: pytest's end-of-run summary lines. Anything else falls back to the output tail.
+_FAILED_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
+
+#: How many flaked test ids to name before saying "and N more". A flake list long
+#: enough to scroll is a different problem, and the count says so faster than the
+#: names do.
+_MAX_NAMED_FLAKES = 20
+
+
+def _failing_tests(output):
+    """Test ids a run reported as failing, in order, deduplicated."""
+    names = []
+    for match in _FAILED_LINE_RE.finditer(str(output or "")):
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _flake_report(first_output):
+    """What flaked on the first attempt, for a run the re-run then passed.
+
+    The re-run exists to separate the machine from the code, and it does. But until
+    now a push allowed on the second attempt threw the FIRST attempt's output away:
+    the operator was told "the failures were environmental" and "worth a look if it
+    keeps happening", with nothing whatsoever to look at. The comment above the
+    re-run claims both runs are reported; only the fact of them was.
+
+    On this repo a first-run red costs a ~48-minute suite, and it has now happened
+    twice in one day. Naming the tests is what makes the pattern visible: the same
+    id recurring is a test to fix, a different one each time is a machine to fix.
+    """
+    names = _failing_tests(first_output)
+    if not names:
+        tail = str(first_output or "").strip().splitlines()[-10:]
+        return "\n".join(tail) if tail else "(the first attempt produced no parseable failures)"
+    shown = names[:_MAX_NAMED_FLAKES]
+    report = "\n".join("  " + name for name in shown)
+    if len(names) > len(shown):
+        report += "\n  ... and %d more" % (len(names) - len(shown))
+    return report
+
+
 def _timed_out_verdict(command, seconds):
     """The message an operator needs when the suite never finished."""
     return (
@@ -405,10 +449,15 @@ def verify_tests(repo, commit):
                 proof_graph.record_verification(repo, commit, command, "test", True)
             except (AttributeError, TypeError):
                 pass
+            flaked = _flake_report(proc.stdout + proc.stderr)
+            print("production_push_guard: these passed on the re-run, so they are flakes, "
+                  "not failures:\n" + flaked, file=sys.stderr)
             return True, (
                 f"full suite green for {commit[:12]} ON RE-RUN — the first attempt was red and the "
-                "second was clean, which means the failures were environmental, not code. "
-                "Worth a look if it keeps happening."
+                "second was clean, which means the failures were environmental, not code.\n"
+                "Red on the first attempt, green on the second:\n" + flaked + "\n"
+                "The same id recurring is a test to fix; a different one each time is a machine "
+                "to fix."
             )
         proc = second
 
