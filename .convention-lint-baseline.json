@@ -3,9 +3,9 @@
   "counts": {
     "FAIL_SOFT_ERROR": 3276,
     "HARDCODED_SECRET": 143,
-    "MAGIC_NUMBERS": 3125,
+    "MAGIC_NUMBERS": 3123,
     "MODULE_SINGLETON": 1,
     "NAMING_CONVENTION": 1443
   },
-  "total": 7988
+  "total": 7986
 }
