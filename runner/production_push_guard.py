@@ -298,6 +298,17 @@ def _run_suite(repo, command):
         return _SuiteTimedOut(seconds)
 
 
+def _tree_drifted_verdict(commit):
+    """The message an operator needs when the tree moved under a running suite."""
+    return (
+        f"The working tree changed WHILE the suite was running, so the result does not "
+        f"describe {commit[:12]} and no proof has been recorded for it.\n"
+        "Re-run with a clean tree checked out at that commit. (This is the same rule the "
+        "pre-run check enforces — a suite only attests the tree it ran against — applied "
+        "to the other end of a run that can take the better part of an hour.)"
+    )
+
+
 def _timed_out_verdict(command, seconds):
     """The message an operator needs when the suite never finished."""
     return (
@@ -361,6 +372,8 @@ def verify_tests(repo, commit):
         if second.returncode is None:
             return False, _timed_out_verdict(command, second.seconds)
         if second.returncode == 0:
+            if not _tree_is_exactly(repo, commit):
+                return False, _tree_drifted_verdict(commit)
             try:
                 proof_graph.record_verification(repo, commit, command, "test", True)
             except (AttributeError, TypeError):
@@ -372,7 +385,20 @@ def verify_tests(repo, commit):
             )
         proc = second
 
+    # THE TREE MUST STILL BE THE COMMIT WE JUST TESTED.
+    #
+    # _tree_is_exactly runs BEFORE the suite, and until now nothing checked the
+    # other end. On this repo the suite takes ~40 minutes, so that pre-check
+    # guaranteed nothing about a live development machine: any edit landing during
+    # the run made the result describe a tree that is not the commit being pushed.
+    # Worse than a one-off wrong verdict, the result is RECORDED in proof_graph and
+    # handed back later by reusable_verification -- a green proof for a commit whose
+    # suite was never run against it. Verified on 2026-08-26 that a suite run dirties
+    # nothing itself (pytest caches and __pycache__ are both gitignored), so this
+    # only fires on a real edit.
     passed = proc.returncode == 0
+    if not _tree_is_exactly(repo, commit):
+        return False, _tree_drifted_verdict(commit)
     try:
         proof_graph.record_verification(repo, commit, command, "test", passed)
     except (AttributeError, TypeError):

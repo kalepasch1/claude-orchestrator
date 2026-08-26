@@ -156,6 +156,56 @@ def _load_merge_train():
 train = _load_merge_train()
 
 
+class TreeDriftTest(unittest.TestCase):
+    """A suite only attests the tree it ran against — at BOTH ends of the run."""
+
+    def _verify_with(self, tree_states, proc):
+        """Run verify_tests with _tree_is_exactly answering from TREE_STATES in order."""
+        recorded = []
+        answers = list(tree_states)
+
+        def _tree(repo, commit):
+            return answers.pop(0) if answers else True
+
+        with patch.object(guard, "detect_test_cmd", lambda repo: "npm run test"), \
+                patch.object(guard.proof_graph, "reusable_verification", lambda *a, **k: False), \
+                patch.object(guard, "_tree_is_exactly", _tree), \
+                patch.object(guard, "_wait_for_quiet_machine", lambda *a, **k: 0.0), \
+                patch.object(guard.proof_graph, "record_verification",
+                             lambda *a, **k: recorded.append(a)), \
+                patch.object(guard, "_run_suite", lambda repo, cmd: proc):
+            ok, log = guard.verify_tests("/repo", "d2b3a549b9fd")
+        return ok, log, recorded
+
+    def test_a_green_run_on_a_tree_that_moved_is_not_a_proof(self):
+        """The defect: the pre-run check guaranteed nothing about a 40-minute run.
+
+        An edit landing mid-run made the result describe a different tree, and the
+        green verdict was RECORDED — so reusable_verification would later hand back
+        a proof for a commit whose suite was never run against it.
+        """
+        green = type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        ok, log, recorded = self._verify_with([True, False], green)
+        self.assertFalse(ok, "a green run on a drifted tree must not certify the commit")
+        self.assertIn("changed WHILE the suite was running", log)
+        self.assertEqual(recorded, [], "nothing may be recorded for a tree we did not test")
+
+    def test_a_red_run_on_a_tree_that_moved_records_nothing_either(self):
+        """A red verdict about the wrong tree is still a verdict about the wrong tree."""
+        red = type("Proc", (), {"returncode": 1, "stdout": "1 failed", "stderr": ""})()
+        ok, log, recorded = self._verify_with([True, False, False], red)
+        self.assertFalse(ok)
+        self.assertIn("changed WHILE the suite was running", log)
+        self.assertEqual(recorded, [])
+
+    def test_a_stable_tree_still_records_its_proof(self):
+        """The check must not block the ordinary case it sits in front of."""
+        green = type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        ok, _log, recorded = self._verify_with([True, True], green)
+        self.assertTrue(ok)
+        self.assertEqual(len(recorded), 1)
+
+
 class MergeTrainTimeoutTest(unittest.TestCase):
     """The train's clock has the same shape and the same failure mode."""
 
