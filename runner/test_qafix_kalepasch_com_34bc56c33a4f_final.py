@@ -34,6 +34,15 @@ from unittest.mock import Mock, patch, MagicMock
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 
+#: What PricingGrid.total_cost() charges for 30 units on the 1..14 / 51..100 grid in
+#: test_grid_with_gap_in_tiers: tier1's 14 units at 1.0 plus its flat fee. Named
+#: because it is a CHARACTERIZED value, not a target -- see that test for why the
+#: number is contested.
+GAP_GRID_GRADUATED_COST = 22.0
+
+#: Minimum similarity for a proven patch to be reused rather than starting fresh.
+REUSE_SIMILARITY_FLOOR = 0.4
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ["ORCH_DB_ENABLED"] = "false"
@@ -621,7 +630,7 @@ class TestEdgeCases:
         # between volume and graduated is an operator decision with revenue attached,
         # so this pins today's behaviour rather than silently repricing anything.
         cost = grid.total_cost(30)
-        assert cost == 22.0, (
+        assert cost == GAP_GRID_GRADUATED_COST, (
             "graduated: tiers below the count still consume, even across a gap")
 
     def test_fractional_prices(self):
@@ -750,7 +759,8 @@ class TestReuseFirstStrategy:
         # lines up, so the expression is True by construction and the assertion could
         # never hold. The intent is in the test's name: prefer the proven option. What
         # decides that is whether the untested option gets picked, so name it that way.
-        prefer_new = not proven_option["tested"] or proven_option["similarity"] < 0.4
+        prefer_new = (not proven_option["tested"]
+                      or proven_option["similarity"] < REUSE_SIMILARITY_FLOOR)
 
         assert use_proven is True
         assert prefer_new is False, "a proven, sufficiently similar option must win"

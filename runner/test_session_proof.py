@@ -336,7 +336,12 @@ class TestIntegration:
             result = session_proof.verify_session(
                 task={
                     "prompt": "Implement a new feature function",
-                    "base_branch": "master"  # will default since main doesn't exist
+                    # Deliberately a branch that does NOT exist, to exercise the
+                    # missing-base fallback. The old comment said "main doesn't
+                    # exist"; it is `master` that is absent here, because `git init`
+                    # follows init.defaultBranch and this machine's is `main`. The
+                    # test was right about the path it wanted and wrong about why.
+                    "base_branch": "no-such-base-branch"
                 },
                 output_text="I implemented a new feature function",
                 repo=tmpdir,
@@ -392,6 +397,16 @@ class TestIntegration:
             subprocess.run(["git", "add", "."], cwd=tmpdir, capture_output=True, check=True)
             subprocess.run(["git", "commit", "-m", "initial"], cwd=tmpdir, capture_output=True, check=True)
 
+            # The base branch is whatever `git init` actually created. It used to be
+            # hardcoded "master", but `git init` honours init.defaultBranch and this
+            # machine's is `main`, so the diff was taken against a branch that did not
+            # exist: diff_files came back 0 and the test read it as "the noise filter
+            # dropped src.py too". Asking git which branch it made keeps this test
+            # independent of how any particular machine is configured.
+            base_branch = subprocess.run(
+                ["git", "symbolic-ref", "--short", "HEAD"], cwd=tmpdir,
+                capture_output=True, text=True, check=True).stdout.strip()
+
             subprocess.run(["git", "checkout", "-b", "agent/test"], cwd=tmpdir, capture_output=True, check=True)
 
             # Add real work
@@ -409,7 +424,7 @@ class TestIntegration:
             result = session_proof.verify_session(
                 task={
                     "prompt": "Implement the src module",
-                    "base_branch": "master"
+                    "base_branch": base_branch
                 },
                 output_text="I implemented the src module",
                 repo=tmpdir,
