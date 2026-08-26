@@ -27,8 +27,10 @@ Nothing here runs a real suite: the subprocess call is replaced.
 """
 import importlib
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -160,7 +162,11 @@ class TreeDriftTest(unittest.TestCase):
     """A suite only attests the tree it ran against — at BOTH ends of the run."""
 
     def _verify_with(self, tree_states, proc):
-        """Run verify_tests with _tree_is_exactly answering from TREE_STATES in order."""
+        """Run verify_tests with the tree checks answering from TREE_STATES in order.
+
+        The first answer is the PRE-run _tree_is_exactly; the rest are the
+        POST-run _tracked_content_still_matches.
+        """
         recorded = []
         answers = list(tree_states)
 
@@ -170,6 +176,7 @@ class TreeDriftTest(unittest.TestCase):
         with patch.object(guard, "detect_test_cmd", lambda repo: "npm run test"), \
                 patch.object(guard.proof_graph, "reusable_verification", lambda *a, **k: False), \
                 patch.object(guard, "_tree_is_exactly", _tree), \
+                patch.object(guard, "_tracked_content_still_matches", _tree), \
                 patch.object(guard, "_wait_for_quiet_machine", lambda *a, **k: 0.0), \
                 patch.object(guard.proof_graph, "record_verification",
                              lambda *a, **k: recorded.append(a)), \
@@ -197,6 +204,42 @@ class TreeDriftTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("changed WHILE the suite was running", log)
         self.assertEqual(recorded, [])
+
+    def test_an_untracked_artifact_written_by_the_run_is_not_drift(self):
+        """A suite that writes into its own repo must still be able to earn a proof.
+
+        The first cut of this check reused _tree_is_exactly, whose `git status
+        --porcelain` counts untracked files. That is right BEFORE the run and wrong
+        after it: coverage output, junit.xml or a scratch file written by the test
+        command is the command doing its job, and counting it would mean any such
+        project could never earn a proof at all. Four tests in
+        runner/test_production_push_guard.py — whose fixture suite writes a `.runs`
+        counter — caught exactly that.
+        """
+        repo = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, repo, True)
+        for args in (["init", "-q"], ["config", "user.email", "t@t"],
+                     ["config", "user.name", "t"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        with open(os.path.join(repo, "tracked.txt"), "w") as handle:
+            handle.write("original\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True,
+                       capture_output=True)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+        self.assertTrue(guard._tracked_content_still_matches(repo, head))
+
+        with open(os.path.join(repo, "coverage.xml"), "w") as handle:
+            handle.write("<coverage/>\n")
+        self.assertTrue(guard._tracked_content_still_matches(repo, head),
+                        "an untracked artifact from the run is not drift")
+
+        with open(os.path.join(repo, "tracked.txt"), "w") as handle:
+            handle.write("edited mid-run\n")
+        self.assertFalse(guard._tracked_content_still_matches(repo, head),
+                         "an edited TRACKED file is exactly what this must catch")
 
     def test_a_stable_tree_still_records_its_proof(self):
         """The check must not block the ordinary case it sits in front of."""

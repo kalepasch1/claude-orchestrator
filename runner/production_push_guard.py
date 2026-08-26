@@ -301,14 +301,38 @@ def _run_suite(repo, command):
         return _SuiteTimedOut(seconds)
 
 
+def _tracked_content_still_matches(repo, commit):
+    """True when HEAD is still `commit` and no TRACKED file has been modified.
+
+    The POST-run counterpart to _tree_is_exactly, and deliberately weaker in one
+    respect: it ignores untracked files. Plenty of test commands legitimately write
+    into the repo while they run — coverage output, junit.xml, a scratch file — and
+    a check that counted those would mean any such project could never earn a proof
+    at all. Those artifacts also cannot retroactively change what the suite already
+    measured, and the PRE-run _tree_is_exactly has already established that the run
+    STARTED from a clean tree at this commit.
+
+    What it does catch is the thing that matters: a tracked file edited, or HEAD
+    moved, while the suite was running — which makes the result describe code that
+    is not the commit being pushed.
+    """
+    try:
+        head = _git(repo, "rev-parse", "HEAD")
+        modified = _git(repo, "status", "--porcelain", "--untracked-files=no")
+    except (subprocess.CalledProcessError, OSError):
+        return False   # cannot confirm the tree held: refuse to certify
+    return head == commit and modified == ""
+
+
 def _tree_drifted_verdict(commit):
     """The message an operator needs when the tree moved under a running suite."""
     return (
-        f"The working tree changed WHILE the suite was running, so the result does not "
+        f"A tracked file changed WHILE the suite was running, so the result does not "
         f"describe {commit[:12]} and no proof has been recorded for it.\n"
         "Re-run with a clean tree checked out at that commit. (This is the same rule the "
         "pre-run check enforces — a suite only attests the tree it ran against — applied "
-        "to the other end of a run that can take the better part of an hour.)"
+        "to the other end of a run that can take the better part of an hour. Untracked "
+        "files the run itself writes are ignored; only tracked content and HEAD count.)"
     )
 
 
@@ -375,7 +399,7 @@ def verify_tests(repo, commit):
         if second.returncode is None:
             return False, _timed_out_verdict(command, second.seconds)
         if second.returncode == 0:
-            if not _tree_is_exactly(repo, commit):
+            if not _tracked_content_still_matches(repo, commit):
                 return False, _tree_drifted_verdict(commit)
             try:
                 proof_graph.record_verification(repo, commit, command, "test", True)
@@ -396,11 +420,13 @@ def verify_tests(repo, commit):
     # the run made the result describe a tree that is not the commit being pushed.
     # Worse than a one-off wrong verdict, the result is RECORDED in proof_graph and
     # handed back later by reusable_verification -- a green proof for a commit whose
-    # suite was never run against it. Verified on 2026-08-26 that a suite run dirties
-    # nothing itself (pytest caches and __pycache__ are both gitignored), so this
-    # only fires on a real edit.
+    # suite was never run against it.
+    #
+    # TRACKED content only: a test command that writes coverage output or a scratch
+    # file into the repo is doing its job, and counting that would mean such a
+    # project could never earn a proof. See _tracked_content_still_matches.
     passed = proc.returncode == 0
-    if not _tree_is_exactly(repo, commit):
+    if not _tracked_content_still_matches(repo, commit):
         return False, _tree_drifted_verdict(commit)
     try:
         proof_graph.record_verification(repo, commit, command, "test", passed)

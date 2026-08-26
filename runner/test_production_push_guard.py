@@ -492,6 +492,9 @@ def test_verify_tests_cools_down_between_the_two_attempts(monkeypatch):
     monkeypatch.setattr(guard.proof_graph, "record_verification",
                         lambda *a, **k: None)
     monkeypatch.setattr(guard, "_tree_is_exactly", lambda repo, commit: True)
+    # verify_tests re-checks tracked content after the suite; this fixture repo path
+    # is a stub, so stub the post-run check the same way as the pre-run one.
+    monkeypatch.setattr(guard, "_tracked_content_still_matches", lambda repo, commit: True)
     monkeypatch.setattr(guard, "_wait_for_quiet_machine", lambda *a, **k: order.append("cooldown"))
 
     class R:
@@ -517,6 +520,9 @@ def test_a_green_first_run_never_pays_for_the_cooldown(monkeypatch):
     monkeypatch.setattr(guard.proof_graph, "reusable_verification", lambda *a, **k: None)
     monkeypatch.setattr(guard.proof_graph, "record_verification", lambda *a, **k: None)
     monkeypatch.setattr(guard, "_tree_is_exactly", lambda repo, commit: True)
+    # verify_tests re-checks tracked content after the suite; this fixture repo path
+    # is a stub, so stub the post-run check the same way as the pre-run one.
+    monkeypatch.setattr(guard, "_tracked_content_still_matches", lambda repo, commit: True)
     monkeypatch.setattr(guard, "_wait_for_quiet_machine", lambda *a, **k: order.append("cooldown"))
 
     class R:
