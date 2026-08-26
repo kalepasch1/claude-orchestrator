@@ -101,6 +101,7 @@ import type { OutputLine } from './TerminalStreamOutput.vue'
 import type { ChecklistStep } from './VerificationChecklist.vue'
 import type { Suggestion } from './SuggestionPanel.vue'
 import type { QAAgent } from './QAResultsPanel.vue'
+import { projectCompletionSteps } from './developmentTerminalProof'
 
 const { snapshot } = useOrchestratorSnapshot(2000)
 const { connected } = useFleetWebSocket()
@@ -160,18 +161,13 @@ async function executeCommand(cmd: string) {
 
 function clearOutput() { outputLines.value = [] }
 
+// The checklist used to be hardcoded to `pass` for five of its seven steps, so
+// every completed task rendered green whether or not anything had been proven.
+// It is now projected from the session's actual evidence by the shared client:
+// no evidence means `pending` (unknown), never `pass`.
 watch(() => snapshot.value.recent_completions, (completions) => {
   if (!completions.length) return
-  const latest = completions[0]
-  verificationSteps.value = [
-    { key: 'code_implemented', label: 'Code implemented', status: 'pass' },
-    { key: 'wired_e2e', label: 'Wired end-to-end', status: 'pass' },
-    { key: 'no_dead_code', label: 'No dead code', status: 'pass' },
-    { key: 'git_merge_clean', label: 'Merge clean', status: latest.state === 'MERGED' ? 'pass' : 'pending' },
-    { key: 'migrations_applied', label: 'Migrations applied', status: 'pass' },
-    { key: 'vercel_deploy', label: 'Vercel deployed', status: latest.state === 'MERGED' ? 'pass' : 'pending' },
-    { key: 'qa_testing', label: 'QA passed', status: 'pass' },
-  ]
+  verificationSteps.value = projectCompletionSteps(completions[0])
 }, { deep: true })
 
 onMounted(() => { setTimeout(() => inputRef.value?.focus(), 100) })
