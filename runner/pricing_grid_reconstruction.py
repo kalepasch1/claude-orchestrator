@@ -276,6 +276,45 @@ class PricingGridReconstructionUtil:
         return issues
 
     @staticmethod
+    def _validate_tier_gaps(sorted_tiers: List[PricingTier]) -> List[str]:
+        """Report unit counts that fall between two tiers and so belong to neither.
+
+        The validator checked bounds, overlaps and unlimited-tier count, but never
+        whether the tiers COVER the range they span. A grid of 1..14 and 51..100 was
+        therefore reported valid, and the module's two pricing entry points then
+        disagreed about it in the open:
+
+            grid.tier_for_units(30)  ->  None      # no tier contains 30
+            grid.total_cost(30)      ->  22.0      # tier1's 14 units, then 16 more
+                                                   # consumed at tier2's rate
+
+        Both are behaving as designed. tier_for_units is a band lookup and respects
+        min/max. total_cost is GRADUATED -- it walks the tiers consuming capacity,
+        which is correct on a contiguous grid and is what `_consume_tier_units` and
+        `common_utils.consume_from_tier` are built for -- and consuming capacity does
+        not consult tier_min, so units in a gap are billed at the next tier's rate.
+
+        What a gap SHOULD cost is a pricing decision, and this method deliberately
+        does not make one. It reports the grid as invalid, which is the honest
+        answer: a grid nobody has priced the gap for is not ready to charge anyone.
+        On a valid (gap-free) grid the two entry points cannot disagree.
+
+        Only gaps BETWEEN tiers are reported. A grid whose lowest tier starts above 1
+        is left alone -- "units start at 5" is a legitimate product, not an oversight.
+        """
+        issues = []
+        for earlier, later in zip(sorted_tiers, sorted_tiers[1:]):
+            if earlier.max_units is None:
+                continue   # an unlimited tier leaves nothing uncovered after it
+            first_uncovered = earlier.max_units + 1
+            if later.min_units > first_uncovered:
+                last_uncovered = later.min_units - 1
+                issues.append(
+                    "gap between tier '%s' and '%s': units %d-%d belong to no tier"
+                    % (earlier.name, later.name, first_uncovered, last_uncovered))
+        return issues
+
+    @staticmethod
     def validate_grid(grid: PricingGrid) -> Tuple[bool, List[str]]:
         """Validate a pricing grid for consistency.
 
@@ -299,5 +338,7 @@ class PricingGridReconstructionUtil:
 
         if unlimited_count > 1:
             issues.append("grid has multiple unlimited tiers")
+
+        issues.extend(PricingGridReconstructionUtil._validate_tier_gaps(grid.sorted_tiers))
 
         return len(issues) == 0, issues

@@ -109,24 +109,23 @@ class TestUnifiedTierHelpers:
         assert applicable == 15 - 10 + 1  # 6
 
     def test_calculate_applicable_units_above_max_is_not_applicable(self):
-        """CHARACTERIZATION, and an OPEN QUESTION for the operator (2026-08-26).
+        """A tier that does not contain the count contributes nothing to ITS OWN cost.
 
         This test asked for 11 -- units 10..20 -- i.e. that a request of 50 against a
-        10..20 tier CAPS at the tier ceiling. The code returns 0: `_tier_units_in_range`
-        rejects 50 as out of range and `_calculate_applicable_units` short-circuits.
+        10..20 tier CAPS at the tier ceiling. The code returns 0.
 
-        Those are two different pricing models, and the module contains BOTH:
+        CORRECTED FRAMING 2026-08-26. I first recorded this as an unresolved conflict
+        between two pricing models. It is not. `_calculate_applicable_units` backs
+        PricingTier.cost_for(), which answers "what does THIS tier charge a customer
+        whose total is N" -- a band question, so a tier that does not contain N
+        charges nothing. PricingGrid.total_cost() answers a different question and is
+        graduated: it walks the tiers consuming capacity. The two never contradict
+        each other on a gap-free grid, and the validator now rejects grids with gaps
+        (see PricingGridReconstructionUtil._validate_tier_gaps), which is where the
+        apparent disagreement came from.
 
-          * PricingTier.cost_for()/`_calculate_applicable_units` and
-            PricingGrid.tier_for_units() behave as VOLUME pricing -- a tier that does
-            not contain the count does not apply, so it contributes nothing.
-          * PricingGrid.total_cost() walks the tiers consuming units, which is
-            GRADUATED pricing -- every tier below the count contributes.
-
-        Which one is correct is a billing decision with revenue attached, not
-        something a test should settle on its own, so this pins what the code does
-        today rather than changing what customers are charged. See
-        test_grid_with_gap_in_tiers for the same conflict from the other side.
+        So 0 is right, and the original assertion was asking cost_for() to behave
+        like total_cost().
         """
         applicable = _calculate_applicable_units(units=50, tier_min=10, tier_max=20)
         assert applicable == 0, (
@@ -617,18 +616,24 @@ class TestEdgeCases:
         tier = grid.tier_for_units(30)
         assert tier is None
 
-        # CHARACTERIZATION, and the same OPEN QUESTION as
-        # test_calculate_applicable_units_above_max_is_not_applicable (2026-08-26).
+        # CORRECTED FRAMING 2026-08-26. This asserted 0.0 -- nothing chargeable in a
+        # gap -- and total_cost returns 22.0: tier1's 14 units at 1.0, then 16 more
+        # consumed at tier2's rate, because graduated consumption walks CAPACITY and
+        # does not consult tier_min.
         #
-        # This asserted 0.0 -- nothing is chargeable in a gap -- and total_cost returns
-        # 22.0, because it walks the tiers CONSUMING units (graduated) and tier1 covers
-        # 1..14 at 1.0 plus its flat fee. So on a 30-unit request the grid reports "no
-        # applicable tier" and simultaneously charges for 14 units.
+        # I first filed this as an open billing question. The sharper statement is
+        # that this GRID is not valid: validate_grid now reports the gap (units 15-50
+        # belong to no tier), so what total_cost does here is behaviour on input the
+        # module rejects. On a valid grid tier_for_units and total_cost agree.
         #
-        # tier_for_units and total_cost disagree about what a gap means, and they are
-        # both public. That is a real inconsistency on a billing surface, but choosing
-        # between volume and graduated is an operator decision with revenue attached,
-        # so this pins today's behaviour rather than silently repricing anything.
+        # The value is still pinned rather than "fixed", because what a gap should
+        # cost remains a pricing decision and this module has no production callers
+        # to have made one. Rejecting the grid is the honest answer; inventing a
+        # price for the gap would not be.
+        is_valid, issues = PricingGridReconstructionUtil.validate_grid(grid)
+        assert is_valid is False, "a grid with a gap must not validate"
+        assert any("gap between" in issue for issue in issues), issues
+
         cost = grid.total_cost(30)
         assert cost == GAP_GRID_GRADUATED_COST, (
             "graduated: tiers below the count still consume, even across a gap")
