@@ -143,6 +143,49 @@ class TestTestingPipelineSetup(unittest.TestCase):
             "new test module(s) share a basename between runner/ and runner/tests/: "
             + ", ".join(duplicates[self.MAX_DUPLICATE_TEST_BASENAMES:]))
 
+    def test_no_gated_test_spawns_a_process_by_pickling_a_module_target(self):
+        """multiprocessing.Process in a test is a spawn-import hazard here.
+
+        macOS defaults to the SPAWN start method, which unpickles the target BY
+        MODULE PATH -- so the child must import the test module before it runs a
+        line. In this repo that import is not dependable, because `runner/` contains
+        runner.py: with that directory on sys.path, `import runner` resolves to the
+        MODULE and shadows the PACKAGE, making `runner.tests.*` unimportable. Whether
+        a given child survives depends on where `runner/` sits in sys.path relative
+        to the repo root, which depends on which files were imported first, which
+        depends on what else is being collected.
+
+        Two files learned this the hard way on 2026-08-26. In
+        runner/test_repo_lock_holder.py it presented as "holder process never
+        acquired the lock" -- a message pointing squarely at repo_lock, which was
+        correct throughout -- and it was green alone and red in the full run.
+        runner/tests/test_repo_lock.py had the same latent defect and happened to
+        work.
+
+        Both spawn a plain subprocess now, which pickles nothing and imports no test
+        module. This keeps the pattern from coming back into the GATED suite, where
+        the cost of an intermittent failure is a re-run of a ~48-minute gate.
+
+        Not a blanket ban on multiprocessing: a test that needs it can use a
+        subprocess, or `get_context("fork")`, or say why here.
+        """
+        offenders = []
+        tests_dir = os.path.dirname(os.path.abspath(__file__))
+        this_file = os.path.basename(os.path.abspath(__file__))
+        for name in sorted(os.listdir(tests_dir)):
+            if not (name.startswith("test_") and name.endswith(".py")):
+                continue
+            if name == this_file:
+                continue   # the checker necessarily contains the pattern it looks for
+            with open(os.path.join(tests_dir, name), encoding="utf-8") as handle:
+                source = handle.read()
+            if "multiprocessing.Process(" in source:
+                offenders.append(name)
+        self.assertEqual(offenders, [], (
+            "these gated tests spawn via multiprocessing.Process, whose child must "
+            "import the test module by dotted path -- unreliable while runner/runner.py "
+            "shadows the runner package. Use a subprocess instead: %s" % offenders))
+
     def test_runner_tests_dir_exists(self):
         """runner/tests/ directory must exist."""
         test_dir = os.path.dirname(__file__)
