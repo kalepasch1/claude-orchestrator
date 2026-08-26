@@ -46,6 +46,12 @@ FILE_TASKS = os.environ.get("ORCH_DEPLOY_SILENCE_FILE_TASKS", "true").lower() in
 SILENCE_DAYS = float(os.environ.get("ORCH_DEPLOY_SILENCE_DAYS", "2"))
 # Re-alerting every cycle is its own kind of noise; hold for this long between alerts.
 COOLDOWN_S = float(os.environ.get("ORCH_DEPLOY_SILENCE_COOLDOWN_S", "21600"))
+# A deploy is triggered BY a commit, so it is always slightly younger than that commit.
+# Clock skew between the git committer timestamp and Vercel's `created` can invert that by
+# a few minutes and make a healthy project look one commit behind. Anything inside this
+# window counts as "production has built the newest commit".
+DEPLOY_LAG_TOLERANCE_DAYS = float(
+    os.environ.get("ORCH_DEPLOY_LAG_TOLERANCE_DAYS", "0.02"))  # ~29 minutes
 DAY = 86400.0
 
 
@@ -100,14 +106,32 @@ def _git(repo, *args):
 
 
 def last_commit_age_days(repo, branch):
-    """Days since the last commit on the production branch, or None."""
-    rc, out, _ = _git(repo, "log", "-1", "--format=%ct", branch)
-    if rc != 0 or not out.strip():
-        return None
-    try:
-        return (time.time() - float(out.strip())) / DAY
-    except ValueError:
-        return None
+    """Days since the last commit Vercel can actually see on the production branch.
+
+    Deliberately prefers `origin/<branch>` over the bare local ref. Vercel builds from the
+    REMOTE; a commit that exists only in the local checkout is invisible to it and can never
+    trigger a deployment. Reading the local ref therefore measures something Vercel cannot
+    act on, and gets the answer wrong in both directions:
+
+      * local ahead of origin -- the fleet's own merge automation lands agent branches into
+        local `main` without pushing (kalepasch-com sat 115 commits ahead of origin). The
+        detector then sees a fresh commit, Vercel sees nothing new, and every sweep reports
+        a "deploy silence" incident that no config change can ever fix.
+      * local behind origin -- a stale checkout makes real commits look old, so `commit_age
+        > silence_days` short-circuits `evaluate` and a genuine outage is never reported.
+
+    Falls back to the local ref when there is no remote-tracking ref (local-only repos such
+    as smoke-test), since a wrong-but-present answer beats skipping the project entirely.
+    """
+    for ref in ("origin/" + branch, branch):
+        rc, out, _ = _git(repo, "log", "-1", "--format=%ct", ref)
+        if rc != 0 or not out.strip():
+            continue
+        try:
+            return (time.time() - float(out.strip())) / DAY
+        except ValueError:
+            continue
+    return None
 
 
 def last_production_deploy(vercel_project):
@@ -182,9 +206,21 @@ def evaluate(project_row, silence_days=None):
     commit_age = last_commit_age_days(repo, branch)
     if commit_age is None:
         return None
-    # No recent commits => nothing SHOULD have deployed. Not silence, just quiet.
-    if commit_age > silence_days:
-        return None
+    # NOTE: there used to be a `if commit_age > silence_days: return None` short-circuit
+    # here, reading "no recent commits => nothing SHOULD have deployed". It is a proxy for
+    # the right question and it is wrong in both directions.
+    #
+    # It hid a real outage: a commit 5 days old whose last production deploy is 30 days old
+    # IS silence -- the commit landed and never shipped -- but 5 > 2 skipped the project
+    # before the deploy age was ever fetched, so that failure was structurally invisible.
+    #
+    # It also made the deploy-vs-commit comparison below unreachable, because "deploy older
+    # than commit" implies `commit_age >= deploy_age > silence_days`, which this branch had
+    # already swallowed.
+    #
+    # The honest test is "did production build the newest commit?", and that needs the
+    # deploy age, so the Vercel lookup now happens for every eligible project. The cost is
+    # bounded: one cached API call per project per sweep, behind a 6h alert cooldown.
     try:
         import deploy_verify
         vercel_project = deploy_verify._vercel_project(name, project_row)
@@ -194,6 +230,12 @@ def evaluate(project_row, silence_days=None):
         return None
     latest = last_production_deploy(vercel_project)
     if latest is None:
+        # No deployment history AT ALL is ambiguous: it is either a broken git connection or
+        # a project that was simply never wired up. Only the first is an incident, and only
+        # a recent commit distinguishes them -- so this one branch keeps the commit-recency
+        # requirement that the general case above correctly drops.
+        if commit_age > silence_days:
+            return None
         return {"project": name, "repo": repo, "branch": branch, "vercel": vercel_project,
                 "commit_age_days": commit_age, "deploy_age_days": None,
                 "reason": ("%s has commits on '%s' as recently as %.1f day(s) ago, but the "
@@ -209,6 +251,15 @@ def evaluate(project_row, silence_days=None):
                            "production deployment has reached READY — the newest is in state "
                            "%s." % (name, branch, commit_age, state))}
     if deploy_age <= silence_days:
+        return None
+    # Production already built the newest commit. `deploy_age > silence_days` on its own
+    # only means the BRANCH went quiet -- and a quiet branch is not an incident, it is a
+    # weekend. The incident this module exists to catch is "commits are landing and
+    # production is NOT updating", which requires a commit NEWER than the last deploy.
+    # Without this guard every healthy-but-idle project alerts forever once it crosses the
+    # threshold, and the remediation task it files ("check ignoreCommand and
+    # git.deploymentEnabled") is unactionable because the config is correct.
+    if deploy_age <= commit_age + DEPLOY_LAG_TOLERANCE_DAYS:
         return None
     return {"project": name, "repo": repo, "branch": branch, "vercel": vercel_project,
             "commit_age_days": commit_age, "deploy_age_days": deploy_age, "url": url,
