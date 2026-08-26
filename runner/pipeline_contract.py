@@ -56,7 +56,7 @@ CONTROL_PREFIXES = ("REPLAY:", "ROTATE_KEY:", "REVOKE_AND_STOP:")
 SECURITY_RX = re.compile(
     r"\b(auth|authn|authz|oauth|authenticat\w*|authoris\w*|authoriz\w*|permissions?|rls"
     r"|secrets?|tokens?|credentials?|security|xss|csrf|sql injection)\b", re.I)
-LEGAL_RX = re.compile(r"\b(legal|compliance|licensing|registration|custody|transmission|advice|contract|terms|privacy|gdpr|hipaa|pci|soc|audit|regulatory|counsel|attorney|lawyer)\b", re.I)
+LEGAL_RX = re.compile(r"\b(legal|compliance|licens\w*|registration|custody|transmission|advice|contract|terms|privacy|gdpr|hipaa|pci|soc|audit|regulatory|counsel|attorney|lawyer)\b", re.I)
 MIGRATION_RX = re.compile(r"\b(schema|migration|database|backfill|data model|rls|release train|merge train)\b", re.I)
 RESEARCH_RX = re.compile(r"\b(research|investigate|ideate|concept|strategy|proposal|experiment|ab test|a/b)\b", re.I)
 MECHANICAL_RX = re.compile(r"\b(copy|typo|format|lint|rename|style|css|tailwind|docs?|changelog)\b", re.I)
