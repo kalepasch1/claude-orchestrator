@@ -61,6 +61,37 @@ MIGRATION_RX = re.compile(r"\b(schema|migration|database|backfill|data model|rls
 RESEARCH_RX = re.compile(r"\b(research|investigate|ideate|concept|strategy|proposal|experiment|ab test|a/b)\b", re.I)
 MECHANICAL_RX = re.compile(r"\b(copy|typo|format|lint|rename|style|css|tailwind|docs?|changelog)\b", re.I)
 
+#: Wording that DENIES the mechanical keyword that follows it. A prompt reading
+#: "extract the stable contracts, do NOT naively copy 4,900 files" was classified as
+#: a copy job -- need 5, risk routine -- because `copy` matched and nothing looked at
+#: the two words in front of it. That is the one classification that reduces scrutiny,
+#: so a false positive there is the expensive kind.
+_MECHANICAL_NEGATION_RX = re.compile(
+    r"\b(?:do(?:es)?\s+not|don'?t|doesn'?t|never|avoid|without|"
+    r"rather\s+than|instead\s+of|no\s+need\s+to|not\s+a)\b", re.I)
+
+#: How far back from a keyword a denial can sit and still govern it. Long enough for
+#: "do NOT naively copy", short enough that a denial in an unrelated earlier clause
+#: does not silently disarm a real one. Sentence punctuation ends the reach outright.
+_NEGATION_WINDOW = 40
+
+
+def _mechanical_match(text):
+    """First MECHANICAL_RX match in TEXT that is not denied by nearby wording.
+
+    Returns None when every mechanical keyword present is negated, so the caller
+    falls through to a fuller classification rather than filing the task as routine.
+    """
+    body = text or ""
+    for match in MECHANICAL_RX.finditer(body):
+        window = body[max(0, match.start() - _NEGATION_WINDOW):match.start()]
+        # A sentence boundary ends a denial's reach: the clause that denied
+        # something is over.
+        window = re.split(r"[.;:!?\n]", window)[-1]
+        if not _MECHANICAL_NEGATION_RX.search(window):
+            return match
+    return None
+
 _ALLOWLIST_ENV_KEYS = {
     "security": "ORCH_SECURITY_TASK_ALLOWLIST",
     "legal": "ORCH_LEGAL_TASK_ALLOWLIST",
@@ -167,10 +198,25 @@ def classify(prompt: str, kind: str = "build", material: bool = False) -> Dict[s
         return {"task_class": "security", "need": 9, "risk": "security"}
     if k in ("research", "strategy") or RESEARCH_RX.search(text):
         return {"task_class": "plan", "need": 8, "risk": "strategy"}
-    if k in ("efficiency", "cost") or MECHANICAL_RX.search(text):
+    # An EXPLICIT kind is an operator declaration and outranks anything inferred
+    # from prompt wording, in both directions.
+    if k in ("efficiency", "cost"):
         return {"task_class": "mechanical", "need": 5, "risk": "routine"}
-    if k == "speculative" or MIGRATION_RX.search(text):
+    if k == "speculative":
         return {"task_class": "hard", "need": 8, "risk": "broad_change"}
+    # INFERRED classes: broad change is checked BEFORE routine.
+    #
+    # `mechanical` is the only class that LOWERS scrutiny -- need 5, risk routine --
+    # and MECHANICAL_RX matches "copy", "rename", "format", "style", "docs": ordinary
+    # English that appears constantly in prompts for work that is not routine at all.
+    # With mechanical checked first, "rename the payment columns and backfill" matched
+    # `rename` and was filed as a routine typo-fix, even though `backfill` names it a
+    # migration. When both families match, the safe reading is the broader one; the
+    # dangerous direction is downgrading.
+    if MIGRATION_RX.search(text):
+        return {"task_class": "hard", "need": 8, "risk": "broad_change"}
+    if _mechanical_match(text):
+        return {"task_class": "mechanical", "need": 5, "risk": "routine"}
     return {"task_class": "build", "need": 6, "risk": "standard"}
 
 
