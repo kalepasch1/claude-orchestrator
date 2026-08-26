@@ -28,6 +28,14 @@ Coverage areas:
 import os
 import sys
 import re
+
+#: unittest calls these by name, so they CANNOT be snake_case. A style check that
+#: reports them is reporting a rule the framework does not allow you to follow --
+#: the same false positive convention-lint carries against setUp elsewhere.
+UNITTEST_LIFECYCLE_NAMES = frozenset({
+    "setUp", "tearDown", "setUpClass", "tearDownClass",
+    "setUpModule", "tearDownModule", "asyncSetUp", "asyncTearDown",
+})
 import ast
 import unittest
 import tempfile
@@ -48,14 +56,21 @@ class CanaryTypoFixValidation(unittest.TestCase):
             (r'\bseperate\b', 'separate'),
             (r'\boccassion\b', 'occasion'),
             (r'\bdefinately\b', 'definitely'),
-            (r'\benvironment\b', 'environment'),  # environment vs enviroment
+            # FIXED 2026-08-26: the pattern here was r'\\benvironment\\b' -- the CORRECT
+            # spelling -- so this check reported every file containing the ordinary
+            # word "environment" as carrying a typo. A typo-checker that fires on the
+            # right spelling cannot pass and cannot find anything. The comment beside
+            # it always said what was meant: environment vs enviroment.
+            (r'\benviroment\b', 'environment'),
         ]
 
-        # Scan test files for common typos
-        test_files = self._find_python_files_in_repo()
+        # Scan test files for common typos. SORTED and explicit: the slice used to
+        # take whatever ten paths the filesystem happened to yield first, so which
+        # files were actually checked varied between machines and runs.
+        test_files = sorted(self._find_python_files_in_repo())
         found_typos = []
 
-        for file_path in test_files[:10]:  # Scan first 10 files
+        for file_path in test_files[:10]:
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
@@ -330,13 +345,21 @@ class CanaryBehaviorPreservation(unittest.TestCase):
         with open(test_file, 'r') as f:
             tree = ast.parse(f.read())
 
-        # Count assertions to verify tests are intact
+        # Count assertions to verify tests are intact.
+        #
+        # FIXED 2026-08-26: this counted only unittest-style `self.assertX(...)`
+        # calls, and the reference file is written in pytest style with bare `assert`
+        # statements -- which are ast.Assert nodes, not ast.Call. The count came back
+        # 0 and the check reported that a canary had stripped the assertions out of a
+        # file that has six of them. Any pytest-style file in the repo would have
+        # tripped it.
         assertion_count = 0
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Attribute):
-                    if node.func.attr.startswith('assert'):
-                        assertion_count += 1
+            if isinstance(node, ast.Assert):
+                assertion_count += 1
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr.startswith('assert'):
+                    assertion_count += 1
 
         # Canary tasks don't remove or break assertions
         self.assertGreater(assertion_count, 0,
@@ -499,6 +522,8 @@ class CanaryCodeStyleConsistency(unittest.TestCase):
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in UNITTEST_LIFECYCLE_NAMES:
+                    continue
                 # Function names should be snake_case
                 if not re.match(r'^[a-z_][a-z0-9_]*$', node.name):
                     # Private functions can start with underscore
@@ -517,13 +542,27 @@ class CanaryCodeStyleConsistency(unittest.TestCase):
             self.skipTest(f"Reference test file {test_file} not found")
 
         with open(test_file, 'r') as f:
-            lines = f.readlines()
+            source = f.read()
 
-        # Canary tasks maintain import organization
-        # (This is a quality check, not strict)
-        import_section_found = any('import' in line for line in lines[:20])
-        self.assertTrue(import_section_found or len(lines) < 5,
-                       "Imports should be present and organized")
+        # Canary tasks maintain import organization.
+        #
+        # FIXED 2026-08-26: this scanned the first 20 LINES for the substring
+        # "import". Every substantial module in this repo opens with a long "WHY THIS
+        # FILE EXISTS" docstring -- the documented house style -- so the imports sit
+        # well past line 20 and the check failed on files that are correctly
+        # organised. It punished the convention it was meant to protect, and would
+        # also have counted the word "important" in a docstring as an import.
+        #
+        # The AST knows where the imports actually are.
+        tree = ast.parse(source)
+        imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+        self.assertTrue(imports, "Imports should be present and organized")
+
+        # NOT asserted: that every import precedes the first statement. This repo
+        # requires the opposite in a lot of files -- `sys.path.insert(0, ...)` has to
+        # run BEFORE the sibling module it makes importable, so a local import sitting
+        # after a statement is correct here, not a lapse. A style check has no business
+        # failing the pattern the codebase needs.
 
 
 class CanaryIntegrationValidation(unittest.TestCase):
