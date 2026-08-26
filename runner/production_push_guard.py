@@ -258,7 +258,10 @@ def _gate_timeout():
     zero seconds". A non-positive number would make every run time out instantly
     and read as an unverifiable suite, so it falls back too.
     """
-    raw = str(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "")).strip()
+    # str(CONSTANT), not "", so scripts/gen_env_example.py can resolve and document
+    # the real default; the fail-soft parse below still covers a SET but bad value.
+    raw = str(os.environ.get("ORCH_TEST_GATE_TIMEOUT",
+                             str(TEST_GATE_TIMEOUT_DEFAULT))).strip()
     try:
         seconds = int(raw)
     except ValueError:

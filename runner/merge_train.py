@@ -105,7 +105,10 @@ def _test_timeout():
     and a non-positive number would reject every candidate instantly, so both fall
     back to the default rather than being taken literally.
     """
-    raw = str(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "")).strip()
+    # str(CONSTANT), not "", so scripts/gen_env_example.py can resolve and document
+    # the real default; the fail-soft parse below still covers a SET but bad value.
+    raw = str(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT",
+                             str(TEST_TIMEOUT_DEFAULT))).strip()
     try:
         seconds = int(raw)
     except ValueError:
