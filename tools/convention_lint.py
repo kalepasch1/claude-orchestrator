@@ -140,6 +140,32 @@ def _is_pem_private_key(value: str) -> bool:
     return bool(_PEM_PRIVATE_KEY_RE.search(str(value or '')))
 
 
+#: A regex EXTENSION GROUP -- `(?:`, `(?=`, `(?!`, `(?<`, `(?P<`. Deliberately not the
+#: looser markers (\b, \d, [A-Z], .*), which do occur inside real credential material.
+#: An extension group does not.
+_REGEX_EXTENSION_GROUP_RE = re.compile(r'\(\?[:=!<P]')
+
+
+def _is_regex_source(value: str) -> bool:
+    """True when a literal is the SOURCE OF A PATTERN rather than a value.
+
+    The rule matches on `name says credential` AND `value looks credential-shaped`,
+    and a regex that HUNTS for credentials satisfies both by construction: it is
+    named for what it matches, it has no spaces, and it is all entropy. So every
+    secret scanner in this repo reported its own detector as a hardcoded secret --
+    tools/convention_lint.py on itself, and runner/patch_templates.py on the
+    redaction pattern that keeps prompt credentials out of the shared template
+    store. The rule punished exactly the code written to enforce it.
+
+    The test is a regex EXTENSION GROUP, which is grammar, not content: an API key
+    or password containing the two-character sequence "(?" followed by one of
+    ":=!<P" is not a shape credentials take. Looser markers were considered and
+    rejected -- "\\d" and "[A-Z" appear in real key material often enough that
+    keying on them would blind the rule to genuine leaks.
+    """
+    return bool(_REGEX_EXTENSION_GROUP_RE.search(str(value or '')))
+
+
 def _looks_like_secret_value(value: str) -> bool:
     """True only when the assigned literal could plausibly BE a credential.
 
@@ -440,6 +466,8 @@ class ConventionChecker(ast.NodeVisitor):
                 'store or the environment instead'
             ))
             return
+        if _is_regex_source(value):
+            return   # a detector's own pattern is not the thing it detects
         if not _looks_like_secret_value(value):
             return
 

@@ -38,7 +38,9 @@ exercises the resolution path tested here.
 No test here touches the network: `db.select`/`db.insert` are patched in setUp to
 raise, and the JSONL store is redirected to a temp directory.
 """
+import contextlib
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -49,6 +51,47 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import patch_templates
+
+
+class _RecordCollector(logging.Handler):
+    """Keeps every record a logger emits, for no_logs() below."""
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def no_logs(logger_name, level="DEBUG"):
+    """Assert the named logger emits nothing at LEVEL or above. Py3.9-safe.
+
+    `unittest.TestCase.assertNoLogs` landed in Python 3.10. This repo runs on
+    3.9 — the interpreter the suite is invoked with — so the one test that
+    reached for it did not fail an assertion, it raised AttributeError on the
+    TestCase itself, and had done so on every interpreter this project has ever
+    used. The behaviour under test (a denied lookup must not narrate the store)
+    is real and worth keeping, so capture the records directly instead: same
+    check, no version floor.
+    """
+    logger = logging.getLogger(logger_name)
+    collector = _RecordCollector()
+    prior_level = logger.level
+    logger.addHandler(collector)
+    logger.setLevel(getattr(logging, level))
+    try:
+        yield collector
+    finally:
+        logger.removeHandler(collector)
+        logger.setLevel(prior_level)
+    if collector.records:
+        raise AssertionError(
+            "%s emitted %d record(s) at %s or above, expected none: %s"
+            % (logger_name, len(collector.records), level,
+               [r.getMessage() for r in collector.records])
+        )
 
 
 def _body_for(tid, note="scaffold"):
@@ -272,7 +315,7 @@ class TestDeniedLookupDisclosesNothing(TemplateStoreCase):
 
     def test_denied_lookup_returns_no_body_and_logs_nothing(self):
         self.store_template("aaaaaaaaaaaa", body=_body_for("aaaaaaaaaaaa", note="secret intent"))
-        with self.assertNoLogs(patch_templates.log.name, level="DEBUG"):
+        with no_logs(patch_templates.log.name, level="DEBUG"):
             result = patch_templates.lookup("bbbbbbbbbbbb")
         self.assertEqual(result, {})
 

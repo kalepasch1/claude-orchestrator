@@ -17,6 +17,24 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Set
 
 
+#: A regex EXTENSION GROUP -- `(?:`, `(?=`, `(?!`, `(?<`, `(?P<`. Deliberately NOT the
+#: looser markers (\b, \d, [A-Z], .*), which do occur inside real key material; keying
+#: on those would blind the rule to genuine leaks. An extension group is grammar, not
+#: content: credentials do not contain "(?" followed by one of ":=!<P".
+_REGEX_EXTENSION_GROUP_RE = re.compile(r'\(\?[:=!<P]')
+
+
+def _is_regex_source(value: str) -> bool:
+    """True when a literal is the source of a PATTERN rather than a value.
+
+    Mirrors _is_regex_source in tools/convention_lint.py. Both linters carry it
+    because both fired on the redaction pattern in runner/patch_templates.py --
+    the regex that keeps prompt credentials out of the shared patch-template
+    store -- and on their own detectors.
+    """
+    return bool(_REGEX_EXTENSION_GROUP_RE.search(str(value or '')))
+
+
 class ConventionViolation:
     def __init__(self, filepath: str, lineno: int, rule: str, message: str, severity: str = "error"):
         self.filepath = filepath
@@ -234,10 +252,19 @@ class ConventionChecker(ast.NodeVisitor):
         pass
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
-        """Check for hardcoded secrets in variables with sensitive names."""
+        """Check for hardcoded secrets in variables with sensitive names.
+
+        A literal that is the SOURCE OF A PATTERN is excluded (see
+        _is_regex_source): this rule keys off the target name alone, so a regex
+        written to FIND credentials satisfies it by construction and every
+        secret scanner in this repo reported its own detector as a hardcoded
+        secret. The rule punished exactly the code written to enforce it.
+        """
         secret_keywords = ('password', 'token', 'secret', 'key', 'api_key')
 
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            if _is_regex_source(node.value.value):
+                return
             if node.value.value and not node.value.value.startswith('$'):
                 for target in node.targets:
                     if isinstance(target, ast.Name):

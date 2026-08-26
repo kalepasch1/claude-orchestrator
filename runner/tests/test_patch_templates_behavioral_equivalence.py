@@ -37,8 +37,18 @@ TASK = {"slug": "demo-slug", "prompt": "Add a webhook route and a migration test
 
 
 def _no_hits():
-    """Force build() down the no-prior-patterns path deterministically."""
-    return patch.dict(sys.modules, {"merged_diff_library": None})
+    """Force build() down the no-prior-patterns path deterministically.
+
+    Patches the MODULE ATTRIBUTE, not sys.modules (2026-08-26). These fakes used
+    to be installed with `patch.dict(sys.modules, ...)`, which worked only
+    because patch_templates re-imported each collaborator inside the function
+    that used it — a function-local `import X` that also made
+    `patch("patch_templates.X...")` impossible, so the sibling security suite's
+    fail-soft tests could not run at all. The imports are module-level now;
+    binding the attribute is what reaches build() and it pins the same
+    observable output this file exists to pin.
+    """
+    return patch.object(pt, "merged_diff_library", None)
 
 
 class IdentityTest(unittest.TestCase):
@@ -121,7 +131,7 @@ class BuildOutputTest(unittest.TestCase):
     def test_build_is_fail_soft_when_the_diff_library_raises(self):
         boom = type(sys)("merged_diff_library")
         boom.find = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("library down"))
-        with patch.dict(sys.modules, {"merged_diff_library": boom}):
+        with patch.object(pt, "merged_diff_library", boom):
             tid, body = pt.build(TASK)
         self.assertEqual(tid, pt._id(TASK))
         self.assertIn("none found", body)
@@ -134,7 +144,8 @@ class BuildOutputTest(unittest.TestCase):
         ]
         bad = type(sys)("patch_adaptation")
         bad.directive = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("adaptation down"))
-        with patch.dict(sys.modules, {"merged_diff_library": lib, "patch_adaptation": bad}):
+        with patch.object(pt, "merged_diff_library", lib), \
+                patch.object(pt, "patch_adaptation", bad):
             tid, body = pt.build(TASK)
         self.assertEqual(tid, pt._id(TASK))
         self.assertIn("Prior merged patterns to adapt:", body)
