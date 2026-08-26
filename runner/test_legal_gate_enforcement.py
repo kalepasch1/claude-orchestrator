@@ -126,9 +126,11 @@ class TestOwnerOnlyApproval:
 
     def test_owner_approval_required_for_licensing(self):
         """Licensing changes require owner approval."""
-        validator = cv.PipelineContractValidator()
+        # cv.check_legal_gates() is the dict-returning public API; the VALIDATOR
+        # METHOD of the same name returns LegalGateResult objects, which is why
+        # r["gate"] raised TypeError here.
         diff = "Updated LICENSE file"
-        all_clear, results = validator.check_legal_gates(diff)
+        all_clear, results = cv.check_legal_gates(diff)
 
         # Find licensing gate result
         licensing = [r for r in results if "license" in r["gate"].lower()]
@@ -363,7 +365,7 @@ class TestLegalGateIntegration:
 
         # Check legal gates
         diff = "Added feature to src/feature.py"
-        all_clear, results = validator.check_legal_gates(diff)
+        all_clear, results = cv.check_legal_gates(diff)
 
         # Verify structure
         assert isinstance(all_clear, bool)
@@ -382,7 +384,7 @@ class TestLegalGateIntegration:
         +DATABASE_PASSWORD=xyz789
         """
 
-        all_clear, results = validator.check_legal_gates(sensitive_diff)
+        all_clear, results = cv.check_legal_gates(sensitive_diff)
         triggered = [r for r in results if r["triggered"]]
         # At least one gate should trigger
         assert len(triggered) > 0 or not all_clear
@@ -399,7 +401,7 @@ class TestLegalGateIntegration:
               return "improved"
         """
 
-        all_clear, results = validator.check_legal_gates(safe_diff)
+        all_clear, results = cv.check_legal_gates(safe_diff)
         # Should have minimal triggers for clean code
         triggered = [r for r in results if r["triggered"]]
         assert len(triggered) <= 1

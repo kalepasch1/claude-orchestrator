@@ -49,7 +49,31 @@ import subscription_guard
 
 
 class _TempPaths:
-    """Redirect account_pool's import-time path constants into a temp directory."""
+    """Isolate account_pool from this machine: temp paths AND an offline control plane.
+
+    REDIRECTING THE PATH CONSTANTS IS NOT ENOUGH (fixed 2026-08-26). _load_cfg reads
+    the Supabase `accounts` table FIRST and only falls back to the local JSON when
+    that returns nothing. So every test here that wrote a config file and then built
+    an AccountPool got the OPERATOR'S REAL ACCOUNTS instead — which is why
+    `pool.state["test"]` raised KeyError and stats() reported 3 accounts where the
+    fixture had written 1.
+
+    Worse than a wrong assertion: mark_exhausted() then ran against a real account.
+    It does
+
+        db.update("accounts", {"name": a["name"]}, {"cooldown_until": until})
+
+    and sends a notification. Running this file put the operator's live Claude
+    accounts into cooldown and paged about the rotation — a unit test that could
+    pause the fleet's capacity. The captured stdout said so out loud:
+    "[notify] Account 'kale@heretomorrow.us' hit its limit -> rotated to
+    'kale@smrter.us'."
+
+    So the control plane is stubbed for the whole class: select returns nothing (the
+    documented fallback path, which is what the fixtures write), and the writes are
+    inert. account_pool does `import db` inside its functions, so the patch has to
+    land on the real db module rather than an attribute of account_pool.
+    """
 
     def setup_method(self, method):
         self.temp_dir = tempfile.mkdtemp()
@@ -65,7 +89,20 @@ class _TempPaths:
         account_pool._pool = None
         account_pool._EXH_CACHE = {"t": 0.0, "v": False}
 
+        import db as _db
+        import notify as _notify
+        self._patchers = [
+            patch.object(_db, "select", lambda *a, **k: []),
+            patch.object(_db, "update", lambda *a, **k: None),
+            patch.object(_db, "insert", lambda *a, **k: None),
+            patch.object(_notify, "send", lambda *a, **k: None),
+        ]
+        for p in self._patchers:
+            p.start()
+
     def teardown_method(self, method):
+        for p in reversed(self._patchers):
+            p.stop()
         account_pool.CFG, account_pool.STATE, account_pool.EXHAUSTED_FLAG = self._orig
         account_pool._pool = self._orig_pool
         account_pool._EXH_CACHE = {"t": 0.0, "v": False}

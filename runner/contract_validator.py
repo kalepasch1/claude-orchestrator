@@ -135,6 +135,28 @@ class PipelineContractValidator:
         self.legal_results = []
         all_clear = True
 
+        # A DIFF THAT IS NOT TEXT FAILS THE GATE, IT DOES NOT CRASH IT (2026-08-26).
+        #
+        # This went straight to `trigger.lower() in diff_content.lower()`, so
+        # check_legal_gates(None) raised AttributeError out of a compliance gate on
+        # the merge path. An exception there is the worst of the three outcomes: the
+        # gate neither passes nor blocks, it just breaks its caller, and whether the
+        # change was reviewed depends on how that caller happens to handle errors.
+        #
+        # Failing CLOSED rather than treating it as clear, for the reason build_gate
+        # states about its own undeterminable case: a gate that cannot see the change
+        # has not cleared it. An empty STRING is different and still scans normally —
+        # "no changes" is a real answer, "the diff never arrived" is not.
+        if not isinstance(diff_content, str):
+            self.legal_results = [LegalGateResult(
+                gate_name="diff_unavailable",
+                triggered=True,
+                reason=(f"diff_content was {type(diff_content).__name__}, not text; "
+                        "the legal gates had nothing to scan"),
+                required_approver="owner",
+            )]
+            return False, self.legal_results
+
         for gate_name, gate_def in opc.LEGAL_GATES.items():
             triggered = False
             reason = ""

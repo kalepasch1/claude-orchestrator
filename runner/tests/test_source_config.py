@@ -69,17 +69,19 @@ class TestTestingPipelineSetup(unittest.TestCase):
     """Verify the testing pipeline infrastructure is functional."""
 
     #: Test modules that exist under BOTH runner/ and runner/tests/ with the same
-    #: basename, and are NOT copies — all 24 pairs differ in content. Both
+    #: basename, and are NOT copies — every remaining pair differs in content. Both
     #: directories end up on sys.path, so the two files compete for one top-level
     #: module name: whichever is imported first wins, and unittest's loader
     #: refuses outright ("'test_account_pool' module incorrectly imported from
     #: .../runner. Expected .../runner/tests").
     #:
     #: This is a layout defect, not a test defect, and resolving it means deciding
-    #: for each pair whether to merge, rename or delete — 24 judgement calls about
-    #: live coverage, not a mechanical move. Recorded as a ratchet so the number
-    #: cannot grow while that decision is outstanding.
-    MAX_DUPLICATE_TEST_BASENAMES = 24
+    #: for each pair whether to merge, rename or delete — a judgement call about live
+    #: coverage each time, not a mechanical move. Recorded as a ratchet so the number
+    #: cannot grow while that decision is outstanding; it came down from 24 when
+    #: runner/test_marginal_value_scheduler.py was deleted (every one of its eight
+    #: tests called score_marginal(), a function that module has never defined).
+    MAX_DUPLICATE_TEST_BASENAMES = 23
 
     def _duplicate_test_basenames(self):
         tests_dir = os.path.dirname(os.path.abspath(__file__))
@@ -95,7 +97,7 @@ class TestTestingPipelineSetup(unittest.TestCase):
 
         This used to call loader.discover() over the whole directory and assert a
         nonzero count. It raised ImportError instead — not because discovery is
-        broken, but because 24 basenames exist in both runner/ and runner/tests/
+        broken, but because ~two dozen basenames exist in both runner/ and runner/tests/
         and unittest refuses to import the second one under a name the first
         already holds. A bare `discover()` therefore cannot pass in this repo, in
         a clean interpreter or otherwise, and the failure said nothing about why.
