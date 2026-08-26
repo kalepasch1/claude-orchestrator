@@ -92,12 +92,26 @@ def _test_pipeline_health(metrics, lookback_minutes=HEALTH_LOOKBACK_MINUTES):
         return None
 
 
+#: Seconds a gated suite gets. The old default was 300, shorter than the suite of
+#: the largest repo this train gates (~2330s), so every candidate for that repo was
+#: rejected on the clock and the rejection read as "tests failed".
+TEST_TIMEOUT_DEFAULT = 3600
+
+
 def _test_timeout():
-    """Read at call time so fleet_config changes take effect without restart."""
+    """Read at call time so fleet_config changes take effect without restart.
+
+    Fail-soft on a bad value: absent, empty or unparseable means "nobody set this",
+    and a non-positive number would reject every candidate instantly, so both fall
+    back to the default rather than being taken literally.
+    """
+    raw = str(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "")).strip()
     try:
-        return int(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "300"))
+        seconds = int(raw)
     except ValueError:
-        return 300
+        return TEST_TIMEOUT_DEFAULT
+    return seconds if seconds > 0 else TEST_TIMEOUT_DEFAULT
+
 
 TEST_TIMEOUT = _test_timeout()  # backward-compat module-level ref
 MERGING_STATE = os.environ.get("MERGE_TRAIN_STATE", "RUNNING")
@@ -865,7 +879,10 @@ def _run_tests(repo, test_cmd, ref=None):
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return False, f"tests timed out after {timeout}s"
+        return False, (f"tests did not finish within {timeout}s — NO verdict on this "
+                       "candidate, which is not the same as a red suite. Raise "
+                       "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
+                       "what is hanging.")
     if r.returncode != 0:
         tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
@@ -878,7 +895,10 @@ def _run_tests(repo, test_cmd, ref=None):
                     return True, "green (after dep install)"
                 return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
             except subprocess.TimeoutExpired:
-                return False, f"tests timed out after {timeout}s"
+                return False, (f"tests did not finish within {timeout}s — NO verdict on this "
+                       "candidate, which is not the same as a red suite. Raise "
+                       "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
+                       "what is hanging.")
         return False, tail
     return True, "green"
 

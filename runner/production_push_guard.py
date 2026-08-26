@@ -244,10 +244,69 @@ def _wait_for_quiet_machine(max_wait=None, per_cpu=None):
         time.sleep(5)
 
 
+#: Seconds a full suite gets before the gate gives up on it. The old inline default
+#: was 1800, which is SHORTER than this repo's own suite (~2330s for 14,352 tests),
+#: so the gate could not finish the run it exists to perform.
+TEST_GATE_TIMEOUT_DEFAULT = 3600
+
+
+def _gate_timeout():
+    """Seconds the suite gets, read at call time so fleet_config edits apply live.
+
+    Fail-soft on a bad value, like _task_timeout in runner.py: an absent, empty or
+    unparseable ORCH_TEST_GATE_TIMEOUT means "nobody set this", not "give the suite
+    zero seconds". A non-positive number would make every run time out instantly
+    and read as an unverifiable suite, so it falls back too.
+    """
+    raw = str(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "")).strip()
+    try:
+        seconds = int(raw)
+    except ValueError:
+        return TEST_GATE_TIMEOUT_DEFAULT
+    return seconds if seconds > 0 else TEST_GATE_TIMEOUT_DEFAULT
+
+
+class _SuiteTimedOut:
+    """Stands in for a CompletedProcess that never completed.
+
+    `returncode` is None, which no real CompletedProcess ever is, so a caller that
+    checks `!= 0` treats an unfinished suite as not-green — the safe reading — and a
+    caller that wants to say something more precise can test for None.
+    """
+
+    returncode = None
+
+    def __init__(self, seconds):
+        self.seconds = seconds
+        self.stdout = ""
+        self.stderr = ""
+
+
 def _run_suite(repo, command):
-    return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
-                          capture_output=True, text=True,
-                          timeout=int(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "1800")))
+    """Run COMMAND in REPO. Returns a CompletedProcess, or _SuiteTimedOut.
+
+    A timeout used to escape as an uncaught subprocess.TimeoutExpired straight out
+    of the pre-push hook. It blocked the push, which is right, but it reported a
+    traceback rather than a diagnosis — and the diagnosis is the whole story: the
+    clock was shorter than the suite, so nothing at all was learned about the code.
+    """
+    seconds = _gate_timeout()
+    try:
+        return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
+                              capture_output=True, text=True, timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return _SuiteTimedOut(seconds)
+
+
+def _timed_out_verdict(command, seconds):
+    """The message an operator needs when the suite never finished."""
+    return (
+        f"`{command}` did not finish within {seconds}s, so this guard has NO verdict on the "
+        "suite. That is NOT the same as a red run — nothing here says the code is broken.\n"
+        "Either the gate clock is shorter than the suite's real runtime (raise "
+        "ORCH_TEST_GATE_TIMEOUT in runner/.env or fleet_config), or something is hanging. "
+        "Blocking the push: an unfinished suite is not a green one."
+    )
 
 
 def verify_tests(repo, commit):
@@ -272,6 +331,15 @@ def verify_tests(repo, commit):
     print(f"production_push_guard: no test proof for {commit[:12]} — running `{command}`", file=sys.stderr)
     proc = _run_suite(repo, command)
 
+    # A TIMEOUT IS NOT A RED RUN, AND IT IS NOT RE-RUN.
+    #
+    # The flake re-run below exists because a red result under load can be the
+    # machine. A timeout is different in kind: no result was produced at all, so
+    # there is nothing to separate flake from failure, and a second attempt would
+    # cost another full clock to learn the same nothing. Report it and stop.
+    if proc.returncode is None:
+        return False, _timed_out_verdict(command, proc.seconds)
+
     # A RED FIRST RUN IS NOT YET A VERDICT.
     #
     # This gate runs inside a pre-push hook, on whatever the machine happens to be
@@ -290,6 +358,8 @@ def verify_tests(repo, commit):
               file=sys.stderr)
         _wait_for_quiet_machine()
         second = _run_suite(repo, command)
+        if second.returncode is None:
+            return False, _timed_out_verdict(command, second.seconds)
         if second.returncode == 0:
             try:
                 proof_graph.record_verification(repo, commit, command, "test", True)
