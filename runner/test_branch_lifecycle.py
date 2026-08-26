@@ -289,7 +289,19 @@ class TestZeroSpendRecovery:
 # from False ("the branch is fresh").
 # ---------------------------------------------------------------------------
 def _commit_at(repo, message, epoch):
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(epoch))
+    """Commit with author/committer date pinned to EPOCH.
+
+    The offset is explicit. This used to render UTC wall-clock via time.gmtime() and
+    hand git a bare "2026-08-14T15:04:54" with no zone -- which git reads as LOCAL
+    time. On this machine (UTC-4) every fixture commit therefore landed four hours
+    after the epoch the caller asked for, and
+    test_last_commit_epoch_matches_the_commit_date failed by exactly 14400 seconds.
+
+    The staleness tests around it never noticed, because 30 days plus four hours is
+    still 30 days. Only the test that asserts the EXACT epoch could see it -- which is
+    the argument for having one.
+    """
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S+0000", time.gmtime(epoch))
     env = dict(os.environ, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)
     subprocess.run(["git", "commit", "--allow-empty", "-m", message],
                    cwd=repo, capture_output=True, env=env)
