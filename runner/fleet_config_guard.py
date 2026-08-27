@@ -19,6 +19,24 @@ back to its own inline pattern rather than allowing the write.
 
 Detection is by NAME *and* by VALUE SHAPE, because the observed table also contained a
 row literally keyed `key` — an innocuous name is no evidence of innocuous content.
+
+THE READ SIDE (added after the executor-fleet outage)
+-----------------------------------------------------
+Closing the write door left the read door open, and the read door fails in the
+worse direction. `fleet_config_dao.get()` is fail-soft by contract: any miss or
+error returns `None`. So code that still asked fleet_config for GITHUB_PAT after
+the 2026-08-02 purge did not raise — it received nothing, coerced it to `""`,
+built `https://:@github.com/...` from it, and pushed. Every run of all sixteen
+cowork executors failed that way, and the failure surfaced as a git error about
+a remote, three layers from the cause.
+
+A write guard that raises and a read path that returns `None` are not symmetric
+protections. `assert_readable()` gives the read path the same loud refusal, at
+the same choke point (`fleet_config_dao.get` / `get_many`), naming the real fix:
+read it from the host environment.
+
+`get_all()` and `scan_rows()` are deliberately NOT guarded — auditing the table
+for credentials requires being able to see them.
 """
 import re
 
@@ -79,6 +97,38 @@ def assert_writable(key, value=None):
             f"Secrets belong in the host env / secret store and are read with "
             f"os.environ.get(); fleet_config is replicated, logged and diffed fleet-wide.")
     return True
+
+
+class CredentialReadError(ValueError):
+    """Raised when code asks fleet_config for a credential-shaped key.
+
+    A subclass of ValueError so existing `except ValueError` around config
+    access keeps working, and so it reads the same as assert_writable's refusal.
+    """
+
+
+def assert_readable(key):
+    """Raise CredentialReadError if `key` must never be read from fleet_config.
+
+    Read-side twin of assert_writable. Only the key name is available at read
+    time — there is no value to shape-match yet — so this is name-based only,
+    which is the same test that would have caught GITHUB_PAT, VERCEL_TOKEN,
+    OPENAI_API_KEY and GEMINI_API_KEY.
+    """
+    k = str(key or "")
+    if _NAME_RE.search(k):
+        raise CredentialReadError(
+            f"[fleet-config-guard] refusing to read a credential from fleet_config: "
+            f"key name '{k}' denotes a credential. Credentials were purged from this "
+            f"table in the 2026-08-02 incident and writes are rejected, so this read "
+            f"can only ever return nothing — which silently becomes an empty token. "
+            f"Read it from the host environment instead: os.environ.get('{k}').")
+    return True
+
+
+def is_readable(key):
+    """Non-raising form of assert_readable, for callers that want to branch."""
+    return not _NAME_RE.search(str(key or ""))
 
 
 def scan_rows(rows):

@@ -35,6 +35,24 @@ def _is_regex_source(value: str) -> bool:
     return bool(_REGEX_EXTENSION_GROUP_RE.search(str(value or '')))
 
 
+#: Config-read functions whose first positional argument is a fleet_config key.
+#: Reading a credential out of fleet_config is the mirror of writing one there,
+#: and it is the failure that is hard to see: the DAO is fail-soft, so the read
+#: returns None, becomes "", and produces an empty token instead of an error.
+#: runner/fleet_config_guard.assert_readable now refuses it at runtime; this
+#: rule refuses it at review time, before a fleet-wide run burns on it.
+_CONFIG_READ_FUNCS = frozenset({'get_config', 'get_many', 'get_config_value'})
+
+#: Key names that denote a credential. Kept in step with the `_NAME_RE` in
+#: runner/fleet_config_guard.py -- that module is the authority; this is the
+#: static-analysis echo of it, and a literal key is all a linter can see.
+_CREDENTIAL_KEY_RE = re.compile(
+    r'(SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIAL|_PAT\b|^PAT$|'
+    r'(^|_)KEY(_|$)|_KEY\b|'
+    r'COOKIE|DSN|CONNECTION_?STRING|DATABASE_URL)',
+    re.IGNORECASE)
+
+
 class ConventionViolation:
     def __init__(self, filepath: str, lineno: int, rule: str, message: str, severity: str = "error"):
         self.filepath = filepath
@@ -74,6 +92,11 @@ class ConventionChecker(ast.NodeVisitor):
         self._check_magic_numbers(node)
         self._check_hardcoded_secrets(node)
         self._check_assignment_naming(node)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        """Check for credential keys read out of fleet configuration."""
+        self._check_credential_config_read(node)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
@@ -250,6 +273,65 @@ class ConventionChecker(ast.NodeVisitor):
     def _check_unguarded_mutations(self, node: ast.Attribute) -> None:
         """Flag mutations to shared state outside lock context."""
         pass
+
+    @staticmethod
+    def _dotted_name(node) -> str:
+        """Best-effort dotted source text for a Name/Attribute chain."""
+        parts = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if isinstance(node, ast.Name):
+            parts.append(node.id)
+        return '.'.join(reversed(parts))
+
+    def _is_config_read(self, func) -> bool:
+        """Is this call a read against the fleet_config store?"""
+        if isinstance(func, ast.Name):
+            return func.id in _CONFIG_READ_FUNCS
+        if isinstance(func, ast.Attribute):
+            if func.attr in _CONFIG_READ_FUNCS:
+                return True
+            # `fleet_config_dao.get("X")` / `self._fleet_config.get("X")`: a bare
+            # `.get` is only a config read when the receiver says so. Matching
+            # every `.get` would fire on every dict in the tree.
+            if func.attr == 'get':
+                return 'fleet_config' in self._dotted_name(func.value).lower()
+        return False
+
+    def _check_credential_config_read(self, node: ast.Call) -> None:
+        """Flag `get_config("GITHUB_PAT")`-shaped reads of fleet configuration.
+
+        Self-referential files are exempt for the same reason _is_regex_source
+        exists: the guard, this linter and their tests must be able to NAME the
+        keys they forbid without being reported for it.
+        """
+        name = Path(self.filepath).name
+        if name in ('fleet_config_guard.py', 'lint_conventions.py') or name.startswith('test_'):
+            return
+        if not self._is_config_read(node.func):
+            return
+
+        literals = []
+        if node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                literals.append(first.value)
+            elif isinstance(first, (ast.List, ast.Tuple, ast.Set)):
+                literals.extend(
+                    e.value for e in first.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                )
+        for key in literals:
+            if _CREDENTIAL_KEY_RE.search(key):
+                self.violations.append(ConventionViolation(
+                    self.filepath, node.lineno, 'CREDENTIAL_CONFIG_READ',
+                    f'Key "{key}" denotes a credential and must not be read from '
+                    f'fleet_config; credentials were purged from that table, so this '
+                    f'read yields an empty value rather than an error. Use '
+                    f'os.environ.get("{key}") instead.'
+                ))
+                break
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
         """Check for hardcoded secrets in variables with sensitive names.
