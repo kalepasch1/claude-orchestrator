@@ -230,6 +230,37 @@ def _reap_oldest_agent():
 
 # ── BOT 2: thrash_hunter (durable root fixes on recurrence) ───────────────────
 
+def _parse_ts(text):
+    """Parse one of our own UTC timestamps into an AWARE datetime, or None.
+
+    Every writer in the fleet stamps UTC and marks it with a trailing "Z": journal() above
+    does `_now().isoformat().replace("+00:00", "Z")`, and sentinel.py does
+    `datetime.datetime.utcnow().isoformat() + "Z"` — the second of which is a NAIVE clock
+    reading with a UTC marker glued on. Reading either one back has to produce something
+    comparable to _now(), which is aware.
+
+    That is the whole of the bug this helper exists to remove: _recent_events() used to strip
+    the "Z" off the sentinel timestamp and compare the resulting NAIVE datetime against an
+    AWARE cutoff. Python does not order those — it raises
+    "TypeError: can't compare offset-naive and offset-aware datetimes" — and the comparison
+    sat inside a bare `except Exception: pass`, so there was no traceback and no log line.
+    Every sentinel event was silently dropped from every window, which meant thrash_hunter()
+    and loop_breaker() never saw a single ram-clamp, dedupe, runner-cycled or runner-wedged
+    event: the two bots whose entire job is spotting repetition were counting nothing but the
+    medic's own journal, forever.
+
+    A timestamp that arrives with no offset is assumed UTC, because that is what our writers
+    mean by it.
+    """
+    try:
+        t = datetime.datetime.fromisoformat(str(text).strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        return t.replace(tzinfo=datetime.timezone.utc)
+    return t
+
+
 def _recent_events(minutes):
     """Merge medic journal + sentinel log lines within the window."""
     cutoff = _now() - datetime.timedelta(minutes=minutes)
@@ -239,8 +270,8 @@ def _recent_events(minutes):
         for line in open(JOURNAL):
             try:
                 r = json.loads(line)
-                t = datetime.datetime.fromisoformat(r["at"].replace("Z", "+00:00"))
-                if t.replace(tzinfo=None) >= cutoff.replace(tzinfo=None):
+                t = _parse_ts(r["at"])
+                if t is not None and t >= cutoff:
                     events.append((r.get("bot", ""), r.get("action", ""), r.get("detail", "")))
             except Exception:
                 continue
@@ -252,12 +283,9 @@ def _recent_events(minutes):
             for tag in ("ram-clamp", "dedupe", "runner-cycled", "runner-wedged",
                         "extra-keepalive-killed", "zombie-agent-reaped"):
                 if tag in line:
-                    ts = line.split(" ", 1)[0].replace("Z", "")
-                    try:
-                        if datetime.datetime.fromisoformat(ts) >= cutoff:
-                            events.append(("sentinel", tag, line.strip()[-120:]))
-                    except Exception:
-                        pass
+                    t = _parse_ts(line.split(" ", 1)[0])
+                    if t is not None and t >= cutoff:
+                        events.append(("sentinel", tag, line.strip()[-120:]))
     except OSError:
         pass
     return events

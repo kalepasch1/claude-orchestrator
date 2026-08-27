@@ -103,8 +103,19 @@ def is_flake(task_id, output):
 
 # ── Tier 2: Infra failure detection ──────────────────────────────────────────
 
+# The OOM alternatives are ANCHORED with \b. They used to be a bare `OOM|oom-kill`, which
+# under re.I matches the three letters "oom" ANYWHERE — including inside ordinary words. The
+# word that broke the fleet was "groomed": queue_groom.py parks duplicates with the note
+# "groomed: duplicate queued slug", blocker_quarantine.run() feeds note+log_tail to triage()
+# BEFORE it ever calls classify(), and triage() checks tier 2 before tier 3 — so every single
+# groomed task came back as tier-2 "infra failure: oom", got its state reset to QUEUED with a
+# runner-restart recommendation, and was requeued instead of classified. The duplicate then
+# groomed again on the next pass: a requeue loop driven entirely by a substring.
+# "room", "zoom", "bloom", "boom", "broom" and "mushroom" are the same hazard and appear
+# routinely in build output and test names, so the boundary has to be on the pattern, not on
+# a list of words to exclude.
 _INFRA_PATTERNS = re.compile(
-    r"out of memory|OOM|oom-kill|"
+    r"out of memory|\bOOM\b|\boom[-_ ]?kill(?:ed|er)?\b|"
     r"no space left on device|ENOSPC|disk full|"
     r"network (?:error|unreachable|timeout)|"
     r"DNS resolution failed|"

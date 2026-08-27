@@ -374,6 +374,32 @@ def _invoke_job(job):
         return None
     except db.TransientDBError as exc:
         return {"skipped": "transient-db", "job": job, "detail": str(exc)[:300]}
+    except Exception as exc:
+        # _is_transient_net_error() was written for exactly this arm and then never wired to
+        # anything — it was defined directly above and called from nowhere in the repo. So a
+        # Supabase read that merely TIMED OUT came back as a raw urllib.error.URLError, sailed
+        # past both db.* arms (db only wraps what it recognises), and took the whole cycle down:
+        # one blipped socket and every remaining job in that pass never ran.
+        #
+        # The treatment is deliberately identical to the db.TransientDBError arm above — skip
+        # this cycle, let the next one run — because the situation is identical: the job is
+        # fine, the network was not. Disabling on a network blip would take a healthy job
+        # offline for the duration of an outage.
+        #
+        # The re-raise is the load-bearing half. Everything the predicate REJECTS still
+        # escapes: a ValueError, an AttributeError, a 400 from PostgREST (a real client bug,
+        # which _is_transient_net_error() rejects on purpose) must stay as loud as they were
+        # before this handler existed. A bare `except Exception: return` here would convert
+        # every genuine job bug into a silent skip, which is the failure mode the timeout arm
+        # was added to fix.
+        if not _is_transient_net_error(exc):
+            raise
+        # Say so once, then return None the way the MissingRelationError arm does — the
+        # scheduler's exit code only distinguishes _Skipped from everything else, so the
+        # printed line is the observability here, not the return value.
+        print(f"periodic {job}: skipped this cycle — transient network error "
+              f"({type(exc).__name__}: {exc}). The job is fine; the next invocation runs.")
+        return None
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
