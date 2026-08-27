@@ -269,6 +269,85 @@ def _slice_exists(task, slug):
         return False
 
 
+def _slice_row(task, part, deps):
+    """The `tasks` row for one slice, with its dep chain supplied by the caller.
+
+    `deps` is passed in rather than read from `part` because the chain has to be
+    built against what actually landed -- see _insert_chain.
+    """
+    return {"project_id": task.get("project_id"), "slug": part["slug"],
+            "kind": task.get("kind") or "build", "state": "QUEUED",
+            "prompt": part["prompt"] + f"\n\nParent task: {task.get('slug')}",
+            "deps": list(deps), "base_branch": task.get("base_branch"),
+            # THE LINK WAS PROSE ONLY. Until now the parent survived here as
+            # "parent=<slug>" in the note and "Parent task: <slug>" in the
+            # prompt, and nowhere in a column anything could join on.
+            # bankruptcy_decompose.py has always set parent_task_id and
+            # queue_materializer.py:228 calls it "authoritative" -- the
+            # slicer was the one decomposer that never wrote it.
+            #
+            # The cost was a queue that could not resolve its own
+            # dependencies. A task waiting on a DECOMPOSED parent is waiting
+            # for that parent's children, and with no FK there was no way to
+            # find them: measured on the live queue 2026-08-25, 10 of the 16
+            # decomposed dependencies that HAD children had them reachable
+            # only by slug prefix, and dependency resolution therefore
+            # treated every one as permanently unsatisfied.
+            "parent_task_id": task.get("id"),
+            "note": f"{MARK}: parent={task.get('slug')}"}
+
+
+def _insert_chain(parts, make_row, exists, insert, attempts=2):
+    """Insert slices in order, keeping the dep chain contiguous across failures.
+
+    A TRUNCATED CHAIN IS UNSATISFIABLE FOREVER (2026-08-27). The insert loop used to
+    build each slice's deps from the slug of the *previous part in the plan* and then
+    swallow per-row insert failures with a bare `except: pass`. When slice-3 failed and
+    slices 4 and 5 succeeded, the result was slice-4 sitting in QUEUED with
+    deps=["...-slice-3"] pointing at a row that was never written. The dependency
+    predicate only accepts DONE/MERGED, a nonexistent slug can reach neither, and the
+    `if not inserted` rollback never fired because other slices *had* landed. So the
+    parent stayed DECOMPOSED and the tail of the chain was permanently unclaimable --
+    measured on the live queue 2026-08-25, 11 chains were truncated exactly this way
+    (QUEUE-DEADLOCK-2026-08-25.md, cause 2), including
+    improve-streamlined-branch-management-with-autom, whose slice-3 does not exist while
+    slices 1, 2, 4 and 5 all do.
+
+    Two changes close it:
+
+    1. Deps are chained off the last slice that *actually landed*, not the last one
+       planned. A dropped slice-3 makes slice-4 depend on slice-2, so the chain stays
+       short but satisfiable instead of long and dead.
+    2. Failures are retried once and then reported, not swallowed. The caller records
+       dropped slugs on the parent note so a partial decomposition is visible.
+
+    Re-running over an existing decomposition also fills gaps: slices that exist are
+    skipped and become the chain anchor, and a missing middle slice is inserted with
+    deps pointing at its surviving predecessor.
+
+    Returns (landed_slugs, dropped_slugs). Pure with respect to the injected callables.
+    """
+    landed, dropped, prev = [], [], None
+    for part in parts:
+        slug = part["slug"]
+        if exists(slug):
+            landed.append(slug)
+            prev = slug
+            continue
+        row = make_row(part, [prev] if prev else [])
+        for _ in range(max(1, attempts)):
+            try:
+                insert(row)
+                landed.append(slug)
+                prev = slug
+                break
+            except Exception:
+                continue
+        else:
+            dropped.append(slug)
+    return landed, dropped
+
+
 def pre_agent_hook(task):
     if not isinstance(task, dict) or not should_slice(task):
         return False
@@ -278,16 +357,10 @@ def pre_agent_hook(task):
     # Idempotency guard (2026-07-10): the parent used to flip to DECOMPOSED only AFTER the
     # slice inserts. Any DB blip on that final update left a QUEUED parent that re-sliced on
     # the next claim, re-inserting the same 5 slugs — the dominant source of sentinel-dedupe
-    # quarantines (235/255 quarantined rows on 2026-07-09/10 were *-slice-N). If slices
-    # already exist, just finish flipping the parent.
-    if _slice_exists(task, parts[0]["slug"]):
-        try:
-            db.update("tasks", {"id": task["id"]},
-                      {"state": "DECOMPOSED", "updated_at": "now()",
-                       "note": f"{MARK}: slices already present; parent flip retried"})
-        except Exception:
-            pass
-        return True
+    # quarantines (235/255 quarantined rows on 2026-07-09/10 were *-slice-N). Slices that
+    # already exist are skipped by _insert_chain, so re-entry is safe and now also repairs
+    # a chain whose middle went missing.
+    already = _slice_exists(task, parts[0]["slug"])
     # Flip the parent BEFORE inserting slices so a mid-insert failure can never leave a
     # QUEUED parent alongside live slices. If the flip itself fails, do nothing this cycle.
     try:
@@ -295,38 +368,15 @@ def pre_agent_hook(task):
                   {"state": "DECOMPOSED", "updated_at": "now()",
                    "note": f"{MARK}: spawning {len(parts)} sub-subtasks"})
     except Exception:
-        return False
-    inserted = 0
-    for part in parts:
-        row = {"project_id": task.get("project_id"), "slug": part["slug"],
-               "kind": task.get("kind") or "build", "state": "QUEUED",
-               "prompt": part["prompt"] + f"\n\nParent task: {task.get('slug')}",
-               "deps": part["deps"], "base_branch": task.get("base_branch"),
-               # THE LINK WAS PROSE ONLY. Until now the parent survived here as
-               # "parent=<slug>" in the note and "Parent task: <slug>" in the
-               # prompt, and nowhere in a column anything could join on.
-               # bankruptcy_decompose.py has always set parent_task_id and
-               # queue_materializer.py:228 calls it "authoritative" -- the
-               # slicer was the one decomposer that never wrote it.
-               #
-               # The cost was a queue that could not resolve its own
-               # dependencies. A task waiting on a DECOMPOSED parent is waiting
-               # for that parent's children, and with no FK there was no way to
-               # find them: measured on the live queue 2026-08-25, 10 of the 16
-               # decomposed dependencies that HAD children had them reachable
-               # only by slug prefix, and dependency resolution therefore
-               # treated every one as permanently unsatisfied.
-               "parent_task_id": task.get("id"),
-               "note": f"{MARK}: parent={task.get('slug')}"}
-        try:
-            if _slice_exists(task, part["slug"]):
-                inserted += 1  # already landed on a previous attempt
-                continue
-            _insert_task(row)
-            inserted += 1
-        except Exception:
-            pass
-    if not inserted:
+        return bool(already)
+
+    landed, dropped = _insert_chain(
+        parts,
+        lambda part, deps: _slice_row(task, part, deps),
+        lambda slug: _slice_exists(task, slug),
+        _insert_task,
+    )
+    if not landed:
         # Nothing landed — restore the parent so the work isn't silently lost.
         try:
             db.update("tasks", {"id": task["id"]},
@@ -335,6 +385,19 @@ def pre_agent_hook(task):
         except Exception:
             pass
         return False
+    if dropped:
+        # A partial decomposition is a real defect even though the survivors are
+        # claimable. Name the casualties on the parent so triage can regenerate them
+        # instead of discovering the hole weeks later in a deadlock audit.
+        try:
+            db.update("tasks", {"id": task["id"]},
+                      {"state": "DECOMPOSED", "updated_at": "now()",
+                       "note": f"{MARK}: parent={task.get('slug')}; "
+                               f"{len(landed)}/{len(parts)} slices landed; "
+                               f"dropped: {', '.join(dropped)}; "
+                               f"dep chain re-pointed to last surviving slice"})
+        except Exception:
+            pass
     return True
 
 
