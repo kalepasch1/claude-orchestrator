@@ -32,8 +32,21 @@ THE FOUR CATEGORIES, AND WHY THEY ARE SEPARATE
                         is a judgement about intent, not a fact about the queue,
                         so this tool reports and does not act.
 
-  dangling              The dep names a slug no task has ever had. A typo or a
-                        deleted row; unsatisfiable by construction.
+  dangling              The dep names a slug no task has ever had. Split by
+                        cause, because "no task has ever had this slug" names
+                        the symptom and leaves the remedy to guesswork:
+
+                          slice-series gap  the decomposer produced
+                                            <base>-slice-1..N and skipped one,
+                                            while a sibling still depends on the
+                                            member that was never created. The
+                                            dependency is not wrong about what
+                                            it wanted; the work is missing.
+                                            Re-slice the parent, or drop the dep.
+                                            EVERY dangling edge on the live queue
+                                            measured 2026-08-26 was this.
+
+                          bad slug          a typo or a deleted row. Fix or drop.
 
 This script is READ-ONLY. It changes nothing. That is deliberate: the four
 categories want four different remedies, and three of them need a human to say
@@ -43,6 +56,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -88,12 +102,58 @@ def _rank(row):
     return order.get(row.get("state"), 3)
 
 
+_SLICE_RE = re.compile(r"^(?P<base>.+)-slice-(?P<n>\d+)$")
+
+
+def _diagnose_dangling(bare, by_slug):
+    """Why a dep names a slug no task has ever had.
+
+    "no task has ever had this slug" is true and useless: it names the symptom
+    and leaves the operator to work out whether it is a typo, a deleted row, or
+    something structural. Every dangling edge on the live queue turned out to be
+    the same structural thing, and it was invisible until the slugs were laid
+    side by side.
+
+    A slice series is decomposed as <base>-slice-1..N. The decomposer sometimes
+    skips one. Measured 2026-08-26: improve-implement-automated-testing-framework
+    has slices 1, 3, 4, 5 and a dependency on the slice-2 that was never
+    created; improve-implement-real-time-configuration-manage has 1, 2, 3, 5 and
+    a dependency on 4. The dependency is not wrong about what it wanted — the
+    work is simply missing from the series.
+
+    That distinction changes the remedy. "Fix the slug" is the wrong advice for
+    a gap: there is no slug to fix. Either re-slice the parent so the missing
+    member exists, or decide the dependent no longer needs it.
+
+    This function only explains. Filling a gap means re-running a decomposition,
+    which is a decision about intent, so the report still refuses to act.
+    """
+    match = _SLICE_RE.match(bare)
+    if not match:
+        return "no task has ever had the slug %r" % bare
+
+    base, missing = match.group("base"), int(match.group("n"))
+    siblings = sorted(
+        int(m.group("n"))
+        for slug in by_slug
+        for m in [_SLICE_RE.match(slug)]
+        if m and m.group("base") == base
+    )
+    if not siblings:
+        return "no task has ever had the slug %r" % bare
+    return (
+        "gap in a slice series: %s-slice-%d was never created "
+        "(siblings present: %s) — re-slice the parent or drop the dep"
+        % (base, missing, ", ".join(str(n) for n in siblings))
+    )
+
+
 def _classify(dep, by_slug, children, finished_children):
     """(category, detail) for one dependency, or None when it is satisfiable."""
     bare = str(dep).split(":")[-1]
     target = by_slug.get(bare)
     if target is None:
-        return "dangling", "no task has ever had the slug %r" % bare
+        return "dangling", _diagnose_dangling(bare, by_slug)
 
     state = target.get("state")
     if state in SATISFYING:
@@ -186,7 +246,8 @@ def main(argv=None):
     print("  decomposed-childless -> re-queue the parent, or re-slice it")
     print("  collapsed            -> repoint the dep at the batch named above")
     print("  terminal             -> decide whether the dependent should proceed")
-    print("  dangling             -> drop the dep, or fix the slug")
+    print("  dangling             -> a slice-series gap needs the parent")
+    print("                          re-sliced; anything else is a bad slug")
     return 1
 
 
