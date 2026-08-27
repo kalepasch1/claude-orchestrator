@@ -27,7 +27,22 @@ _PATTERNS: list[tuple[re.Pattern, str, float]] = [
     (re.compile(r"cannot import name", re.I), "dependency", 0.80),
 
     # auth
-    (re.compile(r"401|403|Unauthorized|Forbidden|AuthenticationError", re.I), "auth", 0.90),
+    #
+    # The status codes are ANCHORED and require HTTP context. They used to be a
+    # bare `401|403`, which under re.I matches those three digits ANYWHERE:
+    # "line 401", "took 1403ms", a port, a byte count, the first four of a SHA.
+    # Any build log containing one of those was classified `auth` at confidence
+    # 0.90 — and `auth` was on the automatic-retry list, so a syntax error on
+    # line 401 was retried as an expired token.
+    #
+    # This is the third time this exact shape has bitten this repo: the bare
+    # `OOM` in quarantine_triage matched "groomed" and requeued every groomed
+    # duplicate, and the secret linter flagged its own detector. A digit
+    # alternation with no boundary is not a pattern, it is a substring search.
+    (re.compile(r"\b(?:HTTP[/ ]?[\d.]*\s*)?40[13]\b\s*"
+                r"(?:Unauthorized|Forbidden|Client Error|-|:)|"
+                r"(?:status|code|response)\D{0,12}\b40[13]\b|"
+                r"Unauthorized|Forbidden|AuthenticationError", re.I), "auth", 0.90),
     (re.compile(r"token expired|invalid token|permission denied", re.I), "auth", 0.88),
     (re.compile(r"Access Denied|credentials", re.I), "auth", 0.75),
 
@@ -53,8 +68,30 @@ _PATTERNS: list[tuple[re.Pattern, str, float]] = [
     (re.compile(r"Exception|Error", re.I), "runtime", 0.50),
 ]
 
-# Transient categories — worth an automatic retry
-_TRANSIENT_CATEGORIES = {"timeout", "resource", "auth"}
+# Transient categories — worth an automatic retry.
+#
+# `auth` used to be in here, on the reasoning that a token can expire. But an
+# expired token does not un-expire because you asked again: clearing it takes a
+# credential change, which is an action, not a wait. Retrying auth failures
+# spends the retry budget on the one category guaranteed not to benefit, and
+# against a real service it walks into lockouts and rate limits — turning a
+# fixable credential problem into a throttled one.
+#
+# suggest_remediation still describes exactly what to do about auth ("refresh or
+# rotate the expired token"). That is the remedy. A retry is not.
+#
+# `resource` stays: a MemoryError or a full disk can genuinely clear, and the
+# retry may land on a host with room.
+_TRANSIENT_CATEGORIES = {"timeout", "resource"}
+
+#: Categories that are never worth an automatic retry, named so the reason
+#: travels with the decision instead of being implied by an absence.
+NON_RETRYABLE_REASONS = {
+    "auth": "credentials must be rotated or re-granted; retrying cannot fix it "
+            "and risks lockout or rate limiting",
+    "syntax": "the source is wrong; it will fail identically every time",
+    "dependency": "the install path must be repaired first",
+}
 
 # Severity ordering (lower index = higher severity)
 _SEVERITY_ORDER = ["resource", "auth", "syntax", "dependency", "timeout", "runtime", "unknown"]
@@ -144,7 +181,11 @@ def suggest_remediation(classification: dict) -> list[str]:
 def is_transient(classification: dict) -> bool:
     """Return *True* if the error is likely transient and worth retrying.
 
-    Transient categories: timeout, resource, auth (token expiry).
+    Transient categories: timeout, resource. NOT auth — see
+    _TRANSIENT_CATEGORIES and NON_RETRYABLE_REASONS: an expired credential does
+    not un-expire because you asked again, and retrying it spends the budget on
+    the one category guaranteed not to benefit.
+
     Fail-soft: bad input → ``False`` (don't retry what we don't understand).
     """
     if not classification or not isinstance(classification, dict):
