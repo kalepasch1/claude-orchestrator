@@ -1556,6 +1556,12 @@ def _record_stage_transition(table, match, patch):
         pass
 
 
+#: PostgREST filter operators.  A match value that already starts with one of
+#: these plus a dot is passed through; anything else is an equality test.
+_PGRST_OPS = ('eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'like', 'ilike', 'is', 'in', 'cs', 'cd', 'sl', 'sr', 'nxl', 'nxr', 'adj', 'not', 'or', 'and', 'fts', 'plfts', 'phfts', 'wfts', 'match', 'imatch')
+_HAS_OP_RX = re.compile(r"^(?:%s)\." % "|".join(_PGRST_OPS))
+
+
 def update(table, match, patch):
     """PATCH rows in *table* matching *match* dict with *patch* fields.  Tolerates 409 (concurrent write)."""
     # A PATCH can plant a secret just as easily as an INSERT; the key may live in
@@ -1602,6 +1608,36 @@ def update(table, match, patch):
         # satisfied by the other writer, so treat it as a no-op instead of letting it bubble up as a
         # "runner exception: HTTP 409 conflict" that terminally BLOCKS the task (this froze 200+ tasks).
         return None
+
+
+def delete(table, match):
+    """DELETE rows in *table* matching *match*.  Returns the deleted rows.
+
+    *match* is a dict of PostgREST filters.  A bare value is turned into `eq.`,
+    so both {"signature": sig} and {"signature": f"eq.{sig}"} mean the same
+    thing; an explicit operator ("lt.2026-01-01", "in.(QUEUED,RUNNING)") is
+    passed through untouched.
+
+    AN EMPTY MATCH IS REFUSED.  PostgREST executes an unfiltered DELETE as a
+    table truncation without complaint, so `delete(t, {})` — the shape a caller
+    reaches by building filters in a loop that turns out to be empty — would
+    silently empty the table.  It raises instead.
+
+    This function did not exist until 2026-08-25, while two modules had been
+    calling it for months: result_cache.invalidate() and file_reservation, both
+    inside `except Exception: pass`, so cache invalidation and lock release were
+    permanent no-ops that reported success.  See the surface guard in
+    runner/tests/test_db_api_surface.py.
+    """
+    if not match:
+        raise ValueError(
+            "db.delete(%r, {}) refused: an unfiltered DELETE truncates the table. "
+            "Pass an explicit filter, or call _req('DELETE', ...) if a truncation "
+            "is genuinely what you mean." % (table,))
+    params = {k: (v if isinstance(v, str) and _HAS_OP_RX.match(v) else "eq.%s" % (v,))
+              for k, v in match.items()}
+    return _req("DELETE", f"/rest/v1/{table}", params=params,
+                headers={"Prefer": "return=representation"})
 
 
 def rpc(fn, args):

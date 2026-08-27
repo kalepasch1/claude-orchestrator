@@ -52,10 +52,17 @@ class FakeTemplateStore:
             rows = [r for r in rows if r["kind"] == wanted]
         return [dict(r) for r in rows]
 
-    def insert(self, table, row, resolution=None):
+    def insert(self, table, row, upsert=False):
+        # Signature copied from the real runner/db.py: insert(table, row,
+        # upsert=False).  It used to be `resolution=None`, matching the keyword
+        # prompt_evolver was passing and the real db has never accepted — so this
+        # fake made a call that raises TypeError in production look correct here.
         if table != "prompt_templates":
             return
-        # `merge-duplicates` upserts on (kind, template_id) — accumulate, don't append.
+        assert upsert, ("prompt_templates accumulates per (kind, template_id); "
+                        "a plain insert would append a new row per trial")
+        # upsert=True sends Prefer: resolution=merge-duplicates, which upserts on
+        # (kind, template_id) — accumulate, don't append.
         for existing in self.rows:
             if (existing["kind"], existing["template_id"]) == (row["kind"], row["template_id"]):
                 existing["total_reward"] += row["total_reward"]

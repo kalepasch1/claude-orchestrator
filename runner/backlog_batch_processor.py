@@ -549,11 +549,14 @@ class BacklogBatchProcessor:
     def _update_task_status(self, task: Dict[str, Any], status: str, metadata: str = ""):
         """Update task status in database."""
         try:
-            db.update("tasks", {
-                "id": f"eq.{task.get('id')}",
-                "status": status,
-                "metadata": metadata,
-            })
+            # Two defects.  update(table, match, patch) takes three arguments
+            # and this passed two, so it raised TypeError: missing 'patch'.  And
+            # the column is `state`, not `status` — every other writer in the
+            # repo patches {"state": ...} — so even reaching the network it would
+            # have written a column tasks does not have.  `metadata` is likewise
+            # not a tasks column; the equivalent field is `note`.
+            db.update("tasks", {"id": task.get("id")},
+                      {"state": status, "note": metadata})
         except Exception as e:
             _log.error(f"Failed to update task status: {e}")
 

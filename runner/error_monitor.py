@@ -51,9 +51,11 @@ def _write_alert(alert_key: str, message: str) -> None:
     """Write alert to fleet_config. Fail-soft."""
     try:
         import db
+        # on_conflict= is not a parameter of db.upsert; the call raised TypeError
+        # inside a fail-soft handler, so error_monitor has never written an alert.
         db.upsert("fleet_config", {"key": alert_key, "value": json.dumps({
             "message": message, "timestamp": time.time(),
-        })}, on_conflict="key")
+        })})
     except Exception:
         pass
 
