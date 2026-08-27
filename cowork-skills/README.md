@@ -23,3 +23,24 @@ skill, re-run the sync:
 4. `FOR UPDATE OF t SKIP LOCKED` — locking the joined `projects` row makes 16 concurrent
    executors skip each other's whole projects.
 5. DONE only after a verified push of a non-doc diff. No stub commits, no DONE on push failure.
+6. A zero-row claim is NOT proof of an empty queue. Count `QUEUED` separately from
+   claimable; `queued > 0` with nothing claimable is a STALL and must never be reported
+   as a clean run. From 2026-07-15 to 2026-08-27 all 16 executors reported success against
+   a queue that never moved, because both cases returned zero rows.
+
+## These invariants are enforced, not just documented
+
+`runner/tests/test_cowork_skill_invariants.py` checks every file in this directory on
+every test run, so a regression fails CI instead of quietly costing six weeks:
+
+    python3 -m pytest runner/tests/test_cowork_skill_invariants.py
+
+Invariant 6 was added to all 16 copies by `tools/patch_skill_claimability_preflight.py`
+(idempotent; `--check` reports drift without writing).
+
+**Sync direction for this change:** the fix landed here first, so the live copies at
+`~/Documents/Claude/Scheduled/cowork-executor*/SKILL.md` are now BEHIND. Copy repo → live:
+
+    for d in ~/Documents/Claude/Scheduled/cowork-executor*/; do
+      cp cowork-skills/"$(basename "$d")".SKILL.md "$d/SKILL.md"
+    done

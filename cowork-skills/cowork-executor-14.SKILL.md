@@ -114,6 +114,31 @@ SELECT c.*, p.name AS project_name, p.repo_path, p.default_base
 FROM claimed c JOIN projects p ON c.project_id = p.id;
 ```
 
+### Claimability preflight — a zero-row claim is NOT proof of an empty queue
+
+Before treating zero claimed rows as "queue empty", count them separately:
+
+```sql
+SELECT count(*) FILTER (WHERE state='QUEUED') AS queued,
+       count(*) FILTER (WHERE state='QUEUED' AND (deps IS NULL
+             OR array_length(deps,1) IS NULL)) AS trivially_claimable
+FROM tasks;
+```
+
+- `queued = 0` → the queue really is empty. Heartbeat, write `<run-summary>`, stop.
+- `queued > 0` and nothing claimable → **STALL, not an empty queue.** This is never
+  a reason to stop and must never be reported as a clean run. Report the blocker
+  states and stop with the stall named.
+
+Do NOT "fix" a stall by widening the dependency gate. A dep sitting in DECOMPOSED,
+QUARANTINED, SUPERSEDED or CLOSED is terminal, and waving it through launches work
+whose stated prerequisite never happened — the most expensive failure mode this
+fleet has (see CLAUDE.md). Diagnose and report; unblocking is an operator decision.
+
+Why this exists: from 2026-07-15 to 2026-08-27 sixteen executors reported clean
+runs against a queue that never moved, because a deadlocked queue and a finished
+one produced the identical zero-row signal.
+
 If 0 rows → heartbeat (Step 4), stop.
 
 ---
