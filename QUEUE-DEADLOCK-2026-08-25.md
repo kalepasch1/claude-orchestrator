@@ -35,11 +35,27 @@
 > Step 0c gate is on the same branch. Note the interaction: the dependency deadlock is
 > the only reason this has not already caused pushes against a halted fleet.
 >
-> Also still true: **the `fleet_config` heartbeat guard has not changed.**
-> `enforce_compiled_fleet_config()` still requires an authorized `policy_change_id`
-> for every key, `claim_next()` was never created in the live database, and
-> `COWORK_EXECUTOR_V6_LAST_RUN` still does not exist. The fleet remains without
-> executor telemetry.
+> **The `fleet_config` heartbeat guard has not changed**, and section 4 below overstates
+> one detail — correcting it here rather than editing the original.
+> `enforce_compiled_fleet_config()` still requires an authorized `policy_change_id` for
+> every key; a Step 4 heartbeat write attempted this run was rejected with the same
+> `P0001`. But `COWORK_EXECUTOR_V6_LAST_RUN` **does exist** — section 4's "has never once
+> landed" is wrong. It is *frozen*, last written 2026-08-05 22:51 UTC, which is also the
+> newest surviving executor heartbeat of any kind (not `COWORK_EXECUTOR_12` at
+> 2026-07-15, as section 4 states). The conclusion is unchanged and the date is worse
+> than it looks: telemetry stopped when the guard landed, and every run since has been
+> invisible. Worth stating precisely in a document about false signals.
+>
+> **Also found this run: BLOCKED is not a resting state.** Four tasks marked BLOCKED
+> here at 12:56 UTC, each with a note naming exactly what was missing, were re-claimed
+> by a *different, concurrently running* cowork executor
+> (`cowork-executor-v6-1787835696`) at 13:01:36 — thirteen minutes later — which
+> overwrote all four notes with `agentic-repair:rework`. So an executor's diagnosis of
+> why a task cannot proceed survives about as long as it takes the next executor to
+> start, and the repair loop recycles the task regardless of what the note said. This is
+> a large part of why the same slugs keep reappearing: nothing downstream reads the
+> BLOCKED reason. Any triage of the 102 unclaimable tasks will be undone the same way
+> unless the rework path is taught to respect an executor's BLOCKED note.
 
 ## Summary
 
