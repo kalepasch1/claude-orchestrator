@@ -40,7 +40,7 @@ async function load() {
   try {
     state.value = await authed('/api/hivemind/outcomes')
   } catch (error: any) {
-    message.value = error?.data?.message || error?.message || 'The Hivemind outcome view is temporarily unavailable.'
+    message.value = error?.data?.message || error?.message || 'The outcome view is temporarily unavailable.'
   }
 }
 
@@ -84,11 +84,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="cockpit" aria-labelledby="hivemind-outcomes-title">
+  <section class="cockpit" aria-labelledby="portfolio-outcomes-title">
     <header class="hero">
       <div>
-        <span class="eyebrow">MADEUS HIVEMIND</span>
-        <h1 id="hivemind-outcomes-title">The network works.<br><em>You steer the outcomes.</em></h1>
+        <span class="eyebrow">MADEUS PORTFOLIO OUTCOMES</span>
+        <h1 id="portfolio-outcomes-title">The network works.<br><em>You steer the outcomes.</em></h1>
       </div>
       <div class="hero-copy">
         <p>Madeus quietly compounds what works across your portfolio, contains what does not, and returns the value to the people who created it.</p>
