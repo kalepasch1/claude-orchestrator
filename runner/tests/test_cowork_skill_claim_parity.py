@@ -88,6 +88,30 @@ def test_zero_rows_is_not_reported_as_empty_queue(skill):
 
 
 @pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.name)
+def test_kill_switch_is_checked_before_claiming(skill):
+    """An executor must not claim or push through a deliberate halt.
+
+    runner/db.py drops paused projects from its claim set and kill_switch.is_paused()
+    gates the runner on the global and host scopes. The skills had no equivalent, so a
+    scheduled executor would work straight through a global pause -- and on 2026-08-27
+    a global pause had been in force for three days with every portfolio project also
+    individually paused.
+    """
+    text = _read(skill)
+    assert "FROM controls" in text, \
+        f"{skill.name}: never reads the controls table, so it cannot see a pause"
+    assert "remote-quarantine" in text, \
+        f"{skill.name}: pause check does not exclude remote-quarantine rows, diverging " \
+        f"from kill_switch.is_paused()"
+    assert "stop this run now" in text, \
+        f"{skill.name}: reads controls but does not halt on a global pause"
+
+    # The gate has to sit ahead of the claim, or it gates nothing.
+    assert text.index("FROM controls") < text.index("## Step 1"), \
+        f"{skill.name}: kill-switch check appears after the claim step"
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.name)
 def test_no_bulk_dep_clearing_shortcut(skill):
     """The obvious 'fix' -- wave the whole queue through -- is the expensive one.
 

@@ -41,6 +41,41 @@ Store all four. You will use them throughout.
 
 ---
 
+### 0c. Honour the kill switch (every loop, BEFORE claiming)
+
+`runner/db.py` drops paused projects from its claim set and `runner/kill_switch.py`
+`is_paused()` gates the runner on the global and host scopes. **This skill had no such
+check**, so a scheduled executor would claim, commit and push straight through a
+deliberate halt. Latest decision per scope wins, and `updated_by='remote-quarantine'`
+rows do not count -- both mirror `is_paused()`.
+
+```sql
+SELECT scope, COALESCE(project,'-') AS project, reason, updated_at,
+       now() - updated_at AS age
+FROM (
+  SELECT DISTINCT ON (scope, project) scope, project, paused, reason, updated_at
+  FROM controls
+  WHERE COALESCE(updated_by,'') <> 'remote-quarantine'
+  ORDER BY scope, project, updated_at DESC
+) latest
+WHERE paused AND scope IN ('global','project')
+ORDER BY scope, project;
+```
+
+- **A `global` row -> stop this run now.** Claim nothing, push nothing. Report the
+  reason and its age and exit. A global pause is an operator decision about spend,
+  provider credit or safety; it is not an obstacle to route around, and "the queue has
+  work in it" is not a reason to override it.
+- **A `project` row** -> that project is off limits for this run. Do not claim its
+  tasks. If you already hold one, release it to QUEUED rather than leaving it RUNNING.
+- **No rows** -> proceed to Step 1.
+
+This gate outranks every "ZERO SKIP" and "never stop early" instruction below. Those
+rules exist to stop an executor talking itself out of ordinary work; they were never
+meant to override a kill switch.
+
+---
+
 ## Step 1: ATOMIC CLAIM — all 5 in one CTE (no pre-evaluation)
 
 ```sql

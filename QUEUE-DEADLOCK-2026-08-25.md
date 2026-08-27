@@ -22,6 +22,19 @@
 > needs a human.** Current split: 102 of 137 unclaimable — 14 decomposed-childless,
 > 12 collapsed (redirectable; only 1 points at a `DONE` target), 76 terminal.
 >
+> **New, and more urgent than the deadlock: the executor skills never checked the kill
+> switch.** `runner/db.py` drops paused projects from its claim set and
+> `kill_switch.is_paused()` gates the runner on the global and host scopes, but none of
+> the sixteen `SKILL.md` files mentioned `controls` or `paused` at all. Meanwhile a
+> `scope=global` pause has been in force since 2026-08-24 ("every hosted provider is out
+> of credit"), and **all sixteen portfolio projects carry their own project-scope pause**
+> — `tomorrow`'s set by the operator by name, `apparently`/`smarter`/`apparently-law`
+> since 2026-08-09, and nine more from a "controlled fleet verification" that declared
+> itself REVERSIBLE and auto-lifting and then never lifted. Nothing in the skill would
+> have stopped a scheduled executor from committing and pushing through all of it. A
+> Step 0c gate is on the same branch. Note the interaction: the dependency deadlock is
+> the only reason this has not already caused pushes against a halted fleet.
+>
 > Also still true: **the `fleet_config` heartbeat guard has not changed.**
 > `enforce_compiled_fleet_config()` still requires an authorized `policy_change_id`
 > for every key, `claim_next()` was never created in the live database, and
