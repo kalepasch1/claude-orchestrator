@@ -328,21 +328,40 @@ class TestVersionConflicts(unittest.TestCase):
             _db.select = orig_select
 
     def test_later_load_config_overwrites_earlier_value(self):
-        """A second load_config call with an updated DB value must update the env."""
+        """A second load_config call with an updated DB value must update the env.
+
+        The fake answers by QUERY SHAPE rather than by call order. Keying it to
+        a fixed sequence of selects made it assert the number of round trips
+        load_config makes, which is not what this test is about — adding the
+        one-row freshness probe changed that count and broke it.
+        """
+        state = {"value": "2", "stamp": "2026-08-26T00:00:00+00:00"}
+
+        def fake_select(table, params):
+            if table == "approvals":
+                return []
+            if params.get("select") == "updated_at":
+                return [{"updated_at": state["stamp"]}]
+            return [{"key": "ORCH_PARALLEL_SETTING", "value": state["value"]}]
+
         fake_db = MagicMock()
-        fake_db.select.side_effect = [
-            [{"key": "ORCH_PARALLEL_SETTING", "value": "2"}],
-            [{"key": "ORCH_PARALLEL_SETTING", "value": "5"}],
-        ]
+        fake_db.select.side_effect = fake_select
+
         with patch.object(fleet_control, "db", fake_db):
             saved = os.environ.pop("ORCH_PARALLEL_SETTING", None)
+            fleet_control.invalidate_config_cache()
             try:
                 fleet_control.load_config()
                 self.assertEqual(os.environ.get("ORCH_PARALLEL_SETTING"), "2")
+                # A real value change moves the row's updated_at, which is what
+                # tells the next load there is something new to read.
+                state["value"] = "5"
+                state["stamp"] = "2026-08-27T00:00:00+00:00"
                 fleet_control.load_config()
                 self.assertEqual(os.environ.get("ORCH_PARALLEL_SETTING"), "5",
                                  "second load must overwrite with updated value")
             finally:
+                fleet_control.invalidate_config_cache()
                 os.environ.pop("ORCH_PARALLEL_SETTING", None)
                 if saved is not None:
                     os.environ["ORCH_PARALLEL_SETTING"] = saved
