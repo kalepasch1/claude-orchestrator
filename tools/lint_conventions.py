@@ -35,6 +35,22 @@ def _is_regex_source(value: str) -> bool:
     return bool(_REGEX_EXTENSION_GROUP_RE.search(str(value or '')))
 
 
+#: Method names the standard library dispatches on by exact spelling. These are
+#: not style choices — `ast.NodeVisitor` looks up `visit_<NodeType>` and
+#: `unittest` looks up `setUp`/`tearDown`, so renaming them to snake_case stops
+#: the code working. Flagging them produced violations nobody could ever fix.
+_FRAMEWORK_METHOD_RE = re.compile(
+    r'^(?:'
+    r'visit_[A-Za-z]+|generic_visit|'                 # ast.NodeVisitor
+    r'setUp|tearDown|setUpClass|tearDownClass|'       # unittest.TestCase
+    r'setUpModule|tearDownModule|addTypeEqualityFunc|'
+    r'runTest|shortDescription|'
+    r'do_[A-Z]\w*|'                                   # http.server handlers
+    r'__[a-z_]+__'                                    # dunders
+    r')$'
+)
+
+
 class ConventionViolation:
     def __init__(self, filepath: str, lineno: int, rule: str, message: str, severity: str = "error"):
         self.filepath = filepath
@@ -198,9 +214,18 @@ class ConventionChecker(ast.NodeVisitor):
                     ))
 
     def _check_function_naming(self, node: ast.FunctionDef) -> None:
-        """Check function names follow snake_case."""
+        """Check function names follow snake_case.
+
+        Framework-mandated names are exempt (see _FRAMEWORK_METHOD_RE): a name
+        the library dispatches on is not a style choice, and renaming it breaks
+        the code. This module was itself the largest single victim — thirteen of
+        the tree's NAMING_CONVENTION violations are its own `visit_ClassDef`,
+        `visit_Assign`, `visit_Try` and friends, which `ast.NodeVisitor` looks up
+        by exact node-type name. Same shape as the `_is_regex_source` exemption
+        above: the rule was punishing the code written to enforce it.
+        """
         name = node.name
-        if not name.startswith('_'):
+        if not name.startswith('_') and not _FRAMEWORK_METHOD_RE.match(name):
             if not self._is_snake_case(name):
                 self.violations.append(ConventionViolation(
                     self.filepath, node.lineno, 'NAMING_CONVENTION',
@@ -351,14 +376,66 @@ def check_file(filepath: str) -> List[ConventionViolation]:
         )]
 
 
-def scan_directory(dirpath: str) -> List[ConventionViolation]:
-    """Scan a directory recursively for Python files with convention violations."""
-    violations = []
-    dirpath = Path(dirpath).resolve()
+#: Directory names that never contain source this gate is responsible for:
+#: caches, vendored packages, build output, scratch space, and staged deletions.
+SKIP_DIRS = frozenset({
+    '__pycache__', '.git', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
+    '.venv', 'venv', 'env', 'site-packages', 'node_modules',
+    'dist', 'build', 'coverage', '.next', '.nuxt', '.output',
+    '.orch-tmp', '.runtime', '_to_delete',
+})
 
-    for pyfile in dirpath.rglob('*.py'):
-        skip_dirs = {'__pycache__', '.venv', 'venv', '.git', 'node_modules', '.pytest_cache'}
-        if any(part in skip_dirs for part in pyfile.parts):
+
+def _is_worktree_root(path: Path) -> bool:
+    """Is `path` a nested checkout — an agent worktree or a vendored repo?
+
+    A nested checkout is a SECOND COPY of the same source. Scanning it counts
+    every violation twice, and the ratchet fails when a count RISES: an agent
+    worktree that happens to exist during a run makes an unrelated commit fail
+    the gate, and removing one masks a real regression in the same amount.
+    Which copy the numbers came from is not recorded anywhere, so the failure
+    reads as "you introduced 3,276 violations".
+
+    Both shapes are detected: the `<repo>-wt/<slug>` layout this fleet creates,
+    and any directory carrying its own `.git` entry.
+    """
+    if path.name.endswith('-wt'):
+        return True
+    return (path / '.git').exists()
+
+
+def _skipped(pyfile: Path, root: Path) -> bool:
+    """Should `pyfile` be excluded from the scan?
+
+    Matching is done on the path RELATIVE to the scan root. The absolute path
+    was used before, so any component of the checkout's own location could
+    silently disable the gate — a machine that keeps its repos under
+    ~/build/... or ~/env/... would have scanned nothing and reported clean.
+    """
+    # rglob always yields descendants of `root`, so slicing off the root's own
+    # components is exact and needs no exception handler for the impossible case.
+    parts = pyfile.parts[len(root.parts):] or pyfile.parts
+    if any(part in SKIP_DIRS for part in parts):
+        return True
+    current = root
+    for part in parts[:-1]:
+        current = current / part
+        if _is_worktree_root(current):
+            return True
+    return False
+
+
+def scan_directory(dirpath: str) -> List[ConventionViolation]:
+    """Scan a directory recursively for Python files with convention violations.
+
+    Sorted so two runs over the same tree report in the same order; `rglob`
+    order is filesystem-dependent, which made diffing two reports useless.
+    """
+    violations = []
+    root = Path(dirpath).resolve()
+
+    for pyfile in sorted(root.rglob('*.py')):
+        if _skipped(pyfile, root):
             continue
         violations.extend(check_file(str(pyfile)))
 
