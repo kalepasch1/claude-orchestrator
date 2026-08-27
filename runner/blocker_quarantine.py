@@ -18,6 +18,7 @@ import pipeline_contract
 import privacy
 import agentic_repair
 import quarantine_triage
+import quarantine_reason
 
 DEFAULT_LIMIT = int(os.environ.get("ORCH_QUARANTINE_LIMIT", "120"))
 MAX_BASE_CHARS = int(os.environ.get("ORCH_QUARANTINE_PROMPT_CHARS", "12000"))
@@ -670,6 +671,13 @@ def _park_original(task, new_slug, category):
         f"{MARK}: quarantined as {category}; replacement queued as {new_slug}. "
         f"Original blocker: {(task.get('note') or task.get('log_tail') or '')[:300]}"
     )[:900]
+    # Tag the event with a machine-readable reason. The prose above is only
+    # readable by the regex in quarantine_breakdown, and only for notes this
+    # module wrote; the tag is readable by anything, and names a reason that
+    # maps to one remedy. Truncate BEFORE tagging so the tag is never the part
+    # that gets cut off.
+    note = quarantine_reason.annotate(
+        note[:860], task.get("note"), task.get("log_tail"), category)
     patch = {"state": "QUARANTINED", "account": None, "updated_at": "now()", "note": note}
     try:
         db.update("tasks", {"id": task["id"]}, patch)
