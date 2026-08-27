@@ -30,9 +30,9 @@
     "@playwright/test": "^1.49.0",
     "@types/node": "^26.1.0",
     "@vitejs/plugin-vue": "^5.0.0",
-    "@vitest/ui": "^1.0.0",
+    "@vitest/ui": "^4.1.11",
     "typescript": "6.0.3",
-    "vitest": "^1.0.0",
+    "vitest": "^4.1.11",
     "vue-tsc": "3.3.6"
   },
   "engines": {
