@@ -552,27 +552,84 @@ def _owner_bias():
         return 0.0
 
 
+#: Words that appear in almost every subject title this fleet produces. They
+#: carry no evidence of similarity, and three of them co-occurring is not a
+#: coincidence — it is the house style. Left in, they made "three shared words"
+#: a bar that nearly any pair of titles clears.
+_OWNER_MATCH_STOPWORDS = frozenset({
+    "task", "tasks", "slice", "batch", "branch", "commit", "queue", "queued",
+    "agent", "agentic", "runner", "recover", "recovery", "repair", "remediate",
+    "improve", "update", "updates", "release", "deploy", "deployment", "build",
+    "test", "tests", "check", "checks", "with", "from", "that", "this", "into",
+    "than", "then", "when", "will", "your", "their", "them", "have", "been",
+    "should", "would", "could", "make", "made", "using", "before", "after",
+    "beethoven", "apparently", "tomorrow", "smarter", "pareto", "illuminati",
+})
+
+#: A match needs three shared meaningful words AND those words must be a real
+#: share of the shorter title. Three words out of forty is a coincidence.
+_OWNER_MATCH_MIN_WORDS = 3
+_OWNER_MATCH_MIN_RATIO = 0.30
+
+
+def _title_terms(text):
+    """Meaningful lowercase words in a subject title, stopwords removed."""
+    return {
+        w for w in re.findall(r"[a-z]{4,}", str(text or "").lower())
+        if w not in _OWNER_MATCH_STOPWORDS
+    }
+
+
 def _matches_owner_calls(title, recommendation):
     """Compare the current recommendation against past owner decisions on similar subjects.
-    Returns a human-readable signal string, or None if no close match exists."""
+    Returns a human-readable signal string, or None if no close match exists.
+
+    The comparison used to accept any pair of titles sharing three words of four
+    or more letters, and to report the FIRST such row. In this fleet's titles —
+    "recover missing branch for improve-quarantine-auto-triage slice 3" — three
+    generic words are shared by almost everything, so the newest override in the
+    list matched nearly every subject. The signal then told the aggregate that a
+    recommendation "matches the owner's prior decision" on a subject the owner
+    had never connected to it, which is worse than staying silent: it is
+    fabricated evidence about what the owner wants, presented with a quote.
+
+    Two changes, no new scope: score against meaningful words only, and return
+    the BEST match rather than whichever row happened to be newest.
+    """
     try:
         overrides = db.select("owner_overrides", {"select": "subject_title,owner_decision",
                                                   "order": "created_at.desc", "limit": "50"}) or []
         if not overrides:
             return None
         current_pos = not str(recommendation or "").startswith(("HOLD", "ESCALATE"))
-        key = set(re.findall(r"[a-z]{4,}", (title or "").lower()))
+        key = _title_terms(title)
+        if len(key) < _OWNER_MATCH_MIN_WORDS:
+            return None
+
+        best = None
+        best_overlap = 0
         for o in overrides:
             past_title = o.get("subject_title") or ""
-            past_decision = o.get("owner_decision") or ""
-            kk = set(re.findall(r"[a-z]{4,}", past_title.lower()))
-            if len(key & kk) >= 3:
-                past_pos = (past_decision == "approved")
-                if current_pos == past_pos:
-                    return f"matches owner's prior '{past_decision}' on '{past_title}'"
-                else:
-                    return f"contradicts owner's prior '{past_decision}' on '{past_title}'"
-        return None
+            past_terms = _title_terms(past_title)
+            shared = key & past_terms
+            if len(shared) < _OWNER_MATCH_MIN_WORDS:
+                continue
+            # Ratio against the SHORTER title: a long title should not qualify
+            # merely by containing enough words to collide with everything.
+            denom = min(len(key), len(past_terms)) or 1
+            if len(shared) / denom < _OWNER_MATCH_MIN_RATIO:
+                continue
+            if len(shared) > best_overlap:
+                best_overlap = len(shared)
+                best = o
+
+        if best is None:
+            return None
+        past_title = best.get("subject_title") or ""
+        past_decision = best.get("owner_decision") or ""
+        past_pos = (past_decision == "approved")
+        verb = "matches" if current_pos == past_pos else "contradicts"
+        return f"{verb} owner's prior '{past_decision}' on '{past_title}'"
     except Exception:
         return None
 
