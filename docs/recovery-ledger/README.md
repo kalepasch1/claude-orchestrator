@@ -3,8 +3,32 @@
 One JSON ledger per audit fingerprint, produced by `scripts/reconcile-evidence.mjs`.
 
 Current ledgers: `0481d68df58a`, `0df18d9279e9`, `170f33cf2458`, `286879fa5fe4`,
-`44d6bb63e4fc`, `696153ef8f37`, `6e398b6bdfef`, `968c9d3ff963`, `9ac0b820e01f`,
-`d64eac25eb52`, **`84fc83c513d9`**.
+`44d6bb63e4fc`, `5dc36bf5e0be`, `696153ef8f37`, `6e398b6bdfef`, `968c9d3ff963`,
+`9ac0b820e01f`, `d64eac25eb52`, **`84fc83c513d9`**.
+
+## `5dc36bf5e0be` — the 13 conflicted refs, resolved
+
+That fingerprint had a markdown report but no JSON ledger, so nothing could read
+it. `5dc36bf5e0be.json` supplies one, and
+`5dc36bf5e0be-focused-conflict-triage.{json,md}` answers the question the
+original report left open.
+
+`CONFLICTED_NEEDS_FOCUSED_TASK` was an honest refusal — "this diff no longer
+applies, do not force an overwrite" — but it is not an answer, and it left 13
+refs touching up to 2,583 files each with no way to tell lost work from noise.
+`tools/focused_conflict_triage.py` decomposes each ref to the hunk and gives
+every hunk its own verdict.
+
+Out of **14,300 hunks: exactly one** is genuinely missing from `origin/master`
+— a high-ROI fix boost in `runner/priority_scorer.score_task`, now recovered
+with tests. Twelve of the thirteen refs are fully accounted for.
+
+**13,991 of those hunks are deletions**, and that number is the point. The first
+run of the tool called them missing work, which would have proposed deleting
+most of the repository in order to recover it. A rescue ref is a sweep snapshot
+whose first parent is often an unrelated older tip, so its diff is mostly
+removals that carry no intent. Deletions are now counted and never proposed:
+recovery restores lost work, it does not remove present work.
 
 ## What was done
 
