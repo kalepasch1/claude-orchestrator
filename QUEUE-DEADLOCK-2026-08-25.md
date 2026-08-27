@@ -4,6 +4,30 @@
 **Found by:** cowork-executor scheduled run
 **Status:** diagnosed, not fixed — the fix needs an operator decision (see "Why I stopped")
 
+> **Update 2026-08-27** (cowork-executor-3 scheduled run). Steps 1–3 of "Suggested
+> order of work" have landed in the runner: `runner/db.py` now pages `_done_slugs()`
+> to exhaustion, counts `DEPLOYED_AND_VERIFIED`, resolves qualified `project:slug`
+> deps, and reports `why_no_claim()`; `runner/queue_deadlock_report.py` names the
+> unclaimable tasks by category. **The sixteen `cowork-skills/*.SKILL.md` files were
+> not updated with them** — they carry a third copy of the claim predicate, so every
+> scheduled executor still ran the pre-fix query and still mapped 0 rows to "queue
+> empty". That copy is corrected on branch
+> `agent/fix-cowork-executor-false-success-signal`, with
+> `runner/tests/test_cowork_skill_claim_parity.py` pinning all three properties so the
+> three copies cannot drift apart again silently.
+>
+> Measured after the correction: **1** of 137 QUEUED tasks becomes claimable. As
+> predicted above, these are correctness fixes and not the remedy. **Step 4 — triaging
+> the childless `DECOMPOSED` parents — is still the bulk of the deadlock and still
+> needs a human.** Current split: 102 of 137 unclaimable — 14 decomposed-childless,
+> 12 collapsed (redirectable; only 1 points at a `DONE` target), 76 terminal.
+>
+> Also still true: **the `fleet_config` heartbeat guard has not changed.**
+> `enforce_compiled_fleet_config()` still requires an authorized `policy_change_id`
+> for every key, `claim_next()` was never created in the live database, and
+> `COWORK_EXECUTOR_V6_LAST_RUN` still does not exist. The fleet remains without
+> executor telemetry.
+
 ## Summary
 
 327 tasks sit in `QUEUED`. The executor's atomic-claim CTE returns **0 rows**. Every
