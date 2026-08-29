@@ -878,6 +878,18 @@ def _run_tests(repo, test_cmd, ref=None):
         except Exception:
             pass
         _ensure_node_deps(repo, test_cmd)
+        # 2026-08-29: a bulk token conversion across 59 .vue files left several
+        # components with a duplicated attribute -- each a hard compile error.
+        # TypeScript-only lints do not read templates, so these passed every
+        # gate and surfaced inside the production build minutes into a deploy.
+        # Compile them here, where the message names the file and line, rather
+        # than reading it out of a build log. See repo_hygiene.check_vue_templates.
+        # No guard needed: check_vue_templates never raises (see its docstring).
+        vue_ok, vue_detail = repo_hygiene.check_vue_templates(repo)
+        if not vue_ok:
+            return False, ("a Vue component does not compile — the tests were not run, "
+                           "because this breaks the build and the dev server too:\n"
+                           f"{vue_detail[:4000]}")
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)
