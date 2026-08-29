@@ -134,3 +134,38 @@ def test_infrastructure_failure_does_not_block(tmp_path, monkeypatch):
     ok, detail = repo_hygiene.check_vue_templates(repo)
     assert ok is True
     assert "skipped" in detail
+
+
+def test_a_missing_toolchain_is_not_a_compile_failure(tmp_path):
+    """The false positive that would get this gate switched off.
+
+    A fresh worktree whose node_modules symlink is not in place yet exits
+    non-zero for a reason that says nothing about the edit under review. If that
+    read as "broken", every task in that tree would be blocked."""
+    repo = _make_repo(tmp_path, BROKEN)          # deliberately broken component
+    # ...but no node_modules, so the checker cannot load vue/compiler-sfc
+    ok, detail = repo_hygiene.check_vue_templates(repo)
+    assert ok is True, f"a missing toolchain must not block: {detail}"
+    assert "skipped" in detail
+
+
+def test_the_runner_gate_is_wired_ahead_of_every_skip():
+    """The gate must sit before cache-bypass, speculative-exec and graduated
+    autonomy. Each of those says "we have seen this pass before", which is not
+    evidence about the edit in front of us -- and a component that does not
+    compile is not a judgement call."""
+    runner_src = open(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner.py"),
+        encoding="utf-8").read()
+
+    assert "repo_hygiene.check_vue_templates(wt)" in runner_src, "gate not wired into the runner"
+
+    gate_at = runner_src.index("repo_hygiene.check_vue_templates(wt)")
+    skip_at = runner_src.index('if _autonomy_skip.get("skip_all")')
+    assert gate_at < skip_at, "the gate must run before the autonomy/cache skips"
+
+    # And it must hand the failure back to the agent rather than only blocking,
+    # so the agent that wrote the edit is the one that fixes it.
+    tail = runner_src[gate_at:gate_at + 2000]
+    assert "_agentic_repair_continue(" in tail
+    assert "vue-templates" in tail

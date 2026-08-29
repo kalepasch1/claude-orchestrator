@@ -159,6 +159,7 @@ import agentic_repair
 import cowork_dispatch
 import worktree_isolation
 import common_utils
+import repo_hygiene
 try:
     import warm_pool
 except ImportError:
@@ -2351,6 +2352,45 @@ def run_task(t):
                     set_state(t["id"], note=f"speculative-exec: {_spec_reason}")
             except Exception as e:
                 _log.debug("hook speculative_exec failed: %s", e)
+
+            # TEMPLATE COMPILE GATE — deliberately ahead of every skip above.
+            #
+            # cache-bypass, speculative-exec and graduated-autonomy L4 all say
+            # some version of "we have seen this pass before". None of them is
+            # evidence about the edit actually in front of us, and a component
+            # that does not compile is not a judgement call — it breaks the
+            # build and the local dev server for whoever works next.
+            #
+            # 2026-08-29: an agent converting 421 hardcoded hex values to design
+            # tokens across 59 .vue files appended an attribute to elements that
+            # already had one, six times. Nothing noticed until a dev server
+            # refused to serve a page. The repair loop below hands the compiler
+            # output back to the agent that wrote it, so the task cannot be
+            # reported done over a broken tree.
+            #
+            # Costs about a second, and runs before the model gates so we never
+            # pay a judge to review code that cannot compile. Silent no-op in
+            # repos that declare no checker. See repo_hygiene.check_vue_templates.
+            _vue_ok, _vue_detail = repo_hygiene.check_vue_templates(wt)
+            if not _vue_ok:
+                if _agentic_repair_continue(
+                    t, "vue-templates", _vue_detail[:2000], attempt,
+                    "A Vue component in your diff does not compile. The compiler output names "
+                    "the file and line. The usual cause is an attribute added to an element that "
+                    "already had one — two `class`, two `:style`, or static classes left outside "
+                    "a `:class` array. Merge the value into the attribute that is already there "
+                    "rather than adding a second one, then re-run the check and commit.",
+                ):
+                    continue
+                set_state(t["id"], state="BLOCKED", note="vue templates: will not compile")
+                approval(name, "verify", f"Vue component will not compile: {slug}",
+                         why=_vue_detail[:1000],
+                         risk="breaks the production build and the local dev server",
+                         detail=_vue_detail[:3000])
+                regression.record(name, slug, kind, t["prompt"][:500],
+                                  "vue templates: will not compile", _vue_detail[:500])
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0,
+                       cost=run_cost); return
 
             if _autonomy_skip.get("skip_all"):
                 # Graduated autonomy Level 4: skip ALL gates — proven pattern

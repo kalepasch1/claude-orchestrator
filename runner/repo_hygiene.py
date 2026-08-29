@@ -237,4 +237,14 @@ def check_vue_templates(repo, timeout=180):
     if out.returncode == 0:
         return True, ""
     detail = ((out.stdout or "") + (out.stderr or "")).strip()
+    # "I could not load the compiler" is not "a component is broken". A fresh
+    # worktree whose node_modules symlink is not in place yet, or a repo whose
+    # deps were never installed, exits non-zero for a reason that says nothing
+    # about the edit in front of us. Blocking on it would fail every task in
+    # that tree -- the exact false positive that makes a gate get switched off.
+    if any(s in detail for s in (
+        "ERR_MODULE_NOT_FOUND", "Cannot find package", "Cannot find module",
+        "command not found", "ENOENT",
+    )):
+        return True, f"(vue template check skipped: toolchain unavailable)\n{detail[:400]}"
     return False, detail
