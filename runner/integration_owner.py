@@ -46,6 +46,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common_utils
 import db
 
 HOST = socket.gethostname()
@@ -78,15 +79,25 @@ def _live_hosts():
         h = (r.get("hostname") or "").strip()
         if not h or h in out:
             continue
+        # Was datetime.fromisoformat() directly. On Python < 3.11 that accepts only
+        # 3 or 6 fractional digits, and Postgres trims trailing zeros — so a
+        # last_seen of "...:05.72819+00:00" (five digits) raised, hit the fail-open
+        # below, and kept a host that had been dead 75 hours in `live`. It won the
+        # election and every merge_train pass on the real host refused as
+        # "not the integration owner": 532 passes, 0 branches considered.
+        # Fail-open is still the right call — refusing to integrate beats racing
+        # another host — but it must be reached by a genuinely bad timestamp, not
+        # by a parser that rejects one row in ten.
         ts = str(r.get("last_seen") or "")
-        try:
-            seen = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        seen = common_utils.parse_iso_timestamp(ts)
+        if seen is not None:
             if seen.tzinfo is None:
                 seen = seen.replace(tzinfo=datetime.timezone.utc)
             if (now - seen).total_seconds() > HEARTBEAT_STALE_S:
                 continue
-        except Exception:
-            pass          # unparseable timestamp: treat as live rather than silently drop a host
+        elif ts:
+            print(f"[integration-owner] unparseable last_seen for {h!r}: {ts!r} "
+                  f"— counting it live (fail-open)", flush=True)
         out[h] = (r.get("code_sha") or "").strip()
     return out
 

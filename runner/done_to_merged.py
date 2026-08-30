@@ -126,7 +126,14 @@ def reconcile_missing_cards(within_hours=24, limit=500, project_names=None):
                "rejections_recorded": 0, "errors": 0}
     try:
         tasks = db.select("tasks", {
-            "select": "id,slug,note,project_id,branch,submitted_by,submitted_by_label",
+            # `tasks` has artifact_branch / artifact_ref / base_branch — never a
+            # bare `branch`. Selecting it returned HTTP 400 on every pass, so this
+            # reconcile scanned nothing and no DONE task was ever checked for a
+            # missing card. _branch_of() below already reads both names, which is
+            # why the mismatch survived review: the consumer was tolerant and the
+            # query was not.
+            "select": "id,slug,note,project_id,artifact_branch,"
+                      "submitted_by,submitted_by_label",
             "state": "eq.DONE",
             "order": "updated_at.desc",
             "limit": str(int(limit))}) or []
