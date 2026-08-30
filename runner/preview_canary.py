@@ -122,10 +122,13 @@ def run():
         if state in ("ERROR", "CANCELED"):
             failed += 1
             try:
+                # `body` is not a column on `approvals`; the free-form field is
+                # `detail`. The old name 400'd and the except below ate it, so a
+                # failed preview build filed no card at all.
                 db.insert("approvals", {
                     "slug": f"preview-canary-{app}",
                     "title": f"Preview build failed: {app}",
-                    "body": f"Preview deployment for {app} ({branch}) is {state}. URL: {url}",
+                    "detail": f"Preview deployment for {app} ({branch}) is {state}. URL: {url}",
                     "status": "pending",
                 })
             except Exception:
