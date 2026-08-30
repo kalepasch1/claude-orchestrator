@@ -222,7 +222,16 @@ def on_test_completion(event):
             return verdict(False, "kill switch engaged", slug)
     except Exception:
         pass
-    _create_fast_approval(task)
+    # Unguarded until 2026-08-30, which is how a wrong column name took the whole
+    # gate down: the insert raised, this function raised with it, and a method
+    # documented never to raise took its dispatcher with it on every green test.
+    # The payload bug is fixed, but the contract is what matters — a DB blip must
+    # come back as a declined verdict, not an exception.
+    try:
+        _create_fast_approval(task)
+    except Exception as exc:
+        print(f"[fast_auto_merge] approval write failed for {slug}: {exc}")
+        return verdict(False, f"approval card could not be written: {exc}", slug)
     print(f"[fast_auto_merge] event: auto-approved {slug} on test pass")
     return verdict(True, "low-risk task passed tests; fast approval created", slug)
 

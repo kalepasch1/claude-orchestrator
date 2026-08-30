@@ -26,6 +26,30 @@ _GATE_KILL_SWITCHES = (
 )
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _tests_never_write_to_the_live_runtime_dir(tmp_path_factory):
+    """Point every runtime writer at a temp dir for the whole session.
+
+    94 modules resolve their state and log paths from CLAUDE_ORCH_HOME, defaulting
+    to the repo's .runtime/. Nothing overrode it under pytest, so guard tests
+    appended their fixtures straight into the production log files. By 2026-08-30
+    the tails of automerge-discard-guard.log, divergent-authorship-guard.log and
+    vercel-config-guard.log were pure test noise — rows naming /tmp/tmpXXXX repos,
+    branch "topic", file "f.py", project "test" — sitting in 10-14MB files that an
+    operator reads to find out what the fleet actually did. Reading those tails on
+    2026-08-30 I concluded the guards had never run against a real repo at all;
+    they had, and the fixtures were burying the evidence.
+
+    Session-scoped so it lands before the per-test env snapshot in
+    _restore_environment_after_test, which then restores this value rather than
+    the machine's.
+    """
+    sandbox = tmp_path_factory.mktemp("orch-runtime")
+    os.environ["CLAUDE_ORCH_HOME"] = str(sandbox)
+    os.environ.setdefault("ORCH_SCOREBOARD_DIR", str(sandbox))
+    yield sandbox
+
+
 @pytest.fixture(autouse=True)
 def _gates_are_on_unless_a_test_says_otherwise(monkeypatch):
     """A gate must not be off just because this machine has it off.
