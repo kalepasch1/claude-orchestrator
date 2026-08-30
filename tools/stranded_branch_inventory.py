@@ -50,6 +50,11 @@ AGENT_PREFIX = re.compile(
 # someone reviews; counted but not diffed file-by-file, which is the slow part.
 WIDE_BRANCH_FILES = 400
 
+# Share of a branch's files that mainline has rewritten since the fork point,
+# above which the branch is reported as almost certainly dead. Not a delete
+# threshold - a sort key, so a human looks at the landable end of the list first.
+DEAD_SUPERSEDED_PCT = 90.0
+
 
 def git(repo, *args, timeout=60):
     try:
@@ -131,15 +136,15 @@ def main(argv=None):
 
     total_commits = sum(r["commits_ahead"] for r in rows)
     clean = [r for r in rows if r["superseded_pct"] == 0.0]
-    dead = [r for r in rows if r["superseded_pct"] >= 90.0]
+    dead = [r for r in rows if r["superseded_pct"] >= DEAD_SUPERSEDED_PCT]
 
     print()
     print("STRANDED: %d branches, %d commits not in %s"
           % (len(rows), total_commits, args.mainline))
     print("  untouched since fork (land candidates): %d branches / %d commits"
           % (len(clean), sum(r["commits_ahead"] for r in clean)))
-    print("  >=90%% of files rewritten since (likely dead): %d branches / %d commits"
-          % (len(dead), sum(r["commits_ahead"] for r in dead)))
+    print("  >=%.0f%% of files rewritten since (likely dead): %d branches / %d commits"
+          % (DEAD_SUPERSEDED_PCT, len(dead), sum(r["commits_ahead"] for r in dead)))
     print()
     print("%-58s %5s %5s %7s %5s  %s"
           % ("BRANCH", "AHEAD", "FILES", "SUPER%", "AGE", "LAST COMMIT"))
