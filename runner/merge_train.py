@@ -809,7 +809,11 @@ def _ensure_node_deps(repo, test_cmd=""):
     (MERGE_TRAIN_NPM_TOTAL_TIMEOUT, default 900s) across all installs triggered by a single
     call, so a monorepo with many nested packages can't multiply timeouts into an effectively
     unbounded hold on the repo lock."""
-    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "180"))
+    # The docstring above says this default is 900s; the code said 180s. 180 is far
+    # under a Nuxt `npm ci`, so every install started here timed out and returned
+    # with node_modules still absent — silently, because TimeoutExpired just
+    # `continue`s. Match the documented contract.
+    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "900"))
     per_install_cap = int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600"))
     deadline = time.monotonic() + total_budget
     # The gate runs in repo unless the command explicitly changes directory or
@@ -844,6 +848,66 @@ def _ensure_node_deps(repo, test_cmd=""):
         pass
 
 
+def _warm_shared_runtime(repo, candidate):
+    """Warm one dependency snapshot and link it in. True when that path worked."""
+    try:
+        import dependency_prewarm
+        dependency_prewarm.ensure_all(repo, reason="merge_train:qa-overlay")
+        dependency_prewarm.link_shared_runtime(repo, candidate)
+        return True
+    except Exception as exc:
+        print(f"merge_train: dependency_prewarm unavailable for overlay ({exc}); "
+              "falling back to a direct symlink", flush=True)
+        return False
+
+
+def _share_deps_into_overlay(repo, candidate, test_cmd=""):
+    """Give the branch-exact QA overlay a usable node_modules. Never raises.
+
+    THE BUG THIS FIXES (2026-08-30)
+    -------------------------------
+    This used to be a bare `os.symlink(repo/node_modules, candidate/node_modules)`
+    guarded by `if os.path.exists(src)`. Integration worktrees are fresh checkouts
+    and have NO node_modules, so the guard was false, no link was made, and the
+    overlay ran its suite against nothing:
+
+        vitest.config.ts (1:325) [UNRESOLVED_IMPORT] Could not resolve 'vitest/config'
+
+    Every branch reported TESTFAIL. On the first unblocked merge_train pass, 17 of
+    25 tomorrow cards "failed tests" — every one of them with that identical line.
+    Not one test had run. A gate that cannot start reports the same verdict as a
+    gate that ran and found a real defect, which is how three weeks of stranded
+    work looked like three weeks of bad work.
+
+    `_ensure_node_deps` did not save it either: the recursive call reaches it with
+    the OVERLAY as `repo`, so it tried a fresh `npm ci` per overlay under a 180s
+    cumulative budget — far under a Nuxt install — timed out, and moved on.
+
+    dependency_prewarm already solves this properly, and build_gate already uses
+    it: warm ONE immutable snapshot per manifest and link it into each ephemeral
+    worktree. Use that, and keep the old symlink as the fallback.
+    """
+    _warm_shared_runtime(repo, candidate)
+
+    # Fallback and belt-and-braces: if anything above left the overlay without
+    # node_modules, link the parent's when it has one.
+    for shared in ("node_modules",):
+        src, dst = os.path.join(repo, shared), os.path.join(candidate, shared)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                os.symlink(src, dst)
+            except OSError:
+                pass
+
+    if os.path.isfile(os.path.join(candidate, "package.json")) \
+            and not os.path.exists(os.path.join(candidate, "node_modules")):
+        # Last resort: install in place. Loud, because reaching here means the
+        # snapshot path failed and the next run will pay this cost again.
+        print(f"merge_train: overlay {candidate} still has no node_modules after "
+              "prewarm+symlink; installing in place", flush=True)
+        _ensure_node_deps(candidate, test_cmd)
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -853,13 +917,7 @@ def _run_tests(repo, test_cmd, ref=None):
             import commit_overlay
             with commit_overlay.checkout(repo, ref, prefix="merge-qa-overlay-") as overlay:
                 candidate = overlay["path"]
-                for shared in ("node_modules",):
-                    src, dst = os.path.join(repo, shared), os.path.join(candidate, shared)
-                    if os.path.exists(src) and not os.path.exists(dst):
-                        try:
-                            os.symlink(src, dst)
-                        except OSError:
-                            pass
+                _share_deps_into_overlay(repo, candidate, test_cmd)
                 ok, detail = _run_tests(candidate, test_cmd)
                 return ok, f"overlay:{overlay['commit'][:12]} {detail}"
         except Exception as exc:
@@ -901,7 +959,16 @@ def _run_tests(repo, test_cmd, ref=None):
     if r.returncode != 0:
         tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
-        if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
+        # Node says "cannot find module"; vite/rollup — which is what actually runs
+        # a vitest suite — says "[UNRESOLVED_IMPORT] Could not resolve 'vitest/config'".
+        # None of the original four strings matched that, so the one self-heal that
+        # would have caught the missing-node_modules outage never fired on any of
+        # the 17 branches it hit on 2026-08-30.
+        if any(s in tail.lower() for s in ("cannot find module", "module not found",
+                                           "eresolve", "command not found",
+                                           "unresolved_import", "could not resolve",
+                                           "failed to resolve import",
+                                           "cannot find package")):
             _ensure_node_deps(repo)
             try:
                 r2 = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
