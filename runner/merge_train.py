@@ -848,6 +848,29 @@ def _ensure_node_deps(repo, test_cmd=""):
         pass
 
 
+def _primary_checkout_of(repo):
+    """The main working tree of `repo`'s git repository, or None.
+
+    An integration worktree is a linked worktree: its `--git-common-dir` is the
+    primary checkout's .git. That primary checkout is where a human works, so it
+    is the one place in the fleet whose node_modules is reliably warm.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=20)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    common = (result.stdout or "").strip()
+    if not common.endswith(".git"):
+        return None
+    primary = os.path.dirname(common)
+    return primary if os.path.isdir(primary) and primary != repo else None
+
+
 def _warm_shared_runtime(repo, candidate):
     """Warm one dependency snapshot and link it in. True when that path worked."""
     try:
@@ -889,13 +912,21 @@ def _share_deps_into_overlay(repo, candidate, test_cmd=""):
     """
     _warm_shared_runtime(repo, candidate)
 
-    # Fallback and belt-and-braces: if anything above left the overlay without
-    # node_modules, link the parent's when it has one.
-    for shared in ("node_modules",):
-        src, dst = os.path.join(repo, shared), os.path.join(candidate, shared)
+    # Fallback: link a warm node_modules from the first donor that has one.
+    #
+    # `repo` is an integration worktree and is normally cold, so the original
+    # code (which only ever looked at `repo`) linked nothing. The repo's PRIMARY
+    # checkout is the same git repository at a different commit — the one a human
+    # works in, kept warm — so its node_modules is exactly what this overlay needs
+    # and costs a symlink instead of a several-minute `npm ci` per card.
+    for donor in (repo, _primary_checkout_of(repo)):
+        if not donor:
+            continue
+        src, dst = os.path.join(donor, "node_modules"), os.path.join(candidate, "node_modules")
         if os.path.exists(src) and not os.path.exists(dst):
             try:
                 os.symlink(src, dst)
+                break
             except OSError:
                 pass
 

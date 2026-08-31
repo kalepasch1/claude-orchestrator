@@ -103,6 +103,39 @@ def test_it_reaches_the_last_resort_even_when_the_parent_does_not_exist(monkeypa
     assert reached == [overlay], "crashed before reaching the last-resort install"
 
 
+def test_a_cold_worktree_borrows_node_modules_from_the_primary_checkout(monkeypatch):
+    """The production case: integration worktrees are always cold.
+
+    Installing per overlay was too slow to keep up — the first pass after the
+    symlink fix still logged UNRESOLVED_IMPORT while several concurrent overlays
+    each tried their own `npm ci`. The repo's primary checkout is the same git
+    repository, kept warm by whoever works in it, and a symlink to it is instant.
+    """
+    _no_prewarm(monkeypatch)
+    installed = []
+    monkeypatch.setattr(merge_train, "_ensure_node_deps",
+                        lambda repo, cmd="": installed.append(repo))
+    with tempfile.TemporaryDirectory() as sandbox:
+        primary = _tree(os.path.join(sandbox, "primary"), with_modules=True)
+        worktree = _tree(os.path.join(sandbox, "wt"), with_modules=False)
+        overlay = _tree(os.path.join(sandbox, "overlay"), with_modules=False)
+        monkeypatch.setattr(merge_train, "_primary_checkout_of",
+                            lambda repo: primary)
+        merge_train._share_deps_into_overlay(worktree, overlay, "npm test")
+
+        linked = os.path.join(overlay, "node_modules")
+        assert os.path.exists(linked), "cold worktree did not borrow from primary"
+        assert os.path.exists(os.path.join(linked, "vitest"))
+    assert installed == [], "should not have needed an install at all"
+
+
+def test_primary_checkout_resolution_is_safe_on_a_non_git_path():
+    """It runs on every overlay; a non-repo path must return None, not raise."""
+    with tempfile.TemporaryDirectory() as sandbox:
+        assert merge_train._primary_checkout_of(sandbox) is None
+    assert merge_train._primary_checkout_of("/nonexistent/path/xyz") is None
+
+
 def test_the_missing_dependency_retry_recognises_the_vite_wording():
     """The self-heal that should have caught this could not see the error.
 
