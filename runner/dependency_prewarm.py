@@ -19,6 +19,28 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 _HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 _STAMP_DIR = os.environ.get("ORCH_DEPS_STAMP_DIR", os.path.join(_HOME, "deps"))
 _LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock")
+
+#: Files that configure the RESOLUTION, not just the dependency list.
+#:
+#: pnpm 10+ moved `overrides`, `allowBuilds`, `minimumReleaseAgeExclude` and
+#: friends out of package.json and into pnpm-workspace.yaml. A snapshot built from
+#: package.json + lockfile alone therefore has NO overrides while the lockfile
+#: records them, and pnpm refuses the frozen install outright:
+#:
+#:   [ERR_PNPM_LOCKFILE_CONFIG_MISMATCH] Cannot proceed with the frozen
+#:   installation. The current "overrides" configuration doesn't match the value
+#:   found in the lockfile
+#:
+#: Found 2026-08-30: tomorrow pinned four transitive packages via
+#: pnpm-workspace.yaml `overrides` in the 2026-08-18 vulnerability fix. Every
+#: snapshot build for that repo has failed since, so every merge_train build gate
+#: returned BUILDFAIL — "production build red; fix build/type errors before
+#: merge" — on branches whose code was never the problem.
+#:
+#: These belong in the fingerprint too: changing an override changes the install,
+#: so a snapshot keyed without them would be served stale after an edit.
+_CONFIG_FILES = ("pnpm-workspace.yaml", "pnpm-workspace.yml",
+                 ".pnpmfile.cjs", "pnpmfile.cjs", ".yarnrc.yml")
 _DEFAULT_TIMEOUT = int(os.environ.get("ORCH_DEPS_PREWARM_TIMEOUT", "900"))
 # Per-`cp` ceiling for one package root's node_modules activation.
 _ACTIVATION_CALL_TIMEOUT_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_TIMEOUT", "180"))
@@ -86,7 +108,7 @@ def _fingerprint(repo):
     digest = hashlib.sha256()
     digest.update(os.uname().sysname.encode("utf-8"))
     digest.update(os.uname().machine.encode("utf-8"))
-    for name in ("package.json", *_LOCKS, ".npmrc"):
+    for name in ("package.json", *_LOCKS, *_CONFIG_FILES, ".npmrc"):
         path = os.path.join(repo, name)
         if not os.path.isfile(path):
             continue
@@ -103,7 +125,7 @@ def _snapshot_path(repo):
 
 def _signature(repo):
     bits = []
-    for name in ("package.json", *_LOCKS):
+    for name in ("package.json", *_LOCKS, *_CONFIG_FILES):
         path = os.path.join(repo, name)
         if os.path.exists(path):
             st = os.stat(path)
@@ -583,7 +605,7 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
         # vercel.json comes along because _vercel_install_cmd reads it. Without it
         # the staging dir looks like a bare package.json + lockfile, _manager
         # infers `npm ci`, and the project's own declared installCommand is lost.
-        for name in ("package.json", *_LOCKS, ".npmrc", "vercel.json"):
+        for name in ("package.json", *_LOCKS, *_CONFIG_FILES, ".npmrc", "vercel.json"):
             src = os.path.join(repo, name)
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(build_root, name))
