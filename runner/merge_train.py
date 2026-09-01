@@ -147,7 +147,20 @@ def _push_enabled_for_base(base):
         return False
     return _truthy("ORCH_PUSH_ON_MERGE", False)
 
+class _NoRepo:
+    """Stand-in for a git result when there is no repo to run in."""
+    returncode = 128
+    stdout = ""
+    stderr = "no repo path"
+
+
 def _git(repo, *args, timeout=60):
+    # 2026-09-01: an empty cwd raised FileNotFoundError('') out of subprocess and killed the
+    # ENTIRE train pass before a single merge was attempted -- the direct cause of
+    # "0 merged ... across 0 project(s)" on every cycle. A missing repo is a per-project
+    # condition and must degrade to a failed git call, never take down the pass.
+    if not repo or not os.path.isdir(repo):
+        return _NoRepo()
     return subprocess.run(["git", *args], cwd=repo, capture_output=True,
                           encoding="utf-8", errors="replace", timeout=timeout)
 
@@ -2597,6 +2610,24 @@ def _train_run_unleased(report=None):
                 _r("skipped", _slug,
                    f"project-paused: {(projects.get(_pid) or {}).get('name') or _pid}")
         by_project = {pid: v for pid, v in by_project.items() if pid not in _paused_pids}
+
+    # ORPHANED project_id (2026-09-01): a card can resolve to a task whose project row no
+    # longer exists (renamed/archived/deleted). projects.get(pid) then returns {}, repo_path
+    # becomes "" and _record_pressure crashed the whole pass with FileNotFoundError(''). The
+    # comment on the paused-project block above documents this exact failure, but the fix
+    # there only covered paused ids. Drop unknown/repo-less groups here for the same reason,
+    # and say which ones, loudly -- silently skipping real work is how this fleet got here.
+    _orphans = [pid for pid in by_project
+                if not (projects.get(pid) or {}).get("repo_path")]
+    for _pid in _orphans:
+        _n = len(by_project.get(_pid, []))
+        print(f"merge_train: dropping {_n} card(s) for unknown/repo-less project_id {_pid} — "
+              f"no project row or no repo_path; these cannot be merged by any host",
+              flush=True)
+        for _c, _slug, _t in by_project.get(_pid, []):
+            _r("skipped", _slug, f"orphaned-project: {_pid}")
+    if _orphans:
+        by_project = {pid: v for pid, v in by_project.items() if pid not in _orphans}
 
     pressure = _record_pressure(by_project, projects)
     summary = {"projects": 0, "merged": 0, "already_integrated": 0,
