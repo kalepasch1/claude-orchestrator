@@ -1,6 +1,9 @@
 {
   "aliases": {
-    "apparently": "smarter"
+    "apparently": "smarter",
+    "vigil": "smarter",
+    "illuminati": "smarter",
+    "trojun": "smarter"
   },
   "targets": [
     {
@@ -18,14 +21,6 @@
       "branch": "main",
       "vercel_project": "darwn",
       "supabase_project_ref": "xnzrxkjixouzcizjemjg"
-    },
-    {
-      "app": "illuminati",
-      "repo_path": "/Users/kpasch/Documents/illuminati",
-      "github_repo": "kalepasch1/illuminati",
-      "branch": "master",
-      "vercel_project": "illuminati",
-      "supabase_project_ref": "tsefmbiprirwcgqefemb"
     },
     {
       "app": "kalepasch-com",
@@ -90,14 +85,6 @@
       "supabase_project_ref": "edetxpcoaiqlqrwyzltw"
     },
     {
-      "app": "vigil",
-      "repo_path": "/Users/kpasch/Documents/vigil",
-      "github_repo": "kalepasch1/vigil",
-      "branch": "main",
-      "vercel_project": "vigil",
-      "supabase_project_ref": "hjortulytchuaptnuciz"
-    },
-    {
       "app": "apparently-law",
       "repo_path": "/Users/kpasch/Documents/apparently-law",
       "github_repo": "kalepasch1/apparently-law",
@@ -119,6 +106,7 @@
     "pasch-prod",
     "pareto",
     "prediction-markets-advisors",
-    "apparently"
+    "apparently",
+    "vigil"
   ]
 }
