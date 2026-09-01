@@ -1,13 +1,8 @@
 {
+  "aliases": {
+    "apparently": "smarter"
+  },
   "targets": [
-    {
-      "app": "apparently",
-      "repo_path": "/Users/kpasch/Documents/apparently",
-      "github_repo": "kalepasch1/apparently",
-      "branch": "master",
-      "vercel_project": "apparently",
-      "supabase_project_ref": "oosolxvlfyifkhjohdzq"
-    },
     {
       "app": "beethoven",
       "repo_path": "/Users/kpasch/Documents/beethoven/claude-orchestrator",
@@ -123,6 +118,7 @@
     "pasch",
     "pasch-prod",
     "pareto",
-    "prediction-markets-advisors"
+    "prediction-markets-advisors",
+    "apparently"
   ]
 }
