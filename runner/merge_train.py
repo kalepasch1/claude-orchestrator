@@ -298,7 +298,35 @@ def _recover_branch_from_worktree(repo, branch):
     return _branch_exists(repo, branch)
 
 
-def _materialize_branch(repo, branch):
+def _recover_branch_from_artifact_commit(repo, branch, task):
+    """Recreate a lost agent branch from the commit the task recorded at completion.
+
+    2026-09-01: across the three live projects, 101 tasks sit in DONE and only 10 still
+    have an artifact_branch. 79 have NO branch but DO have an artifact_commit -- and a
+    sample of 28 found every single one of those commits still present in its repository.
+    The work was never lost; only the ref was. _materialize_branch resolved by branch NAME
+    alone, so the train saw "branch missing", filed a rebuild task, and eventually gave up
+    on finished, reachable work. Checking the recorded commit is a local cat-file, cheaper
+    than the remote paths below it, so it runs first.
+
+    Set ORCH_RECOVER_BRANCH_FROM_COMMIT=false to disable.
+    """
+    if os.environ.get("ORCH_RECOVER_BRANCH_FROM_COMMIT", "true").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        return False
+    sha = str((task or {}).get("artifact_commit") or "").strip()
+    if not sha or not repo or not os.path.isdir(repo):
+        return False
+    if _git(repo, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+        return False          # recorded, but genuinely not in this repo
+    if _git(repo, "branch", branch, sha).returncode == 0 or _branch_exists(repo, branch):
+        print(f"[branch-recovery] recreated {branch} from recorded artifact_commit "
+              f"{sha[:12]} in {repo} — the work was reachable all along", flush=True)
+        return True
+    return False
+
+
+def _materialize_branch(repo, branch, task=None):
     """Fleet-aware branch lookup with worktree recovery.
 
     Resolution order (cheapest first):
@@ -315,6 +343,10 @@ def _materialize_branch(repo, branch):
     # a worktree-held branch that was never pushed is precisely what that
     # short-circuit rejects, and it costs no network to check.
     if _recover_branch_from_worktree(repo, branch):
+        return True
+    # Cheapest remaining recovery, and the one that unlocks the DONE backlog: the task
+    # already told us the commit. Local only — runs before any network path below.
+    if _recover_branch_from_artifact_commit(repo, branch, task):
         return True
     # THE TRAIN'S REAL WALL-CLOCK SINK (measured 2026-08-06).
     #
@@ -1554,7 +1586,7 @@ def _record_pressure(by_project, projects):
         for card, slug, task in group:
             risk = _risk_level(card, task)
             p["risk"][risk] += 1
-            if _materialize_branch(repo, f"agent/{slug}"):
+            if _materialize_branch(repo, f"agent/{slug}", task):
                 p["passed_waiting"] += 1
                 p["oldest_wait_age_s"] = max(p["oldest_wait_age_s"], _age_seconds(card.get("created_at") or task.get("updated_at")))
             else:
@@ -2212,7 +2244,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "SKIP", "another host holds the integrator lease")
         return "not-integrator"
 
-    if not _materialize_branch(repo, branch):
+    if not _materialize_branch(repo, branch, task):
         state = task.get("state")
         if state in ("QUEUED", "RUNNING", "RETRY"):
             _log(pname, slug, "WAIT", f"{branch} not created yet ({state})")
