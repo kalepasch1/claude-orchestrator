@@ -984,6 +984,50 @@ def _share_deps_into_overlay(repo, candidate, test_cmd=""):
         _ensure_node_deps(candidate, test_cmd)
 
 
+_GATE_ENV_CACHE = None
+
+
+def _node_bin_dir():
+    """Best guess at the directory holding npm/node on this host.
+
+    ORCH_NODE_BIN wins if set. Otherwise the newest nvm install, then the usual
+    package-manager prefixes. Returns "" when node cannot be located at all.
+    """
+    explicit = os.environ.get("ORCH_NODE_BIN", "").strip()
+    if explicit and os.path.isfile(os.path.join(explicit, "npm")):
+        return explicit
+    import glob
+    cands = sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin")), reverse=True)
+    cands += ["/opt/homebrew/bin", "/usr/local/bin"]
+    for c in cands:
+        if os.path.isfile(os.path.join(c, "npm")):
+            return c
+    return ""
+
+
+def _gate_env():
+    """Environment for test/build gates, with node guaranteed on PATH.
+
+    2026-09-01: EVERY merge-train TESTFAIL on this host was `bash: npm: command not found`.
+    The gates shell out with `bash -lc`, which sources ~/.bash_profile -- but the operator's
+    shell is zsh and nvm is initialised in ~/.zshrc, so a login bash never sees node. Under
+    launchd there is no interactive shell at all and PATH is minimal. Good, finished work was
+    being marked TESTFAIL for an environment fault, which then burned its redo cap and was
+    abandoned. Prepending the resolved node bin makes the gates independent of which shell
+    profile happens to define nvm.
+    """
+    global _GATE_ENV_CACHE
+    if _GATE_ENV_CACHE is not None:
+        return _GATE_ENV_CACHE
+    env = dict(os.environ)
+    nb = _node_bin_dir()
+    if nb and nb not in env.get("PATH", "").split(os.pathsep):
+        env["PATH"] = nb + os.pathsep + env.get("PATH", "")
+        print(f"[gate-env] node not on PATH; prepending {nb}", flush=True)
+    _GATE_ENV_CACHE = env
+    return env
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -1026,7 +1070,7 @@ def _run_tests(repo, test_cmd, ref=None):
                            f"{vue_detail[:4000]}")
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, timeout=timeout, env=_gate_env())
     except subprocess.TimeoutExpired:
         return False, (f"tests did not finish within {timeout}s — NO verdict on this "
                        "candidate, which is not the same as a red suite. Raise "
@@ -1048,7 +1092,7 @@ def _run_tests(repo, test_cmd, ref=None):
             _ensure_node_deps(repo)
             try:
                 r2 = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
-                                    text=True, timeout=timeout)
+                                    text=True, timeout=timeout, env=_gate_env())
                 if r2.returncode == 0:
                     return True, "green (after dep install)"
                 return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()

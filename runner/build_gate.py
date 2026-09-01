@@ -208,7 +208,16 @@ def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
             tmp = overlay["path"]
             dependency_prewarm.link_shared_runtime(repo, tmp)
             removed = _apply_vercelignore(tmp, overlay["files"]) if vercel_context else []
-            r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True, text=True, timeout=timeout)
+            # Same shell problem as the test gate: `bash -lc` sources ~/.bash_profile, but
+            # nvm is initialised in ~/.zshrc on this host, so a login bash never sees node.
+            # Reuse merge_train's resolved gate environment. See merge_train._gate_env.
+            try:
+                import merge_train
+                _env = merge_train._gate_env()
+            except Exception:
+                _env = None
+            r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True,
+                               text=True, timeout=timeout, env=_env)
             ok = r.returncode == 0
             context = (f"overlay {overlay['commit'][:12]}; Vercel context removed "
                        f"{len(removed)} tracked file(s)")
