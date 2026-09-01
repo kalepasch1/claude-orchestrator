@@ -596,6 +596,80 @@ def verify_immutable_ref(local_ref, local_sha, repo):
     )
 
 
+STAGING_BRANCH = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+
+
+def _push_remote(repo):
+    """The remote this push is going to. `origin` unless the repo has no origin."""
+    try:
+        remotes = _git(repo, "remote").splitlines()
+    except subprocess.CalledProcessError:
+        return "origin"
+    return "origin" if "origin" in remotes else (remotes[0] if remotes else "origin")
+
+
+def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main"):
+    """Production is a fast-forward of staging, never a side entrance.
+
+    Every project in this fleet develops on feature branches and integrates on
+    `orchestrator/dev`. When a commit reaches main or master without passing
+    through that branch, two things are lost at once: the integration merge that
+    would have surfaced a conflict against everyone else's in-flight work, and
+    the release train's verification of the *merged* result. The commit builds
+    and its own suite passes — both gates below stay green — and it still ships a
+    tree nobody integrated. That is how the same fix gets written twice in two
+    places, and how a branch that was ahead of production silently stopped being
+    merged at all.
+
+    So: the commit being pushed to main/master must already be contained in the
+    remote staging branch. Merge into orchestrator/dev, let it settle there, then
+    promote — at which point this check is a fast-forward and costs nothing.
+
+    A repo whose remote has no staging branch is not held to this. The rule
+    describes the flow the fleet actually uses; bricking a repo that never
+    adopted it would only teach people to reach for the override.
+    """
+    remote = _push_remote(repo)
+    tracking = f"refs/remotes/{remote}/{STAGING_BRANCH}"
+    try:
+        _git(repo, "fetch", "--quiet", remote,
+             f"+refs/heads/{STAGING_BRANCH}:{tracking}")
+    except subprocess.CalledProcessError:
+        pass  # offline, or no such branch upstream — both resolved by the rev-parse below
+    try:
+        staging_sha = _git(repo, "rev-parse", "--verify", f"{tracking}^{{commit}}")
+    except subprocess.CalledProcessError:
+        return True, f"no {remote}/{STAGING_BRANCH} on this remote — staging rule does not apply here"
+
+    if commit == staging_sha:
+        return True, f"promoting the tip of {remote}/{STAGING_BRANCH}"
+
+    contained = subprocess.run(["git", "merge-base", "--is-ancestor", commit, staging_sha],
+                               cwd=repo, env=_clean_git_env(), capture_output=True, text=True,
+                               timeout=30)
+    if contained.returncode == 0:
+        return True, f"contained in {remote}/{STAGING_BRANCH}"
+
+    try:
+        ahead = _git(repo, "rev-list", "--count", f"{staging_sha}..{commit}")
+    except subprocess.CalledProcessError:
+        ahead = "?"
+    return False, (
+        f"{commit[:12]} is not contained in {remote}/{STAGING_BRANCH} — {ahead} commit(s) "
+        f"would reach production without ever being integrated on staging.\n"
+        f"Production is promoted from {STAGING_BRANCH}, not pushed to directly, so that every\n"
+        f"change meets the rest of the in-flight work in one place and conflicts are resolved\n"
+        f"there rather than discovered in production.\n\n"
+        f"    git fetch {remote}\n"
+        f"    git checkout -B {STAGING_BRANCH} {remote}/{STAGING_BRANCH}\n"
+        f"    git merge {commit[:12]}        # resolve conflicts HERE, keeping the better side\n"
+        f"    git push {remote} HEAD:refs/heads/{STAGING_BRANCH}\n"
+        f"    git push {remote} <new-dev-sha>:{remote_ref}\n\n"
+        f"Emergency only: ORCH_ALLOW_DIRECT_PROD_PUSH=1. That is a separate switch from the\n"
+        f"build and test overrides on purpose — skipping integration is its own decision."
+    )
+
+
 def main(stdin=None):
     repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
     updates = guarded_updates(stdin if stdin is not None else sys.stdin)
@@ -613,6 +687,22 @@ def main(stdin=None):
             print("production_push_guard: BLOCKED — mutable source ref", file=sys.stderr)
             print(ref_log, file=sys.stderr)
             return 1
+
+        # Structural, like the ref check above, and for the same reason: no amount
+        # of green build or green suite can substitute for having been integrated.
+        staged_ok, staged_log = verify_promoted_from_staging(repo, commit, remote_ref)
+        if not staged_ok:
+            if os.environ.get("ORCH_ALLOW_DIRECT_PROD_PUSH", "").lower() in {"1", "true", "yes", "on"}:
+                print("production_push_guard: BYPASSING STAGING — ORCH_ALLOW_DIRECT_PROD_PUSH is set",
+                      file=sys.stderr)
+                print(staged_log, file=sys.stderr)
+            else:
+                print("production_push_guard: BLOCKED — production push that never met staging",
+                      file=sys.stderr)
+                print(staged_log, file=sys.stderr)
+                return 1
+        else:
+            print(f"production_push_guard: INTEGRATED — {staged_log}", file=sys.stderr)
 
         content_ok, content_log = verify_content(repo, remote_commit, commit)
         if not content_ok:
