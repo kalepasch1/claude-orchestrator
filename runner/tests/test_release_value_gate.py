@@ -84,6 +84,24 @@ class ValueGateTests(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("improve-cache-the-route-table", out["regressed"])
 
+    def test_underdelivered_does_not_block(self):
+        """An improvement that helped but missed its ambitious target must still ship.
+
+        The gate queries status='regressed' only. With the three-way verdict, a 1.6x win
+        against a 5x margin is 'underdelivered' and never appears in this query -- so the
+        batch proceeds. This test pins that: an 'underdelivered' row must not hold a release.
+        """
+        class _UnderDB(_FakeDB):
+            def select(self, table, params):
+                self.queries.append((table, params))
+                return []   # nothing with status='regressed'
+        rt.db = _UnderDB()
+        out = rt._release_value_gate("tomorrow", MANIFEST, MANIFEST_TASKS, CANDIDATES)
+        self.assertIsNone(out, "an underdelivered improvement blocked the release")
+        q = [p for t, p in rt.db.queries if t == "improvement_proposals"]
+        self.assertTrue(all(p.get("status") == "eq.regressed" for p in q),
+                        "the gate must ask only for true regressions")
+
     def test_unrelated_regression_does_not_block(self):
         """Only regressions carried BY THIS BATCH may hold it."""
         rt.db = _FakeDB(regressed_slugs={"some-other-project-task"})
