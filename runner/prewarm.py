@@ -30,11 +30,22 @@ def _branch_exists(repo, branch):
     return bool(branch) and _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
 
+def _strict_default_base():
+    """Prefer projects.default_base over a generic stored base_branch. Default on."""
+    return os.environ.get("ORCH_STRICT_DEFAULT_BASE", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _normalize_base(repo, proj, requested):
-    for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
+    # Mirrors runner._normalize_task_base — a prewarmed worktree on the wrong base is
+    # worse than none, because the agent inherits it silently. See that function's note.
+    order = (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master")
+    if _strict_default_base() and (requested or "").strip().lower() in ("", "main", "master"):
+        order = (proj.get("default_base"), requested, proj.get("prod_branch"), "main", "master")
+    for b in order:
         if _branch_exists(repo, b):
             return b
-    return requested or proj.get("default_base") or "main"
+    return proj.get("default_base") or requested or "main"
 
 
 def _claimable_next(limit):

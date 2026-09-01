@@ -38,6 +38,10 @@ MAX_REQUEUE_PER_RUN = int(os.environ.get("ORCH_REMEDIATION_BATCH", "50"))
 REMEDIATION_COOLDOWN_H = float(os.environ.get("ORCH_REMEDIATION_COOLDOWN_H", "24"))
 MIN_QUARANTINE_AGE_H = float(os.environ.get("ORCH_REMEDIATION_MIN_AGE_H", "4"))
 MAX_REMEDIATION_ATTEMPTS = int(os.environ.get("ORCH_REMEDIATION_MAX_ATTEMPTS", "3"))
+# Consult generator_feedback before requeueing. Set false to restore the old
+# insert-unconditionally behaviour.
+_FEEDBACK_GATE = os.environ.get(
+    "ORCH_REMEDIATION_FEEDBACK_GATE", "true").strip().lower() in ("1", "true", "yes", "on")
 
 # Slugs matching these patterns are NOT real improvements — skip them
 SKIP_SLUG_PATTERNS = [
@@ -50,6 +54,11 @@ SKIP_SLUG_PATTERNS = [
     r"^shadow-",
     r"^backlog-batch-",
     r"^fused-canary-",
+    # 2026-09-01: a remediation of a remediation is the treadmill. _normalize_slug strips
+    # "remediate-" (line ~109), so without this the child is indistinguishable from the
+    # parent and the pair re-enters the queue every hour until MAX_REMEDIATION_ATTEMPTS.
+    # Measured on `tomorrow`: 384 improvement tasks -> 3 merged, 60 quarantined.
+    r"^remediate-",
 ]
 
 # Prompts matching these are garbage — skip
@@ -183,6 +192,31 @@ def _requeue_task(task: dict, reason: str) -> bool:
 
     remediation_count = int(task.get("remediation_count") or 0)
 
+    # Ask the generator-feedback gate before spending anything. This module used to insert
+    # unconditionally; semantic dedupe then quarantined the duplicate up to 10 minutes later,
+    # so every duplicate was paid for in full before being detected. generator_feedback has
+    # always implemented exactly this check -- nothing had ever called it.
+    if _FEEDBACK_GATE:
+        try:
+            import generator_feedback
+            verdict = generator_feedback.should_generate(
+                prompt, kind=task.get("kind") or "improvement",
+                project_id=task.get("project_id") or "")
+            if not verdict.get("generate", True):
+                print(f"[remediation] skipped {task.get('slug')}: {verdict.get('reason')}"
+                      f" (similar to {verdict.get('similar_to','?')})")
+                return False
+        except Exception as e:  # never let the gate block remediation outright
+            print(f"[remediation] feedback gate unavailable ({e}); proceeding")
+
+    # Carry the parent's duplicate evidence onto the child. Overwriting the note here is what
+    # defeated _is_dupe_note on the next pass: the child looked like a fresh task, so the
+    # dedupe->requeue->dedupe cycle could run until the attempt cap.
+    note = f"auto-remediation: {reason} (attempt {remediation_count + 1})"
+    parent_note = (task.get("note") or "").strip()
+    if parent_note and _is_dupe_note(parent_note):
+        note = f"{note} | parent-note: {parent_note[:160]}"
+
     try:
         db.insert("tasks", {
             "slug": new_slug,
@@ -190,7 +224,7 @@ def _requeue_task(task: dict, reason: str) -> bool:
             "project_id": task.get("project_id"),
             "state": "QUEUED",
             "kind": task.get("kind") or "improvement",
-            "note": f"auto-remediation: {reason} (attempt {remediation_count + 1})",
+            "note": note,
             "priority": 5,
             "remediation_count": remediation_count + 1,
         })
@@ -204,6 +238,16 @@ def _requeue_task(task: dict, reason: str) -> bool:
 
 def run():
     """Main periodic entry point. Scan quarantined tasks and requeue viable ones."""
+    # Improvement window (default 01:00-05:00 local). autopilot calls this in-process
+    # every 180s and survives drain mode, lean mode and the kill switch, so the gate has
+    # to live here rather than only at the scheduler.
+    try:
+        import self_work_gate
+        if not self_work_gate.allow_improvement_now("quarantine_remediation.run"):
+            return {"requeued": 0, "window_closed": True}
+    except ImportError:
+        pass
+
     started = time.time()
 
     # Get quarantined tasks that are old enough

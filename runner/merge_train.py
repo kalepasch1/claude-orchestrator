@@ -1437,11 +1437,27 @@ def _detect_prod_branch(repo, proj):
     return proj.get("default_base") or "main"
 
 
+def _strict_default_base():
+    """Prefer projects.default_base over a generic stored base_branch. Default on."""
+    return os.environ.get("ORCH_STRICT_DEFAULT_BASE", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _normalize_task_base(repo, proj, requested):
-    for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
+    # 2026-09-01: a *generic* requested base ("main"/"master") must not outrank the
+    # project's configured default. db._guard_task_base_branch already applies this rule
+    # at insert time, but it is insert-only -- a row written by an unguarded path, or an
+    # older row, still carries "main", and checking `requested` first sent that work back
+    # to the production branch at execution time. Non-generic values (release/*, hotfix/*)
+    # are deliberate and still win. Set ORCH_STRICT_DEFAULT_BASE=false to restore the old
+    # requested-first order.
+    order = (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master")
+    if _strict_default_base() and (requested or "").strip().lower() in ("", "main", "master"):
+        order = (proj.get("default_base"), requested, proj.get("prod_branch"), "main", "master")
+    for b in order:
         if _branch_exists(repo, b):
             return b
-    return requested or proj.get("default_base") or "main"
+    return proj.get("default_base") or requested or "main"
 
 
 def _integration_base(repo, proj, task_base):

@@ -635,6 +635,12 @@ def _localize_repo_path(proj, db_path):
     return None
 
 
+def _strict_default_base():
+    """Prefer projects.default_base over a generic stored base_branch. Default on."""
+    return os.environ.get("ORCH_STRICT_DEFAULT_BASE", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _normalize_task_base(repo, proj, requested):
     """Resolve task base to a local branch that actually exists before worktree setup.
 
@@ -642,10 +648,88 @@ def _normalize_task_base(repo, proj, requested):
     configured default. Normalizing here prevents empty diffs, failed worktree setup,
     stale branch churn, and wasted agent retries.
     """
-    for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
+    # 2026-09-01: a *generic* requested base ("main"/"master") must not outrank the
+    # project's configured default. db._guard_task_base_branch already applies this rule
+    # at insert time, but it is insert-only -- a row written by an unguarded path, or an
+    # older row, still carries "main", and checking `requested` first sent that work back
+    # to the production branch at execution time. Non-generic values (release/*, hotfix/*)
+    # are deliberate and still win. Set ORCH_STRICT_DEFAULT_BASE=false to restore the old
+    # requested-first order.
+    order = (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master")
+    if _strict_default_base() and (requested or "").strip().lower() in ("", "main", "master"):
+        order = (proj.get("default_base"), requested, proj.get("prod_branch"), "main", "master")
+    for b in order:
         if _branch_exists(repo, b):
             return b
-    return requested or proj.get("default_base") or "main"
+    return proj.get("default_base") or requested or "main"
+
+
+def _dev_reset_on_drift():
+    """True only if the operator has explicitly opted back into destructive dev resets.
+
+    Default False. See _integration_base for why the default flipped on 2026-09-01.
+    """
+    return os.environ.get("ORCH_DEV_RESET_ON_DRIFT", "false").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _ref_commit_time(repo, ref):
+    """Committer timestamp of `ref`, or None if it does not resolve here."""
+    try:
+        r = subprocess.run(["git", "log", "-1", "--format=%ct", ref], cwd=repo,
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return int((r.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _freshest_upstream(repo, proj):
+    """The upstream the integration lane should track: whichever of dev or prod is newer.
+
+    Operator directive 2026-09-01: the improvement lane must replicate "/dev and /prod,
+    whichever is more recent", so improvements always build on the freshest real code
+    without a human choosing which branch that is this week.
+
+    Picking by commit date rather than by name is what makes this safe on these repos.
+    `tomorrow`'s origin/dev is 4,336 commits behind origin/main and was last touched in
+    February; a name-based rule would drag the fleet onto seven-month-old code, while the
+    freshness rule silently keeps it on main until someone actually starts committing to
+    dev again. Remote refs are preferred over local ones because the local copy can be
+    stale on any given host.
+
+    Returns a ref name, or "" if nothing resolves.
+    """
+    prod = _detect_prod_branch(repo, proj)
+    dev_name = os.environ.get("ORCH_TRACK_DEV_BRANCH", "dev")
+    candidates = []
+    for name in (dev_name, prod):
+        if not name:
+            continue
+        for ref in (f"origin/{name}", name):
+            t = _ref_commit_time(repo, ref)
+            if t is not None:
+                candidates.append((t, ref, name))
+                break
+    if not candidates:
+        return ""
+    if os.environ.get("ORCH_DEV_TRACKS_FRESHEST", "true").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        # Legacy behaviour: always track prod.
+        for _t, ref, name in candidates:
+            if name == prod:
+                return ref
+        return candidates[0][1]
+    candidates.sort(reverse=True)  # newest committer date wins
+    best_t, best_ref, best_name = candidates[0]
+    if len(candidates) > 1 and best_name != prod:
+        _log.info("integration-base: tracking %s in %s — it is newer than %s",
+                  best_ref, repo, prod)
+    return best_ref
 
 
 def _integration_base(repo, proj, task_base):
@@ -662,12 +746,29 @@ def _integration_base(repo, proj, task_base):
         prod = _detect_prod_branch(repo, proj)
         # RECURRENT-CONFLICT FIX: keep the integration base CURRENT with prod. After external pushes
         # (e.g. hotfixes to origin/main) a stale local dev drifts BEHIND prod, so every agent branch
-        # rebased onto it conflicts and releases can't promote. Fetch prod, then reset dev to it
-        # UNLESS dev is strictly ahead (contains all of prod + unreleased merges). Fail-soft; a
-        # no-op if dev is checked out in a worktree (the recovery script frees those).
+        # rebased onto it conflicts and releases can't promote.
+        #
+        # 2026-09-01 -- THIS USED TO DESTROY WORK. The old code ran `git branch -f dev prod`
+        # whenever dev was not strictly ahead, which silently discarded every merge that had
+        # landed on dev but had not yet been promoted to prod. The task rows stayed MERGED, so
+        # the loss was invisible: reflog shows 22 such resets in `tomorrow` and 9 in
+        # `apparently-law`, and phantom_merge_audit holds 10,598 tasks that claimed MERGED with
+        # nothing behind them. Fast-forward is the only safe direction. Now:
+        #     dev missing     -> create it from prod              (unchanged)
+        #     dev behind prod -> fast-forward onto prod           (nothing exists to lose)
+        #     dev diverged    -> LEAVE IT ALONE and log loudly    (it holds unpromoted merges)
+        # Set ORCH_DEV_RESET_ON_DRIFT=true to restore the old destructive behaviour.
         subprocess.run(["git", "fetch", "origin", prod], cwd=repo, capture_output=True, timeout=90)
-        pref = f"origin/{prod}" if subprocess.run(["git", "rev-parse", "--verify", f"origin/{prod}"],
-                                                  cwd=repo, capture_output=True).returncode == 0 else prod
+        dev_name = os.environ.get("ORCH_TRACK_DEV_BRANCH", "dev")
+        if dev_name and dev_name != prod:
+            subprocess.run(["git", "fetch", "origin", dev_name], cwd=repo,
+                           capture_output=True, timeout=90)
+        # Track whichever of dev/prod is actually newer, not whichever is named prod.
+        pref = _freshest_upstream(repo, proj)
+        if not pref:
+            pref = f"origin/{prod}" if subprocess.run(
+                ["git", "rev-parse", "--verify", f"origin/{prod}"],
+                cwd=repo, capture_output=True).returncode == 0 else prod
         if subprocess.run(["git", "rev-parse", "--verify", dev], cwd=repo,
                           capture_output=True).returncode != 0:
             subprocess.run(["git", "branch", dev, pref], cwd=repo, capture_output=True)
@@ -675,7 +776,31 @@ def _integration_base(repo, proj, task_base):
             strictly_ahead = subprocess.run(["git", "merge-base", "--is-ancestor", pref, dev],
                                             cwd=repo, capture_output=True).returncode == 0
             if not strictly_ahead:
-                subprocess.run(["git", "branch", "-f", dev, pref], cwd=repo, capture_output=True)
+                # `git fetch . <prod>:<dev>` updates dev ONLY if it is a fast-forward; it refuses
+                # a non-fast-forward rather than clobbering. That is exactly the guarantee we want.
+                ff = subprocess.run(["git", "fetch", ".", f"{pref}:{dev}"], cwd=repo,
+                                    capture_output=True)
+                if ff.returncode != 0:
+                    # dev may simply be the checked-out branch, which `fetch` will not write to.
+                    cur = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo,
+                                         capture_output=True, text=True)
+                    if (cur.stdout or "").strip() == dev:
+                        ff = subprocess.run(["git", "merge", "--ff-only", pref], cwd=repo,
+                                            capture_output=True)
+                if ff.returncode != 0:
+                    if _dev_reset_on_drift():
+                        subprocess.run(["git", "branch", "-f", dev, pref], cwd=repo,
+                                       capture_output=True)
+                        _log.warning(
+                            "integration-base: %s diverged from %s in %s and was FORCE-RESET "
+                            "because ORCH_DEV_RESET_ON_DRIFT is set. Unpromoted merges on %s "
+                            "have been discarded.", dev, pref, repo, dev)
+                    else:
+                        _log.warning(
+                            "integration-base: %s has diverged from %s in %s -- leaving it alone. "
+                            "It holds merges that were never promoted to prod; force-resetting "
+                            "would discard them (that bug is fixed). release_train should "
+                            "reconcile the two.", dev, pref, repo)
     except (OSError, subprocess.SubprocessError):
         return task_base
     return dev

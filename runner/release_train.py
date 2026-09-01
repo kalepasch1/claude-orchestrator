@@ -1258,6 +1258,78 @@ def _release_gate_slug(project, staging_sha):
     return f"release:{project}:{(staging_sha or '')[:12]}"
 
 
+def _batch_slugs(manifest_tasks, candidates):
+    """Every task slug this release batch carries."""
+    slugs = set()
+    for src in (manifest_tasks or [], candidates or []):
+        for t in src:
+            try:
+                sl = str((t or {}).get("slug") or "").strip()
+            except AttributeError:
+                continue
+            if sl:
+                slugs.add(sl)
+    return sorted(slugs)
+
+
+def _release_value_gate(project, manifest, manifest_tasks, candidates):
+    """Hold a batch that carries an improvement already measured as a regression.
+
+    This is the only gate on the promotion path that asks whether a change HELPED
+    rather than whether it COMPILED. It reads improvement_verify's verdicts, which
+    are produced by re-running each proposal's own declared metric_query after its
+    measurement window closes -- a falsifiable prediction, not a model's opinion.
+
+    Returns None to proceed, or a hold dict (same contract as the operator gate:
+    the batch stays on staging, nothing is lost, a later attempt re-evaluates).
+    Set ORCH_RELEASE_VALUE_GATE=false to disable.
+    """
+    if not _truthy("ORCH_RELEASE_VALUE_GATE", True):
+        return None
+    slugs = _batch_slugs(manifest_tasks, candidates)
+    if not slugs:
+        return None
+    regressed = []
+    try:
+        # PostgREST `in.(...)` has a URL-length ceiling; chunk it.
+        for i in range(0, len(slugs), 40):
+            chunk = slugs[i:i + 40]
+            quoted = ",".join('"%s"' % c.replace('"', '') for c in chunk)
+            rows = db.select("improvement_proposals", {
+                "select": "task_slug,status,title,realized_multiplier,required_margin",
+                "status": "eq.regressed",
+                "task_slug": f"in.({quoted})",
+                "limit": "40"}) or []
+            regressed.extend(rows)
+    except Exception as exc:
+        # A gate that cannot read its evidence must not silently pass the batch,
+        # but it must not wedge the train either. Log loudly and proceed.
+        print(f"[value-gate] {project}: could not read improvement verdicts ({exc}); "
+              f"proceeding without the value check")
+        return None
+    if not regressed:
+        if manifest:
+            try:
+                release_manifest.record_gate(manifest["id"], "value", True,
+                                             command=f"{len(slugs)} slug(s); no measured regression")
+            except Exception:
+                pass
+        return None
+
+    names = ", ".join(str(r.get("task_slug")) for r in regressed[:5])
+    note = (f"value gate: {len(regressed)} improvement(s) in this batch were measured as "
+            f"REGRESSIONS against their own declared metric ({names}). Holding on staging. "
+            f"Revert or re-scope them, or set ORCH_RELEASE_VALUE_GATE=false to override.")
+    print(f"[value-gate] {project}: HOLD -- {note}")
+    if manifest:
+        try:
+            release_manifest.record_gate(manifest["id"], "value", False, command=note[:400])
+        except Exception:
+            pass
+    return {"project": project, "value": "RED", "regressed": [r.get("task_slug") for r in regressed],
+            "note": note}
+
+
 def _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha, ahead,
                            qa_note=""):
     """Wave-0 operator review gate (review-gate spec item 1): a QA/build-green staging
@@ -1459,6 +1531,7 @@ def _run_for_unlocked(project, repo_override=None):
     # manifest-less release rather than a stopped one.
     delivery_lease.require(delivery_lease.held(project, delivery_lease.ROLE_RELEASER),
                            f"create release manifest for {project}")
+    manifest_tasks = []
     try:
         import release_manifest
         manifest_tasks = release_manifest.discover_tasks(
@@ -1647,6 +1720,16 @@ def _run_for_unlocked(project, repo_override=None):
     # floors are met — file/consult the kind='release' approval card instead of
     # promoting automatically. Only an approved card (or ORCH_RELEASE_AUTOPROMOTE=true)
     # lets the promotion below run.
+    # VALUE GATE (2026-09-01): every gate above this line asks "is it correct?" -- conflict
+    # markers, IP, tests, build, build provenance. None of them asks "did it help?". Of 1003
+    # improvement proposals, 395 reached status='merged' (their code landed) and exactly ONE
+    # was ever 'validated'. improvement_verify already re-runs each proposal's own
+    # metric_query after its window and writes 'validated' or 'regressed'; nothing on the
+    # promotion path had ever read that verdict. Now a batch carrying a measured regression
+    # does not reach the branch that deploys to production.
+    valued = _release_value_gate(project, manifest, manifest_tasks, candidates)
+    if valued:
+        return valued
     gated = _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha,
                                    int(ahead), qa_note=str(qa_plan.get("reason") or ""))
     if gated:

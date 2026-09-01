@@ -217,8 +217,42 @@ def build_proposal(b, app, title=None, proposal_text=None, predicted_multiplier=
     return row
 
 
+REQUIRE_PREDICTION = os.environ.get(
+    "ORCH_IMPROVE_REQUIRE_PREDICTION", "true").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_falsifiable(row):
+    """True if this proposal can later be proved wrong.
+
+    improvement_verify.evaluate() re-runs `metric_query` after the window and compares
+    the result to `baseline_value` using `comparator` and `required_margin`. Without all
+    four, there is no verdict to reach -- the proposal is unfalsifiable by construction
+    and 'did it add value?' can never be answered for it.
+    """
+    if not str(row.get("metric_query") or "").strip():
+        return False
+    if not str(row.get("comparator") or "").strip():
+        return False
+    return row.get("baseline_value") is not None and row.get("required_margin") is not None
+
+
 def queue(row, existing_slugs=None):
     """Dedupe (G), allocate a collision-free slug (B), insert. Returns the row or None."""
+    # 2026-09-01: of 1003 proposals, 814 (all of July) carried NO metric_query, baseline,
+    # comparator or margin. Their code merged; whether any of it helped is permanently
+    # unknowable. Exactly one proposal in the table has ever been 'validated'. An
+    # improvement that cannot be measured is not an improvement, it is a change -- refuse
+    # to queue it. Set ORCH_IMPROVE_REQUIRE_PREDICTION=false to restore the old behaviour.
+    if REQUIRE_PREDICTION and not is_falsifiable(row):
+        missing = [f for f, ok in (
+            ("metric_query", str(row.get("metric_query") or "").strip()),
+            ("comparator", str(row.get("comparator") or "").strip()),
+            ("baseline_value", row.get("baseline_value") is not None),
+            ("required_margin", row.get("required_margin") is not None)) if not ok]
+        print(f"[improvement_ledger] REFUSED (unfalsifiable): {str(row.get('title'))[:60]!r} "
+              f"— missing {', '.join(missing)}. Nothing could ever prove this helped, so it "
+              f"is not queued. This is the correct outcome, not a failure.")
+        return None
     dup = is_duplicate(row)
     if dup["duplicate"]:
         print(f"[improvement_ledger] dedupe: skipping {row['title'][:60]!r} — "

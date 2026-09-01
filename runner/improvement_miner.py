@@ -427,6 +427,16 @@ def run_measured():
 def run():
     """Dispatch entry point. Measured generation is the default; the legacy template
     path survives only behind ORCH_IMPROVE_LEGACY_TEMPLATE=1 for comparison."""
+    # Improvement window (default 01:00-05:00 local). autopilot calls this in-process
+    # every 180s and survives drain mode, lean mode and the kill switch, so the gate has
+    # to live here rather than only at the scheduler.
+    try:
+        import self_work_gate
+        if not self_work_gate.allow_improvement_now("improvement_miner.run"):
+            return {"detected": 0, "queued": 0, "skipped_duplicate": 0, "window_closed": True}
+    except ImportError:
+        pass
+
     if os.environ.get("ORCH_IMPROVE_LEGACY_TEMPLATE", "").lower() in ("1", "true", "yes", "on"):
         print("improvement_miner: LEGACY template generation explicitly enabled")
         return run_template()
