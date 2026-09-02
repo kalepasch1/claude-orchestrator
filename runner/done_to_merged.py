@@ -176,10 +176,10 @@ def _mark_full_sweep(now=None):
     path = _full_sweep_stamp_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w") as fh:
+        scratch = path + ".tmp"
+        with open(scratch, "w") as fh:
             fh.write("%f" % now)
-        os.replace(tmp, path)
+        os.replace(scratch, path)
     except OSError:
         pass      # a stamp we cannot write means one extra full sweep, not a failure
 

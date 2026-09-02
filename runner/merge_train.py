@@ -650,7 +650,7 @@ def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, 
     cap = int(os.environ.get("MERGE_REGRESSION_REDO_CAP", "2"))
     state = "QUARANTINED"
 
-    # SHARED CAUSE: stop paying per card for one broken symbol. See _REGRESSION_KEY.
+    # SHARED CAUSE: stop paying per card for one broken symbol. See _REGRESSION_LEDGER_PREFIX.
     # Runs BEFORE the repair budget is spent, because the whole cost being removed is
     # the repair run -- and after the roll is recorded, so the count includes this card.
     if _shared_regression_enabled():
@@ -1208,7 +1208,7 @@ def _conflict_ledger_load():
 # The first cards still get their full budget: one of them may resolve the contention,
 # and until several have failed there is no evidence the file is contended at all. A
 # merge on that signature clears it -- the contention is over.
-_HOT_FILE_KEY = "hotfile"
+_HOT_FILE_LEDGER_PREFIX = "hotfile"
 
 
 #: slug -> the conflicting-file signature it last hit, so a later MERGE on that slug can
@@ -1231,7 +1231,7 @@ def _hot_file_enabled():
 
 
 def _hot_file_id(project, sig):
-    return "%s:%s:%s" % (_HOT_FILE_KEY, project or "?", sig or "?")
+    return "%s:%s:%s" % (_HOT_FILE_LEDGER_PREFIX, project or "?", sig or "?")
 
 
 def _hot_file_slugs(project, sig):
@@ -1305,7 +1305,7 @@ def _hot_file_clear(project, sig):
 # cause is shared. After that, the next card carrying the same finding is parked with the
 # shared cause named and its sibling slugs listed, and ONE coordination task is filed for
 # the cause instead of one per card. A merge on that signature clears the roll.
-_REGRESSION_KEY = "regress"
+_REGRESSION_LEDGER_PREFIX = "regress"
 
 #: slug -> the regression signature it last hit, so a later MERGE clears the roll.
 _regression_last_sig = {}
@@ -1346,7 +1346,7 @@ def _regression_signature(detail):
 
 
 def _regression_id(project, sig):
-    return "%s:%s:%s" % (_REGRESSION_KEY, project or "?", sig or "?")
+    return "%s:%s:%s" % (_REGRESSION_LEDGER_PREFIX, project or "?", sig or "?")
 
 
 def _regression_slugs(project, sig):
