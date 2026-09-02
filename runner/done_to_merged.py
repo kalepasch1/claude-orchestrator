@@ -43,6 +43,7 @@ they can -- this closes the paths that do not.
 """
 
 import os
+import time
 
 import db
 
@@ -93,12 +94,38 @@ def _deliberately_branchless(task):
     return False, ""
 
 
+def _rejection_already_recorded(slug, gate, reason):
+    """True when this exact refusal is already on file.
+
+    THE REASON IS RECORDED ONCE, NOT ONCE PER PASS. This function runs on every
+    merge-train tick -- every 60 seconds -- and a task that legitimately has no branch
+    never stops qualifying, so each one re-wrote its own row forever. Measured
+    2026-09-02:
+
+        admission_rejections rows          5,616
+        distinct slugs                       872   (6.4 duplicates each)
+
+    A row per pass is not a record, it is a metronome. Fails OPEN: an unreadable table
+    means write the row, because a missing refusal is a silent DONE task and that is the
+    failure this module exists to stop.
+    """
+    try:
+        rows = db.select("admission_rejections", {
+            "select": "id,gate,reason", "slug": f"eq.{slug}",
+            "gate": f"eq.{gate}", "limit": "20"}) or []
+    except Exception:
+        return False
+    return any(str(r.get("reason") or "") == str(reason)[:500] for r in rows)
+
+
 def record_rejection(task, reason, gate=GATE):
     """Persist why a DONE task gets no card. Fail-soft, but never silent on operator work."""
     slug = str(task.get("slug") or "")[:200]
     operator = bool(str(task.get("submitted_by") or "").strip()
                     or str(task.get("submitted_by_label") or "").strip()
                     or slug.startswith("dropbox-"))
+    if slug and _rejection_already_recorded(slug, gate, reason):
+        return True      # already on file: the contract is satisfied, not re-satisfied
     try:
         db.insert("admission_rejections", {
             "slug": slug,
@@ -124,23 +151,53 @@ def reconcile_missing_cards(within_hours=24, limit=500, project_names=None):
     """
     summary = {"scanned": 0, "already_carded": 0, "cards_filed": 0,
                "rejections_recorded": 0, "errors": 0}
+    # `within_hours` WAS A DEAD PARAMETER. It has been in this signature and this
+    # docstring since the function was written and never reached the query, so every
+    # tick asked for the newest 500 DONE tasks out of 1,017 and the fleet's own
+    # truncation detector said so 154 times in one log:
+    #
+    #   [db] TRUNCATED SCAN done_to_merged.py:128 -> tasks returned exactly its limit
+    #        (500) ordered by updated_at.desc. Anything past the cap is invisible
+    #
+    # Measured 2026-09-02: 517 DONE tasks sat past that cap, 6 of them with no card at
+    # all -- so the promise in the docstring above ("every DONE task either has a card
+    # or a recorded reason") was false for a third of the table, permanently, because
+    # nothing ages back into the newest 500.
+    #
+    # Using the window the signature already declares fixes both halves at once. Only 8
+    # DONE tasks were updated in the last 24h, so the per-tick scan goes from 500 rows
+    # to single digits AND stops truncating -- this runs on every merge-train pass, and
+    # the pass runs every 60 seconds. Pass within_hours=0 for a full sweep, which is
+    # what the periodic backfill wants.
+    params = {
+        # `tasks` has artifact_branch / artifact_ref / base_branch — never a
+        # bare `branch`. Selecting it returned HTTP 400 on every pass, so this
+        # reconcile scanned nothing and no DONE task was ever checked for a
+        # missing card. _branch_of() below already reads both names, which is
+        # why the mismatch survived review: the consumer was tolerant and the
+        # query was not.
+        "select": "id,slug,note,project_id,artifact_branch,"
+                  "submitted_by,submitted_by_label",
+        "state": "eq.DONE",
+        "order": "updated_at.desc",
+        "limit": str(int(limit)),
+    }
+    if within_hours:
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                               time.gmtime(time.time() - float(within_hours) * 3600.0))
+        params["updated_at"] = f"gte.{cutoff}"
     try:
-        tasks = db.select("tasks", {
-            # `tasks` has artifact_branch / artifact_ref / base_branch — never a
-            # bare `branch`. Selecting it returned HTTP 400 on every pass, so this
-            # reconcile scanned nothing and no DONE task was ever checked for a
-            # missing card. _branch_of() below already reads both names, which is
-            # why the mismatch survived review: the consumer was tolerant and the
-            # query was not.
-            "select": "id,slug,note,project_id,artifact_branch,"
-                      "submitted_by,submitted_by_label",
-            "state": "eq.DONE",
-            "order": "updated_at.desc",
-            "limit": str(int(limit))}) or []
+        tasks = db.select("tasks", params) or []
     except Exception as exc:
         print(f"[done->merged] scan failed: {exc}", flush=True)
         summary["errors"] += 1
         return summary
+    if len(tasks) >= int(limit):
+        # Still truncated: say so HERE, where the window is known, rather than leaving
+        # it to a generic db-layer warning nobody attributes to this scan.
+        print(f"[done->merged] scan hit its {limit}-row cap over the last "
+              f"{within_hours or 'all'} hour(s); older DONE tasks were not examined "
+              f"this pass", flush=True)
 
     projects = {}
     try:
