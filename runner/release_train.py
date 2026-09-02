@@ -884,6 +884,84 @@ def _repair_lockfile_only_merge(worktree):
     return True, "staging refreshed; lockfile-only conflict regenerated deterministically"
 
 
+#: Append-only transcripts: every write adds lines, nothing rewrites them. They are NOT
+#: regenerable -- nothing can rebuild a record of what an agent did -- so they are
+#: deliberately absent from regenerable_artifacts. But an append-only file has a merge
+#: that loses nothing: keep BOTH sides.
+#:
+#: Found 2026-09-02, from the fix one layer down naming its own blocker. Once the tag
+#: cache stopped failing kalepasch-com's releases, the row said:
+#:
+#:   lockfile auto-repair: not a lockfile-only conflict;
+#:   conflict includes non-regenerable file(s): .aider.chat.history.md
+#:
+#: which conflicts on every refresh for the same reason the cache did -- two branches
+#: appended different lines.
+_APPEND_ONLY_FILES = (
+    ".aider.chat.history.md",
+    ".aider.input.history",
+)
+
+
+def _is_append_only(path):
+    # `lstrip("./")` would eat the leading dot of EVERY dotfile, so ".aider.chat.
+    # history.md" became "aider.chat.history.md" and matched nothing. My own tests
+    # caught it; regenerable_artifacts.is_regenerable() carries a comment warning
+    # about this exact mistake, which I then made one file over.
+    name = str(path or "").strip()
+    while name.startswith("./"):
+        name = name[2:]
+    return any(name == marker or name.endswith("/" + marker)
+               for marker in _APPEND_ONLY_FILES)
+
+
+def _union_merge_file(worktree, path):
+    """Resolve one conflicted append-only file by keeping BOTH sides. True on success.
+
+    Uses git's own union merge over the three index stages, so the result is what
+    `merge=union` in .gitattributes would have produced -- no bespoke concatenation
+    that could drop a side or reorder it.
+    """
+    import tempfile as _tf
+    stages = {}
+    try:
+        for stage, key in ((1, "base"), (2, "ours"), (3, "theirs")):
+            r = subprocess.run(["git", "show", ":%d:%s" % (stage, path)], cwd=worktree,
+                               capture_output=True, timeout=60)
+            # Stage 1 is absent for a file added on both sides; an empty base is the
+            # right answer there, and git merge-file accepts it.
+            stages[key] = r.stdout if r.returncode == 0 else b""
+        if not stages["ours"] and not stages["theirs"]:
+            return False
+        paths = {}
+        for key, blob in stages.items():
+            fh = _tf.NamedTemporaryFile(prefix="union-%s-" % key, delete=False)
+            fh.write(blob)
+            fh.close()
+            paths[key] = fh.name
+        merged = subprocess.run(
+            ["git", "merge-file", "--union", "-p",
+             paths["ours"], paths["base"], paths["theirs"]],
+            cwd=worktree, capture_output=True, timeout=60)
+        # merge-file exits with the number of conflicts; --union leaves none, but a
+        # non-zero exit with output is still a complete union result.
+        if not merged.stdout and merged.returncode != 0:
+            return False
+        with open(os.path.join(worktree, path), "wb") as out:
+            out.write(merged.stdout)
+        added = subprocess.run(["git", "add", "--", path], cwd=worktree,
+                               capture_output=True, text=True, timeout=30)
+        return added.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        for name in list(locals().get("paths", {}).values()):
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
+
+
 def _repair_regenerable_only_merge(worktree):
     """Resolve a refresh conflict when EVERY conflicting file is machine output.
 
@@ -922,13 +1000,27 @@ def _repair_regenerable_only_merge(worktree):
         import regenerable_artifacts
     except ImportError as exc:
         return False, f"regenerable-artifact classifier unavailable ({exc})"
-    real = [name for name in files if not regenerable_artifacts.is_regenerable(name)]
+    append_only = [name for name in files if _is_append_only(name)]
+    regenerable = [name for name in files
+                   if name not in append_only
+                   and regenerable_artifacts.is_regenerable(name)]
+    real = [name for name in files
+            if name not in append_only and name not in regenerable]
     if real:
         # Say what was NOT exempt: an operator reading this needs to know the refusal
         # was about source, not about the cache that happens to be in the same list.
         return False, ("conflict includes non-regenerable file(s): "
                        + ", ".join(real[:5]) + (" ..." if len(real) > 5 else ""))
-    for name in files:
+    for name in append_only:
+        # UNION, NOT "OURS". These are append-only transcripts of what agents did, and
+        # nothing can rebuild them -- which is exactly why they were kept out of the
+        # regenerable list. Taking one side would DELETE the other side's history.
+        # Concatenating both sides is the correct merge for an append-only log and
+        # loses nothing, which is the only reason this file class can be resolved at
+        # all.
+        if not _union_merge_file(worktree, name):
+            return False, ("could not union-merge append-only file %s" % name)
+    for name in regenerable:
         taken = subprocess.run(["git", "checkout", "--ours", "--", name], cwd=worktree,
                                capture_output=True, text=True, timeout=30)
         if taken.returncode != 0:
@@ -948,10 +1040,15 @@ def _repair_regenerable_only_merge(worktree):
                                capture_output=True, text=True, timeout=60)
     if committed.returncode != 0:
         return False, f"machine-output merge commit failed: {(committed.stderr or '')[-300:]}"
-    print("release_train: refresh conflict was machine output only (%s); took the "
-          "staging side and continued" % ", ".join(files[:5]), flush=True)
-    return True, ("staging refreshed; conflict was machine output only (%s)"
-                  % ", ".join(files[:5]))
+    how = []
+    if regenerable:
+        how.append("took the staging side for %d cache file(s)" % len(regenerable))
+    if append_only:
+        how.append("kept BOTH sides of %d append-only transcript(s)" % len(append_only))
+    detail = "%s: %s" % (", ".join(files[:5]), "; ".join(how))
+    print("release_train: refresh conflict was machine output only — %s" % detail,
+          flush=True)
+    return True, "staging refreshed; conflict was machine output only — %s" % detail
 
 
 def _merge_into_staging(repo, branch):

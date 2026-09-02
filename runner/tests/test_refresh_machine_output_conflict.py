@@ -137,10 +137,16 @@ def test_a_lockfile_conflict_is_not_swallowed_here(conflicted):
 
 
 def test_the_chat_transcript_is_not_treated_as_a_cache(conflicted):
-    """.aider.chat.history.md records what an agent did and nothing can rebuild it."""
+    """.aider.chat.history.md records what an agent did and nothing can rebuild it, so
+    it must NOT be resolved the way a cache is. It is resolved by union instead -- see
+    the append-only section below -- and the property that matters is that neither
+    side is discarded."""
     repo = conflicted(".aider.chat.history.md", "left\n", "right\n")
     ok, _note = release_train._repair_regenerable_only_merge(repo)
-    assert ok is False
+    assert ok is True
+    merged = open(os.path.join(repo, ".aider.chat.history.md")).read()
+    assert "left" in merged and "right" in merged, (
+        "the transcript was resolved by taking one side, which deletes history")
 
 
 def test_no_conflict_at_all_is_not_a_repair(tmp_path):
@@ -173,3 +179,75 @@ def test_the_tag_cache_is_regenerable(path):
 ])
 def test_these_are_not_regenerable(path):
     assert regenerable_artifacts.is_regenerable(path) is False
+
+
+# ── append-only transcripts: union, never "ours" ─────────────────────────────
+#
+# The layer below named its own blocker. Once the tag cache stopped failing
+# kalepasch-com's releases, the row read:
+#
+#   lockfile auto-repair: not a lockfile-only conflict;
+#   conflict includes non-regenerable file(s): .aider.chat.history.md
+#
+# That file conflicts on every refresh for exactly the reason the cache did -- two
+# branches appended different lines -- but it is NOT regenerable: nothing can rebuild a
+# record of what an agent did. Taking one side would delete the other side's history.
+#
+# An append-only log has a merge that loses nothing: keep BOTH sides. That is the only
+# reason this file class can be auto-resolved at all, and it is why "ours" is wrong here
+# and right for the cache.
+
+TRANSCRIPT = ".aider.chat.history.md"
+
+
+def test_an_append_only_transcript_is_resolved(conflicted):
+    repo = conflicted(TRANSCRIPT, "left line\n", "right line\n")
+    ok, note = release_train._repair_regenerable_only_merge(repo)
+    assert ok, note
+
+
+def test_the_union_keeps_both_sides(conflicted):
+    """The whole point. Losing either side is losing a record nothing can rebuild."""
+    repo = conflicted(TRANSCRIPT, "left line\n", "right line\n")
+    release_train._repair_regenerable_only_merge(repo)
+    merged = open(os.path.join(repo, TRANSCRIPT)).read()
+    assert "left line" in merged, "the union dropped our side"
+    assert "right line" in merged, "the union dropped their side"
+    assert "<<<<<<<" not in merged, "conflict markers were committed"
+
+
+def test_a_transcript_and_a_cache_together_are_both_resolved(conflicted):
+    """The real kalepasch-com shape: the cache AND the transcript in one conflict."""
+    repo = conflicted(TRANSCRIPT, "left line\n", "right line\n", extra=[CACHE])
+    ok, note = release_train._repair_regenerable_only_merge(repo)
+    assert ok, note
+    merged = open(os.path.join(repo, TRANSCRIPT)).read()
+    assert "left line" in merged and "right line" in merged
+    assert not _git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+
+
+def test_a_transcript_plus_real_source_is_still_refused(conflicted):
+    repo = conflicted(TRANSCRIPT, "left\n", "right\n", extra=["lib/commerce/coppa.ts"])
+    ok, note = release_train._repair_regenerable_only_merge(repo)
+    assert ok is False
+    assert "coppa.ts" in note
+
+
+def test_the_transcript_is_still_not_classified_as_regenerable():
+    """It is resolvable, which is not the same as rebuildable. If it ever lands in the
+    regenerable list, the resolution silently becomes 'take ours' and deletes history."""
+    assert regenerable_artifacts.is_regenerable(TRANSCRIPT) is False
+    assert regenerable_artifacts.is_regenerable(".aider.input.history") is False
+
+
+@pytest.mark.parametrize("path,expected", [
+    (".aider.chat.history.md", True),
+    (".aider.input.history", True),
+    ("web/.aider.chat.history.md", True),
+    ("./.aider.chat.history.md", True),
+    (".aider.tags.cache.v4/cache.db", False),
+    ("src/app.vue", False),
+    ("CHANGELOG.md", False),
+])
+def test_append_only_classification(path, expected):
+    assert release_train._is_append_only(path) is expected
