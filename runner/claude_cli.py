@@ -22,7 +22,7 @@ Usage (replace every `subprocess.run([CLAUDE_BIN,'-p',...,'--output-format','tex
 API-equivalent figure the CLI reports lives in `notional_usd`; use that when
 comparing models to each other, never when adding up money actually spent.
 """
-import os, sys, json, time, subprocess, threading, logging, asyncio
+import os, sys, json, time, subprocess, threading, logging, asyncio, tempfile, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 log = logging.getLogger(__name__)
@@ -230,12 +230,31 @@ def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
 # ---------------------------------------------------------------------------
 
 def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
-        permission="acceptEdits", timeout=None, output_only=True):
+        permission="acceptEdits", timeout=None, output_only=True, sandbox=False):
     """Metered Claude call.
 
     Returns {text, cost_usd, notional_usd, input_tokens, output_tokens, returncode, raw}.
     cost_usd is billable spend (0 on a subscription); notional_usd is what the
     same tokens would have cost on the API.
+
+    `sandbox=True` is for ADVISORY calls — the ones that only want text back (a spec
+    review, a risk estimate, a draft diff). They run in a throwaway temp directory that
+    is deleted afterwards, so anything the model decides to write cannot land in a repo.
+
+    That is not hypothetical. ORCH_SKIP_PERMISSIONS defaults to true, so every call here
+    gets --dangerously-skip-permissions, and `cwd=None` inherits the CALLER's directory.
+    queue_preopt's five advisory calls passed neither, so they ran with unrestricted
+    write access inside runner/ — the orchestrator's own source tree. A "return a unified
+    diff" prompt for a task belonging to the `tomorrow` project produced
+    runner/server/utils/entity-link.ts and runner/server/utils/__tests__/ in the
+    ORCHESTRATOR repo on 2026-09-01, along with runner/daemon.py, runner/pool.py and a
+    dozen test_*_slice*.py files. None of it was on a branch, so no merge train could
+    ever pick it up; all of it made the tree dirty, which is what stopped fleet_control's
+    auto-pull and failed host_update three times running.
+
+    `project` is not decoration either: run() refuses a call for a paused project, and
+    only 2 of the 44 call sites in this repo passed it. Pausing `beethoven` therefore did
+    not stop model spend on its 105 queued tasks.
     """
     if _paused(project):
         return {"text": "", "cost_usd": 0, "notional_usd": 0, "input_tokens": 0,
@@ -243,6 +262,23 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
                 "skipped": "kill_switch"}
     with _lock:
         _check_budget()          # raises CircuitOpen if over cap
+
+    # An advisory call gets a throwaway directory of its own, whatever the caller passed.
+    # Cleaned up in the finally below, so a model that writes leaves nothing behind.
+    _sandbox_dir = None
+    if sandbox:
+        _sandbox_dir = tempfile.mkdtemp(prefix="orch-advisory-")
+        cwd = _sandbox_dir
+    try:
+        return _run_inner(prompt, model, cwd, env, project, max_turns,
+                          permission, timeout, output_only)
+    finally:
+        if _sandbox_dir:
+            shutil.rmtree(_sandbox_dir, ignore_errors=True)
+
+
+def _run_inner(prompt, model, cwd, env, project, max_turns,
+               permission, timeout, output_only):
 
     # --- Route: Agent SDK vs CLI subprocess ---
     # Both paths use subscription tokens (not API billing). The SDK path gives us
