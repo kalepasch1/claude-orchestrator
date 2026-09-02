@@ -175,6 +175,47 @@ def is_critical_name(symbol):
     return bool(symbol and _CRITICAL.search(symbol))
 
 
+#: SCREAMING_SNAKE_CASE. In TS/JS this names a VALUE, never a function, by universal
+#: convention — and this guard's whole argument ("its NAME promises a computation, so a
+#: constant body means the check no longer runs") is an argument about functions.
+_SCREAMING_SNAKE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+#: A value binding, not a callable: no function keyword, no arrow, no class.
+_CALLABLE_HINT = re.compile(r"\bfunction\b|=>|\bclass\b")
+
+
+def _is_named_constant(name, slice_text):
+    """True for `export const SOME_NAME = <literal>` — a constant, not a stubbed function.
+
+    THE FALSE POSITIVE THIS FIXES (2026-09-01)
+    ------------------------------------------
+    smarter/packages/corpus-lattice/src/admit.ts:49 is
+
+        export const REPLACEMENT_MARGIN = 0.01
+
+    with a nine-line comment above it explaining why it is not zero. _CRITICAL matches
+    case-insensitively, so the domain suffix `Margin` matched `..._MARGIN`, and the
+    structural pass saw an export whose body is a constant. Result:
+
+        REGRESSFAIL — SILENT STUB / SHADOWED RE-EXPORT
+        [fabricated_critical_return] packages/corpus-lattice/src/admit.ts:49
+
+    A constant returning a constant is what a constant IS. And because the finding is
+    BLOCKING, it quarantined every smarter candidate that came near that package — four
+    unrelated cards in one evening, all rejected for the same line, none of which had
+    touched it. The lane cannot clear while one declaration in the BASE trips the gate.
+
+    The teeth are kept where they belong. `computePrice = 0` is not SCREAMING_SNAKE and
+    is still reported. A named constant that was legitimately computed yesterday and is a
+    literal today is a DIFFERENTIAL change, and regression_guard.check_ts_symbols compares
+    pre- and post-merge exports specifically to catch that — which is the only place the
+    distinction can actually be made, because an absolute scan of one file cannot tell a
+    deliberate 0.01 from a fabricated one.
+    """
+    if not _SCREAMING_SNAKE.match(name or ""):
+        return False
+    return not _CALLABLE_HINT.search(slice_text or "")
+
+
 def _home():
     return os.environ.get("CLAUDE_ORCH_HOME",
                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".runtime"))
@@ -291,6 +332,8 @@ def _structural_stubs(path, txt):
         out = []
         for name, slice_text in exports.items():
             if not slice_text:
+                continue
+            if _is_named_constant(name, slice_text):
                 continue
             kind = _rg._ts_stub_kind(slice_text)
             if kind:
