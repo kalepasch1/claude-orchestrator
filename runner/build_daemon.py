@@ -13,6 +13,7 @@ Runs as a periodic job.
 """
 import os, sys, subprocess, json, time, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import active_projects  # a paused repo is not warmed -- see its module docstring
 import build_slots     # this daemon runs REAL production builds; they need a slot
 import db
 
@@ -53,6 +54,15 @@ BUILD_CHECK = os.environ.get("ORCH_BUILD_DAEMON_BUILD_CHECK", "false").lower() i
 def run():
     """Periodic entry: warm all registered project repos."""
     projects = db.select("projects", {"select": "id,name,repo_path,test_cmd,default_base"}) or []
+    # A PAUSED PROJECT IS NOT WARMED. Caught live 2026-09-02 18:19Z: this daemon was
+    # running git fetch + npm install + a full production build every 600s against
+    # /Users/kpasch/Documents/_ARCHIVED-apparently-do-not-use (3.45 GB RSS, 61.8% CPU),
+    # one of four archived repos paused the day before precisely so the fleet would stop
+    # touching them. Five of sixteen projects were paused; all five were being warmed.
+    _skip_note = active_projects.note(projects)
+    if _skip_note:
+        print("[build_daemon] " + _skip_note, flush=True)
+    projects = active_projects.active(projects)
     results = {}
     _sink_errors = []
 

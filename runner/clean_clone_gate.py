@@ -30,6 +30,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import active_projects  # the sweep below is the fleet's most expensive bot
 import build_slots     # the pristine build below is a real one; it needs a slot
 import db
 import guard_tasks
@@ -521,6 +522,13 @@ def run(limit=None):
         return {"enabled": False}
     budget = PER_RUN_LIMIT if limit is None else int(limit)
     projects = db.select("projects", {"select": "*"}) or []
+    # This is the expensive bot by its own docstring: a pristine export, a real install
+    # and the project's real build. Spending that budget on a repo nothing may claim
+    # also starves the live ones, because PER_RUN_LIMIT is shared across all of them.
+    _skip_note = active_projects.note(projects)
+    if _skip_note:
+        print("clean_clone_gate: " + _skip_note, flush=True)
+    projects = active_projects.active(projects)
     filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN)
     summary = {"checked": 0, "cached": 0, "green": 0, "red": 0, "skipped": 0, "tasks_retracted": 0}
     for p in projects:
