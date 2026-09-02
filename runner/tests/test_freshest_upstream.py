@@ -31,7 +31,13 @@ def _commit(repo, name, when):
     with open(os.path.join(repo, name), "w") as fh:
         fh.write(name)
     _git(repo, "add", "-A")
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(when))
+    # "+0000" IS LOAD-BEARING. git reads a bare ISO string with no offset as LOCAL
+    # time, so on any host that is not UTC the commit lands `when` shifted by the
+    # machine's offset -- and test_ref_commit_time_reads_real_dates, which is the only
+    # test here that checks an ABSOLUTE value rather than an ordering, failed by exactly
+    # that offset (1700018000 != 1700000000, i.e. 18000s = UTC-5). The subject was fine
+    # all along: _ref_commit_time asks git for `%ct`, which is a real epoch.
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S+0000", time.gmtime(when))
     _git(repo, "commit", "-m", name, "--no-gpg-sign",
          env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
 
