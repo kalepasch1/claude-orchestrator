@@ -2589,7 +2589,10 @@ def run_task(t):
                 # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
                 # SPECULATIVE EXEC: skip if agent already proved green build
                 if not _spec_skip:
-                    qg = quality_gate.run(wt)
+                    # `base` is passed so the gate can see what THIS branch changed.
+                    # Without it quality_gate.run had no way to tell the candidate's
+                    # test files from the repo's, and its inert-test scan is a no-op.
+                    qg = quality_gate.run(wt, base=base)
                     if not qg["pass"]:
                         if _soft_advisory:
                             _soft_flags.append("quality: " + (qg.get("notes") or "")[:180])
