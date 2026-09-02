@@ -51,7 +51,7 @@ FILE_TASKS = os.environ.get("ORCH_STUB_GUARD_FILE_TASKS", "true").lower() in ("1
 # file) produced zero BLOCKING violations -> check_repo()["ok"] = True -> merge_train._stub_gate
 # returned "stub gate clean". A guard that cannot run must never report clean.
 BLOCKING = {"stub_shadows_reexport", "body_replaced_by_constant", "stub_commit_message",
-            "fabricated_critical_return", "guard_error"}
+            "fabricated_critical_return", "guard_error", "intent_manifest_stub"}
 
 # How a violation ROUTES once found. A fabricated compliance/financial return escalates loudly
 # (notification + approvals card); a plain constant return is logged and files nothing, because a
@@ -61,6 +61,7 @@ TASK_SEVERITY = {
     "body_replaced_by_constant": guard_tasks.CRITICAL,
     "stub_shadows_reexport": guard_tasks.HIGH,
     "stub_commit_message": guard_tasks.HIGH,
+    "intent_manifest_stub": guard_tasks.HIGH,
     "fabricated_constant_return": guard_tasks.ADVISORY,
     "guard_error": guard_tasks.ADVISORY,
 }
@@ -609,6 +610,67 @@ def scan_commit_messages(repo, base, head):
     return out
 
 
+# `.recovery-intent-<slug>.txt` — a manifest of the task's own prompt, committed in place of
+# the work. Shape is identical everywhere it appears:
+#
+#     recovery-intent: <task slug>
+#     template: <hash>
+#     intent: <alphabetised bag of words lifted from the prompt>
+#     originalbase: <branch>
+#
+# No code, no test, no diff to any real file. apparently-law added its own test for this and
+# states the rule exactly: "a run with nothing real to ship must leave the task BLOCKED, not
+# commit a stub manifest" (test/repo-hygiene.test.js). That test is currently RED.
+#
+# MEASURED 2026-09-02, tracked files, live repos:
+#     pareto-2080 173 | pasch 63 | Sustainable_Barks 50 | racefeed 33 | hisanta 33
+#     pmi 19 | apparently-law 18 | smarter 1                      = 390 files, ~124KB in 2080 alone
+#
+# This is the same class stub_guard already blocks in code — a green result standing in for
+# work that did not happen — expressed as a file rather than as a function body.
+_INTENT_STUB_NAME = re.compile(r"(?:^|/)\.recovery-intent-[^/]*\.txt$")
+_INTENT_STUB_HEAD = re.compile(r"\Arecovery-intent:\s*\S")
+
+
+def scan_intent_stubs(repo, base, head):
+    """Intent manifests ADDED by this candidate. Blocking.
+
+    Deliberately diff-scoped, never whole-tree. The 390 already on the base branches must not
+    block every card in those projects forever — that is the precise failure documented above
+    _code_files, where one pre-existing stub refused a whole project. The periodic sweep is
+    where the existing ones get cleaned up; this gate only stops NEW ones landing.
+    """
+    out = []
+    if not base:
+        return out
+    rng = "%s..%s" % (base, head or "HEAD")
+    # --diff-filter=A: added only. A candidate that DELETES these is doing the right thing and
+    # must never be penalised for touching them.
+    rc, names, _ = _git(repo, "diff", "--name-only", "--diff-filter=A", rng)
+    if rc != 0 or not names:
+        return out
+    for name in names.split("\n"):
+        name = name.strip()
+        if not name or not _INTENT_STUB_NAME.search(name):
+            continue
+        # Confirm by CONTENT as well as by name, so a file that merely matches the naming
+        # convention but carries real material is not refused on its filename alone.
+        body = _read(os.path.join(repo, name)) or ""
+        if not _INTENT_STUB_HEAD.match(body):
+            continue
+        out.append(_violation(
+            "intent_manifest_stub", name,
+            "%s is a recovery-intent manifest: the task's own prompt written back out as a "
+            "file, with no code, test or diff behind it. A run that produced nothing real "
+            "must end BLOCKED so the work is visibly still owed; committing a manifest "
+            "instead makes the card look delivered and the debt disappears."
+            % name,
+            "Delete the file and leave the task BLOCKED with the reason it could not be "
+            "completed. If real work WAS done, commit that work — the manifest is not it.",
+            symbol=None))
+    return out
+
+
 # ---------------------------------------------------------------- plumbing
 
 def _code_files(repo):
@@ -714,6 +776,7 @@ def check_repo(repo, branch=None, project=None, base=None):
             attribute_to_candidate(repo, base, result["violations"])
             result["violations"].extend(scan_commit_messages(repo, base, branch or "HEAD"))
             result["violations"].extend(scan_diff_replacements(repo, base, branch or "HEAD"))
+            result["violations"].extend(scan_intent_stubs(repo, base, branch or "HEAD"))
     except (OSError, ValueError, TypeError, re.error) as e:
         result["violations"].append(_violation(
             "guard_error", repo, "stub_guard could not evaluate this repo: %s" % e,
