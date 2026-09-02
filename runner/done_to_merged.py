@@ -50,6 +50,14 @@ import db
 MERGE_KINDS = ("integrate", "merge", "code-merge")
 GATE = "done-without-card"
 
+#: Minutes between FULL sweeps (no time window). The per-tick call looks at the last
+#: `within_hours` only, which is what keeps it to single-digit rows on a query that
+#: runs every 60 seconds -- but a task that goes DONE without a card and then ages out
+#: of that window would become invisible again, which is the exact bug the window was
+#: introduced to fix, only slower. So one call an hour ignores the window entirely.
+FULL_SWEEP_MIN = float(os.environ.get("ORCH_DONE_CARD_FULL_SWEEP_MIN", "60"))
+FULL_SWEEP_LIMIT = int(os.environ.get("ORCH_DONE_CARD_FULL_SWEEP_LIMIT", "2000"))
+
 # Notes that mean "finished, but there is deliberately no branch to integrate".
 # These get a recorded reason instead of a card -- they are correct, not lost.
 NO_BRANCH_NOTE_MARKERS = (
@@ -144,6 +152,38 @@ def record_rejection(task, reason, gate=GATE):
     return True
 
 
+def _full_sweep_stamp_path():
+    home = os.environ.get("CLAUDE_ORCH_HOME") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), ".runtime")
+    return os.path.join(home, "done_to_merged_full_sweep.stamp")
+
+
+def _full_sweep_due(now=None):
+    """True when the hourly window-free sweep is owed. Never raises."""
+    if FULL_SWEEP_MIN <= 0:
+        return False
+    now = time.time() if now is None else now
+    try:
+        with open(_full_sweep_stamp_path()) as fh:
+            last = float((fh.read() or "0").strip() or 0)
+    except (OSError, ValueError):
+        last = 0.0
+    return (now - last) >= FULL_SWEEP_MIN * 60.0
+
+
+def _mark_full_sweep(now=None):
+    now = time.time() if now is None else now
+    path = _full_sweep_stamp_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write("%f" % now)
+        os.replace(tmp, path)
+    except OSError:
+        pass      # a stamp we cannot write means one extra full sweep, not a failure
+
+
 def reconcile_missing_cards(within_hours=24, limit=500, project_names=None):
     """Every DONE task either has a card or a recorded reason. Returns a summary dict.
 
@@ -182,6 +222,18 @@ def reconcile_missing_cards(within_hours=24, limit=500, project_names=None):
         "order": "updated_at.desc",
         "limit": str(int(limit)),
     }
+    # ONE SWEEP AN HOUR IGNORES THE WINDOW. Narrowing the per-tick scan to 24h is what
+    # keeps it to single-digit rows, but on its own it would let a task that goes DONE
+    # without a card simply age out of view -- the same invisibility, arriving more
+    # slowly. The hourly sweep is the backstop, and it is inside this function rather
+    # than in the scheduler so it cannot be forgotten by a caller.
+    full_sweep = bool(within_hours) and _full_sweep_due()
+    if full_sweep:
+        within_hours = 0
+        limit = max(int(limit), FULL_SWEEP_LIMIT)
+        params["limit"] = str(limit)      # params was built above; keep them in step
+        print(f"[done->merged] hourly full sweep: ignoring the {FULL_SWEEP_MIN:.0f}-minute "
+              f"window, scanning up to {limit} DONE task(s)", flush=True)
     if within_hours:
         cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                time.gmtime(time.time() - float(within_hours) * 3600.0))
@@ -192,6 +244,8 @@ def reconcile_missing_cards(within_hours=24, limit=500, project_names=None):
         print(f"[done->merged] scan failed: {exc}", flush=True)
         summary["errors"] += 1
         return summary
+    if full_sweep:
+        _mark_full_sweep()
     if len(tasks) >= int(limit):
         # Still truncated: say so HERE, where the window is known, rather than leaving
         # it to a generic db-layer warning nobody attributes to this scan.

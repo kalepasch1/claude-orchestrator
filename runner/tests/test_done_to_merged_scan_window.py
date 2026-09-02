@@ -66,9 +66,14 @@ class _DB:
 
 
 @pytest.fixture
-def db(monkeypatch):
+def db(monkeypatch, tmp_path):
     d = _DB()
     monkeypatch.setattr(done_to_merged, "db", d)
+    # The hourly full sweep is tested on its own below. Stamp it as just-done so the
+    # window tests exercise the WINDOW rather than the backstop; and point the stamp at
+    # a temp home so no test writes into the live .runtime.
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "home"))
+    done_to_merged._mark_full_sweep()
     return d
 
 
@@ -174,3 +179,70 @@ def test_the_operator_alert_still_fires(db, capsys):
 def test_a_slugless_task_is_still_recorded(db):
     done_to_merged.record_rejection({"project_id": "p"}, "because")
     assert len(db.inserts) == 1
+
+
+# ── the hourly full sweep (added with the window, not after it) ───────────────
+#
+# Narrowing the per-tick scan to 24h is what takes it from 500 rows to 8. On its own
+# it would also let a task that goes DONE without a card simply age out of view -- the
+# same invisibility as the 500-row cap, arriving more slowly. One sweep an hour ignores
+# the window entirely, and it lives inside reconcile_missing_cards() rather than in the
+# scheduler so no caller can forget it.
+
+@pytest.fixture
+def sweep_home(tmp_path, monkeypatch):
+    """A home with NO stamp, so the hourly sweep is due."""
+    home = tmp_path / "sweep-home"
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(home))
+    return home
+
+
+def test_the_first_call_of_the_hour_ignores_the_window(db, sweep_home):
+    done_to_merged.reconcile_missing_cards()
+    assert "updated_at" not in db.queries[0][1], (
+        "the hourly backstop did not run; an aged-out DONE task stays invisible")
+
+
+def test_the_next_call_uses_the_window_again(db, sweep_home):
+    done_to_merged.reconcile_missing_cards()
+    db.queries.clear()
+    done_to_merged.reconcile_missing_cards()
+    assert "updated_at" in db.queries[0][1], "every pass is now a full sweep"
+
+
+def test_the_sweep_comes_due_again(db, sweep_home, monkeypatch):
+    done_to_merged.reconcile_missing_cards()
+    monkeypatch.setattr(done_to_merged, "FULL_SWEEP_MIN", 0.0000001)
+    assert done_to_merged._full_sweep_due()
+
+
+def test_the_sweep_raises_the_row_limit(db, sweep_home):
+    done_to_merged.reconcile_missing_cards(limit=10)
+    assert int(db.queries[0][1]["limit"]) >= done_to_merged.FULL_SWEEP_LIMIT
+
+
+def test_an_explicit_full_sweep_is_not_stamped(db, sweep_home):
+    """within_hours=0 is a caller asking for one; it must not consume the hourly slot."""
+    done_to_merged.reconcile_missing_cards(within_hours=0)
+    db.queries.clear()
+    done_to_merged.reconcile_missing_cards()
+    assert "updated_at" not in db.queries[0][1], (
+        "a manual sweep silently used up the automatic one")
+
+
+def test_the_sweep_can_be_disabled(db, sweep_home, monkeypatch):
+    monkeypatch.setattr(done_to_merged, "FULL_SWEEP_MIN", 0.0)
+    done_to_merged.reconcile_missing_cards()
+    assert "updated_at" in db.queries[0][1]
+
+
+def test_an_unwritable_stamp_does_not_break_the_pass(db, sweep_home, monkeypatch):
+    monkeypatch.setattr(done_to_merged, "_full_sweep_stamp_path",
+                        lambda: "/proc/definitely/not/writable/stamp")
+    out = done_to_merged.reconcile_missing_cards()
+    assert out["errors"] == 0
+
+
+def test_the_stamp_lives_under_claude_orch_home(sweep_home):
+    """Tests must not stamp the live runtime dir -- the conftest fixture is why."""
+    assert str(sweep_home) in done_to_merged._full_sweep_stamp_path()
