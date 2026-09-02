@@ -53,10 +53,36 @@ import fcntl
 import os
 import time
 
+#: Default slot directory, resolved at import for callers that read the constant.
+#: Prefer slot_dir(): it is read at CALL time and honours CLAUDE_ORCH_HOME.
 SLOT_DIR = os.environ.get(
     "ORCH_BUILD_SLOT_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime", "build-slots"),
 )
+
+
+def slot_dir():
+    """Where the slot files live, resolved at call time.
+
+    TESTS MUST NOT CONTEND WITH THE LIVE FLEET. The path used to be a module constant
+    fixed at import, so any test that reached a real hold() took a lock in the
+    orchestrator's OWN .runtime/build-slots and waited on the machine's real builds --
+    up to ORCH_BUILD_SLOT_WAIT_S (900s) of it. On 2026-09-02, once the limiter was wired
+    into the suite path as well as the gates, that surfaced as a clean_clone_gate test
+    timing out while two production builds held both slots.
+
+    This is the same defect the CLAUDE_ORCH_HOME fixture in tests/conftest.py exists to
+    prevent for every other runtime writer -- 94 modules honour it, this one did not.
+    Explicit ORCH_BUILD_SLOT_DIR still wins, so an operator can point the fleet at a
+    specific directory.
+    """
+    override = os.environ.get("ORCH_BUILD_SLOT_DIR")
+    if override:
+        return override
+    home = os.environ.get("CLAUDE_ORCH_HOME")
+    if home:
+        return os.path.join(home, "build-slots")
+    return SLOT_DIR
 
 #: Two, not one: a single slot serialises the whole fleet's builds behind the slowest
 #: repo, and two 5 GB builds still fit on a 48 GB machine with the memory floor below.
@@ -120,7 +146,8 @@ def free_gb():
 
 
 def _slot_paths():
-    return [os.path.join(SLOT_DIR, "build-%02d.slot" % i) for i in range(max_concurrent())]
+    base = slot_dir()
+    return [os.path.join(base, "build-%02d.slot" % i) for i in range(max_concurrent())]
 
 
 def _try_take(path):
