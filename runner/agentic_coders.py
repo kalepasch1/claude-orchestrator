@@ -1041,6 +1041,28 @@ def _agentic_event(kind, coder, model="", project=None, value=0, action=""):
 
 def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **kwargs):
     """Dispatch to the chosen agentic backend, returning claude_cli-shaped output."""
+    # THE SECOND SPEND PATH, AND IT HAD NO KILL SWITCH.
+    #
+    # claude_cli.run has always refused a call for a paused project. This function is
+    # the other half of the fleet's model spend -- cowork-skill, swarm:*, aider, gemini,
+    # codex, every local-model lane -- and it took `project` only to label its telemetry
+    # events. `grep -n is_paused agentic_coders.py` found nothing. So pausing a project
+    # stopped one of the two ways it could spend, and `beethoven`, paused since
+    # 2026-08-24, kept getting coders run against it.
+    #
+    # Same shape as claude_cli's refusal, including the 75 return code (EX_TEMPFAIL:
+    # try later, nothing is wrong with the request), so existing callers that already
+    # branch on that treat both paths identically.
+    try:
+        import claude_cli as _cc
+        _proj = _cc._effective_project(project)
+        if _cc._paused(_proj):
+            return {"text": "", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+                    "returncode": 75, "stderr": f"paused: {_proj}", "coder": coder,
+                    "skipped": "kill_switch"}
+    except Exception:
+        pass          # a guard that cannot look must not be the reason work stops
+
     # --- Cowork skill path: browser automation, document generation, etc. ---
     if coder == "cowork-skill":
         try:
