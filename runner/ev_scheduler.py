@@ -270,21 +270,17 @@ def outcome_weight(task, ctx):
     return max(weight, 0.1)  # floor at 0.1 so nothing is fully zeroed
 
 
-#: Base score when the fleet has NO revenue data at all. Chosen as 1.0, which is
-#: log10(1 + $9) — a deliberately modest stand-in, not a thumb on the scale.
-NO_REVENUE_BASE = _env_float_ev("ORCH_EV_NO_REVENUE_BASE", 1.0)
-
-#: Floor under success_rate, for the same reason outcome_weight() floors its result at
-#: 0.1: a multiplier of exactly zero does not rank a project low, it erases it.
+#: ONE definition, in thermal_map, imported here. Not two.
 #:
-#: success_rate comes from the recent outcomes window, and on 2026-09-02 it read 0.000
-#: for apparently-law and 0.000 for tomorrow -- the two projects whose merges this fleet
-#: exists to land. Zero there makes score() return zero whatever else is true of the
-#: task, so every task in both projects sorts to the bottom and is stamped "near-zero
-#: expected value". They then get capacity last, land nothing, and measure 0.000 again.
-#: A project that has recently succeeded at nothing SHOULD rank low. It should not be
-#: mathematically prevented from ever ranking otherwise.
-SUCCESS_RATE_FLOOR = _env_float_ev("ORCH_EV_SUCCESS_RATE_FLOOR", 0.05)
+#: These floors were first added to this module alone. That accomplished nothing: the
+#: function the queue actually uses is thermal_map.expected_value — _scored_queue() feeds
+#: both park_zero_ev and claim_task's ordering and calls thermal_score(), never score().
+#: Measured on the live queue after that first fix: 0 of 296 tasks below ZERO_EV by
+#: score(), 185 of 296 by the thermal path, and 18 still stamped "near-zero expected
+#: value" per run. Two near-identical scoring functions with independent copies of the
+#: same constant is exactly how a fix lands on the twin nobody calls.
+NO_REVENUE_BASE = thermal_map.NO_REVENUE_BASE
+SUCCESS_RATE_FLOOR = thermal_map.SUCCESS_RATE_FLOOR
 
 
 def score(task, ctx):
@@ -613,13 +609,39 @@ def apply_ranking(scored=None):
     return {"storage": "confidence", "count": n}
 
 
-def park_zero_ev(scored=None):
-    """Annotate near-zero-EV tasks without blocking them (cap PARK_CAP/run)."""
+def park_zero_ev(scored=None, ctx=None):
+    """Annotate near-zero-EV tasks without blocking them (cap PARK_CAP/run).
+
+    PARKS ON VALUE, ORDERS ON VALUE-PER-MINUTE. These are different questions and this
+    function was asking the wrong one.
+
+    `scored` carries thermal_map.score(), which is expected_value DIVIDED BY estimated
+    minutes — the right number for deciding what to claim first, because a cheap
+    high-value task should outrank an equally valuable one that takes an hour. It is the
+    wrong number for this. ZERO_EV is 0.01 and a task worth a perfectly ordinary 1.4,
+    estimated at 480 minutes, scores 0.0029 — so it gets stamped
+
+        [ev-low-priority: near-zero expected value — keep queued, run when capacity
+         allows]
+
+    which is not true of it. It is not near-zero value; it is near-zero value PER MINUTE,
+    because it is big. Measured on the live queue after the multiply-by-zero fix: 159 of
+    294 tasks still below ZERO_EV by rate, and the note misdescribed every one of them.
+    Parking systematically on size also means the largest work is the work that never
+    gets prioritised.
+
+    So the parking test now reads expected_value directly. Ordering is untouched.
+    """
     scored = scored if scored is not None else _scored_queue()
+    ctx = ctx if ctx is not None else load_ctx()
     parked = 0
-    for s, t in scored:
+    for _rate, t in scored:
         if parked >= PARK_CAP:
             break
+        try:
+            s = thermal_map.expected_value(t, ctx)
+        except Exception:
+            continue        # a task we cannot score is not evidence that it is worthless
         if s < ZERO_EV and int(t.get("attempt") or 0) >= 2:
             try:
                 db.update("tasks", {"id": t["id"]},
@@ -743,10 +765,14 @@ def shelve_low_ev(scored=None, threshold=None):
 
 def run():
     try:
-        scored = _scored_queue()
+        # One ctx for the whole run: the ordering and the parking decision must be made
+        # against the same revenue and outcome snapshot, and it saves a second set of
+        # DB reads. park_zero_ev recomputes it only when a caller does not supply one.
+        ctx = load_ctx()
+        scored = _scored_queue(ctx=ctx)
         coverage = scan_coverage(len(scored))
         applied = apply_ranking(scored)
-        parked = park_zero_ev(scored)
+        parked = park_zero_ev(scored, ctx=ctx)
         print(f"ev_scheduler: ranked {len(scored)} queued tasks "
               f"(of {coverage['queue_depth']} in queue, complete={coverage['complete']}, "
               f"storage={applied['storage']}, wrote {applied['count']}), parked {parked}")
