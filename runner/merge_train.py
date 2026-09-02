@@ -1045,6 +1045,47 @@ def _gate_env():
     return env
 
 
+#: Marker written into a task's note carrying the previous rebase attempt's conflicting
+#: file set, so the next attempt can tell "the same collision again" from "progress".
+#: A tag rather than a column: tasks has no field for this and adding one is a schema
+#: change on a live fleet, while the note is already where the train explains itself.
+_CONFLICT_SIG_TAG = "[conflict-files:"
+
+
+def _conflict_signature(conflict_detail):
+    """A stable fingerprint of WHICH files conflicted, order- and noise-insensitive.
+
+    conflict_detail arrives as git's list, e.g. "tests/test_consent_gate.py." or
+    "a.ts, b.ts". Order varies between runs and is meaningless, so sort; the trailing
+    period is punctuation from the caller's sentence, so strip it.
+    """
+    if not conflict_detail:
+        return ""
+    parts = sorted({p.strip().rstrip(".").strip()
+                    for p in str(conflict_detail).replace("\n", ",").split(",")
+                    if p.strip().rstrip(".").strip()})
+    if not parts:
+        return ""
+    import hashlib
+    return hashlib.sha1("|".join(parts).encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _recorded_conflict_signature(task):
+    """The signature the PREVIOUS attempt recorded in this task's note, if any."""
+    note = str((task or {}).get("note") or "")
+    i = note.rfind(_CONFLICT_SIG_TAG)
+    if i < 0:
+        return ""
+    j = note.find("]", i)
+    return note[i + len(_CONFLICT_SIG_TAG):j].strip() if j > i else ""
+
+
+def _stop_on_repeat_conflict():
+    """Off switch, read at call time so it can be changed without a runner restart."""
+    return os.environ.get("ORCH_STOP_ON_REPEAT_CONFLICT", "true").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
 #: project name -> (card slug, epoch seconds it started). Read by the watchdog so a
 #: killed pass names what it was working on instead of only dumping thread stacks.
 #: Written from the per-project worker threads; dict item assignment is atomic under
@@ -2438,6 +2479,36 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         tr = int(task.get("transient_retries") or 0)
         cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
         files_hint = (f" Conflicting files: {conflict_detail}." if conflict_detail else "")
+        # A REDO THAT CONFLICTS ON THE SAME FILES IS NOT CONVERGING.
+        #
+        # Each redo deletes the branch and has an agent rebuild the whole task from
+        # scratch on a fresh base — a full agent run. That is the right move when the
+        # branch was merely stale. It is useless when the branch and the base both
+        # CREATE the same file, because the rebuild writes that file again and collides
+        # in exactly the same place. Every conflict in this log ends "redo cap 4
+        # exhausted", 3,468 of them, and the sampled ones repeat one filename across
+        # every attempt: smarter's bridge-consent-gate card conflicted on
+        # tests/test_consent_gate.py at 3/4, again at 4/4, and was then given up — three
+        # agent rebuilds spent to reproduce the first result twice.
+        #
+        # So: compare this attempt's conflicting-file set with the last one's. Identical
+        # means the rebuild changed nothing that matters, and the remaining budget would
+        # buy more of the same. Any difference means it IS making progress, and the redo
+        # continues. Same principle as the repair-ceiling that already exists for repairs.
+        sig = _conflict_signature(conflict_detail)
+        prev = _recorded_conflict_signature(task)
+        if sig and prev and sig == prev and _stop_on_repeat_conflict():
+            _task_patch(task, {"state": "CONFLICT",
+                               "note": (f"train: rebuild {tr}/{cap} hit the SAME conflict as the "
+                                        f"attempt before it, so the remaining redos would too — "
+                                        f"needs a human rebase, or the colliding work merged "
+                                        f"first.{files_hint}")[:480]})
+            _retire_card(card.get("id"), "conflict-not-converging")
+            _attribute_train_outcome(slug, task, "conflict", integrated=False)
+            _log(pname, slug, "CONFLICT",
+                 f"same conflict two attempts running; stopping at {tr}/{cap} "
+                 f"instead of spending {cap - tr} more agent rebuild(s){files_hint}")
+            return "conflict"
         if tr < cap:
             _delete_branch(repo, branch)
             patch = agentic_repair.repair_patch(
@@ -2446,6 +2517,8 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                 directive=(f"Rebuild the same task on fresh {base}, resolve the conflict in "
                            f"code, run tests, and commit.{files_hint}"))
             patch["transient_retries"] = tr + 1
+            if sig:
+                patch["note"] = (str(patch.get("note") or "") + f" {_CONFLICT_SIG_TAG}{sig}]")[:480]
             _task_patch(task, patch)
             _retire_card(card.get("id"), "redo")
             _log(pname, slug, "REDO", f"rebase conflict{files_hint}, rebuild on fresh {base} ({tr+1}/{cap})")
