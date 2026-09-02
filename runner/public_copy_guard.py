@@ -66,12 +66,13 @@ RULES = [
             # DISCLAIMER says what the product is not, to protect the reader -- the
             # opposite of a disclosure risk, and in this case a legal obligation.
             #
-            # NOTE for whoever reads this next: "not custody", "not money transmission",
-            # "not securities" and "not a broker-dealer" below are the same shape --
-            # standard disclaimers a fintech page is expected to carry. They are left in
-            # because nothing has yet blocked on them and this is the operator's
-            # compliance policy to set, not mine.
-            r"not\s+(?:custody|money transmission|securities|broker[- ]dealer))\b",
+            # "not custody", "not money transmission", "not securities" and "not a
+            # broker-dealer" USED to be here too. Operator decision 2026-09-02: they are
+            # the same shape as the attorney-advertising disclaimer above -- standard
+            # disclaimers a fintech page is expected to carry -- so they no longer block
+            # a release. They are not simply dropped: see DISCLAIMER_RULES below, which
+            # reports them without failing the gate.
+            r"work[- ]product playbook)\b",
             re.I,
         ),
         "Describe compliance value generally; do not publish the legal/regulatory playbook.",
@@ -104,6 +105,32 @@ RULES = [
 
 def _git(repo, *args, timeout=60):
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout)
+
+
+#: Reported, never blocking. These are the phrases an operator wants to KNOW about
+#: rather than be stopped by.
+#:
+#: Operator decision 2026-09-02, after the attorney-advertising disclaimer
+#: ("Informational only, not legal advice") failed nine apparently-law releases: the
+#: regulatory equivalents are the same shape. "not custody", "not money transmission",
+#: "not securities", "not a broker-dealer" are disclaimers a fintech page is expected to
+#: carry -- they say what the product is NOT, to protect the reader, which is the
+#: opposite of disclosing a playbook. Genuine strategy phrasing is still caught by the
+#: `avoid(s|ing) ...` branch in legal_strategy, which is unchanged and still blocks.
+#:
+#: So: the release ships, and a coordination task names the page. The operator sees it
+#: without a failed release.
+DISCLAIMER_RULES = [
+    (
+        "regulatory_disclaimer",
+        re.compile(
+            r"\bnot\s+(?:a\s+)?(?:custody|money transmission|money transmitter|"
+            r"securities|broker[- ]dealer|investment advice)\b",
+            re.I,
+        ),
+        "Regulatory disclaimer published. Allowed; confirm it is the wording you want.",
+    ),
+]
 
 
 def _is_public_file(path):
@@ -178,10 +205,16 @@ def _clean(raw):
     return text
 
 
-def scan_lines(path, lines):
-    """Scan added lines for one public-facing file."""
+def scan_lines(path, lines, rules=None):
+    """Scan added lines for one public-facing file.
+
+    `rules` defaults to the blocking RULES. Pass DISCLAIMER_RULES for the advisory
+    pass -- same masking, same cleaning, same excerpting, so an advisory finding is
+    exactly as trustworthy as a blocking one.
+    """
     if not _is_public_file(path):
         return []
+    rules = RULES if rules is None else rules
     findings = []
     lines = list(lines)
     # A block comment's middle lines start with prose, so they must be masked
@@ -196,7 +229,7 @@ def scan_lines(path, lines):
         if not text:
             continue
         haystack = f"{raw}\n{text}"
-        for rule, pattern, guidance in RULES:
+        for rule, pattern, guidance in rules:
             if pattern.search(haystack):
                 findings.append({
                     "file": path,
@@ -250,17 +283,72 @@ def scan_diff(repo, base_ref, head_ref, project=None):
             "excerpt": (r.stderr or r.stdout or "git diff failed")[-220:],
             "guidance": "Public-copy guard could not inspect the staged release diff.",
         }], "notes": "scan failed"}
-    findings = []
+    findings, advisories = [], []
     for path, added in _added_lines_by_file(r.stdout).items():
         findings.extend(scan_lines(path, added))
+        advisories.extend(scan_lines(path, added, rules=DISCLAIMER_RULES))
     max_findings = int(os.environ.get("ORCH_PUBLIC_COPY_MAX_FINDINGS", "25") or 25)
     findings = findings[:max_findings]
+    advisories = advisories[:max_findings]
+    if advisories:
+        _alert_disclaimers(project, advisories)
+    notes = "ok" if not findings else f"{len(findings)} public-copy disclosure finding(s)"
+    if advisories:
+        notes += f" ({len(advisories)} regulatory disclaimer(s) reported, not blocking)"
     return {
+        # `pass` depends on the BLOCKING findings only. An advisory that failed the gate
+        # would be a blocking rule wearing a different name.
         "pass": not findings,
         "findings": findings,
-        "notes": "ok" if not findings else f"{len(findings)} public-copy disclosure finding(s)",
+        "advisories": advisories,
+        "notes": notes,
         "project": project or "",
     }
+
+
+def _alert_disclaimers(project, advisories):
+    """File ONE coordination task naming the pages. Never raises, never floods.
+
+    Deduped on a signature of (project, file:line set) within ALERT_DEDUPE_HOURS, for
+    the reason done_to_merged learned the hard way: a row per pass is not a record, it
+    is a metronome.
+    """
+    try:
+        import hashlib
+        import json as _json
+        import time as _time
+        import db
+        where = sorted({"%s:%s" % (a.get("file"), a.get("line")) for a in advisories})
+        sig = hashlib.sha256(("%s|%s" % (project or "", "|".join(where))).encode()).hexdigest()[:16]
+        hours = float(os.environ.get("ORCH_COPY_ALERT_DEDUPE_HOURS", "24") or 24)
+        since = _time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                               _time.gmtime(_time.time() - hours * 3600.0))
+        try:
+            seen = db.select("coordination_tasks", {
+                "select": "id,payload", "task_type": "eq.public_copy_disclaimer",
+                "created_at": f"gte.{since}", "limit": "200"}) or []
+        except Exception:
+            seen = []
+        if any(sig in str(row.get("payload") or "") for row in seen):
+            return False
+        db.insert("coordination_tasks", {
+            "task_type": "public_copy_disclaimer",
+            "payload": _json.dumps({
+                "at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                "signature": sig,
+                "project": project or "",
+                "note": ("Regulatory disclaimer wording published. This did NOT block the "
+                         "release; it is here so the wording is seen. Operator decision "
+                         "2026-09-02."),
+                "pages": where,
+                "excerpts": [str(a.get("excerpt"))[:200] for a in advisories[:8]],
+            })[:8000]}, upsert=False)
+        print("public_copy_guard: %d regulatory disclaimer(s) reported for %s (%s) — "
+              "release not blocked" % (len(advisories), project or "?", ", ".join(where[:3])),
+              flush=True)
+        return True
+    except Exception:
+        return False
 
 
 def format_findings(findings):

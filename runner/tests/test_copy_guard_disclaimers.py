@@ -68,12 +68,51 @@ def test_a_required_disclaimer_passes(copy):
     "our legal strategy is to stay under the UPL threshold",
     "the privilege guard keeps work-product strategy out of discovery",
     "avoids broker-dealer registration",
-    "the service is not custody",              # left in deliberately; see the rule
-    "this is not money transmission",
-    "these are not securities",
 ])
 def test_a_regulatory_playbook_is_still_blocked(copy):
     assert _rule(LEGAL).search(copy), "the rule went permissive: %r" % copy
+
+
+# ── the regulatory disclaimers: reported, not blocking ───────────────────────
+#
+# Operator decision 2026-09-02, after the attorney-advertising disclaimer failed nine
+# apparently-law releases: "not custody", "not money transmission", "not securities"
+# and "not a broker-dealer" are the same shape. They say what the product is NOT, to
+# protect the reader, which is the opposite of disclosing a playbook. They no longer
+# block; they file a coordination task naming the page instead.
+
+@pytest.mark.parametrize("copy", [
+    "the service is not custody",
+    "this is not money transmission",
+    "these are not securities",
+    "we are not a broker-dealer",
+    "Nothing here is investment advice.",
+])
+def test_a_regulatory_disclaimer_no_longer_blocks(copy):
+    for name, pattern, _message in public_copy_guard.RULES:
+        assert not pattern.search(copy), "%s still blocks a disclaimer: %r" % (name, copy)
+
+
+@pytest.mark.parametrize("copy", [
+    "the service is not custody",
+    "this is not money transmission",
+    "these are not securities",
+    "we are not a broker-dealer",
+])
+def test_a_regulatory_disclaimer_is_still_reported(copy):
+    """Unblocking is not the same as ignoring. The operator asked to be told."""
+    assert any(p.search(copy) for _n, p, _m in public_copy_guard.DISCLAIMER_RULES), (
+        "a disclaimer was unblocked AND silenced: %r" % copy)
+
+
+@pytest.mark.parametrize("copy", [
+    "avoids SEC registration by design",
+    "our regulatory arbitrage playbook",
+    "Attorney advertising. Informational only, not legal advice.",
+    "Privacy-preserving and compliance-aware.",
+])
+def test_the_advisory_rule_does_not_fire_on_everything_else(copy):
+    assert not any(p.search(copy) for _n, p, _m in public_copy_guard.DISCLAIMER_RULES)
 
 
 # ── the other rules are untouched ────────────────────────────────────────────
@@ -98,3 +137,89 @@ def test_ordinary_marketing_copy_passes_every_rule():
             "answers fast, reviewed by licensed attorneys.")
     for name, pattern, _message in public_copy_guard.RULES:
         assert not pattern.search(copy), "%s flagged ordinary marketing copy" % name
+
+
+# ── the alert: one row per page-set per day, never a metronome ────────────────
+
+class _AlertDB:
+    def __init__(self, existing=None, boom=False):
+        self.existing = existing or []
+        self.boom = boom
+        self.inserts = []
+
+    def select(self, table, params=None):
+        if self.boom:
+            raise RuntimeError("control plane down")
+        return list(self.existing)
+
+    def insert(self, table, row, **kw):
+        self.inserts.append((table, row))
+        return row
+
+
+ADVISORY = [{"file": "app/pages/pricing.vue", "line": 12, "rule": "regulatory_disclaimer",
+             "excerpt": "this is not money transmission", "guidance": "..."}]
+
+
+def test_the_alert_names_the_page(monkeypatch):
+    db = _AlertDB()
+    monkeypatch.setitem(sys.modules, "db", db)
+    assert public_copy_guard._alert_disclaimers("kalepasch-com", ADVISORY) is True
+    table, row = db.inserts[0]
+    assert table == "coordination_tasks"
+    assert row["task_type"] == "public_copy_disclaimer"
+    assert "app/pages/pricing.vue:12" in row["payload"]
+    assert "kalepasch-com" in row["payload"]
+
+
+def test_the_same_pages_are_not_alerted_twice(monkeypatch):
+    db = _AlertDB()
+    monkeypatch.setitem(sys.modules, "db", db)
+    public_copy_guard._alert_disclaimers("p", ADVISORY)
+    sig = [r for _t, r in db.inserts][0]["payload"]
+    db2 = _AlertDB(existing=[{"id": "1", "payload": sig}])
+    monkeypatch.setitem(sys.modules, "db", db2)
+    assert public_copy_guard._alert_disclaimers("p", ADVISORY) is False
+    assert db2.inserts == []
+
+
+def test_a_different_page_gets_its_own_alert(monkeypatch):
+    db = _AlertDB()
+    monkeypatch.setitem(sys.modules, "db", db)
+    public_copy_guard._alert_disclaimers("p", ADVISORY)
+    first = db.inserts[0][1]["payload"]
+    other = [dict(ADVISORY[0], file="app/pages/terms.vue", line=99)]
+    db2 = _AlertDB(existing=[{"id": "1", "payload": first}])
+    monkeypatch.setitem(sys.modules, "db", db2)
+    assert public_copy_guard._alert_disclaimers("p", other) is True
+
+
+def test_an_unreadable_dedupe_check_still_records_the_alert(monkeypatch):
+    """Fail-open on the DEDUPE read: an alert nobody can look up is worse than a
+    duplicate one. Same reasoning as done_to_merged's rejection recorder."""
+    db = _AlertDB(boom=True)
+    monkeypatch.setitem(sys.modules, "db", db)
+    assert public_copy_guard._alert_disclaimers("p", ADVISORY) is True
+    assert db.inserts, "the alert was dropped because the dedupe read failed"
+
+
+def test_a_fully_unreachable_control_plane_never_breaks_the_gate(monkeypatch):
+    """The guarantee that matters: reporting must never be why a release fails."""
+    class _Dead:
+        def select(self, *a, **k):
+            raise RuntimeError("down")
+
+        def insert(self, *a, **k):
+            raise RuntimeError("down")
+
+    monkeypatch.setitem(sys.modules, "db", _Dead())
+    assert public_copy_guard._alert_disclaimers("p", ADVISORY) is False
+
+
+def test_scan_lines_can_be_pointed_at_either_rule_set():
+    line = [(1, '<p>this is not money transmission</p>')]
+    path = "app/pages/pricing.vue"
+    assert public_copy_guard.scan_lines(path, line) == []
+    advisory = public_copy_guard.scan_lines(path, line,
+                                            rules=public_copy_guard.DISCLAIMER_RULES)
+    assert advisory and advisory[0]["rule"] == "regulatory_disclaimer"
