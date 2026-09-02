@@ -1258,6 +1258,48 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
         if shadow_mode.refuse("promote-to-production", project=project,
                               subject=prod, detail=f"{STAGING} -> origin/{prod} ({to_sha[:12]})"):
             return False, to_sha, "shadow mode: promotion withheld, production was not moved"
+        # PUBLISH THE INTEGRATED TIP TO STAGING BEFORE PROMOTING IT.
+        #
+        # _integrate_prod_into_staging() above creates a NEW merge commit on the local
+        # STAGING branch. Pushing that straight to prod means promoting a commit that
+        # exists only on this machine's disk -- and production_push_guard refuses it,
+        # correctly and by design:
+        #
+        #   production_push_guard: BLOCKED — production push that never met staging
+        #   11fad7ff6a31 is not contained in origin/orchestrator/dev — 1 commit(s)
+        #   would reach production without ever being integrated on staging.
+        #
+        # sustainable-barks failed 45 releases on 2026-09-02 with nothing in the row but
+        # git's last line, "error: failed to push some refs". The refusal above it was
+        # the actual reason, and the guard's own remedy text is exactly this sequence:
+        #
+        #     git push origin HEAD:refs/heads/orchestrator/dev
+        #     git push origin <new-dev-sha>:refs/heads/main
+        #
+        # FAIL-CLOSED. If the integrated tip cannot reach the shared staging branch, the
+        # release does not happen: promoting it anyway is how a machine's local merge
+        # ends up in production without ever meeting the rest of the in-flight work,
+        # which is the entire failure this guard exists to prevent.
+        if _git(repo, "merge-base", "--is-ancestor", to_sha,
+                f"origin/{STAGING}").returncode != 0:
+            if shadow_mode.refuse("push-integration-branch", project=project,
+                                  subject=STAGING,
+                                  detail=f"{STAGING} -> origin/{STAGING} ({to_sha[:12]})"):
+                return False, to_sha, ("shadow mode: staging publish withheld, "
+                                       "production was not moved")
+            sp = _git(repo, "push", "origin", f"{STAGING}:{STAGING}", timeout=300)
+            if sp.returncode != 0:
+                slog = ((sp.stdout or "")[-1000:] + "\n" + (sp.stderr or "")[-1000:]).strip()
+                if _is_non_fast_forward(sp) and attempt < attempts:
+                    # origin/<staging> moved while we were integrating. Re-integrate on
+                    # top of it and try the whole sequence again.
+                    continue
+                _insert_failed_release(
+                    project, "staging-publish", ahead, release_base_sha, to_sha,
+                    f"push {STAGING}->origin/{STAGING} failed: "
+                    f"{stderr_digest.digest(slog, 160)}")
+                return False, to_sha, slog or "push staging to origin failed"
+            _git(repo, "fetch", "origin", STAGING)
         pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
         if pr.returncode == 0:
             # Keep local prod fresh when possible, but do not fail a good remote release
