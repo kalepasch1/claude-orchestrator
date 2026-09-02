@@ -127,6 +127,72 @@ def test_a_failing_git_leaves_the_count_unchanged(repo, monkeypatch):
     assert before == after
 
 
+def test_an_existing_lock_means_hands_off(repo):
+    """Someone else is packing, or already left one. Either way it is not ours."""
+    _make_branches(repo, 40)
+    lock = os.path.join(repo, ".git", "packed-refs.lock")
+    open(lock, "w").close()
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(wg, "PACK_REFS_MIN_LOOSE", 10)
+            before, after = wg.pack_refs(repo)
+        assert before == after, "packed while another process held the lock"
+        assert os.path.exists(lock), "removed a lock that was not ours"
+    finally:
+        os.remove(lock)
+
+
+def test_a_lock_we_created_is_cleaned_up_when_the_call_fails(repo, monkeypatch, capsys):
+    """The regression that matters most in this file.
+
+    _run_git bounds its subprocesses, so on a big repo `git pack-refs` can be KILLED
+    mid-write. git leaves .git/packed-refs.lock behind, and after that EVERY branch
+    create, fetch and commit in that repo fails with "Unable to create ...
+    packed-refs.lock: File exists" until a human deletes it — which is a far worse
+    outcome than the slow ref enumeration this exists to fix. It happened for real in
+    the orchestrator's own repo the first time this code ran.
+    """
+    _make_branches(repo, 40)
+    lock = os.path.join(repo, ".git", "packed-refs.lock")
+
+    class _Killed:
+        returncode = -9
+        stdout = ""
+        stderr = "killed"
+
+    def _fake(args, r, *a, **k):
+        open(lock, "w").close()          # what git leaves behind when it dies here
+        return _Killed()
+
+    monkeypatch.setattr(wg, "PACK_REFS_MIN_LOOSE", 10)
+    monkeypatch.setattr(wg, "_run_git", _fake)
+    before, after = wg.pack_refs(repo)
+
+    assert before == after
+    assert not os.path.exists(lock), (
+        "pack_refs left its own packed-refs.lock behind — every later ref update in "
+        "this repo would fail until someone deleted it by hand"
+    )
+    assert "stale packed-refs.lock" in capsys.readouterr().out
+
+
+def test_the_repo_still_works_after_a_killed_pack(repo, monkeypatch):
+    """Not just 'the file is gone' — git must actually be able to write a ref again."""
+    _make_branches(repo, 40)
+    lock = os.path.join(repo, ".git", "packed-refs.lock")
+
+    class _Killed:
+        returncode = -9
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(wg, "PACK_REFS_MIN_LOOSE", 10)
+    monkeypatch.setattr(wg, "_run_git",
+                        lambda *a, **k: (open(lock, "w").close(), _Killed())[1])
+    wg.pack_refs(repo)
+    assert _git(repo, "branch", "after-the-kill").returncode == 0
+
+
 def test_the_loose_count_is_bounded(repo):
     """A repo with a pathological ref tree must not make the counter the slow part."""
     _make_branches(repo, 30)

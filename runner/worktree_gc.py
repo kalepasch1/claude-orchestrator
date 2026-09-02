@@ -622,11 +622,33 @@ def pack_refs(repo, dry_run=False):
     before = _loose_ref_count(repo)
     if before < PACK_REFS_MIN_LOOSE or dry_run:
         return (before, before)
+    # A LOCK WE LEAVE BEHIND BREAKS EVERY LATER REF UPDATE IN THIS REPO.
+    #
+    # git holds .git/packed-refs.lock for the duration of pack-refs, and _run_git bounds
+    # its subprocesses — so on a big repo the call can be KILLED mid-write, leaving the
+    # lock file behind. After that every branch create, fetch and commit in that repo
+    # fails with "Unable to create ... packed-refs.lock: File exists" until a human
+    # deletes it. That is a far worse outcome than the slow ref enumeration this is
+    # meant to fix, and it happened in this very repo the first time the code ran.
+    #
+    # So: if a lock is already there, someone else is packing (or already left one) and
+    # this is not ours to touch — skip. If there was none when we started and the call
+    # fails, the lock is unambiguously ours, and we remove it.
+    lock = os.path.join(repo, ".git", "packed-refs.lock")
+    if os.path.exists(lock):
+        return (before, before)
     try:
         r = _run_git(["git", "pack-refs", "--all"], repo)
-        if getattr(r, "returncode", 1) != 0:
-            return (before, before)
+        ok = getattr(r, "returncode", 1) == 0
     except Exception:
+        ok = False
+    if not ok:
+        try:
+            if os.path.exists(lock):
+                os.remove(lock)
+                print(f"worktree_gc: removed our own stale packed-refs.lock in {repo}")
+        except OSError:
+            pass
         return (before, before)
     return (before, _loose_ref_count(repo))
 
