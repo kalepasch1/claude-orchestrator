@@ -3520,6 +3520,42 @@ def _train_run_unleased(report=None):
 
     items = list(by_project.items())
     workers = min(len(items), max(1, int(os.environ.get("MERGE_TRAIN_PROJECT_WORKERS", "4"))))
+    # GATE CONCURRENCY OBEYS THE SAME CPU CURVE AS EVERYTHING ELSE.
+    #
+    # resource_governor clamps TASK LANES on load (soft 1.5, hard 3.0 per core) and has
+    # for a long time. It never saw this: four project workers, each running a suite and
+    # a production build, are gate machinery, not lanes, so the fleet could be clamped to
+    # one lane while four trains hammered the box.
+    #
+    # What that costs is not throughput, it is TRUST IN THE VERDICTS. Measured across the
+    # 42 TESTFAILs carrying a load annotation on 2026-09-02, split in half by time:
+    #
+    #     first half    median load/core 1.65   67% over the 1.50 threshold   max 2.80
+    #     second half   median load/core 3.32   86% over                      max 4.85
+    #
+    # The second half is above the governor's own HARD threshold. The train's own
+    # _load_note says a result taken there "may be about the machine, not the code", and
+    # two of them quarantine a task. Four workers is what produces that load, so four
+    # workers is what buys the false quarantines.
+    #
+    # Reuses the governor's existing curve rather than inventing a knob, and it is
+    # adaptive in both directions: a quiet machine gets all four back on the next pass.
+    # Fails open -- an unreadable load average clamps nothing.
+    try:
+        import resource_governor
+        _pc = resource_governor.load_per_core()
+        if _pc is not None:
+            _budget = max(1, int(resource_governor.cpu_budget(workers, _pc)))
+            if _budget < workers:
+                print("merge_train: load/core %.2f (soft %.1f hard %.1f) — running %d "
+                      "project worker(s) instead of %d; a verdict from a saturated box "
+                      "is not a verdict about the code"
+                      % (_pc, resource_governor._cpu_soft(), resource_governor._cpu_hard(),
+                         _budget, workers), flush=True)
+                workers = _budget
+    except Exception as _cpu_exc:
+        print(f"merge_train: CPU budget check unavailable ({_cpu_exc}); "
+              f"running {workers} project worker(s)", flush=True)
     if items:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                    thread_name_prefix="merge-project") as pool:
