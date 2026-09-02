@@ -3621,21 +3621,34 @@ def train_run():
     except Exception as _io_exc:      # a broken owner check must never stall every host
         print(f"merge_train: integration-owner check failed ({_io_exc}); proceeding", flush=True)
 
-    # FAILURE 1 (2026-08-06): most DONE tasks never reach integrate(), so no card is
-    # ever filed and the train cannot see them. Reconcile before the pass so this
-    # cycle's scan includes work that finished on a card-less path. Fail-soft: a
-    # reconciler outage must degrade to the old behaviour, not stop integration.
-    try:
-        import done_to_merged
-        done_to_merged.reconcile_missing_cards()
-    except Exception as _rc_exc:
-        print(f"merge_train: card reconciler unavailable ({_rc_exc}); continuing", flush=True)
-
     timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
     with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
         if not acquired:
             return _end("lease-not-acquired",
                         {"skipped": "another integration or release train owns the global lease"})
+        # FAILURE 1 (2026-08-06): most DONE tasks never reach integrate(), so no card is
+        # ever filed and the train cannot see them. Reconcile before the pass so this
+        # cycle's scan includes work that finished on a card-less path. Fail-soft: a
+        # reconciler outage must degrade to the old behaviour, not stop integration.
+        #
+        # INSIDE THE LEASE (2026-09-02), not before it. This is the "500 scanned, 498
+        # carded" step and it takes 20-100s against Supabase. runner.integrate() calls
+        # train_run() inline the instant each task finishes, on top of the 60s scheduled
+        # pass, so while one pass holds the lease every other caller was paying that scan
+        # in full and then being turned away. Measured over one merge-train log: 70 of
+        # 659 passes ended lease-not-acquired, 1403s of wall time between them (mean 20s,
+        # and 60-105s each in the recent window where passes run 1284-2137s and a dozen
+        # callers queue up behind one).
+        #
+        # Nothing is lost by moving it: the reconciler writes cards for whichever pass
+        # actually runs, and that pass does its own reconcile here first. It still runs
+        # before the scan, which is the whole requirement in the note above.
+        try:
+            import done_to_merged
+            done_to_merged.reconcile_missing_cards()
+        except Exception as _rc_exc:
+            print(f"merge_train: card reconciler unavailable ({_rc_exc}); continuing",
+                  flush=True)
         try:
             summary = _train_run_unleased(report=report)
             if report is not None:
