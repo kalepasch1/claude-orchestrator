@@ -47,6 +47,11 @@ MODEL_CLAMP_THRASH_N = int(os.environ.get("MEDIC_MODEL_CLAMP_N", "4"))
 RESTART_STORM_N = int(os.environ.get("MEDIC_RESTART_STORM_N", "6"))
 AGENT_MAX_MIN = int(os.environ.get("MEDIC_AGENT_MAX_MIN", "150"))
 LOG_CAP_MB = int(os.environ.get("MEDIC_LOG_CAP_MB", "20"))
+#: Minutes an ORPHANED build/test process may outlive its spawner before the medic
+#: kills it. 30, not 150: the gates' own ceiling is MERGE_TRAIN_TEST_TIMEOUT (900s),
+#: so a build that has been parentless for half an hour is past any budget that could
+#: still have used its exit status. Set MEDIC_BUILD_ORPHAN_MAX_MIN=0 to disable.
+BUILD_ORPHAN_MAX_MIN = int(os.environ.get("MEDIC_BUILD_ORPHAN_MAX_MIN", "30"))
 PRESSURE_WARN = int(os.environ.get("MEDIC_PRESSURE_WARN_PCT", "25"))   # free% below this = warn
 PRESSURE_CRIT = int(os.environ.get("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% below this = critical
 
@@ -219,6 +224,83 @@ def _agent_procs():
     return res
 
 
+#: Command signatures of the build/test tools the gates spawn. Matched against the
+#: lowercased command line. Deliberately narrow: this list is the whole safety
+#: argument for killing by pattern, so it names tools, not the word "node".
+_BUILD_TOOL_MARKERS = (
+    "nuxt build", "nuxt dev", "nuxt.mjs build", "nuxt.mjs dev", "bin/nuxt",
+    "vite build", "vite dev", "next build", "next dev",
+    "vitest", "jest", "playwright test", "cypress run",
+    "npm run build", "npm run dev", "npm run test", "npm run lint", "npm test",
+    "pnpm run build", "pnpm run dev", "pnpm run test", "pnpm build", "pnpm test",
+    "yarn build", "yarn dev", "yarn test",
+    "-m pytest", "bin/pytest", "tsc --noemit", "tsc -p",
+)
+
+#: Never reap these, whatever else matches. The runner and its own periodic jobs are
+#: long-lived by design, and the medic must never kill the thing that runs the medic.
+_NEVER_REAP_MARKERS = (
+    "runner.py", "sentinel.py", "resource_medic", "keepalive.sh",
+    "merge_train.py", "release_train.py", "claudeRunner".lower(),
+)
+
+
+def _orphaned_build_procs():
+    """[(secs, pid, cmd)] of parentless build/test processes.
+
+    ppid == 1 is the whole point. A build the gates started has a live parent that is
+    waiting on its exit status; once that parent is gone the process has been reparented
+    to launchd and NOTHING can ever read its result. It is pure load. On 2026-09-01 this
+    machine was carrying twelve of them — a `nuxt run dev:full` at 12h53m and 415% CPU,
+    two `nuxt build`s inside _ARCHIVED-apparently-do-not-use, a `pnpm run build:vercel`
+    at 4h58m — and sat at a 1-minute load average of 59. Every test verdict the merge
+    train produced in that state is suspect, and production_push_guard's load cool-down
+    (threshold: cores x 0.5) could never settle, so every red suite it saw cost the full
+    180s wait before a re-run that was just as contended.
+    """
+    res = []
+    try:
+        out = sh("ps", "-axo", "pid=,ppid=,etimes=,command=", timeout=20).stdout
+    except Exception:
+        return res
+    for line in out.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, ppid, et, cmd = parts
+        if ppid != "1":
+            continue                      # still has a parent that can use the result
+        low = cmd.lower()
+        if any(m in low for m in _NEVER_REAP_MARKERS):
+            continue
+        if not any(m in low for m in _BUILD_TOOL_MARKERS):
+            continue
+        try:
+            secs = int(et)
+            if int(pid) <= 1 or int(pid) == os.getpid():
+                continue
+        except ValueError:
+            continue
+        res.append((secs, pid, cmd))
+    res.sort(reverse=True)
+    return res
+
+
+def reap_orphaned_builds():
+    """Kill parentless build/test processes past BUILD_ORPHAN_MAX_MIN. Returns the count."""
+    if BUILD_ORPHAN_MAX_MIN <= 0:
+        return 0
+    killed = 0
+    for secs, pid, cmd in _orphaned_build_procs():
+        if secs < BUILD_ORPHAN_MAX_MIN * 60:
+            continue
+        sh("kill", "-9", pid)
+        journal("process_hygiene", "reaped-orphan-build",
+                f"pid={pid} age={secs // 60}min {cmd[:80]}")
+        killed += 1
+    return killed
+
+
 def _reap_oldest_agent():
     procs = _agent_procs()
     if procs:
@@ -349,6 +431,11 @@ def process_hygiene():
         if secs >= AGENT_MAX_MIN * 60:
             sh("kill", "-9", pid)
             journal("process_hygiene", "reaped-zombie-agent", f"pid={pid} age={secs // 60}min {cmd[:50]}")
+    # orphaned build/test processes (parentless, holding CPU — see _orphaned_build_procs)
+    try:
+        reap_orphaned_builds()
+    except Exception:
+        pass
     # orphaned llama-servers (parentless, holding VRAM)
     try:
         for line in sh("pgrep", "-fl", "llama-server", timeout=15).stdout.splitlines():
