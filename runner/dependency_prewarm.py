@@ -502,9 +502,64 @@ def _load_bearing(repo, rel_pkg, manifest):
     return name in _RUNTIME_CRITICAL or name.split("/")[0] in ("@nuxt", "@vue", "@vitejs")
 
 
+#: Every place a Nuxt 3 CLI entrypoint has lived. `nuxi` was the package until ~3.13,
+#: `@nuxt/cli` after it, and `nuxt/bin/nuxt.mjs` is the launcher the `nuxt` package
+#: itself ships. Naming one of these is what made readiness unsatisfiable for darwn.
+_NUXT_LAUNCHERS = (
+    ("nuxi", "bin", "nuxi.mjs"),
+    ("@nuxt", "cli", "bin", "nuxi.mjs"),
+    ("@nuxt", "cli", "dist", "index.mjs"),
+    ("nuxt", "bin", "nuxt.mjs"),
+)
+
+
+def _nuxt_launcher(node_modules):
+    """Path of a real Nuxt CLI module in this tree, or "" when there is none.
+
+    Two ways to find one, because the shim is not the same object everywhere:
+
+    * .bin/nuxt is a SYMLINK under npm, so os.path.isfile() follows it and a shim left
+      dangling by a pruned install answers False -- the partial-install case this check
+      exists for. Its realpath is the launcher.
+    * Under pnpm (and after some copies) .bin/nuxt is a real script that imports the
+      module, so the shim existing proves nothing about the module. Hence the second
+      pass over the paths the CLI has actually shipped at.
+
+    Version-independent by construction: a new Nuxt that moves the CLI again needs one
+    tuple added here, not a fleet whose gate no install can pass.
+    """
+    bin_dir = os.path.join(node_modules, ".bin")
+    for name in ("nuxt", "nuxi"):
+        shim = os.path.join(bin_dir, name)
+        if os.path.islink(shim) and os.path.isfile(shim):
+            return os.path.realpath(shim)
+    for parts in _NUXT_LAUNCHERS:
+        candidate = os.path.join(node_modules, *parts)
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
 def _deps_ready_local(repo):
+    """True when this checkout's dependencies are usable. See _deps_ready_reason."""
+    return _deps_ready_reason(repo)[0]
+
+
+def _deps_ready_reason(repo):
+    """(ready, reason). The reason names WHICH of the six checks below said no.
+
+    "installed snapshot failed dependency readiness validation" appeared 11 times in
+    one merge-train log on 2026-09-02 -- seven of them in a single afternoon window,
+    every one a darwn card that had already paid 100-240s of share-deps and a full
+    rebase before the build gate refused it, and then bought an agentic repair on top.
+    The message named none of the six independent conditions that produce it, so the
+    repair agent, the log and I were all told the same thing: something about deps.
+
+    This is the same defect failure_excerpt.py exists to fix on the test side. The
+    boolean contract is unchanged for every existing caller; only the message improves.
+    """
     if not os.path.isfile(os.path.join(repo, "package.json")):
-        return True
+        return True, ""
     manifest = {}
     try:
         with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
@@ -532,7 +587,7 @@ def _deps_ready_local(repo):
     # `npm ci` legitimately creates no node_modules directory for a zero-dependency
     # package. Treating that as broken caused infinite repair work for leaf packages.
     if not os.path.isdir(nm) and declared_deps:
-        return False
+        return False, "no node_modules/ but package.json declares dependencies"
     scripts = _load_scripts(repo)
     joined = " ".join(str(v).lower() for v in scripts.values())
     required_bins = []
@@ -556,11 +611,14 @@ def _deps_ready_local(repo):
     if "tsc" in joined or "typescript" in joined or _declares_ts:
         required_bins.append(("tsc", "vue-tsc"))
     if not os.path.isdir(nm):
-        return not required_bins
+        if required_bins:
+            return False, ("no node_modules/ and this project needs "
+                           + "/".join("|".join(c) for c in required_bins))
+        return True, ""
     bin_dir = os.path.join(nm, ".bin")
     for choices in required_bins:
         if not any(os.path.exists(os.path.join(bin_dir, c)) for c in choices):
-            return False
+            return False, "node_modules/.bin/%s missing" % ("|".join(choices))
     # A launcher can survive a partial/pruned install while the module it imports
     # has disappeared. Nuxt then fails at startup with a misleading
     # ERR_MODULE_NOT_FOUND for @nuxt/cli/dist/index.mjs; the old check accepted
@@ -568,12 +626,38 @@ def _deps_ready_local(repo):
     # set of runtime entrypoints that makes a Nuxt/Vue install actually usable.
     is_nuxt = any("nuxt" in group for group in required_bins)
     if is_nuxt:
-        required_files = (
-            ("@nuxt", "cli", "dist", "index.mjs"),
-            ("@vue", "compiler-sfc", "dist", "compiler-sfc.cjs.js"),
-        )
-        if not all(os.path.isfile(os.path.join(nm, *parts)) for parts in required_files):
-            return False
+        _absent = []
+        # @vue/compiler-sfc has lived at the same path across every Nuxt 3 release, and
+        # a Nuxt install without it really is broken.
+        if not os.path.isfile(os.path.join(nm, "@vue", "compiler-sfc", "dist",
+                                           "compiler-sfc.cjs.js")):
+            _absent.append("@vue/compiler-sfc/dist/compiler-sfc.cjs.js")
+        # THE LAUNCHER, RESOLVED -- NOT ONE VERSION'S PACKAGE NAME.
+        #
+        # This used to require @nuxt/cli/dist/index.mjs outright. Nuxt moved its CLI
+        # from the `nuxi` package into `@nuxt/cli` around 3.13, so on 2026-09-02 that
+        # made readiness UNSATISFIABLE for darwn (nuxt 3.12.2), whose .bin/nuxt points
+        # at ../nuxi/bin/nuxi.mjs and whose install is completely healthy:
+        #
+        #     darwn     nuxt 3.12.2   .bin/nuxt -> ../nuxi/bin/nuxi.mjs      no @nuxt/cli
+        #     tomorrow  nuxt 3.21.10  .bin/nuxt -> ../@nuxt/cli/bin/nuxi.mjs
+        #     smarter   nuxt 3.13.2   .bin/nuxt -> ../@nuxt/cli/bin/nuxi.mjs
+        #
+        # Seven darwn cards in one afternoon paid a full rebase, 100-240s of
+        # share-deps and an agentic repair each, to be refused by a check no install of
+        # that Nuxt version could ever pass. The module's own comments call this shape
+        # out twice already ("a gate nothing can satisfy does not stop bad builds, it
+        # manufactures repair work"); this was the third instance.
+        #
+        # What the check was actually FOR still holds: .bin/nuxt is a symlink, and a
+        # pruned install leaves the shim pointing at a file that is gone. So resolve
+        # the shim and require its TARGET -- which is version-independent, and is a
+        # stricter test than naming a package, because it follows the link.
+        if not _nuxt_launcher(nm):
+            _absent.append("the nuxt CLI behind node_modules/.bin/nuxt "
+                           "(dangling shim or no launcher installed)")
+        if _absent:
+            return False, "nuxt runtime entrypoint(s) missing: " + ", ".join(_absent)
     # Catch the general case the two hardcoded probes above only sample: any package left
     # entrypoint-less by a concurrent install. Reporting not-ready sends this checkout back
     # through a reinstall instead of into a build that dies on ERR_MODULE_NOT_FOUND.
@@ -582,8 +666,9 @@ def _deps_ready_local(repo):
         if damaged:
             print(f"dependency_prewarm: {repo} has {len(damaged)} load-bearing package(s) with "
                   f"missing entrypoints ({', '.join(damaged[:5])}); treating install as not ready")
-            return False
-    return True
+            return False, ("%d load-bearing package(s) have missing entrypoints: %s"
+                           % (len(damaged), ", ".join(damaged[:5])))
+    return True, ""
 
 
 def _ready_snapshot(repo):
@@ -721,8 +806,10 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
         # A failed install leaves the snapshot unready; label it with the standard
         # readiness-validation failure class so repair routing sees one error family.
         try:
-            if not _deps_ready_local(build_root):
-                err = "installed snapshot failed dependency readiness validation: " + err
+            _ready, _why = _deps_ready_reason(build_root)
+            if not _ready:
+                err = ("installed snapshot failed dependency readiness validation"
+                       + (" (%s)" % _why if _why else "") + ": " + err)
         except Exception:
             pass
         shutil.rmtree(build_root, ignore_errors=True)
@@ -741,11 +828,16 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
                            text=True, timeout=300)
     except Exception:
         pass
-    if not _deps_ready_local(build_root):
+    _ready, _why = _deps_ready_reason(build_root)
+    if not _ready:
         shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
+        # NAME THE CHECK. The bare sentence below cost seven darwn cards a full rebase,
+        # a 100-240s share-deps and an agentic repair apiece on 2026-09-02, and told
+        # none of them which of six conditions had failed.
         return {"ok": False, "manager": manager,
-                "error": "installed snapshot failed dependency readiness validation"}
+                "error": ("installed snapshot failed dependency readiness validation"
+                          + (" (%s)" % _why if _why else ""))}
     final_root = _snapshot_path(repo)
     try:
         with open(os.path.join(build_root, ".ready.json"), "w", encoding="utf-8") as f:
