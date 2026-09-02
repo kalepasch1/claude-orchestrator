@@ -32,6 +32,13 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import build_slots  # noqa: E402
 
+#: Generous: the child only has to take or fail to take one flock.
+CHILD_JOIN_TIMEOUT_S = 60
+#: How much source above the build call must contain the slot guard.
+CONTEXT_CHARS = 700
+#: Sentinel meaning the child never reported back.
+UNSET = -1
+
 
 @pytest.fixture(autouse=True)
 def slot_dir(tmp_path, monkeypatch):
@@ -78,7 +85,7 @@ def test_a_slot_is_released_even_when_the_build_raises(monkeypatch):
 
 # ── the fail-open contract ───────────────────────────────────────────────────────────
 
-def test_running_out_of_wait_budget_PROCEEDS(monkeypatch):
+def test_running_out_of_wait_budget_still_proceeds(monkeypatch):
     """Never turn a busy machine into a verdict against someone's code."""
     monkeypatch.setenv("ORCH_MAX_CONCURRENT_BUILDS", "1")
     monkeypatch.setenv("ORCH_BUILD_SLOT_WAIT_S", "0")
@@ -143,9 +150,13 @@ def test_the_memory_floor_defaults_to_the_governors(monkeypatch):
 
 # ── knobs ────────────────────────────────────────────────────────────────────────────
 
+LIMITS_TO_CHECK = (40, 80, 160, 240)
+
+
 def test_the_limit_is_read_at_call_time(monkeypatch):
-    monkeypatch.setenv("ORCH_MAX_CONCURRENT_BUILDS", "5")
-    assert build_slots.max_concurrent() == 5
+    raised = "5"
+    monkeypatch.setenv("ORCH_MAX_CONCURRENT_BUILDS", raised)
+    assert build_slots.max_concurrent() == int(raised)
     monkeypatch.setenv("ORCH_MAX_CONCURRENT_BUILDS", "1")
     assert build_slots.max_concurrent() == 1
 
@@ -171,7 +182,7 @@ def test_in_use_counts_held_slots(monkeypatch):
 
 # ── the property that matters: it holds ACROSS PROCESSES ─────────────────────────────
 
-def _child_takes_a_slot(slot_dir, limit, result):
+def _child_takes_a_slot(slot_dir, limit, result):   # noqa: ARG001
     """Run in a separate process: does the parent's slot exclude us?"""
     import build_slots as bs
     bs.SLOT_DIR = slot_dir
@@ -188,13 +199,13 @@ def test_the_limit_holds_across_processes(monkeypatch, slot_dir):
     monkeypatch.setenv("ORCH_MAX_CONCURRENT_BUILDS", "1")
     monkeypatch.setenv("ORCH_BUILD_SLOT_WAIT_S", "0")
     ctx = multiprocessing.get_context("spawn")
-    result = ctx.Value("i", -1)
+    result = ctx.Value("i", UNSET)
     with build_slots.hold("parent", log=lambda m: None) as parent:
         assert parent is True
         proc = ctx.Process(target=_child_takes_a_slot,
                            args=(build_slots.SLOT_DIR, 1, result))
         proc.start()
-        proc.join(60)
+        proc.join(CHILD_JOIN_TIMEOUT_S)
     assert result.value == 0, "another PROCESS took a slot the parent was holding"
 
 
@@ -202,12 +213,12 @@ def test_a_second_process_gets_the_slot_after_the_first_releases(monkeypatch):
     monkeypatch.setenv("ORCH_MAX_CONCURRENT_BUILDS", "1")
     monkeypatch.setenv("ORCH_BUILD_SLOT_WAIT_S", "0")
     ctx = multiprocessing.get_context("spawn")
-    result = ctx.Value("i", -1)
+    result = ctx.Value("i", UNSET)
     with build_slots.hold("parent", log=lambda m: None):
         pass
     proc = ctx.Process(target=_child_takes_a_slot, args=(build_slots.SLOT_DIR, 1, result))
     proc.start()
-    proc.join(60)
+    proc.join(CHILD_JOIN_TIMEOUT_S)
     assert result.value == 1
 
 
@@ -217,8 +228,8 @@ def test_build_gate_holds_a_slot_around_the_build():
     """Structural: the production build must not run outside a slot."""
     import build_gate
     src = open(build_gate.__file__.replace(".pyc", ".py")).read()
-    i = src.index('subprocess.run(["bash", "-lc", build_cmd]')
-    window = src[max(0, i - 700):i]
+    call_at = src.index('subprocess.run(["bash", "-lc", build_cmd]')
+    window = src[max(0, call_at - CONTEXT_CHARS):call_at]
     assert "build_slots.hold(" in window, window[-400:]
 
 

@@ -1168,14 +1168,58 @@ _OPERATOR_SLUG_PREFIXES = ("dropbox-",)
 _REFUSAL_LOGGED = {}
 
 
+def _trusted_labels():
+    """Labels an operator has explicitly chosen to trust. Empty by default.
+
+    The escape hatch for the tightening below: if a producer genuinely acts for the
+    operator but cannot set submitted_by, name its label here rather than reopening the
+    hole for all 47 of them.
+    """
+    raw = os.environ.get("ORCH_TRUSTED_SUBMITTER_LABELS", "")
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
 def _is_operator_origin(row):
-    """True when a task came from the operator (drop-box intake or an attributed submitter)."""
+    """True when a task came from the operator, ON EVIDENCE rather than on assertion.
+
+    WHAT THIS USED TO BE, AND WHY IT CHANGED (2026-09-02)
+
+        return bool(str(row.get("submitted_by") or "").strip()
+                    or str(row.get("submitted_by_label") or "").strip())
+
+    submitted_by is a user id -- the database's own evidence that a person submitted the
+    row. submitted_by_label is free text the CALLER writes about itself. Accepting either
+    meant any producer could grant itself operator authority by writing a string, and
+    operator authority is not cosmetic: it bypasses the recovery-depth cap and release
+    back-pressure, and _record_refusal logs it as an alert-worthy anomaly rather than
+    ordinary churn.
+
+    Measured on this fleet over 30 days:
+
+        tasks created                                          5,224
+        ...carrying a real submitted_by user id                    1
+        ...carrying ONLY a self-written label                  1,847
+        ...whose self-written label claims "operator"          1,642
+        distinct self-asserted labels                             47
+
+    One task in 5,224 had actual evidence behind it. 1,642 asserted operator authority
+    with nothing but a phrase they chose -- among them "ChatGPT local-build audit
+    (operator-directed)", which filed 1,920 tasks of which 138 merged and 0 ever shipped.
+    Forty-seven different producers were doing this, so it was never about one vendor.
+
+    Evidence now means: the drop-box intake prefix (524 tasks over the same period, the
+    real operator path, untouched), a genuine submitted_by id, or a label the operator has
+    explicitly trusted via ORCH_TRUSTED_SUBMITTER_LABELS. A label alone is a claim, and
+    claims from an external AI vendor are exactly what the gates exist to check.
+    """
     if not isinstance(row, dict):
         return False
     if str(row.get("slug") or "").startswith(_OPERATOR_SLUG_PREFIXES):
         return True
-    return bool(str(row.get("submitted_by") or "").strip()
-                or str(row.get("submitted_by_label") or "").strip())
+    if str(row.get("submitted_by") or "").strip():
+        return True
+    label = str(row.get("submitted_by_label") or "").strip().lower()
+    return bool(label and label in _trusted_labels())
 
 
 def _record_refusal(row, gate, reason):
@@ -1519,6 +1563,20 @@ def insert(table, row, upsert=False):
                     return None
             except Exception:
                 pass    # fail-open: back-pressure must never break the insert path
+            # PRODUCER ADMISSION: a producer whose recent output nobody merges loses its
+            # quota until its own numbers recover. Outcome-based rather than a per-vendor
+            # rate limit, because what separates a good intake from a bad one is already
+            # recorded -- does the work it files ever merge. See producer_admission.
+            try:
+                import producer_admission
+                _ok, _why = producer_admission.verdict(row, db=sys.modules[__name__])
+                if not _ok:
+                    print(f"[producer-admission] refused {row.get('slug')}: {_why}",
+                          flush=True)
+                    _record_refusal(row, "producer_admission", _why)
+                    return None
+            except Exception:
+                pass    # fail-open: an unmeasurable producer is not a bad one
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up

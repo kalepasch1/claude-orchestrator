@@ -58,21 +58,36 @@ SLOT_DIR = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime", "build-slots"),
 )
 
+#: Two, not one: a single slot serialises the whole fleet's builds behind the slowest
+#: repo, and two 5 GB builds still fit on a 48 GB machine with the memory floor below.
+DEFAULT_MAX_CONCURRENT = 2
+#: Long enough for one Nuxt build to finish and free its slot, well inside the
+#: merge-train watchdog's 2700s budget.
+DEFAULT_WAIT_BUDGET_S = 900.0
+#: Used only when resource_governor cannot be read; deliberately conservative.
+FALLBACK_MIN_FREE_GB = 4.0
+#: How long to sleep between attempts to take a slot.
+POLL_INTERVAL_S = 5.0
+#: A wait shorter than one poll is not worth a log line.
+LOG_WAIT_THRESHOLD_S = 5.0
+
 
 def max_concurrent():
     """How many production builds may run at once. Read at call time."""
     try:
-        return max(1, int(os.environ.get("ORCH_MAX_CONCURRENT_BUILDS", "2")))
+        return max(1, int(os.environ.get("ORCH_MAX_CONCURRENT_BUILDS",
+                                        str(DEFAULT_MAX_CONCURRENT))))
     except (TypeError, ValueError):
-        return 2
+        return DEFAULT_MAX_CONCURRENT
 
 
 def wait_budget_s():
     """How long to wait for a slot before proceeding anyway."""
     try:
-        return max(0.0, float(os.environ.get("ORCH_BUILD_SLOT_WAIT_S", "900")))
+        return max(0.0, float(os.environ.get("ORCH_BUILD_SLOT_WAIT_S",
+                                            str(DEFAULT_WAIT_BUDGET_S))))
     except (TypeError, ValueError):
-        return 900.0
+        return DEFAULT_WAIT_BUDGET_S
 
 
 def min_free_gb():
@@ -86,12 +101,12 @@ def min_free_gb():
         try:
             return max(0.0, float(raw))
         except (TypeError, ValueError):
-            pass
+            return FALLBACK_MIN_FREE_GB    # a bad override is not an absent one
     try:
         import resource_governor
         return float(resource_governor._ram_floor_gb())
     except Exception:
-        return 4.0
+        return FALLBACK_MIN_FREE_GB
 
 
 def free_gb():
@@ -128,7 +143,7 @@ def _try_take(path):
         handle.write("pid=%d at=%d\n" % (os.getpid(), int(time.time())))
         handle.flush()
     except OSError:
-        pass
+        return handle      # the slot is held; only its bookkeeping stamp failed
     return handle
 
 
@@ -163,9 +178,9 @@ def hold(label="build", log=print):
                 % (label, waited, max_concurrent(),
                    "unknown" if free_gb() is None else "%.1f" % free_gb()))
             break
-        time.sleep(5.0)
+        time.sleep(POLL_INTERVAL_S)
         waited = wait_budget_s() - max(0.0, deadline - time.monotonic())
-    if handle and waited >= 5.0:
+    if handle and waited >= LOG_WAIT_THRESHOLD_S:
         log("[build-slots] %s: waited %.0fs for a slot (limit %d)"
             % (label, waited, max_concurrent()))
     try:
@@ -180,11 +195,12 @@ def _release(handle):
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except OSError:
-        pass
+        handle.close()     # closing releases the flock regardless
+        return None
     try:
         handle.close()
     except OSError:
-        pass
+        return None        # already closed; the slot is free either way
 
 
 def in_use():
