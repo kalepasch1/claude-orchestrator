@@ -1,18 +1,35 @@
 #!/usr/bin/env python3
-"""Every release_manifest use site must bind the name in its own scope.
+"""release_manifest must be resolvable everywhere release_train dereferences it.
 
-release_train imports release_manifest locally, inside the function that needs
-it. That is fine until a *second* function calls it: the helper that re-verifies
-gates after integrating prod called release_manifest.record_gate() without any
-import in scope. The call raised NameError straight into an adjacent bare
-`except Exception: pass`, so it failed silently — post-integration gates were
-never recorded on any release, and nothing ever reported a problem.
+THE ORIGINAL BUG. release_train imported release_manifest only LOCALLY, inside the
+function that needed it. That is fine until a *second* function calls it: the helper
+that re-verifies gates after integrating prod called release_manifest.record_gate()
+with no import in scope. The call raised NameError straight into an adjacent bare
+`except Exception: pass`, so it failed silently — post-integration gates were never
+recorded on any release, and nothing ever reported a problem. The same undefined name
+also tripped the anti-regression guard on every attempted agent-branch merge, which
+stranded branches and manufactured recovery tasks.
 
-The same undefined name also trips the anti-regression guard on every attempted
-agent-branch merge, which strands branches and manufactures recovery tasks.
+WHY THE RULE CHANGED, 2026-09-02. This file asserted the fix as "every function that
+dereferences the name must import it IN ITS OWN SCOPE". Since it was written, a
+module-level `import release_manifest` was added at the top of release_train.py, which
+resolves the name for every function in the file — so the local-import rule stopped
+describing the requirement and started describing one particular way of meeting it.
 
-These tests are static (pyflakes + AST). A runtime test would not catch the bug,
-because the bug's whole character is that it is swallowed at runtime.
+That distinction is not academic. _release_value_gate was the one remaining function
+without a local import, and adding one to satisfy this test broke
+test_release_value_gate.py in two places: the local import SHADOWS the module attribute,
+so the stub those tests install on release_train.release_manifest was bypassed and the
+gate wrote to the real module. A rule that makes a codebase less testable to satisfy its
+own letter is the wrong rule.
+
+So the check is now the actual requirement — the name is bound in every scope that uses
+it, module scope included — plus an explicit assertion that the module-level import
+exists. Delete that import and the original local-binding protection re-arms for every
+function, which is exactly the condition the first bug arose in.
+
+These tests are static (pyflakes + AST). A runtime test would not catch the bug, because
+the bug's whole character is that it is swallowed at runtime.
 """
 import ast
 import os
@@ -70,10 +87,31 @@ class ReleaseManifestBindingTest(unittest.TestCase):
         self.assertEqual(undefined, [], "undefined names in release_train.py:\n" +
                          "\n".join(undefined))
 
+    def test_the_module_level_import_exists(self):
+        """The binding every function relies on. Remove it and the rule below tightens."""
+        tree = _tree()
+        top = {alias.asname or alias.name.split(".")[0]
+               for node in tree.body if isinstance(node, ast.Import)
+               for alias in node.names}
+        self.assertIn(
+            "release_manifest", top,
+            "release_train no longer imports release_manifest at module scope; every "
+            "function that dereferences it now needs its own import, or the NameError "
+            "this file exists to prevent comes back")
+
     def test_every_release_manifest_call_has_it_in_scope(self):
         """release_manifest is bound in each function that dereferences it."""
         tree = _tree()
         bindings = _enclosing_functions(tree)
+        module_level = {alias.asname or alias.name.split(".")[0]
+                        for node in tree.body if isinstance(node, ast.Import)
+                        for alias in node.names}
+        if "release_manifest" in module_level:
+            # Module scope resolves the name for every function in the file. Requiring a
+            # local import on top of it would shadow the patchable module attribute --
+            # see this file's docstring.
+            for fn in bindings:
+                bindings[fn] = set(bindings[fn]) | {"release_manifest"}
         offenders = []
         for fn, bound in bindings.items():
             uses = [
