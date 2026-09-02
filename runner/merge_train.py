@@ -1131,6 +1131,120 @@ def _conflict_ledger_load():
         return {}
 
 
+# ── contended files ───────────────────────────────────────────────────────────────────
+#
+# The per-task guard above stops ONE card redoing a conflict it already hit. It cannot
+# see the other shape, which is bigger: many DIFFERENT cards colliding on the same file.
+#
+# Measured 2026-09-02 in one merge-train log:
+#
+#     REDO events                                              283
+#     distinct (project, conflicting-file-set) signatures        94
+#     signatures hit by more than one slug                       29
+#       [beethoven]      28 slugs, all on
+#                        packages/darwin-kernel/src/passport/passport.ts
+#       [apparently-law] 16 slugs, all on app/assets/css/sister.css (+2)
+#       [beethoven]      14 slugs, all on docs/recovery-ledger/README.md
+#       [tomorrow]       11 slugs, all on pages/index.vue
+#
+# Twenty-eight separate cards each rebased onto the same base, hit the same file, and
+# each spent up to MERGE_CONFLICT_REDO_CAP full agent rebuilds discovering what the
+# previous twenty-seven had already established.
+#
+# This costs nothing in merged work. Every one of those cards ended CONFLICT anyway --
+# "redo cap 4 exhausted" was the outcome of all 1,564 beethoven conflict events in the
+# window. The rebuilds bought a result the fleet already had. So after
+# HOT_FILE_SLUG_THRESHOLD distinct slugs have failed on one signature, the next card
+# carrying it is marked CONFLICT immediately with the contended path named, instead of
+# buying the same answer a fourth time.
+#
+# The first cards still get their full budget: one of them may resolve the contention,
+# and until several have failed there is no evidence the file is contended at all. A
+# merge on that signature clears it -- the contention is over.
+_HOT_FILE_KEY = "hotfile"
+
+
+#: slug -> the conflicting-file signature it last hit, so a later MERGE on that slug can
+#: clear the contention roll. Plain dict: written from the per-project worker threads,
+#: and a torn read costs one stale roll entry that the TTL removes anyway.
+_hot_file_last_sig = {}
+
+
+def _hot_file_threshold():
+    """Distinct slugs that must fail on one signature before it counts as contended."""
+    try:
+        return max(2, int(os.environ.get("ORCH_HOT_FILE_SLUG_THRESHOLD", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _hot_file_enabled():
+    return os.environ.get("ORCH_HOT_FILE_GUARD", "true").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _hot_file_id(project, sig):
+    return "%s:%s:%s" % (_HOT_FILE_KEY, project or "?", sig or "?")
+
+
+def _hot_file_slugs(project, sig):
+    """Slugs already known to have failed on this signature, inside the TTL."""
+    if not sig:
+        return []
+    row = _conflict_ledger_load().get(_hot_file_id(project, sig))
+    if not isinstance(row, dict):
+        return []
+    if time.time() - float(row.get("at") or 0) > _CONFLICT_LEDGER_TTL_S:
+        return []
+    return [str(x) for x in (row.get("slugs") or []) if x]
+
+
+def _hot_file_record(project, sig, slug):
+    """Add this slug to the signature's roll. Returns the distinct slug count."""
+    if not sig or not slug:
+        return 0
+    key = _hot_file_id(project, sig)
+    now = time.time()
+    with _CONFLICT_LEDGER_LOCK:
+        data = _conflict_ledger_load()
+        row = data.get(key)
+        slugs = []
+        if isinstance(row, dict) and now - float(row.get("at") or 0) <= _CONFLICT_LEDGER_TTL_S:
+            slugs = [str(x) for x in (row.get("slugs") or []) if x]
+        if slug not in slugs:
+            slugs.append(slug)
+        data[key] = {"slugs": slugs[-50:], "at": now}
+        _conflict_ledger_write(data, now)
+        return len(slugs)
+
+
+def _hot_file_clear(project, sig):
+    """A merge on this signature means the contention is resolved."""
+    if not sig:
+        return
+    key = _hot_file_id(project, sig)
+    now = time.time()
+    with _CONFLICT_LEDGER_LOCK:
+        data = _conflict_ledger_load()
+        if key in data:
+            data.pop(key, None)
+            _conflict_ledger_write(data, now)
+
+
+def _conflict_ledger_write(data, now):
+    """Atomically replace the ledger. Caller holds _CONFLICT_LEDGER_LOCK."""
+    path = _conflict_ledger_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 def _conflict_ledger_get(task):
     """The signature the PREVIOUS attempt recorded for this task, or ""."""
     tid = str((task or {}).get("id") or "")
@@ -1149,22 +1263,15 @@ def _conflict_ledger_put(task, sig):
     tid = str((task or {}).get("id") or "")
     if not tid or not sig:
         return False
-    path = _conflict_ledger_path()
     now = time.time()
     with _CONFLICT_LEDGER_LOCK:
         data = _conflict_ledger_load()
+        # Prunes hot-file rows on the same clock: they carry "at" too, so a contended
+        # file is forgotten on the same schedule as a task's own signature.
         data = {k: v for k, v in data.items()
                 if isinstance(v, dict) and now - float(v.get("at") or 0) <= _CONFLICT_LEDGER_TTL_S}
         data[tid] = {"sig": sig, "at": now, "slug": (task or {}).get("slug") or ""}
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w") as fh:
-                json.dump(data, fh)
-            os.replace(tmp, path)
-            return True
-        except OSError:
-            return False
+        return _conflict_ledger_write(data, now)
 
 
 def _conflict_signature(conflict_detail):
@@ -2596,6 +2703,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _task_patch(task, {"state": "MERGED",
                            "artifact_commit": integrated_sha,
                            "note": f"train: already integrated in {base} @ {integrated_sha[:12]}"})
+        # Same reasoning as the MERGED path below: this work IS in base now, so whatever
+        # file set was colliding is no longer contended on this card's account.
+        try:
+            _hot_file_clear(pname, _hot_file_last_sig.pop(slug, ""))
+        except Exception:
+            pass
         _retire_card(card.get("id"), "ALREADY_INTEGRATED")
         _attribute_merge_outcome(slug, task)
         _attribute_train_outcome(slug, task, "already-integrated", integrated=True)
@@ -2663,6 +2776,29 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         # buy more of the same. Any difference means it IS making progress, and the redo
         # continues. Same principle as the repair-ceiling that already exists for repairs.
         sig = _conflict_signature(conflict_detail)
+        # CONTENDED FILE: several OTHER cards have already failed on exactly this file
+        # set. Their rebuilds established the answer; buying it again changes nothing.
+        # Recorded before the per-task check so the roll grows even when this card is
+        # about to be stopped for its own repeat.
+        _hot_slugs = _hot_file_slugs(pname, sig) if _hot_file_enabled() else []
+        _hot_others = [s for s in _hot_slugs if s != slug]
+        if sig and _hot_file_enabled() and len(_hot_others) >= _hot_file_threshold():
+            _hot_file_record(pname, sig, slug)
+            _task_patch(task, {"state": "CONFLICT",
+                               "note": (f"train: {len(_hot_others)} other card(s) already "
+                                        f"failed on this same file set, so the redo budget "
+                                        f"would buy a result the fleet already has — needs the "
+                                        f"contended file merged once, or a human rebase."
+                                        f"{files_hint}")[:480]})
+            _retire_card(card.get("id"), "conflict-contended-file")
+            _attribute_train_outcome(slug, task, "conflict", integrated=False)
+            _log(pname, slug, "CONFLICT",
+                 f"contended file: {len(_hot_others)} other card(s) failed here already "
+                 f"({', '.join(_hot_others[:3])}) — skipping {cap} rebuild(s){files_hint}")
+            return "conflict"
+        if sig:
+            _hot_file_record(pname, sig, slug)
+            _hot_file_last_sig[slug] = sig
         prev = _recorded_conflict_signature(task)
         if sig and prev and sig == prev and _stop_on_repeat_conflict():
             _task_patch(task, {"state": "CONFLICT",
@@ -2872,6 +3008,14 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     _task_patch(task, {"state": "MERGED",
                        "artifact_commit": current_candidate_sha,
                        "note": f"train: MERGED into {base} @ {str(current_candidate_sha)[:12]}"})
+    # A merge through a contended file ends the contention: the next card rebases onto a
+    # base that already carries this change, so the file set that was colliding may not
+    # collide any more. Forget the roll rather than holding a grudge against the path.
+    try:
+        _hot_file_clear(pname, _hot_file_last_sig.get(slug, ""))
+        _hot_file_last_sig.pop(slug, None)
+    except Exception:
+        pass
     _retire_card(card.get("id"), "MERGED")
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
