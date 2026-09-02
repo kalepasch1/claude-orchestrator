@@ -806,6 +806,11 @@ def _refresh_staging_with_prod(repo, prod):
             repaired, repair_note = _repair_lockfile_only_merge(tmp)
             if repaired:
                 return True, repair_note
+            cached, cache_note = _repair_regenerable_only_merge(tmp)
+            if cached:
+                return True, cache_note
+            if cache_note:
+                repair_note = (repair_note + "; " + cache_note).strip("; ")
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
             log = ((r.stdout or "")[-1500:] + "\n" + (r.stderr or "")[-1500:]).strip()
             if repair_note:
@@ -877,6 +882,76 @@ def _repair_lockfile_only_merge(worktree):
     if committed.returncode != 0:
         return False, f"regenerated lockfile commit failed: {(committed.stderr or '')[-300:]}"
     return True, "staging refreshed; lockfile-only conflict regenerated deterministically"
+
+
+def _repair_regenerable_only_merge(worktree):
+    """Resolve a refresh conflict when EVERY conflicting file is machine output.
+
+    Source conflicts remain fail-closed, exactly as _repair_lockfile_only_merge above
+    keeps them. The difference is what "repair" means: a lockfile is regenerated from
+    the manifest because its contents decide what ships, while a cache has no correct
+    contents at all -- both sides are equally meaningless, so taking one and moving on
+    IS the resolution.
+
+    Why this exists. On 2026-09-02, 14 release failures across kalepasch-com,
+    santas-secret-workshop and beethoven were staging/prod refresh conflicts, and one
+    named its file outright:
+
+        [gate:refresh] staging/prod refresh failed — self-heal queued:
+        nflict in .aider.tags.cache.v4/cache.db-shm
+        Automatic merge failed; fix conflicts and t...
+
+    That is aider's symbol-tag database. Two of the fleet's repos track it with no
+    .gitignore entry while the other four ignore it, and every agent run rewrites it,
+    so it conflicts on every single refresh and each one costs a failed release plus a
+    queued relfix task.
+
+    Classification is regenerable_artifacts', not a list of its own: that module already
+    holds the fleet's answer to "would losing this destroy something nobody can get
+    back?", and it says loudly what it exempted. `--ours` keeps the staging side, which
+    the next agent run overwrites anyway.
+    """
+    unresolved = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    files = [name.strip() for name in (unresolved.stdout or "").splitlines() if name.strip()]
+    if unresolved.returncode != 0 or not files:
+        return False, ""
+    try:
+        import regenerable_artifacts
+    except ImportError as exc:
+        return False, f"regenerable-artifact classifier unavailable ({exc})"
+    real = [name for name in files if not regenerable_artifacts.is_regenerable(name)]
+    if real:
+        # Say what was NOT exempt: an operator reading this needs to know the refusal
+        # was about source, not about the cache that happens to be in the same list.
+        return False, ("conflict includes non-regenerable file(s): "
+                       + ", ".join(real[:5]) + (" ..." if len(real) > 5 else ""))
+    for name in files:
+        taken = subprocess.run(["git", "checkout", "--ours", "--", name], cwd=worktree,
+                               capture_output=True, text=True, timeout=30)
+        if taken.returncode != 0:
+            # A file deleted on one side has no --ours; removing it is the same
+            # resolution for a cache.
+            subprocess.run(["git", "rm", "-q", "--", name], cwd=worktree,
+                           capture_output=True, text=True, timeout=30)
+    added = subprocess.run(["git", "add", "-A", "--", *files], cwd=worktree,
+                           capture_output=True, text=True, timeout=30)
+    if added.returncode != 0:
+        return False, "could not stage resolved machine output"
+    remaining = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"],
+                               cwd=worktree, capture_output=True, text=True, timeout=30)
+    if (remaining.stdout or "").strip():
+        return False, "unresolved files remain after machine-output resolution"
+    committed = subprocess.run(["git", "commit", "--no-edit"], cwd=worktree,
+                               capture_output=True, text=True, timeout=60)
+    if committed.returncode != 0:
+        return False, f"machine-output merge commit failed: {(committed.stderr or '')[-300:]}"
+    print("release_train: refresh conflict was machine output only (%s); took the "
+          "staging side and continued" % ", ".join(files[:5]), flush=True)
+    return True, ("staging refreshed; conflict was machine output only (%s)"
+                  % ", ".join(files[:5]))
 
 
 def _merge_into_staging(repo, branch):
