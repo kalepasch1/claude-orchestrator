@@ -52,6 +52,16 @@ LOG_CAP_MB = int(os.environ.get("MEDIC_LOG_CAP_MB", "20"))
 #: so a build that has been parentless for half an hour is past any budget that could
 #: still have used its exit status. Set MEDIC_BUILD_ORPHAN_MAX_MIN=0 to disable.
 BUILD_ORPHAN_MAX_MIN = int(os.environ.get("MEDIC_BUILD_ORPHAN_MAX_MIN", "30"))
+#: The same clock, for orphans the ORCHESTRATOR itself unmistakably started: a build
+#: running out of .orch-scratch/build-overlay-*, an integration worktree, or a
+#: /private/tmp/claude-* checkout. 30 minutes is the right patience for a build that
+#: MIGHT be a person's, and far too much for one that cannot be. Measured 2026-09-02:
+#: 24 orphaned builds reaped in a single day, every one of them at age 30-33 min, and
+#: none of them holding a build slot -- so the fleet's limit of 2 was being enforced
+#: against 2 live gates while up to three unslotted orphans built alongside them. One
+#: carried 5.2 GB RSS on a machine whose swap was 87% used. Set to 0 to fall back to
+#: BUILD_ORPHAN_MAX_MIN for these too.
+BUILD_ORPHAN_GATE_MAX_MIN = int(os.environ.get("MEDIC_BUILD_ORPHAN_GATE_MAX_MIN", "3"))
 PRESSURE_WARN = int(os.environ.get("MEDIC_PRESSURE_WARN_PCT", "25"))   # free% below this = warn
 PRESSURE_CRIT = int(os.environ.get("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% below this = critical
 
@@ -331,17 +341,110 @@ def _orphaned_build_procs():
     return res
 
 
+#: Path fragments that only the orchestrator produces. A process running out of one of
+#: these was started by a gate, never by a person at a shell, so once it is parentless
+#: there is nobody left who could read its exit status -- not in 30 minutes, not ever.
+_GATE_OWNED_PATHS = (
+    "/.orch-scratch/", "build-overlay-", "integration-worktrees/",
+    "/private/tmp/claude-", "clean-clone-",
+)
+
+
+def _proc_cwd(pid):
+    """Working directory of a pid, or "" when it cannot be read.
+
+    `npm run build` says nothing about WHERE it is building: three of today's orphans
+    were bare `npm run build` lines whose overlay only shows up in their child's argv
+    or in their own cwd. Called for a handful of already-matched candidates, never for
+    the whole process table.
+    """
+    try:
+        out = sh("/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn",
+                 timeout=10).stdout
+    except Exception:
+        return ""
+    for line in out.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return ""
+
+
+def _children_by_ppid():
+    """{ppid: [pid, ...]} for the whole process table. {} when ps fails."""
+    kids = {}
+    try:
+        out = sh("ps", "-axo", "pid=,ppid=", timeout=20).stdout
+    except Exception:
+        return kids
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        kids.setdefault(parts[1], []).append(parts[0])
+    return kids
+
+
+def _descendants(pid, kids):
+    """Every pid below `pid`, breadth-first. Bounded; never includes `pid` itself."""
+    out, queue, seen = [], list(kids.get(str(pid), [])), {str(pid)}
+    while queue and len(out) < 200:
+        cur = queue.pop(0)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        out.append(cur)
+        queue.extend(kids.get(cur, []))
+    return out
+
+
+def _orphan_is_gate_owned(pid, cmd):
+    """True when this parentless build can only have come from a gate."""
+    low = (cmd or "").lower()
+    if any(m in low for m in _GATE_OWNED_PATHS):
+        return True
+    cwd = _proc_cwd(pid).lower()
+    return bool(cwd) and any(m in cwd for m in _GATE_OWNED_PATHS)
+
+
 def reap_orphaned_builds():
-    """Kill parentless build/test processes past BUILD_ORPHAN_MAX_MIN. Returns the count."""
+    """Kill parentless build/test processes and everything under them.
+
+    Two things changed here on 2026-09-02, both from the same day's measurements.
+
+    1. THE TREE, NOT THE PROCESS. `npm run build` spawns the real `nuxt build` as its
+       child. Killing only the wrapper left the 5 GB node process alive with a fresh
+       ppid of 1, so it waited out the FULL window a second time before its own turn
+       came. Today's journal shows exactly that shape: pid=74762 `npm run build` reaped
+       at 16:08, pid=80494 its overlay build reaped at 16:10 -- and pairs like it all
+       day. Reaping the descendants with the parent halves the waste per orphan and
+       removes the second window entirely.
+
+    2. A SHORTER CLOCK FOR BUILDS THE FLEET OWNS. See BUILD_ORPHAN_GATE_MAX_MIN.
+
+    Returns the number of process TREES reaped (not pids), so the count still means
+    "orphans dealt with".
+    """
     if BUILD_ORPHAN_MAX_MIN <= 0:
         return 0
     killed = 0
+    kids = _children_by_ppid()
     for secs, pid, cmd in _orphaned_build_procs():
-        if secs < BUILD_ORPHAN_MAX_MIN * 60:
+        gate_owned = _orphan_is_gate_owned(pid, cmd)
+        limit = BUILD_ORPHAN_MAX_MIN
+        if gate_owned and BUILD_ORPHAN_GATE_MAX_MIN > 0:
+            limit = min(limit, BUILD_ORPHAN_GATE_MAX_MIN)
+        if secs < limit * 60:
             continue
+        tree = _descendants(pid, kids)
+        # Children first: killing the wrapper first can let a shell respawn or let the
+        # child reparent before we get to it.
+        for child in reversed(tree):
+            sh("kill", "-9", child)
         sh("kill", "-9", pid)
         journal("process_hygiene", "reaped-orphan-build",
-                f"pid={pid} age={secs // 60}min {cmd[:80]}")
+                f"pid={pid} age={secs // 60}min limit={limit}min "
+                f"{'gate-owned ' if gate_owned else ''}"
+                f"+{len(tree)} descendant(s) {cmd[:80]}")
         killed += 1
     return killed
 
