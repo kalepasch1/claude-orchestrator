@@ -65,6 +65,7 @@ import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization
                         # imported -> every train_run() crashed with NameError before integrating
                         # anything (the silent integration-stall root cause).
 import concurrent.futures   # FIX 2026-07-28: used by the multi-project ThreadPoolExecutor path, never imported
+import failure_excerpt   # say WHAT failed, not the first 200 chars of the window
 import gate_env          # node on PATH for every gate that shells out
 import stderr_digest       # keep the CAUSE of a git failure, not its last 160 bytes
 import repo_hygiene         # FIX 2026-07-28: used pre-test-run (stray .js cleanup), never imported (fail-soft masked it)
@@ -2770,20 +2771,36 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         except Exception:
             pass
     if not ok:
+        # WHAT WE SAY FAILED IS THE WHOLE VALUE OF SAYING IT FAILED.
+        #
+        # `tail` is up to 12,000 characters -- the last 6,000 of stdout plus the last
+        # 6,000 of stderr. Every consumer here used to take tail[:200], the FRONT of
+        # that window, while every runner in this fleet prints its failure summary at
+        # the END. So the note, the log line and (through agentic_repair) the repair
+        # agent's evidence were an arbitrary slice of whatever was mid-flight.
+        #
+        # Measured 2026-09-02 over 385 TESTFAIL records in one merge-train log: 290
+        # (75%) carried no failure marker of any kind, and 61 of those opened with
+        # PASSING test output. Real examples of what a repair agent was handed as the
+        # reason for a failure:
+        #     [smarter]   "ByName: string; workspaceId: string; createdAt: string;"
+        #     [beethoven] "capability across products (0.610084ms"
+        # See failure_excerpt.py.
+        _why = failure_excerpt.excerpt(tail, 240)
         if _pm:
             try:
                 _pm.record(slug, task.get("kind") or "unknown",
                            ok=False, duration_ms=int((time.monotonic() - _t0) * 1000), gate_decision="TESTFAIL",
-                           gate_reason=tail[:200])
+                           gate_reason=_why[:200])
             except Exception:
                 pass
         # NEVER force-merge red work.
         _gl = _gate_load_note()
         _task_patch(task, {"state": "TESTFAIL",
-                           "note": f"train:{_gl} tests failed on rebased {branch}: {tail[:200]}"})
+                           "note": f"train:{_gl} tests failed on rebased {branch}: {_why}"})
         _retire_card(card.get("id"), "TESTFAIL")
         _attribute_train_outcome(slug, task, "testfail", integrated=False)
-        _log(pname, slug, "TESTFAIL", (_gl + " " + tail).strip()[:160])
+        _log(pname, slug, "TESTFAIL", (_gl + " " + failure_excerpt.excerpt(tail, 160)).strip()[:200])
         return "testfail"
 
     # (3b) PRODUCTION BUILD GATE — fail-closed, runs AFTER the (2c) regression guard and

@@ -104,8 +104,14 @@ def test_the_note_is_written_in_front_of_the_truncated_tail():
     i = body.index('"state": "TESTFAIL"')
     note = body[body.index("_gl = _gate_load_note()", i - 400):body.index("_retire_card", i)]
     assert "{_gl}" in note, "the TESTFAIL note no longer carries the load"
-    assert note.index("{_gl}") < note.index("tail[:200]"), (
-        "the load note is written AFTER the truncated tail — it will be cut off, "
+    # The evidence half of this note used to be `tail[:200]` -- the FRONT of a
+    # 12,000-character window, which is why 75% of TESTFAIL records named no failure at
+    # all (see failure_excerpt.py). It is now `_why`, the excerpt that actually describes
+    # the failure. Either way the load has to come FIRST, or truncation eats it exactly
+    # as it did before.
+    evidence = "_why" if "_why" in note else "tail[:200]"
+    assert note.index("{_gl}") < note.index(evidence), (
+        "the load note is written AFTER the failure evidence — it will be cut off, "
         "exactly as it was before"
     )
 
