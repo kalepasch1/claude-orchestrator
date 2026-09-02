@@ -22,6 +22,7 @@ REPO_ROOT = os.path.dirname(RUNNER_DIR)
 RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runtime"))
 RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
 sys.path.insert(0, RUNNER_DIR)
+import build_slots
 import gate_env          # node on PATH for every gate that shells out
 import db
 import commit_overlay
@@ -729,8 +730,10 @@ def _qa_ref(repo, ref, command, timeout=1800):
             prepared, prepare_log = _prepare_generated_types(worktree)
             if not prepared:
                 return False, "Nuxt type preparation failed:\n" + prepare_log
-            result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
-                                    text=True, timeout=timeout, env=gate_env.gate_env())
+            with build_slots.hold_if_build(command, "baseline-qa"):
+                result = subprocess.run(["bash", "-lc", command], cwd=worktree,
+                                        capture_output=True, text=True, timeout=timeout,
+                                        env=gate_env.gate_env())
             log = (
                 (result.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
                 + "\n"
@@ -1624,7 +1627,12 @@ def _run_for_unlocked(project, repo_override=None):
                 _link_shared_runtime(repo, tmp)
                 prepared, prepare_log = _prepare_generated_types(tmp)
                 if prepared:
-                    qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800, env=gate_env.gate_env())
+                    # A QA command that IS a production build takes a build slot; every
+                    # ordinary suite is untouched. kalepasch-com's test_cmd is
+                    # `npm run build`, so its release QA compiled the app in this overlay
+                    # with nothing bounding it. See build_slots.command_builds.
+                    with build_slots.hold_if_build(qa_cmd, "release-qa %s" % project):
+                        qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800, env=gate_env.gate_env())
                     ok = qa.returncode == 0
                 else:
                     qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)

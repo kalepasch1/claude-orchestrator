@@ -147,6 +147,48 @@ def _try_take(path):
     return handle
 
 
+#: Command fragments that mean "this is a production build", not a test run. Kept
+#: deliberately narrow: every entry here costs throughput if it matches an ordinary
+#: suite, and the failure mode of missing one is only the status quo.
+_BUILD_COMMANDS = (
+    "npm run build", "pnpm run build", "pnpm build", "yarn build", "yarn run build",
+    "npm run build:", "nuxt build", "nuxi build", "next build", "vite build",
+)
+
+
+def command_builds(command):
+    """True when this suite/QA command actually runs a production build.
+
+    A project can have its TEST command set to a build. Measured 2026-09-02, the
+    fleet's own projects table:
+
+        kalepasch-com   test_cmd = "npm run build"
+
+    so its merge-train suite and its release QA both compile the app, in a
+    release-qa-overlay, outside build_gate -- which is why three concurrent nuxt
+    builds were observed against a limit of two, minutes after that project was
+    unpaused. The limiter bounded the build GATES; nothing bounded a suite that is a
+    build wearing a suite's name.
+    """
+    text = (command or "").lower()
+    return any(marker in text for marker in _BUILD_COMMANDS)
+
+
+@contextlib.contextmanager
+def hold_if_build(command, label="suite", log=print):
+    """Hold a slot only when `command` is a production build; otherwise a no-op.
+
+    Suites are this fleet's throughput and must not be serialised. This exists so a
+    suite that IS a build stops being invisible to the limiter, and nothing else
+    changes.
+    """
+    if not command_builds(command):
+        yield None            # None, not False: "no slot was needed", not "denied one"
+        return
+    with hold(label, log=log) as got:
+        yield got
+
+
 @contextlib.contextmanager
 def hold(label="build", log=print):
     """Hold a build slot for the duration of the block.

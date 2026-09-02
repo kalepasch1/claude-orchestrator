@@ -66,6 +66,7 @@ import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization
                         # anything (the silent integration-stall root cause).
 import concurrent.futures   # FIX 2026-07-28: used by the multi-project ThreadPoolExecutor path, never imported
 import failure_excerpt   # say WHAT failed, not the first 200 chars of the window
+import build_slots       # a suite that IS a production build still takes a slot
 import gate_env          # node on PATH for every gate that shells out
 import stderr_digest       # keep the CAUSE of a git failure, not its last 160 bytes
 import repo_hygiene         # FIX 2026-07-28: used pre-test-run (stray .js cleanup), never imported (fail-soft masked it)
@@ -1566,7 +1567,14 @@ def _run_tests(repo, test_cmd, ref=None):
                            f"{vue_detail[:4000]}")
     _record_gate_load()
     try:
-        with _Phase(f"suite `{test_cmd[:40]}`", repo):
+        # A SUITE THAT IS A BUILD IS STILL A BUILD. kalepasch-com's test_cmd is literally
+        # `npm run build`, so its "tests" compile the app outside build_gate and outside
+        # the fleet build limiter -- which is how three concurrent nuxt builds appeared
+        # against a limit of two. hold_if_build() is a no-op for every ordinary suite, so
+        # this costs the fleet's throughput nothing. See build_slots.command_builds.
+        with build_slots.hold_if_build(test_cmd, "suite %s" % os.path.basename(str(repo)),
+                                       log=lambda m: print(m, flush=True)), \
+                _Phase(f"suite `{test_cmd[:40]}`", repo):
             r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                                text=True, timeout=timeout, env=_gate_env())
     except subprocess.TimeoutExpired:
