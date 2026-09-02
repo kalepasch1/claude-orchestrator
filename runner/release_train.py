@@ -1200,6 +1200,38 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
     return True, "", ""
 
 
+#: `npm test` IS `npm run test`. npm defines `test` as a built-in alias for
+#: `run test`, and the same holds for yarn and pnpm, so these are two spellings of one
+#: command -- not two commands that happen to be similar.
+#:
+#: This matters because proof identity is an EXACT string match on the command.
+#: Measured across the fleet 2026-09-02, comparing each project's configured test_cmd
+#: with what production_push_guard.detect_test_cmd() asks for:
+#:
+#:     project                  configured          guard wants      same command?
+#:     pareto-2080              npm test            npm run test     yes, spelled differently
+#:     racefeed                 npm test            npm run test     yes
+#:     santas-secret-workshop   npm test            npm run test     yes
+#:     tomorrow                 npm test            npm run test     yes
+#:     smarter                  npx vue-tsc --noEmit npm run test    NO
+#:     apparently-law           npm run typecheck   npm run test     NO
+#:     sustainable-barks        true                npm run test     NO
+#:
+#: Four projects would have been refused for a spelling difference. The three below
+#: them are genuinely different commands and must stay refused.
+_TEST_ALIASES = {
+    "npm test": "npm run test",
+    "yarn test": "yarn run test",
+    "pnpm test": "pnpm run test",
+}
+
+
+def _canonical_test_cmd(command):
+    """One spelling for one command. Only the package managers' own aliases."""
+    text = " ".join(str(command or "").split())
+    return _TEST_ALIASES.get(text, text)
+
+
 def _persist_production_test_proof(repo, commit, ran_cmd):
     """Persist the SUITE proof the production hook asks for, or say why it cannot.
 
@@ -1238,10 +1270,12 @@ def _persist_production_test_proof(repo, commit, ran_cmd):
         if not guard_cmd:
             # The guard gates on nothing here, so there is nothing to certify.
             return True, "no test script in package.json; nothing to gate on"
-        if ran != guard_cmd:
+        if _canonical_test_cmd(ran) != _canonical_test_cmd(guard_cmd):
             return False, (f"release ran `{ran or '(nothing)'}` but the production guard "
                            f"requires `{guard_cmd}`; refusing to certify a suite that did "
                            f"not run")
+        # Recorded under the GUARD'S spelling, because that is the string it will look
+        # the proof up by.
         proof_graph.record_verification(repo, commit, guard_cmd, "test", True)
         if not proof_graph.reusable_verification(repo, commit, guard_cmd, "test"):
             return False, "exact production test proof was not durably readable after write"

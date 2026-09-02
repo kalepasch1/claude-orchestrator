@@ -166,3 +166,56 @@ def test_it_runs_beside_the_build_proof_before_the_push():
     assert "return False" in window, "a refused suite proof does not stop the release"
     assert "test-proof" in window, (
         "the failure is not recorded under its own gate name")
+
+
+# ── one command, two spellings ───────────────────────────────────────────────
+#
+# Proof identity is an EXACT string match on the command, so `npm test` and
+# `npm run test` -- which npm itself defines as the same thing -- never matched.
+# Measured across the fleet 2026-09-02, configured test_cmd vs what the guard asks for:
+#
+#     pareto-2080              npm test              npm run test    same command
+#     racefeed                 npm test              npm run test    same command
+#     santas-secret-workshop   npm test              npm run test    same command
+#     tomorrow                 npm test              npm run test    same command
+#     smarter                  npx vue-tsc --noEmit  npm run test    DIFFERENT
+#     apparently-law           npm run typecheck     npm run test    DIFFERENT
+#     sustainable-barks        true                  npm run test    DIFFERENT
+#
+# Four projects refused over a spelling difference; three that must stay refused.
+
+@pytest.mark.parametrize("ran,wanted", [
+    ("npm test", "npm run test"),
+    ("npm run test", "npm test"),
+    ("yarn test", "yarn run test"),
+    ("pnpm test", "pnpm run test"),
+    ("npm  test", "npm run test"),          # whitespace is not a different command
+])
+def test_the_package_manager_alias_is_one_command(monkeypatch, recorded, ran, wanted):
+    _guard(monkeypatch, wanted)
+    ok, note = release_train._persist_production_test_proof("/repo", SHA, ran)
+    assert ok, note
+    assert recorded[0]["command"] == wanted, (
+        "the proof must be recorded under the spelling the guard looks up")
+
+
+@pytest.mark.parametrize("ran", [
+    "npx vitest run",            # smarter's neighbours: a real suite, a different one
+    "npm run typecheck",         # apparently-law
+    "true",                      # sustainable-barks
+    "npm run build",
+    "npm run test:unit",         # a NARROWER script is not the full suite
+])
+def test_a_genuinely_different_command_is_still_refused(monkeypatch, recorded, ran):
+    _guard(monkeypatch, "npm run test")
+    ok, _note = release_train._persist_production_test_proof("/repo", SHA, ran)
+    assert ok is False, "%r was accepted as `npm run test`" % ran
+    assert recorded == []
+
+
+def test_the_alias_table_is_only_package_manager_aliases():
+    """It must not become a place to make inconvenient mismatches disappear."""
+    for spelled, canonical in release_train._TEST_ALIASES.items():
+        manager, word = spelled.split()
+        assert word == "test"
+        assert canonical == "%s run test" % manager
