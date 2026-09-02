@@ -630,3 +630,32 @@ def _hermetic(request, monkeypatch):
         monkeypatch.setattr(_subprocess, name, _guard, raising=False)
 
     yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_suite_never_writes_into_the_live_runtime_dir(tmp_path_factory):
+    """Point CLAUDE_ORCH_HOME at a tmp dir for the whole session.
+
+    Several tests drive real train code paths that persist state under .runtime/ --
+    test_patch_template_conflict_handling.py exercises the rebase-conflict redo, which
+    records a conflict signature. Without this, running the suite wrote
+    {"t1": {"slug": "feat-x"}} into the LIVE fleet's merge_train_conflict_sigs.json,
+    observed 2026-09-02. A test run must not be able to reach into the running fleet's
+    state -- neither to corrupt it nor to be confused by it.
+
+    Set only when the environment does not already pin it, so a deliberate
+    CLAUDE_ORCH_HOME (an operator running the suite against a specific home) still wins.
+    """
+    if os.environ.get("CLAUDE_ORCH_HOME"):
+        yield
+        return
+    home = tmp_path_factory.mktemp("orch-home")
+    old = os.environ.get("CLAUDE_ORCH_HOME")
+    os.environ["CLAUDE_ORCH_HOME"] = str(home)
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_ORCH_HOME", None)
+        else:
+            os.environ["CLAUDE_ORCH_HOME"] = old

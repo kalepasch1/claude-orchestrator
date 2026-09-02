@@ -1133,8 +1133,17 @@ _CONFLICT_LEDGER_LOCK = threading.Lock()
 
 
 def _conflict_ledger_path():
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        ".runtime", "merge_train_conflict_sigs.json")
+    """Honours CLAUDE_ORCH_HOME, like the single-instance lock below.
+
+    Not cosmetic: test_patch_template_conflict_handling.py drives the real redo path,
+    so without this the suite writes {"t1": {"slug": "feat-x"}} into the LIVE
+    .runtime/ ledger -- observed 2026-09-02 minutes after this shipped. Tests must
+    not be able to reach into the running fleet's state. conftest.py points this at
+    a tmp dir for the whole session.
+    """
+    home = os.environ.get("CLAUDE_ORCH_HOME") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")
+    return os.path.join(home, "merge_train_conflict_sigs.json")
 
 
 def _conflict_ledger_load():
