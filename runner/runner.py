@@ -181,6 +181,10 @@ RUNNER_ID = os.environ.get("RUNNER_ID", socket.gethostname() + "-" + str(os.getp
 # honouring a restart request, so a fleet that commits to its own repo cannot restart the runner
 # faster than tasks can finish.
 _PROC_START_T = time.time()
+#: When the current self-deploy drain began, so it can be given a deadline. A dict rather
+#: than a plain global because the drain check lives inside a function that never declared
+#: one, and a stuck drain freezes every claim in the fleet -- see ORCH_RESTART_DRAIN_MAX_S.
+_DRAIN_STARTED = {}
 
 
 class _SkipRestart(Exception):
@@ -4193,9 +4197,46 @@ def main():
                     # Deferring, not draining: keep claiming so the lanes stay busy.
                     os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
                     raise _SkipRestart()
+                # A DRAIN THAT CANNOT CONVERGE IS AN OUTAGE, NOT A DRAIN.
+                #
+                # Draining sets ORCH_DRAINING_FOR_RESTART, which freezes new claims so the
+                # active count can fall to the threshold. If a worker thread never finishes,
+                # the count never falls, the restart never happens, and the fleet claims
+                # nothing for as long as that thread stays alive. There is no upper bound on
+                # that wait anywhere else in this loop.
+                #
+                # Observed live 2026-09-02 13:08: MAX_PARALLEL=3, so the clamp above computed
+                # _ceiling = 3 // 4 = 0 and the threshold became "wait for total quiet".
+                # Three agent threads were alive and stuck. The runner logged
+                #     [self-deploy] restart requested — draining lanes active=3 threshold=0
+                # every 30s for 39 minutes while 334 tasks sat QUEUED and the whole fleet
+                # reported 0 RUNNING across all eleven projects.
+                #
+                # The point of the drain is to let work finish before restarting -- it is a
+                # courtesy, not a correctness requirement, because keepalive restarts us and
+                # unfinished tasks are re-claimed. So it gets a deadline: past
+                # ORCH_RESTART_DRAIN_MAX_S we restart anyway and say which lanes we gave up
+                # waiting for. A restart that interrupts a hung thread costs one task's
+                # progress; a restart that never happens costs the entire queue.
+                _drain_started = _DRAIN_STARTED.get("t")
+                if _drain_started is None:
+                    _drain_started = _DRAIN_STARTED["t"] = time.time()
+                _drain_budget = max(0, int(os.environ.get("ORCH_RESTART_DRAIN_MAX_S", "900") or 0))
+                _draining_for = time.time() - _drain_started
                 if time.time() - _restart_log_t > 30:
-                    print(f"[self-deploy] restart requested — draining lanes active={len(active)} threshold={max_active}")
+                    _stuck = ", ".join(sorted(th.name for th in active)[:4]) or "unknown"
+                    print(f"[self-deploy] restart requested — draining lanes "
+                          f"active={len(active)} threshold={max_active} "
+                          f"for {int(_draining_for)}s of {_drain_budget}s; waiting on: {_stuck}",
+                          flush=True)
                     _restart_log_t = time.time()
+                if _drain_budget and _draining_for > _drain_budget:
+                    _stuck = ", ".join(sorted(th.name for th in active)[:6]) or "unknown"
+                    print(f"[self-deploy] drain did not converge in {int(_draining_for)}s "
+                          f"({len(active)} lane(s) still alive, threshold {max_active}) — "
+                          f"restarting anyway so the queue is not frozen. Waited on: {_stuck}",
+                          flush=True)
+                    sys.exit(0)
                 if len(active) <= max_active:
                     print(f"[self-deploy] restart threshold reached ({len(active)} <= {max_active}) — exiting for keepalive")
                     # restart flag intentionally NOT removed here; keepalive.sh consumes it at the
@@ -4205,6 +4246,8 @@ def main():
                 # Freeze new claims while waiting to restart so the active count can converge.
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
             else:
+                # No restart pending: forget any drain clock so the next one starts fresh.
+                _DRAIN_STARTED.pop("t", None)
                 os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
         except _SkipRestart:
             pass
