@@ -1200,6 +1200,56 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
     return True, "", ""
 
 
+def _persist_production_test_proof(repo, commit, ran_cmd):
+    """Persist the SUITE proof the production hook asks for, or say why it cannot.
+
+    The twin of _persist_production_build_proof below, and it exists for the same
+    reason one layer over. That function's own docstring records the original finding:
+    "The release train built the candidate successfully but recorded only a QA proof.
+    The production hook deliberately accepts only kind=build." The identical mismatch
+    was still live for the SUITE, and only became visible once the build proof and the
+    staging-containment check stopped failing first:
+
+        production_push_guard: INTEGRATED — promoting the tip of origin/orchestrator/dev
+        production_push_guard: CONTENT OK — 191 -> 253 files
+        production_push_guard: BUILD GREEN — reused green build proof for 11fad7ff6a31
+        production_push_guard: BLOCKED — production push without a green suite
+
+    The guard asks proof_graph for kind="test" under detect_test_cmd(repo). The release
+    train recorded kind="qa" under its own qa_cmd. Same commit, same tree, a name the
+    reader never asks for.
+
+    WHAT THIS DELIBERATELY WILL NOT DO. It records a proof only when the command that
+    ACTUALLY RAN is the command the guard will ask for. Measured on sustainable-barks:
+    the guard wants `npm run test`, and the release ran `true`, because that project's
+    configured test_cmd is literally `true`. Writing a kind="test" proof from that run
+    would certify that a no-op passed -- a fabricated green, which is the one thing a
+    proof must never be. It returns the mismatch instead, so the release fails with a
+    sentence naming both commands rather than with git's "failed to push some refs".
+
+    Same shape as the build twin: read the proof back before claiming it, because proof
+    persistence is part of the release gate, not best-effort telemetry.
+    """
+    try:
+        import production_push_guard
+        import proof_graph
+        guard_cmd = str(production_push_guard.detect_test_cmd(repo) or "").strip()
+        ran = str(ran_cmd or "").strip()
+        if not guard_cmd:
+            # The guard gates on nothing here, so there is nothing to certify.
+            return True, "no test script in package.json; nothing to gate on"
+        if ran != guard_cmd:
+            return False, (f"release ran `{ran or '(nothing)'}` but the production guard "
+                           f"requires `{guard_cmd}`; refusing to certify a suite that did "
+                           f"not run")
+        proof_graph.record_verification(repo, commit, guard_cmd, "test", True)
+        if not proof_graph.reusable_verification(repo, commit, guard_cmd, "test"):
+            return False, "exact production test proof was not durably readable after write"
+        return True, guard_cmd
+    except Exception as exc:
+        return False, f"production test proof persistence failed: {type(exc).__name__}: {exc}"
+
+
 def _persist_production_build_proof(repo, commit, build_cmd):
     """Persist the exact proof required by the production pre-push hook.
 
@@ -1349,6 +1399,12 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             _insert_failed_release(project, "proof", ahead, release_base_sha, to_sha,
                                    proof_note[-500:])
             return False, to_sha, proof_note
+        # The suite proof the same guard asks for, recorded under the name it reads.
+        tproof_ok, tproof_note = _persist_production_test_proof(repo, to_sha, test_cmd)
+        if not tproof_ok:
+            _insert_failed_release(project, "test-proof", ahead, release_base_sha, to_sha,
+                                   tproof_note[-500:])
+            return False, to_sha, tproof_note
         # FENCE CHECK (2026-08-13): the last possible moment before production moves.
         # Everything above — integrate, re-gate, test, build proof — takes minutes, and
         # the lease can lapse or be taken over inside that window. Verifying here rather
