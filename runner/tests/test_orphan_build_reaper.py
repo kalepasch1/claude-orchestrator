@@ -41,16 +41,21 @@ class _Out:
 
 
 def _ps(rows):
-    """Render (pid, ppid, etimes, command) tuples the way `ps -axo` does."""
+    """Render (pid, ppid, etime, command) rows the way `ps -axo` does.
+
+    `etime`, not `etimes`: BSD ps has no `etimes` column, and asking for one made
+    both of the medic's reapers see an empty process table. See
+    tests/test_ps_etime_parsing.py.
+    """
     return _Out("\n".join(f"{p} {pp} {e} {c}" for p, pp, e, c in rows))
 
 
-ORPHAN_NUXT = ("86289", "1", "46387",
+ORPHAN_NUXT = ("86289", "1", "12:53:07",
                "node /Users/k/Documents/tomorrow/node_modules/.bin/../nuxt/bin/nuxt.mjs dev --port 3005")
-ORPHAN_BUILD = ("53072", "1", "4814",
+ORPHAN_BUILD = ("53072", "1", "01:20:14",
                 "node /Users/k/Documents/_ARCHIVED-apparently/node_modules/.bin/nuxt build")
-ORPHAN_PNPM = ("20149", "1", "17904", "node /opt/homebrew/bin/pnpm run build:vercel")
-ORPHAN_PYTEST = ("35316", "1", "20000", "python3.14 -m pytest test_slice4.py")
+ORPHAN_PNPM = ("20149", "1", "04:58:24", "node /opt/homebrew/bin/pnpm run build:vercel")
+ORPHAN_PYTEST = ("35316", "1", "05:33:20", "python3.14 -m pytest test_slice4.py")
 
 
 def _procs(rows):
@@ -72,7 +77,7 @@ def test_a_build_that_still_has_a_parent_is_never_touched():
 
     A build with a live parent is a gate doing its job, however long it has run.
     """
-    live = ("86289", "77267", "46387",
+    live = ("86289", "77267", "12:53:07",
             "node /Users/k/Documents/tomorrow/node_modules/.bin/nuxt build")
     with _procs([live]):
         assert rm._orphaned_build_procs() == []
@@ -80,7 +85,7 @@ def test_a_build_that_still_has_a_parent_is_never_touched():
 
 def test_a_young_orphan_is_left_alone():
     """30 minutes, not 30 seconds: a gate can outlive its shell by a moment."""
-    young = ("86289", "1", "60", "node node_modules/.bin/nuxt build")
+    young = ("86289", "1", "01:00", "node node_modules/.bin/nuxt build")
     killed = []
     with patch.object(rm, "sh", lambda *a, **k: (
             killed.append(a) if a[:2] == ("kill", "-9") else None) or _ps([young])):
@@ -110,7 +115,7 @@ def test_the_fleets_own_long_lived_processes_are_never_reaped(cmd):
     spawns `npm test` subprocesses whose command lines it also logs, so a looser
     pattern here is a fleet-wide outage rather than a bug.
     """
-    with _procs([("999", "1", "99999", cmd)]):
+    with _procs([("999", "1", "27:46:39", cmd)]):
         assert rm._orphaned_build_procs() == []
 
 
@@ -122,7 +127,7 @@ def test_the_fleets_own_long_lived_processes_are_never_reaped(cmd):
 ])
 def test_unrelated_parentless_processes_are_not_matched(cmd):
     """Killing by pattern is only safe if the pattern names build tools."""
-    with _procs([("999", "1", "99999", cmd)]):
+    with _procs([("999", "1", "27:46:39", cmd)]):
         assert rm._orphaned_build_procs() == []
 
 

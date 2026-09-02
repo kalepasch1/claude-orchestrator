@@ -201,15 +201,52 @@ def _unload_heaviest_model():
     return None
 
 
+def _etime_seconds(text):
+    """Parse ps `etime` — [[DD-]HH:]MM:SS — into seconds. None when unparseable.
+
+    NOT `etimes`. That keyword is procps (Linux) only; BSD ps, which is what macOS
+    ships, answers `ps: etimes: keyword not found` on stderr, returns 1, and then
+    prints the row anyway WITHOUT that column. So the caller gets well-formed output
+    with one field missing, every row fails its field-count check, and the loop
+    silently sees an empty process table. Nothing errors and nothing is ever reaped.
+    Measured 2026-09-02: `_agent_procs()` returned [] on a Mac with 771 processes.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    days = 0
+    if "-" in t:
+        d, _, t = t.partition("-")
+        try:
+            days = int(d)
+        except ValueError:
+            return None
+    bits = t.split(":")
+    try:
+        bits = [int(b) for b in bits]
+    except ValueError:
+        return None
+    if len(bits) == 2:
+        h, m, s = 0, bits[0], bits[1]
+    elif len(bits) == 3:
+        h, m, s = bits
+    else:
+        return None
+    return days * 86400 + h * 3600 + m * 60 + s
+
+
 def _agent_procs():
     """[(secs, pid, cmd)] of coding-agent processes (not the fleet's python/ollama server)."""
     res = []
     try:
-        for line in sh("ps", "-axo", "pid=,etimes=,command=", timeout=20).stdout.splitlines():
+        for line in sh("ps", "-axo", "pid=,etime=,command=", timeout=20).stdout.splitlines():
             parts = line.strip().split(None, 2)
             if len(parts) < 3:
                 continue
             pid, et, cmd = parts
+            et = _etime_seconds(et)
+            if et is None:
+                continue
             low = cmd.lower()
             if any(t in low for t in ("/gemini", "bin/gemini", "aider", "codex exec", "claude exec", " grok")) \
                and "runner.py" not in low and "sentinel.py" not in low \
@@ -260,7 +297,12 @@ def _orphaned_build_procs():
     """
     res = []
     try:
-        out = sh("ps", "-axo", "pid=,ppid=,etimes=,command=", timeout=20).stdout
+        # `etime`, NOT `etimes` — see _etime_seconds. The first version of this
+        # function asked for `etimes` and was therefore blind: BSD ps drops the
+        # unknown column, every row came back one field short, and the loop below
+        # skipped all 771 of them. It reported zero orphans on a machine that had
+        # twelve.
+        out = sh("ps", "-axo", "pid=,ppid=,etime=,command=", timeout=20).stdout
     except Exception:
         return res
     for line in out.splitlines():
@@ -268,6 +310,9 @@ def _orphaned_build_procs():
         if len(parts) < 4:
             continue
         pid, ppid, et, cmd = parts
+        et = _etime_seconds(et)
+        if et is None:
+            continue
         if ppid != "1":
             continue                      # still has a parent that can use the result
         low = cmd.lower()
