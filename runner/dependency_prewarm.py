@@ -42,6 +42,60 @@ _LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.
 _CONFIG_FILES = ("pnpm-workspace.yaml", "pnpm-workspace.yml",
                  ".pnpmfile.cjs", "pnpmfile.cjs", ".yarnrc.yml")
 _DEFAULT_TIMEOUT = int(os.environ.get("ORCH_DEPS_PREWARM_TIMEOUT", "900"))
+#: Resolved once. None means "this platform has no clonefile", which is every non-macOS
+#: host and any macOS old enough not to export it — both fall through to `cp`.
+_CLONEFILE = None
+_CLONEFILE_PROBED = False
+
+
+def _clonefile_fn():
+    global _CLONEFILE, _CLONEFILE_PROBED
+    if _CLONEFILE_PROBED:
+        return _CLONEFILE
+    _CLONEFILE_PROBED = True
+    try:
+        if os.uname().sysname != "Darwin":
+            return None
+        import ctypes, ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        fn = libc.clonefile
+        fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
+        fn.restype = ctypes.c_int
+        _CLONEFILE = fn
+    except Exception:
+        _CLONEFILE = None
+    return _CLONEFILE
+
+
+def _clonefile_dir(src, dst):
+    """Clone a whole directory tree in one syscall. False means "use cp instead".
+
+    Returns True only when the destination exists afterwards, so a partial or refused
+    clone can never be mistaken for a warm node_modules — which would put the gate back
+    into the state where every branch reported TESTFAIL for an unresolvable import.
+    """
+    if os.environ.get("ORCH_DEPS_CLONEFILE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return False
+    fn = _clonefile_fn()
+    if fn is None or os.path.exists(dst):
+        return False
+    try:
+        rc = fn(str(src).encode("utf-8"), str(dst).encode("utf-8"), 0)
+    except Exception:
+        return False
+    if rc != 0 or not os.path.isdir(dst):
+        # EXDEV (different volume), ENOTSUP (not APFS), EEXIST, anything else: leave no
+        # half-built tree behind for the cp fallback to trip over.
+        try:
+            if os.path.exists(dst):
+                shutil.rmtree(dst, ignore_errors=True)
+        except Exception:
+            pass
+        return False
+    return True
+
+
 # Per-`cp` ceiling for one package root's node_modules activation.
 _ACTIVATION_CALL_TIMEOUT_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_TIMEOUT", "180"))
 # Ceiling for ALL roots in one link_shared_runtime() call. Must stay comfortably
@@ -776,6 +830,23 @@ def link_shared_runtime(repo, worktree):
             return
         mode = os.environ.get("ORCH_DEPS_ACTIVATION_MODE", "clone").lower()
         remaining = deadline - time.monotonic()
+        # ONE SYSCALL INSTEAD OF 76,928 OF THEM.
+        #
+        # `cp -cR` clones each file individually, so its cost is the FILE COUNT of a
+        # node_modules, not its size. macOS clonefile(2) clones a whole directory
+        # hierarchy in a single call. Measured on tomorrow's node_modules (76,928
+        # files) on 2026-09-01: cp -cR 46.3s, clonefile 5.5s, identical file count and
+        # the copies read back the same. Under real fleet load the same step was timed
+        # at 136.9s per merge candidate, and it is paid again in full on every redo.
+        #
+        # Same semantics as cp -c: copy-on-write, an independent tree that shares
+        # blocks until written. Every failure path falls through to the cp below, so a
+        # non-APFS volume, a cross-filesystem destination or an older kernel behaves
+        # exactly as before.
+        if (mode == "clone" and remaining > _ACTIVATION_MIN_SLICE_S
+                and _clonefile_dir(src, dst)):
+            linked.append(dst)
+            return
         if mode == "clone" and remaining > _ACTIVATION_MIN_SLICE_S:
             if os.uname().sysname == "Darwin":
                 cmd = ["cp", "-cR", src, dst]
