@@ -22,6 +22,7 @@ REPO_ROOT = os.path.dirname(RUNNER_DIR)
 RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runtime"))
 RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
 sys.path.insert(0, RUNNER_DIR)
+import gate_env          # node on PATH for every gate that shells out
 import db
 import commit_overlay
 import delivery_lease
@@ -729,7 +730,7 @@ def _qa_ref(repo, ref, command, timeout=1800):
             if not prepared:
                 return False, "Nuxt type preparation failed:\n" + prepare_log
             result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
-                                    text=True, timeout=timeout)
+                                    text=True, timeout=timeout, env=gate_env.gate_env())
             log = (
                 (result.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
                 + "\n"
@@ -989,7 +990,7 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
                 prepared, prepare_log = _prepare_generated_types(tmp)
                 if not prepared:
                     return False, "qa", "Nuxt type preparation failed:\n" + prepare_log
-                qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp,
+                qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, env=gate_env.gate_env(),
                                     capture_output=True, text=True, timeout=1800)
                 if qa.returncode != 0:
                     return False, "qa", (
@@ -1623,7 +1624,7 @@ def _run_for_unlocked(project, repo_override=None):
                 _link_shared_runtime(repo, tmp)
                 prepared, prepare_log = _prepare_generated_types(tmp)
                 if prepared:
-                    qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
+                    qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800, env=gate_env.gate_env())
                     ok = qa.returncode == 0
                 else:
                     qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)

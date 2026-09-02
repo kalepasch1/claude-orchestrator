@@ -10,6 +10,7 @@ real package build) with a timeout. Returns (ok, log). Auto-detects build_cmd an
 """
 import fnmatch, os, sys, json, subprocess, tempfile, shutil, shlex
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gate_env          # node on PATH for every gate that shells out
 import db
 import dependency_prewarm
 
@@ -210,14 +211,13 @@ def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
             removed = _apply_vercelignore(tmp, overlay["files"]) if vercel_context else []
             # Same shell problem as the test gate: `bash -lc` sources ~/.bash_profile, but
             # nvm is initialised in ~/.zshrc on this host, so a login bash never sees node.
-            # Reuse merge_train's resolved gate environment. See merge_train._gate_env.
-            try:
-                import merge_train
-                _env = merge_train._gate_env()
-            except Exception:
-                _env = None
+            #
+            # This used to `import merge_train` to borrow its _gate_env, falling back to
+            # env=None on any exception -- i.e. silently back to the broken environment,
+            # for a reason as ordinary as an import cycle. gate_env.py exists so no gate
+            # has to reach into another gate's module for its own PATH.
             r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True,
-                               text=True, timeout=timeout, env=_env)
+                               text=True, timeout=timeout, env=gate_env.gate_env())
             ok = r.returncode == 0
             context = (f"overlay {overlay['commit'][:12]}; Vercel context removed "
                        f"{len(removed)} tracked file(s)")

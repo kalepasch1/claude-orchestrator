@@ -18,14 +18,23 @@ _spec = importlib.util.spec_from_file_location("_mt_gate_env", os.path.join(RUNN
 mt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mt)
 
+# The implementation moved to gate_env.py on 2026-09-02, because it was fixing ONE of the
+# five places the fleet shells out to a project's toolchain -- merge_train's own suite call
+# -- while release_train's overlay gate, which produced 14 more `npm: command not found`
+# TESTFAILs in the same log, never received it. merge_train._gate_env/_node_bin_dir are now
+# thin aliases. This module keeps testing them through merge_train, because merge_train is
+# where the fleet calls them from; the cache it must reset now lives in gate_env.
+# test_gate_env_everywhere.py covers the other callers and the module itself.
+import gate_env
+
 
 class GateEnvTests(unittest.TestCase):
     def setUp(self):
-        mt._GATE_ENV_CACHE = None
+        gate_env.reset_cache()
         self._prev = os.environ.get("ORCH_NODE_BIN")
 
     def tearDown(self):
-        mt._GATE_ENV_CACHE = None
+        gate_env.reset_cache()
         os.environ.pop("ORCH_NODE_BIN", None)
         if self._prev is not None:
             os.environ["ORCH_NODE_BIN"] = self._prev

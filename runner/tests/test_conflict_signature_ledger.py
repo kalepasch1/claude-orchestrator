@@ -156,8 +156,8 @@ def test_the_redo_path_writes_the_ledger():
     src = open(merge_train.__file__.replace(".pyc", ".py")).read()
     # There are five `transient_retries = tr + 1` sites; anchor on the unique one that
     # writes the conflict tag, so this test cannot silently drift onto another.
-    j = src.index("_CONFLICT_SIG_TAG}{sig}]")
-    i = src.rindex('patch["transient_retries"] = tr + 1', 0, j)
-    window = src[i:j + 600]
+    tag_at = src.index("_CONFLICT_SIG_TAG}{sig}]")
+    retries_at = src.rindex('patch["transient_retries"] = tr + 1', 0, tag_at)
+    window = src[retries_at:tag_at + 600]
     assert "_conflict_ledger_put(task, sig)" in window, window
     assert window.index("_conflict_ledger_put") < window.index("_task_patch(task, patch)"), window

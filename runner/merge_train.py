@@ -65,6 +65,7 @@ import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization
                         # imported -> every train_run() crashed with NameError before integrating
                         # anything (the silent integration-stall root cause).
 import concurrent.futures   # FIX 2026-07-28: used by the multi-project ThreadPoolExecutor path, never imported
+import gate_env          # node on PATH for every gate that shells out
 import stderr_digest       # keep the CAUSE of a git failure, not its last 160 bytes
 import repo_hygiene         # FIX 2026-07-28: used pre-test-run (stray .js cleanup), never imported (fail-soft masked it)
 import semantic_merge       # FIX 2026-07-28: used by the auto-merge path, never imported
@@ -900,6 +901,7 @@ def _ensure_node_deps(repo, test_cmd=""):
                 cmd = "npm ci" if os.path.isfile(os.path.join(root, "package-lock.json")) else "npm install"
                 try:
                     subprocess.run(["bash", "-lc", cmd], cwd=root, capture_output=True,
+                                   env=gate_env.gate_env(),
                                    text=True, timeout=min(per_install_cap, remaining))
                 except subprocess.TimeoutExpired:
                     # this one install is over budget -- move on rather than let a single
@@ -1005,44 +1007,17 @@ _GATE_ENV_CACHE = None
 
 
 def _node_bin_dir():
-    """Best guess at the directory holding npm/node on this host.
-
-    ORCH_NODE_BIN wins if set. Otherwise the newest nvm install, then the usual
-    package-manager prefixes. Returns "" when node cannot be located at all.
-    """
-    explicit = os.environ.get("ORCH_NODE_BIN", "").strip()
-    if explicit and os.path.isfile(os.path.join(explicit, "npm")):
-        return explicit
-    import glob
-    cands = sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin")), reverse=True)
-    cands += ["/opt/homebrew/bin", "/usr/local/bin"]
-    for c in cands:
-        if os.path.isfile(os.path.join(c, "npm")):
-            return c
-    return ""
+    """Kept as merge_train's name for gate_env.node_bin_dir; see that module."""
+    return gate_env.node_bin_dir()
 
 
 def _gate_env():
-    """Environment for test/build gates, with node guaranteed on PATH.
+    """merge_train's name for gate_env.gate_env().
 
-    2026-09-01: EVERY merge-train TESTFAIL on this host was `bash: npm: command not found`.
-    The gates shell out with `bash -lc`, which sources ~/.bash_profile -- but the operator's
-    shell is zsh and nvm is initialised in ~/.zshrc, so a login bash never sees node. Under
-    launchd there is no interactive shell at all and PATH is minimal. Good, finished work was
-    being marked TESTFAIL for an environment fault, which then burned its redo cap and was
-    abandoned. Prepending the resolved node bin makes the gates independent of which shell
-    profile happens to define nvm.
+    The implementation moved to gate_env.py on 2026-09-02 because it was fixing ONE of
+    the five places the fleet shells out to a project's toolchain. See that module.
     """
-    global _GATE_ENV_CACHE
-    if _GATE_ENV_CACHE is not None:
-        return _GATE_ENV_CACHE
-    env = dict(os.environ)
-    nb = _node_bin_dir()
-    if nb and nb not in env.get("PATH", "").split(os.pathsep):
-        env["PATH"] = nb + os.pathsep + env.get("PATH", "")
-        print(f"[gate-env] node not on PATH; prepending {nb}", flush=True)
-    _GATE_ENV_CACHE = env
-    return env
+    return gate_env.gate_env()
 
 
 #: Load-per-core above which a red suite says as much about the machine as the code.

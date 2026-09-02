@@ -111,8 +111,8 @@ def test_resolve_task_falls_back_to_a_terminal_row_when_that_is_all_there_is():
 def test_the_card_loop_refuses_before_grouping_the_card():
     """Structural: the guard must run before by_project.setdefault, not after."""
     src = open(merge_train.__file__.replace(".pyc", ".py")).read()
-    i = src.index('_r("skipped", slug, "no-task: no task row for this slug")')
-    window = src[i:i + 900]
+    anchor = src.index('_r("skipped", slug, "no-task: no task row for this slug")')
+    window = src[anchor:anchor + 900]
     assert "_not_integratable(t)" in window, window
     assert window.index("_not_integratable(t)") < window.index("by_project.setdefault"), window
     assert "_retire_card" in window
@@ -121,7 +121,7 @@ def test_the_card_loop_refuses_before_grouping_the_card():
 def test_the_card_loop_retires_the_card_rather_than_leaving_it_in_the_pool():
     """A card left approved is refiled and re-attempted next pass -- the amplifier."""
     src = open(merge_train.__file__.replace(".pyc", ".py")).read()
-    i = src.index("_dead = _not_integratable(t)")
-    window = src[i:i + 400]
+    anchor = src.index("_dead = _not_integratable(t)")
+    window = src[anchor:anchor + 400]
     assert 'f"task-{_dead.lower()}"' in window, window
     assert "continue" in window
