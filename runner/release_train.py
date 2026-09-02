@@ -569,6 +569,43 @@ def _recent_failed_gate(project, staging_sha, gate):
     return False
 
 
+# Gates whose failures the train RECORDS with a cooldown but never HONOURED as one.
+# `copy`, `qa`, `build` and `refresh` each consult _recent_failed_gate before doing
+# their expensive work; the push family never did, so the cooldown damped only the
+# releases rows, not the retries behind them.
+#
+# MEASURED 2026-09-02, sustainable-barks, one staging batch (c1731589, 17 hours):
+#     [gate:push] rows written .................  5   (dedupe working as designed)
+#     untagged summary rows written ............ 38   (= full release passes actually run)
+# Every one of those 38 passes re-integrated, re-ran the suite, re-ran the production
+# build and re-attempted the identical push, holding one of only two build slots each
+# time. That is the source of the `waited 453s for a slot` and the 900s releasetrain
+# TIMEOUTs in .runtime/logs/releasetrain.log.
+_PUSH_FAMILY_GATES = ("push", "staging-publish", "proof", "test-proof")
+
+
+def _push_family_cooling(project, staging_sha):
+    """The gate name that recently failed for this exact staging tip, or None.
+
+    Keyed on the PRE-INTEGRATION staging tip, which is what the push family recorded in
+    every observed case (integration of an already-current prod is a fast-forward and
+    mints no new commit). When integration DOES mint a merge commit the recorded SHA
+    differs, this returns None, and the pass proceeds exactly as it does today — the
+    degradation is "no skip", never "skip something that would have succeeded".
+    """
+    if not staging_sha:
+        return None
+    for gate in _PUSH_FAMILY_GATES:
+        try:
+            if _recent_failed_gate(project, staging_sha, gate):
+                return gate
+        except Exception:
+            # FAIL-OPEN. A control-plane blip must cost one redundant pass, never a
+            # release that silently never happens.
+            return None
+    return None
+
+
 def _insert_release(row):
     """Insert a releases row stamped with the host that produced it.
 
@@ -2113,6 +2150,17 @@ def _run_for_unlocked(project, repo_override=None):
     pushed = None
     push_log = ""
     if push_on:
+        cooling = _push_family_cooling(project, to_sha)
+        if cooling:
+            # A silent hold is indistinguishable from an idle train (see _hold_for_open_fix);
+            # always say so, and return BEFORE the integrate/suite/build work rather than
+            # after, which is the whole point of the skip.
+            print(f"release_train {project}: staging {to_sha[:12]} already failed "
+                  f"gate={cooling} within {int(RED_GATE_COOLDOWN_MIN)}m — holding this pass "
+                  f"instead of re-running the suite and build to fail the same way")
+            return {"project": project, "prod": prod, "released": 0, "pushed": False,
+                    "push_cooldown_gate": cooling,
+                    "note": f"unchanged staging SHA already failed {cooling} recently"}
         pushed, to_sha, push_log = _integrate_regate_and_push(
             p, project, repo, prod, ahead, release_base_sha, staging_sha,
             test_cmd, require_tests, bcmd, manifest=manifest)
