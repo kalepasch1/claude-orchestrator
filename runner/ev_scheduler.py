@@ -270,15 +270,56 @@ def outcome_weight(task, ctx):
     return max(weight, 0.1)  # floor at 0.1 so nothing is fully zeroed
 
 
+#: Base score when the fleet has NO revenue data at all. Chosen as 1.0, which is
+#: log10(1 + $9) — a deliberately modest stand-in, not a thumb on the scale.
+NO_REVENUE_BASE = _env_float_ev("ORCH_EV_NO_REVENUE_BASE", 1.0)
+
+#: Floor under success_rate, for the same reason outcome_weight() floors its result at
+#: 0.1: a multiplier of exactly zero does not rank a project low, it erases it.
+#:
+#: success_rate comes from the recent outcomes window, and on 2026-09-02 it read 0.000
+#: for apparently-law and 0.000 for tomorrow -- the two projects whose merges this fleet
+#: exists to land. Zero there makes score() return zero whatever else is true of the
+#: task, so every task in both projects sorts to the bottom and is stamped "near-zero
+#: expected value". They then get capacity last, land nothing, and measure 0.000 again.
+#: A project that has recently succeeded at nothing SHOULD rank low. It should not be
+#: mathematically prevented from ever ranking otherwise.
+SUCCESS_RATE_FLOOR = _env_float_ev("ORCH_EV_SUCCESS_RATE_FLOOR", 0.05)
+
+
 def score(task, ctx):
     """Expected value per token for one task. Pure + deterministic."""
     project = task.get("project") or ""
-    mrr = float((ctx.get("revenue_by_project") or {}).get(project, 0) or 0)
+    revenue = ctx.get("revenue_by_project") or {}
+    mrr = float(revenue.get(project, 0) or 0)
     stats = (ctx.get("outcome_stats") or {}).get(project, {}) or {}
-    success_rate = float(stats.get("success_rate", 0.7))
+    success_rate = max(float(stats.get("success_rate", 0.7)), SUCCESS_RATE_FLOOR)
     avg_usd = float(stats.get("avg_usd", 0) or 0)
 
-    s = math.log10(1 + max(0.0, mrr)) * success_rate / (avg_usd + 0.5)
+    # EVERY MULTIPLIER BELOW IS MULTIPLIED BY THIS. If it is zero they are all zero.
+    #
+    # base = log10(1 + mrr), and app_revenue on this fleet is an EMPTY TABLE, so mrr was
+    # 0 for every task, so log10(1) = 0, so score() returned exactly 0.0 for every task
+    # in the queue -- and the kind-ROI weighting, the revenue-word boost, the approved
+    # -slug doubling, the flaky-work discount and outcome_weight() all multiplied that
+    # zero. The whole module was inert. Two visible consequences:
+    #
+    #   * park_zero_ev annotates anything under ZERO_EV (0.01), so it parked its
+    #     PARK_CAP of 20 tasks EVERY run, forever, in arbitrary order. On 2026-09-02 at
+    #     01:14:47 it stamped 19 tasks in four seconds with "near-zero expected value",
+    #     among them the merge candidates the train was working that minute.
+    #   * apply_ranking writes priority 1..50 from a total ordering of identical zeros,
+    #     and claim_task sorts on that column ascending. So the order the fleet claims
+    #     work in was a tie-break over noise, not a judgement about value.
+    #
+    # The fallback applies ONLY when no project anywhere reports revenue -- the
+    # degenerate case. The moment one does, the revenue-weighted behaviour is exactly
+    # what it was, because a fleet that HAS revenue data should be ranked by it.
+    base = math.log10(1 + max(0.0, mrr))
+    if base <= 0 and not any(float(v or 0) > 0 for v in revenue.values()):
+        base = NO_REVENUE_BASE
+
+    s = base * success_rate / (avg_usd + 0.5)
 
     kind = (task.get("kind") or "").lower()
     delta = (ctx.get("surface_returns") or {}).get(kind)
