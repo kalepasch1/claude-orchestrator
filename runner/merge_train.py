@@ -648,6 +648,52 @@ def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, 
     tr = int(task.get("transient_retries") or 0)
     cap = int(os.environ.get("MERGE_REGRESSION_REDO_CAP", "2"))
     state = "QUARANTINED"
+
+    # SHARED CAUSE: stop paying per card for one broken symbol. See _REGRESSION_KEY.
+    # Runs BEFORE the repair budget is spent, because the whole cost being removed is
+    # the repair run -- and after the roll is recorded, so the count includes this card.
+    if _shared_regression_enabled():
+        try:
+            _sig = _regression_signature(detail)
+            if _sig:
+                _regression_last_sig[slug] = _sig
+                _n = _regression_record(pname, _sig, slug)
+                _thresh = _shared_regression_threshold()
+                if _n > _thresh:
+                    _siblings = [x for x in _regression_slugs(pname, _sig) if x != slug]
+                    _note = (f"merge-train-regression-guard: SHARED CAUSE. {_sig} has now "
+                             f"blocked {_n} distinct cards in {pname}; this card is parked "
+                             f"rather than spending repair {tr + 1}/{cap} on the same symbol a "
+                             f"{_n}th time. Fix the cause once and every one of these can run. "
+                             f"Also blocked: {', '.join(_siblings[:6])}"
+                             f"{' ...' if len(_siblings) > 6 else ''}. {head}")[:900]
+                    _task_patch(task, {"state": "BLOCKED", "account": None,
+                                       "updated_at": "now()", "note": _note})
+                    _retire_card(card.get("id"), "REGRESSFAIL-shared-cause")
+                    _attribute_train_outcome(slug, task, "regressfail", integrated=False)
+                    # ONE coordination task per cause, not one per card: the roll is the
+                    # dedupe key, so only the card that crosses the threshold files it.
+                    if _n == _thresh + 1:
+                        try:
+                            import json as _json, time as _time
+                            db.insert("coordination_tasks", {
+                                "task_type": "merge_regression_shared_cause",
+                                "payload": _json.dumps({
+                                    "at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                                    "project": pname, "base": base, "signature": _sig,
+                                    "blocked_cards": _n,
+                                    "slugs": _regression_slugs(pname, _sig)[:50],
+                                    "findings": (detail or "")[:2000]})[:8000]},
+                                upsert=False)
+                        except Exception:
+                            pass
+                    _log(pname, slug, "REGRESSFAIL",
+                         f"shared cause ({_n} cards): {_sig[:100]} — parked without "
+                         f"spending a repair")
+                    return "regressfail"
+        except Exception:
+            pass    # fail-open: the guard must never be why a candidate is not judged
+
     if tr < cap:
         try:
             patch = agentic_repair.repair_patch(
@@ -1223,6 +1269,121 @@ def _hot_file_clear(project, sig):
     if not sig:
         return
     key = _hot_file_id(project, sig)
+    now = time.time()
+    with _CONFLICT_LEDGER_LOCK:
+        data = _conflict_ledger_load()
+        if key in data:
+            data.pop(key, None)
+            _conflict_ledger_write(data, now)
+
+
+# ── SHARED REGRESSION CAUSE ───────────────────────────────────────────────────
+# The hot-file rule above, generalised to the regression guard, on the operator's
+# instruction of 2026-09-02: "the same hot-file rule you already approved, generalised."
+#
+# The regression guard is right and must stay fail-closed -- a candidate that deletes an
+# exported symbol the base has should not merge. What it was doing wrong is charging every
+# card SEPARATELY for one cause. Measured over this host's merge-train log on 2026-09-02:
+#
+#     REGRESSFAIL events                                  197
+#     distinct findings behind them                        43
+#     top 5 findings                            121 events (61%)
+#     darwn   src/utils/zkPrivilegeProof.ts      37 events / 28 distinct cards
+#     tomorrow server/utils/otc/ecp/reputation   26 events / 25 distinct cards
+#     tomorrow scripts/reconcile-evidence.mjs::primeCaches
+#                                                12 events / 12 distinct cards
+#
+# Twenty-eight cards, one symbol. Each of those events costs a rebase, a full regression
+# scan and -- under MERGE_REGRESSION_REDO_CAP -- an agentic repair run that is handed the
+# same directive about the same symbol, twenty-eight times. Verified by hand that the
+# guard is not wrong about any of it: `primeCaches` IS exported in tomorrow's main and
+# orchestrator/dev, and IS absent from every candidate branch that was blocked.
+#
+# So the first HOT_FILE_SLUG_THRESHOLD cards keep their full repair budget -- one of them
+# may genuinely restore the symbol, and until several have failed there is no evidence the
+# cause is shared. After that, the next card carrying the same finding is parked with the
+# shared cause named and its sibling slugs listed, and ONE coordination task is filed for
+# the cause instead of one per card. A merge on that signature clears the roll.
+_REGRESSION_KEY = "regress"
+
+#: slug -> the regression signature it last hit, so a later MERGE clears the roll.
+_regression_last_sig = {}
+
+
+def _shared_regression_enabled():
+    return os.environ.get("ORCH_SHARED_REGRESSION_GUARD", "true").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _shared_regression_threshold():
+    """Distinct slugs that must fail on one finding before it counts as a shared cause."""
+    try:
+        return max(2, int(os.environ.get("ORCH_SHARED_REGRESSION_THRESHOLD",
+                                         os.environ.get("ORCH_HOT_FILE_SLUG_THRESHOLD", "3"))))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _regression_signature(detail):
+    """The stable identity of a regression finding, or "" when there is none.
+
+    The raw detail carries per-attempt noise -- a "repair 1/2; " prefix, a "QUARANTINED; "
+    prefix, a trailing "... and N more" -- and several findings joined by " | ". Two cards
+    blocked by the same cause must produce the SAME string here, so this keeps only the
+    first finding's code+path+symbol and drops everything that varies per attempt.
+    """
+    text = (detail or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^(?:QUARANTINED|BLOCKED|repair \d+/\d+)\s*;\s*", "", text)
+    first = text.split(" | ")[0].strip()
+    first = re.sub(r"\s*\.\.\.\s*and \d+ more$", "", first)
+    # `[code] path::symbol: reason` -> `[code] path::symbol`; the reason often quotes a
+    # line number or a count and would split one cause into several signatures.
+    m = re.match(r"(\[[a-z_]+\]\s*[^:]+(?:::[^:\s]+)?)", first)
+    return (m.group(1) if m else first)[:160].strip()
+
+
+def _regression_id(project, sig):
+    return "%s:%s:%s" % (_REGRESSION_KEY, project or "?", sig or "?")
+
+
+def _regression_slugs(project, sig):
+    """Slugs already known to have been blocked by this finding, inside the TTL."""
+    if not sig:
+        return []
+    row = _conflict_ledger_load().get(_regression_id(project, sig))
+    if not isinstance(row, dict):
+        return []
+    if time.time() - float(row.get("at") or 0) > _CONFLICT_LEDGER_TTL_S:
+        return []
+    return [str(x) for x in (row.get("slugs") or []) if x]
+
+
+def _regression_record(project, sig, slug):
+    """Add this slug to the finding's roll. Returns the distinct slug count."""
+    if not sig or not slug:
+        return 0
+    key = _regression_id(project, sig)
+    now = time.time()
+    with _CONFLICT_LEDGER_LOCK:
+        data = _conflict_ledger_load()
+        row = data.get(key)
+        slugs = []
+        if isinstance(row, dict) and now - float(row.get("at") or 0) <= _CONFLICT_LEDGER_TTL_S:
+            slugs = [str(x) for x in (row.get("slugs") or []) if x]
+        if slug not in slugs:
+            slugs.append(slug)
+        data[key] = {"slugs": slugs[-50:], "at": now}
+        _conflict_ledger_write(data, now)
+        return len(slugs)
+
+
+def _regression_clear(project, sig):
+    """A merge past this finding means the shared cause is gone."""
+    if not sig:
+        return
+    key = _regression_id(project, sig)
     now = time.time()
     with _CONFLICT_LEDGER_LOCK:
         data = _conflict_ledger_load()
@@ -2707,6 +2868,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         # file set was colliding is no longer contended on this card's account.
         try:
             _hot_file_clear(pname, _hot_file_last_sig.pop(slug, ""))
+            _regression_clear(pname, _regression_last_sig.pop(slug, ""))
         except Exception:
             pass
         _retire_card(card.get("id"), "ALREADY_INTEGRATED")
@@ -3014,6 +3176,8 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     try:
         _hot_file_clear(pname, _hot_file_last_sig.get(slug, ""))
         _hot_file_last_sig.pop(slug, None)
+        _regression_clear(pname, _regression_last_sig.get(slug, ""))
+        _regression_last_sig.pop(slug, None)
     except Exception:
         pass
     _retire_card(card.get("id"), "MERGED")
