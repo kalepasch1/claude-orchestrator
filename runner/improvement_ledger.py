@@ -70,10 +70,78 @@ def dedupe_key(app, surface, metric_name, title):
     return hashlib.sha1(raw.encode()).hexdigest()[:32]
 
 
+#: Statuses that mean "nobody ever acted on this". They are an intake queue, not a
+#: result -- unlike merged / shipped / validated / regressed / SUPERSEDED, which are
+#: evidence about what happens when you try the idea.
+_INERT_STATUSES = frozenset({"proposed", "for_review", "", "none"})
+
+
+def stale_proposal_days():
+    """How long an unacted proposal keeps blocking a fresh one. 0 disables the expiry."""
+    try:
+        return max(0, int(os.environ.get("ORCH_IMPROVE_STALE_PROPOSAL_DAYS", "21")))
+    except (TypeError, ValueError):
+        return 21
+
+
+def _age_days(row):
+    """Days since this proposal was created, or None when that cannot be read."""
+    raw = str((row or {}).get("created_at") or "").strip()
+    if not raw:
+        return None
+    text = raw.replace("Z", "+00:00")
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            when = datetime.fromisoformat(text[:19])
+        except ValueError:
+            return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    return (now - when).total_seconds() / 86400.0
+
+
+def is_inert(row, max_age_days=None):
+    """True when this proposal is an unacted note old enough to stop blocking new work.
+
+    A proposal that REACHED AN OUTCOME blocks forever, and should: merged, shipped,
+    validated, regressed and SUPERSEDED are all evidence about what happens when the idea
+    is tried, and re-proposing it would be re-doing settled work.
+
+    A proposal still sitting in `proposed` or `for_review` is not evidence of anything.
+    Nobody acted on it. Blocking on it means the bottleneck it describes can never be
+    raised again, however bad it gets.
+
+    Measured 2026-09-02 across 1,004 proposals:
+
+        merged        395   (all of them older than 21 days)
+        proposed      315   oldest 2026-07-13, 314 older than 21 days
+        SUPERSEDED    197
+        for_review     65   64 older than 21 days
+        shipped        21
+        reviewed       10
+        validated       1   -- one, ever
+
+    So 378 proposals that never reached an outcome were permanently suppressing the
+    fleet's ability to re-raise the problems they describe, while exactly one proposal in
+    the table's history was ever validated.
+    """
+    max_age_days = stale_proposal_days() if max_age_days is None else max_age_days
+    if not max_age_days:
+        return False
+    if str((row or {}).get("status") or "").strip().lower() not in _INERT_STATUSES:
+        return False
+    age = _age_days(row)
+    return age is not None and age > max_age_days
+
+
 def _history(app, limit=3000):
     """Everything already tried for this app — INCLUDING regressed, so failures aren't retried."""
     return db.select("improvement_proposals", {
-        "select": "id,app,surface,title,proposal,metric_name,status,dedupe_key,realized_multiplier",
+        "select": ("id,app,surface,title,proposal,metric_name,status,dedupe_key,"
+                   "realized_multiplier,created_at"),
         "app": f"eq.{app}", "limit": str(limit)}) or []
 
 
@@ -84,6 +152,9 @@ def is_duplicate(cand, history=None, threshold=DEDUPE_THRESHOLD):
         cand.get("app"), cand.get("surface"), cand.get("metric_name"), cand.get("title"))
     csig = signature(f"{cand.get('title','')} {cand.get('proposal','')} {cand.get('metric_name','')}")
     for h in history:
+        # An unacted proposal past its expiry is a note, not a result. See is_inert.
+        if is_inert(h):
+            continue
         if h.get("dedupe_key") and h["dedupe_key"] == key:
             gate_liveness.record(DEDUPE_GATE, "duplicate_key", cand.get("title"), h.get("status"))
             return {"duplicate": True, "why": "identical dedupe_key",

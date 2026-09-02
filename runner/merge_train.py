@@ -1059,7 +1059,7 @@ def _load_note(per_core):
     between 42 and 92 on 18 cores. A timing-sensitive suite at five times
     oversubscription fails for reasons that have nothing to do with the diff being gated,
     and the resulting quarantine is a false one that costs a human to undo.
-    
+
     Recording it is deliberately all this does. Suppressing the strike is the obvious
     next step and it is NOT taken here, because on a fleet whose load is routinely above
     the threshold that would mean nothing is ever quarantined — a change that needs the
