@@ -2600,6 +2600,19 @@ def run_task(t):
                     # Without it quality_gate.run had no way to tell the candidate's
                     # test files from the repo's, and its inert-test scan is a no-op.
                     qg = quality_gate.run(wt, base=base)
+                    # AN ADVISORY FINDING ON A PASSING GATE HAD NOWHERE TO GO.
+                    #
+                    # qg["notes"] is read only inside the `if not qg["pass"]` below, so a
+                    # check that reports without blocking — which is what the inert-test
+                    # scan deliberately does while its false-positive rate is unmeasured —
+                    # was discarded on every task. It ran, produced a finding, and the
+                    # finding was dropped one line later. Zero occurrences in the logs and
+                    # zero in tasks.note, so there was also no way to gather the very data
+                    # the advisory period exists to gather.
+                    _qg_notes = str(qg.get("notes") or "")
+                    if qg["pass"] and "ADVISORY" in _qg_notes:
+                        print(f"[quality-advisory] {slug}: {_qg_notes[:300]}", flush=True)
+                        _soft_flags.append("quality: " + _qg_notes[:180])
                     if not qg["pass"]:
                         if _soft_advisory:
                             _soft_flags.append("quality: " + (qg.get("notes") or "")[:180])

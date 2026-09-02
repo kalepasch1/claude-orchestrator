@@ -294,6 +294,30 @@ def test_a_broken_git_does_not_block_the_task(repo):
     assert qg.run(repo, base="no-such-ref-anywhere")["pass"] is True
 
 
+def test_an_advisory_finding_on_a_passing_gate_is_not_discarded():
+    """THE BUG THIS PINS. The scan is advisory, so it returns pass=True — and the call
+    site read qg["notes"] ONLY inside `if not qg["pass"]`.
+
+    So every finding was dropped one line after it was produced. Zero occurrences in the
+    runner logs and zero in tasks.note over a full day, which also meant there was no way
+    to collect the false-positive data the advisory period exists to collect. An advisory
+    check whose advice is thrown away is not a check.
+    """
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "runner.py")
+    with open(src, encoding="utf-8") as fh:
+        body = fh.read()
+    call = body.index("qg = quality_gate.run(wt, base=base)")
+    blocking = body.index('if not qg["pass"]:', call)
+    surfaced = body[call:blocking]
+    assert 'qg["pass"] and "ADVISORY"' in surfaced, (
+        "an advisory quality finding is no longer surfaced on a passing gate — it will "
+        "be discarded on every task, exactly as it was"
+    )
+    assert "_soft_flags.append" in surfaced, "the finding is not recorded on the task"
+    assert "quality-advisory" in surfaced, "the finding is not logged"
+
+
 def test_the_runner_passes_a_base_to_the_gate():
     """Structural. The scan is a no-op unless the call site supplies `base`.
 
