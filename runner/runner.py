@@ -1158,6 +1158,13 @@ def run_task(t):
         _domain_post = None
         _cost_val = 0
 
+        # Declare the project for THIS thread, so every model call made while handling
+        # this task is attributed to it and checked against its pause — without each of
+        # the 44 claude_cli.run call sites having to remember a project= keyword. Two of
+        # them did, which is why `beethoven` kept spending while paused since 24 August.
+        # Set rather than scoped: run_task has many return paths, and a worker thread's
+        # next act is always to claim another task, which overwrites this.
+        claude_cli.set_current_project(name)
         # kill switch: stop all spend on this project (or globally) at a click
         if kill_switch.is_paused(name):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")

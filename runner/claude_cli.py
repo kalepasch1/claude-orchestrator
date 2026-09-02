@@ -23,6 +23,7 @@ API-equivalent figure the CLI reports lives in `notional_usd`; use that when
 comparing models to each other, never when adding up money actually spent.
 """
 import os, sys, json, time, subprocess, threading, logging, asyncio, tempfile, shutil
+import contextlib, contextvars
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 log = logging.getLogger(__name__)
@@ -120,10 +121,53 @@ def _record(usd, sub_usd=0):
         _save(s)
 
 
+#: THE PROJECT THE CURRENT THREAD IS WORKING ON.
+#:
+#: run() refuses a call for a paused project — but only if the caller remembered to pass
+#: `project=`, and on 2026-09-01 exactly 2 of the 44 call sites in this repo did. So
+#: `beethoven` sat paused from 24 August while its 105 queued tasks kept drawing model
+#: calls, and the pause a human clicked meant almost nothing.
+#:
+#: Making it a parameter every caller must remember is what failed. This is the ambient
+#: fact instead: runner.run_task sets it once, when it knows which project it claimed,
+#: and every model call made while handling that task inherits it. An explicit
+#: project= still wins, so nothing that already passes one changes behaviour.
+#:
+#: A ContextVar, not a global: the runner runs tasks on several worker threads at once,
+#: and each thread gets its own value.
+_CURRENT_PROJECT = contextvars.ContextVar("orch_current_project", default=None)
+
+
+def set_current_project(name):
+    """Declare which project this thread is working on. Returns the previous value."""
+    prev = _CURRENT_PROJECT.get()
+    _CURRENT_PROJECT.set(str(name) if name else None)
+    return prev
+
+
+def current_project():
+    return _CURRENT_PROJECT.get()
+
+
+@contextlib.contextmanager
+def project_scope(name):
+    """Scope a block of work to a project, restoring whatever was set before."""
+    token = _CURRENT_PROJECT.set(str(name) if name else None)
+    try:
+        yield
+    finally:
+        _CURRENT_PROJECT.reset(token)
+
+
+def _effective_project(project=None):
+    """An explicit project always wins; otherwise fall back to the thread's."""
+    return project or _CURRENT_PROJECT.get()
+
+
 def _paused(project=None):
     try:
         import kill_switch
-        return kill_switch.is_paused(project)
+        return kill_switch.is_paused(_effective_project(project))
     except Exception:
         return False
 
@@ -256,6 +300,10 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
     only 2 of the 44 call sites in this repo passed it. Pausing `beethoven` therefore did
     not stop model spend on its 105 queued tasks.
     """
+    # Resolve once, here, so the pause check AND the usage attribution downstream both
+    # see the same project — a call made inside a task but without an explicit project=
+    # was previously recorded against nothing at all.
+    project = _effective_project(project)
     if _paused(project):
         return {"text": "", "cost_usd": 0, "notional_usd": 0, "input_tokens": 0,
                 "output_tokens": 0, "returncode": 75, "raw": None,
