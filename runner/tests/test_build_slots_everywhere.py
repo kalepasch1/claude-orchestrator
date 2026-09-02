@@ -187,6 +187,10 @@ def test_build_daemon_actually_takes_a_slot(tmp_path, monkeypatch):
         ran.append((list(cmd), bool(taken)))    # was a slot held when we shelled out?
         return _Result()
 
+    # The check ships OFF (see build_daemon.BUILD_CHECK: its only sink, the
+    # repo_health table, does not exist in the fleet DB). Turn it on, because what
+    # is under test here is that the ENABLED path still takes a slot.
+    monkeypatch.setattr(build_daemon, "BUILD_CHECK", True)
     monkeypatch.setattr(build_daemon.build_slots, "hold", _recording_hold)
     monkeypatch.setattr(build_daemon.subprocess, "run", _fake_run)
 

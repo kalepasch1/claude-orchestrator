@@ -19,11 +19,42 @@ import db
 WARM_WORKTREE_COUNT = int(os.environ.get("ORCH_WARM_WORKTREES", "5"))
 HEALTH_TABLE = "repo_health"
 
+#: Whether step 4 runs a FULL production build of each repo's working tree, every
+#: 600s, for a health field. Default OFF, and the reason is not tuning -- it is that
+#: the result has never had anywhere to go. Checked 2026-09-02 against the fleet DB:
+#:
+#:     select table_name from information_schema.tables
+#:      where table_schema='public' and table_name ilike '%health%';
+#:     -> runner_health, deploy_health, portfolio_health, v_project_health, ...
+#:        and NO repo_health
+#:
+#: HEALTH_TABLE does not exist. Every db.insert() below has been raising into a bare
+#: `except Exception: pass` since the daemon was written, and repo_health() -- the only
+#: reader -- returns None for every project, always. Nothing else in the tree selects
+#: from it (grep: three hits, all in this file plus an unrelated controls key).
+#:
+#: What that bought, per 600s cycle per project: one `npm run build` in the LIVE repo,
+#: 600s timeout, measured here at 4.7 GB RSS. Because it runs in the working tree
+#: rather than an overlay it also writes .nuxt/.output underneath whichever agent is
+#: working in that repo. The medic's journal shows this same build orphaned and reaped
+#: at 15:49Z and again at 17:23Z on the day this was written.
+#:
+#: The check it claims to perform -- "catch pre-existing failures" -- is done properly
+#: three times over by gates whose verdicts ARE read: build_gate (exact commit, in a
+#: disposable overlay), clean_clone_gate (pristine `git archive` export, real install)
+#: and release_train's production proof. This one was the only one that could not be
+#: read by anybody.
+#:
+#: Set ORCH_BUILD_DAEMON_BUILD_CHECK=true to restore it (it is slotted either way).
+BUILD_CHECK = os.environ.get("ORCH_BUILD_DAEMON_BUILD_CHECK", "false").lower() in (
+    "1", "true", "yes", "on")
+
 
 def run():
     """Periodic entry: warm all registered project repos."""
     projects = db.select("projects", {"select": "id,name,repo_path,test_cmd,default_base"}) or []
     results = {}
+    _sink_errors = []
 
     for proj in projects:
         repo = proj.get("repo_path")
@@ -35,11 +66,13 @@ def run():
         result = warm_repo(repo, proj)
         results[name] = result
 
-        # Report health
+        # Report health. `build_ok is False` -- not falsy: None means the build check
+        # did not run (see BUILD_CHECK), and a check that did not run is not a failure.
+        _build_bad = result.get("build_ok") is False
         try:
             db.insert(HEALTH_TABLE, {
                 "project": name,
-                "status": "healthy" if result.get("deps_ok") and result.get("build_ok") else "degraded",
+                "status": "healthy" if result.get("deps_ok") and not _build_bad else "degraded",
                 "deps_ok": result.get("deps_ok", False),
                 "build_ok": result.get("build_ok", False),
                 "warm_worktrees": result.get("warm_worktrees", 0),
@@ -47,10 +80,18 @@ def run():
                 "checked_at": "now()",
                 "detail": json.dumps(result.get("issues", []))[:2000]
             }, upsert=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            # NOT `pass`. This insert has been failing for the life of the daemon
+            # because HEALTH_TABLE does not exist in the fleet DB, and the bare except
+            # is why nobody knew: the daemon printed "n/n repos healthy" every cycle
+            # while writing nothing at all. One line per cycle is the whole fix.
+            _sink_errors.append("%s: %s" % (name, str(exc)[:120]))
 
-    healthy = sum(1 for r in results.values() if r.get("deps_ok") and r.get("build_ok"))
+    healthy = sum(1 for r in results.values()
+                  if r.get("deps_ok") and r.get("build_ok") is not False)
+    if _sink_errors:
+        print("[build_daemon] health sink unwritable (%d project(s)); first: %s"
+              % (len(_sink_errors), _sink_errors[0]), flush=True)
     print(f"[build_daemon] {healthy}/{len(results)} repos healthy")
     return results
 
@@ -153,7 +194,15 @@ def _install_deps(repo, result):
 
 
 def _check_build(repo, result):
-    """Quick build check to catch pre-existing failures."""
+    """Build the working tree, or None when no verdict was produced.
+
+    None, not True. A skipped check that reports success is the exact shape
+    stub_guard.py blocks in agent diffs ("fabricated_critical_return"), and the
+    caller below now distinguishes "green" from "never ran".
+    """
+    if not BUILD_CHECK:
+        result["build_checked"] = False
+        return None
     # Detect build command
     pkg_json = os.path.join(repo, "package.json")
     if os.path.isfile(pkg_json):
@@ -183,7 +232,7 @@ def _check_build(repo, result):
         except Exception:
             pass
 
-    return True  # No build command = assume OK
+    return None    # no package.json, or unreadable: no verdict, not a green one
 
 
 def _warm_worktrees(repo, project_name, base, result):
