@@ -2476,6 +2476,50 @@ def _resolve_task(card, tasks_by_slug=None):
     return slug, t
 
 
+#: States that mean "this work is not to be integrated", full stop.
+#:
+#: _resolve_task above enumerates the states a card may legitimately be merged in --
+#: and then defeats its own enumeration with `tasks[0] if tasks else None`. When every
+#: task row for a slug is terminal, that fallback hands the train a QUARANTINED or
+#: DECOMPOSED task and the whole gate runs on it: rebase, up to MERGE_CONFLICT_REDO_CAP
+#: agent rebuilds, tests, quarantine, retire the card. Next pass a producer files a
+#: fresh card for the same slug and it all happens again.
+#:
+#: Measured 2026-09-02:
+#:   integrate cards created in 7 days                          9,345
+#:   ...whose task is QUEUED (i.e. real, waiting work)             578   (6.2%)
+#:   ...whose task is DONE/MERGED (the legitimate DONE->MERGED path) 6,755
+#:   ...whose task is terminal-and-not-to-be-merged              2,449
+#:   approved integrate cards in the pool right now              4,542
+#:   ...whose ONLY task rows are terminal                          823   (18%)
+#:      DECOMPOSED 473 | QUARANTINED 236 | PHANTOM_UNVERIFIED 117
+#:      CLOSED 8 | SUPERSEDED 2 | DEPLOYED_AND_VERIFIED 1
+#: One slug alone -- dropbox-mission-complete-...-governor-ram-floor, state DONE since
+#: 2026-08-19, attempt 272 -- has accumulated 1,101 cards, 294 of them decided
+#: `train:conflict-exhausted`. In the last 70,000 lines of merge-train.log, beethoven
+#: produced 1,598 CONFLICT events across 24 distinct slugs, every one of them
+#: "redo cap 4 exhausted".
+#:
+#: DONE and MERGED are deliberately NOT here: DONE -> MERGED is the intended path and
+#: skipping it would stop the train merging anything. PHANTOM_UNVERIFIED is not here
+#: either -- it means "we believe this landed but have not proved it", which is a
+#: question the train is the right place to answer.
+#:
+#: DECOMPOSED is the largest single entry and the least ambiguous: the task was split
+#: into slices that are being merged on their own: merging the parent's branch re-lands
+#: work the slices already carry, which is exactly what these conflicts are.
+NON_INTEGRATABLE_STATES = frozenset(
+    s.strip().upper() for s in os.environ.get(
+        "ORCH_MERGE_SKIP_TASK_STATES",
+        "QUARANTINED,SUPERSEDED,DECOMPOSED,CLOSED,SHELVED").split(",") if s.strip())
+
+
+def _not_integratable(task):
+    """The state name when this task must not be merged, else "" ."""
+    state = str((task or {}).get("state") or "").strip().upper()
+    return state if state in NON_INTEGRATABLE_STATES else ""
+
+
 def _resolve_tasks_batch(cards):
     """Batch task lookup for a set of cards into a single query.
 
@@ -2944,6 +2988,7 @@ def _train_run_unleased(report=None):
     # repo lock. See _resolve_tasks_batch.
     tasks_by_slug = _resolve_tasks_batch(cards)
     by_project = {}
+    _terminal_skips = {}
     for c in cards:
         slug, t = _resolve_task(c, tasks_by_slug)
         if not slug:
@@ -2955,7 +3000,23 @@ def _train_run_unleased(report=None):
             _retire_card(c.get("id"), "no-task")
             _r("skipped", slug, "no-task: no task row for this slug")
             continue
+        # _resolve_task falls back to tasks[0] when nothing is in an integratable state,
+        # so a QUARANTINED/DECOMPOSED/SUPERSEDED task arrives here looking merge-ready.
+        # Retire the card instead of spending a rebase, up to MERGE_CONFLICT_REDO_CAP
+        # agent rebuilds and a test run on work that is not to be landed at all.
+        _dead = _not_integratable(t)
+        if _dead:
+            _retire_card(c.get("id"), f"task-{_dead.lower()}")
+            _r("skipped", slug, f"task-state:{_dead} — not integratable")
+            _terminal_skips[_dead] = _terminal_skips.get(_dead, 0) + 1
+            continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
+
+    if _terminal_skips:
+        print("merge_train: retired %d card(s) whose task is not integratable (%s)"
+              % (sum(_terminal_skips.values()),
+                 ", ".join("%s=%d" % kv for kv in sorted(_terminal_skips.items()))),
+              flush=True)
 
     # Drop paused projects from the work grouping (see the pause block above). Their cards are
     # left UNDECIDED on purpose: pausing is reversible, and marking them decided here would
