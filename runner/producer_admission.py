@@ -86,6 +86,10 @@ DEFAULT_MIN_SAMPLE = 50
 DEFAULT_REDUNDANT_CEILING = 0.35
 #: What a throttled producer may still file per day. Rationed, not silenced.
 DEFAULT_THROTTLED_DAILY_CAP = 25
+#: A throttled producer never drops below this many per day. A producer that files
+#: mostly duplicates may still be the only source of the one thing that matters, and a
+#: gate that silences it completely stops being a throttle and becomes a ban.
+DEFAULT_THROTTLED_DAILY_FLOOR = 5
 #: How much history the verdict considers.
 DEFAULT_WINDOW_DAYS = 14
 #: How long a verdict is cached, to keep the insert path off the database.
@@ -133,8 +137,68 @@ def redundant_ceiling():
 
 
 def daily_cap():
-    """How many tasks a throttled producer may still file per day."""
+    """The quota a producer at exactly the redundancy ceiling still gets per day."""
     return max(0, _i("ORCH_PRODUCER_THROTTLED_DAILY_CAP", DEFAULT_THROTTLED_DAILY_CAP))
+
+
+def daily_floor():
+    """The quota no throttled producer drops below, whatever its redundancy."""
+    return max(0, _i("ORCH_PRODUCER_THROTTLED_DAILY_FLOOR", DEFAULT_THROTTLED_DAILY_FLOOR))
+
+
+def quota_for(redundant_rate):
+    """A throttled producer's daily quota, scaled by how redundant it actually is.
+
+    ONE FLAT CAP TREATS 36% AND 84% THE SAME. Measured 2026-09-02, 14-day window:
+
+        producer                                  filed  merged  redundant
+        label:ChatGPT local-build audit             574       3     58.9%
+        slug:recover-missing                        154       1     61.0%
+        slug:chatgpt-local                          182       1     53.3%
+        slug:log-p1                                 285       1     53.0%
+        slug:backlog-batch                           42       0      2.4%   (not throttled)
+
+    Four throttled producers, each still entitled to 25/day under the flat cap: up to
+    100 admissions a day from producers filing duplicates ~57% of the time. The fleet's
+    own semantic-dedupe pass then quarantined 95 near-duplicates (similarity 0.994 to
+    0.999) in the 24 hours to 18:40Z, which is that same number arriving by another
+    route.
+
+    Redundancy is safe to scale on in a way merge rate is not -- see the module
+    docstring. A duplicate is a duplicate whether or not the machine is thrashing and
+    whether or not anything merged this week.
+
+    Linear from the ceiling to certainty: a producer just over the ceiling keeps almost
+    its whole quota, one at 100% redundancy is left with the floor. Deliberately gentle
+    -- a producer wrong 59% of the time is RIGHT 41% of the time, and I have no evidence
+    the other 41% is worthless. At today's measured rates:
+
+        redundancy   quota/day
+             35.0%          25   (the ceiling; not throttled at all)
+             53.0%          19
+             58.9%          18
+             61.0%          17
+             84.2%          10
+            100.0%           5   (the floor)
+
+    which takes the four throttled producers from 100 admissions a day between them to
+    72 -- a 28% cut, not a silencing. If the duplicates continue, the measured rate rises
+    and the quota falls further on its own; that self-correction is the point, and it is
+    why this is not a number to tune by hand.
+    """
+    ceiling = redundant_ceiling()
+    cap, floor = daily_cap(), daily_floor()
+    if floor >= cap:
+        return cap
+    try:
+        rate = float(redundant_rate)
+    except (TypeError, ValueError):
+        return cap
+    if rate <= ceiling or ceiling >= 1.0:
+        return cap
+    # Fraction of the way from the ceiling to fully redundant.
+    over = min(1.0, max(0.0, (rate - ceiling) / (1.0 - ceiling)))
+    return max(floor, int(round(cap - over * (cap - floor))))
 
 
 def window_days():
@@ -236,16 +300,17 @@ def verdict(row, db=None):
         return True, ""
     if stats["redundant_rate"] <= redundant_ceiling():
         return True, ""
-    if stats["last_24h"] < daily_cap():
+    quota = quota_for(stats["redundant_rate"])
+    if stats["last_24h"] < quota:
         return True, ""
     return False, (
         "producer %s is throttled: %d of %d tasks it filed in the last %d days were work "
         "the fleet already had (%.1f%%, ceiling %.0f%%), and it has filed %d in the last "
-        "24h (cap %d). It is not blocked -- its quota returns as soon as it stops filing "
-        "duplicates."
+        "24h (quota %d/day at that redundancy; %d at the ceiling, floor %d). It is not "
+        "blocked -- its quota returns as soon as it stops filing duplicates."
         % (key, stats["redundant"], stats["filed"], window_days(),
            100.0 * stats["redundant_rate"], 100.0 * redundant_ceiling(),
-           stats["last_24h"], daily_cap()))
+           stats["last_24h"], quota, daily_cap(), daily_floor()))
 
 
 def reset_cache():

@@ -262,3 +262,82 @@ def test_trusting_nothing_is_the_default(monkeypatch):
     import db as db_mod
     monkeypatch.delenv("ORCH_TRUSTED_SUBMITTER_LABELS", raising=False)
     assert db_mod._trusted_labels() == set()
+
+
+# ── quota scaling by measured redundancy (added 2026-09-02) ───────────────────
+#
+# One flat cap treated 36% redundancy and 84% redundancy identically. Measured on the
+# live fleet, 14-day window:
+#
+#     label:ChatGPT local-build audit   574 filed   3 merged   58.9% redundant
+#     slug:recover-missing              154 filed   1 merged   61.0% redundant
+#     slug:chatgpt-local                182 filed   1 merged   53.3% redundant
+#     slug:log-p1                       285 filed   1 merged   53.0% redundant
+#     slug:backlog-batch                 42 filed   0 merged    2.4% redundant  (clear)
+#
+# Four throttled producers, each still entitled to 25/day: up to 100 admissions a day
+# from producers filing duplicates ~57% of the time. In the 24h to 18:40Z the fleet's
+# own semantic-dedupe pass quarantined 95 near-duplicates (similarity 0.994-0.999) --
+# the same number arriving by another route.
+
+def test_a_producer_at_the_ceiling_keeps_the_full_cap():
+    assert pa.quota_for(pa.redundant_ceiling()) \
+        == pa.daily_cap()
+
+
+def test_a_producer_below_the_ceiling_keeps_the_full_cap():
+    assert pa.quota_for(0.0) == pa.daily_cap()
+
+
+def test_quota_falls_as_redundancy_rises():
+    a = pa.quota_for(0.40)
+    b = pa.quota_for(0.60)
+    c = pa.quota_for(0.85)
+    assert a > b > c
+
+
+def test_the_worst_possible_producer_still_gets_the_floor():
+    """A throttle that reaches zero is a ban, and a producer filing mostly duplicates
+    may still be the only source of the one thing that matters."""
+    assert pa.quota_for(1.0) == pa.daily_floor()
+    assert pa.daily_floor() > 0
+
+
+def test_the_measured_producers_land_where_the_docstring_says():
+    """The numbers in the docstring are load-bearing; assert them."""
+    assert pa.quota_for(0.589) == 18
+    assert pa.quota_for(0.530) == 19
+    assert pa.quota_for(0.610) == 17
+    assert pa.quota_for(0.842) == 10
+
+
+def test_a_nonsense_rate_gets_the_full_cap():
+    """Unmeasurable is not the same as bad -- the module's own rule."""
+    assert pa.quota_for(None) == pa.daily_cap()
+    assert pa.quota_for("x") == pa.daily_cap()
+
+
+def test_quota_never_exceeds_the_cap_or_drops_below_the_floor():
+    for i in range(0, 101):
+        q = pa.quota_for(i / 100.0)
+        assert pa.daily_floor() <= q <= pa.daily_cap()
+
+
+def test_a_floor_above_the_cap_is_not_an_error(monkeypatch):
+    monkeypatch.setenv("ORCH_PRODUCER_THROTTLED_DAILY_FLOOR", "999")
+    assert pa.quota_for(0.9) == pa.daily_cap()
+
+
+def test_the_refusal_reason_states_the_scaled_quota(monkeypatch):
+    """An operator reading the log must see the quota that actually applied, not the
+    ceiling constant."""
+    monkeypatch.setattr(pa, "enabled", lambda: True)
+    monkeypatch.setattr(pa, "producer_key", lambda row: "slug:x")
+    monkeypatch.setattr(pa, "_measure", lambda key, db: {
+        "filed": 200, "merged": 1, "redundant": 168, "redundant_rate": 0.84,
+        "last_24h": 99})
+    pa.reset_cache()
+    ok, why = pa.verdict({"slug": "x-1"}, db=object())
+    assert ok is False
+    assert "quota 10/day" in why
+    assert "floor" in why
