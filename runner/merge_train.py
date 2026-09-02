@@ -1045,6 +1045,42 @@ def _gate_env():
     return env
 
 
+#: Load-per-core above which a red suite says as much about the machine as the code.
+#: 1.5 matches resource_governor's soft CPU threshold, so the two agree about "loaded".
+GATE_LOAD_SUSPECT = float(os.environ.get("ORCH_GATE_LOAD_SUSPECT", "1.5") or 1.5)
+
+
+def _load_per_core():
+    """1-minute load average divided by cores, or None where that is unavailable."""
+    try:
+        return os.getloadavg()[0] / float(os.cpu_count() or 1)
+    except (OSError, AttributeError, ZeroDivisionError):
+        return None
+
+
+def _load_note(per_core):
+    """A sentence to append to a failing gate result when the box was saturated.
+
+    A TESTFAIL is treated as evidence about the CANDIDATE — two of them quarantine the
+    task. But `tomorrow`'s suite takes 131s on an idle machine and was measured at over
+    ten minutes during a normal fleet pass on 2026-09-01, with the 1-minute load average
+    between 42 and 92 on 18 cores. A timing-sensitive suite at five times
+    oversubscription fails for reasons that have nothing to do with the diff being gated,
+    and the resulting quarantine is a false one that costs a human to undo.
+    
+    Recording it is deliberately all this does. Suppressing the strike is the obvious
+    next step and it is NOT taken here, because on a fleet whose load is routinely above
+    the threshold that would mean nothing is ever quarantined — a change that needs the
+    numbers this line is about to start collecting.
+    """
+    if per_core is None:
+        return ""
+    if per_core < GATE_LOAD_SUSPECT:
+        return f" [load/core {per_core:.2f} at start — machine was not saturated]"
+    return (f" [load/core {per_core:.2f} at start, over the {GATE_LOAD_SUSPECT:.2f} "
+            "threshold — this result may be about the machine, not the code]")
+
+
 #: Marker written into a task's note carrying the previous rebase attempt's conflicting
 #: file set, so the next attempt can tell "the same collision again" from "progress".
 #: A tag rather than a column: tasks has no field for this and adding one is a schema
@@ -1174,6 +1210,7 @@ def _run_tests(repo, test_cmd, ref=None):
             return False, ("a Vue component does not compile — the tests were not run, "
                            "because this breaks the build and the dev server too:\n"
                            f"{vue_detail[:4000]}")
+    _load_at_start = _load_per_core()
     try:
         with _Phase(f"suite `{test_cmd[:40]}`", repo):
             r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
@@ -1182,7 +1219,7 @@ def _run_tests(repo, test_cmd, ref=None):
         return False, (f"tests did not finish within {timeout}s — NO verdict on this "
                        "candidate, which is not the same as a red suite. Raise "
                        "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
-                       "what is hanging.")
+                       f"what is hanging.{_load_note(_load_at_start)}")
     if r.returncode != 0:
         tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
@@ -1207,8 +1244,8 @@ def _run_tests(repo, test_cmd, ref=None):
                 return False, (f"tests did not finish within {timeout}s — NO verdict on this "
                        "candidate, which is not the same as a red suite. Raise "
                        "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
-                       "what is hanging.")
-        return False, tail
+                       f"what is hanging.{_load_note(_load_at_start)}")
+        return False, tail + _load_note(_load_at_start)
     return True, "green"
 
 
