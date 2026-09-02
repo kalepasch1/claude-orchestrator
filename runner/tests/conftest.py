@@ -80,6 +80,37 @@ def _gates_are_on_unless_a_test_says_otherwise(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _the_quiet_cooldown_is_off_under_pytest():
+    """Neutralise production_push_guard's load cool-down for the whole suite.
+
+    _wait_for_quiet_machine sleeps in 5s steps until the 1-minute load average
+    drops below cores x 0.5, for up to ORCH_QUIET_MAX_WAIT_S (180) seconds. Any
+    test that drives verify_tests through a red suite reaches it, and reaches it
+    on a machine whose load is high for exactly one reason: it is running this
+    suite. So the wait cannot succeed, and each such test costs the full 180s.
+
+    The module has said since it was written that "the tests use" the off switch.
+    They did not — on 2026-09-01 no file in this repo other than
+    production_push_guard.py mentioned ORCH_QUIET_MAX_WAIT_S at all, and the
+    variable was read once at import, so a per-test patch.dict could not have
+    worked even where one had been written. A new test added that week
+    (test_escape_hatch_allow_red_tests) hung the run at 53% until pytest-timeout
+    killed it.
+
+    Session-scoped, for the same reason as the runtime-dir fixture above: it must
+    land before _restore_environment_after_test takes its per-test snapshot, so
+    that snapshot restores this value and not the machine's.
+    """
+    before = os.environ.get("ORCH_QUIET_MAX_WAIT_S")
+    os.environ["ORCH_QUIET_MAX_WAIT_S"] = "0"
+    yield
+    if before is None:
+        os.environ.pop("ORCH_QUIET_MAX_WAIT_S", None)
+    else:
+        os.environ["ORCH_QUIET_MAX_WAIT_S"] = before
+
+
 @pytest.fixture(autouse=True)
 def _runner_stays_a_package():
     """See _keep_runner_importable_as_a_package. Runs before every test."""
