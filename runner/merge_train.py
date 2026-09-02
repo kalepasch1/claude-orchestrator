@@ -28,6 +28,23 @@ Idempotent: handled cards get decided_by='train:*'; cards already handled by thi
 the legacy merge-handler are skipped.
 """
 import datetime, json, os, re, sys, subprocess, threading, time
+
+# A PASS THAT PRINTS NOTHING FOR 45 MINUTES IS NOT DIAGNOSABLE.
+#
+# This module's stdout is a log FILE (runner._launch opens one per job), so Python
+# block-buffers it at 8KB. The pass prints four short lines up front and then nothing
+# until a candidate resolves, so 8KB is never reached — on 2026-09-01 a pass ran 45
+# minutes, was killed by its own watchdog, and the log contained four lines and a thread
+# dump. Every print about which project and which card is in flight was sitting in a
+# buffer that os._exit(3) then discarded, which is precisely the information needed to
+# decide whether the watchdog's budget is wrong or the candidate is.
+#
+# Line buffering costs one write per line on a job that runs every few minutes.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass  # older interpreter or a stream that cannot be reconfigured; never fatal
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 # RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
@@ -1028,6 +1045,46 @@ def _gate_env():
     return env
 
 
+#: project name -> (card slug, epoch seconds it started). Read by the watchdog so a
+#: killed pass names what it was working on instead of only dumping thread stacks.
+#: Written from the per-project worker threads; dict item assignment is atomic under
+#: the GIL and a torn read here would only cost a line of diagnostics, so no lock.
+_IN_FLIGHT = {}
+
+
+class _Phase:
+    """Time one step of the gate and say so, on one line, as it finishes.
+
+    The gate's per-candidate cost is the whole question behind the watchdog budget: a
+    pass is allowed ORCH_MERGE_TRAIN_MAX_RUNTIME_S (2700s here) and on 2026-09-01 it
+    spent all of it without resolving a single candidate. The steps are a full repo
+    overlay in /tmp, a node_modules copy, `npm install`, a Vue compile of every
+    component and only then the suite itself — five things with very different costs
+    and no way to tell which one ate the budget, because nothing timed any of them.
+    A watchdog that kills without saying what it killed produces the same mystery
+    every pass.
+    """
+
+    __slots__ = ("name", "repo", "t0")
+
+    def __init__(self, name, repo):
+        self.name = name
+        self.repo = os.path.basename(str(repo).rstrip("/")) if repo else "?"
+
+    def __enter__(self):
+        self.t0 = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        secs = time.time() - self.t0
+        # Sub-second steps are noise; a gate step that matters is seconds or minutes.
+        if secs >= 1.0 or exc_type is not None:
+            outcome = f" ({exc_type.__name__})" if exc_type else ""
+            print(f"merge_train [gate:{self.repo}] {self.name} {secs:.1f}s{outcome}",
+                  flush=True)
+        return False   # never swallow
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -1035,11 +1092,17 @@ def _run_tests(repo, test_cmd, ref=None):
     if ref:
         try:
             import commit_overlay
-            with commit_overlay.checkout(repo, ref, prefix="merge-qa-overlay-") as overlay:
+            with _Phase(f"overlay-checkout {str(ref)[:12]}", repo):
+                _overlay_cm = commit_overlay.checkout(repo, ref, prefix="merge-qa-overlay-")
+                overlay = _overlay_cm.__enter__()
+            try:
                 candidate = overlay["path"]
-                _share_deps_into_overlay(repo, candidate, test_cmd)
+                with _Phase("share-deps", repo):
+                    _share_deps_into_overlay(repo, candidate, test_cmd)
                 ok, detail = _run_tests(candidate, test_cmd)
                 return ok, f"overlay:{overlay['commit'][:12]} {detail}"
+            finally:
+                _overlay_cm.__exit__(None, None, None)
         except Exception as exc:
             return False, f"could not create branch-exact QA overlay: {exc}"
     timeout = _test_timeout()
@@ -1055,7 +1118,8 @@ def _run_tests(repo, test_cmd, ref=None):
                 print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
         except Exception:
             pass
-        _ensure_node_deps(repo, test_cmd)
+        with _Phase("ensure-node-deps", repo):
+            _ensure_node_deps(repo, test_cmd)
         # 2026-08-29: a bulk token conversion across 59 .vue files left several
         # components with a duplicated attribute -- each a hard compile error.
         # TypeScript-only lints do not read templates, so these passed every
@@ -1063,14 +1127,16 @@ def _run_tests(repo, test_cmd, ref=None):
         # Compile them here, where the message names the file and line, rather
         # than reading it out of a build log. See repo_hygiene.check_vue_templates.
         # No guard needed: check_vue_templates never raises (see its docstring).
-        vue_ok, vue_detail = repo_hygiene.check_vue_templates(repo)
+        with _Phase("vue-template-check", repo):
+            vue_ok, vue_detail = repo_hygiene.check_vue_templates(repo)
         if not vue_ok:
             return False, ("a Vue component does not compile — the tests were not run, "
                            "because this breaks the build and the dev server too:\n"
                            f"{vue_detail[:4000]}")
     try:
-        r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
-                           text=True, timeout=timeout, env=_gate_env())
+        with _Phase(f"suite `{test_cmd[:40]}`", repo):
+            r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
+                               text=True, timeout=timeout, env=_gate_env())
     except subprocess.TimeoutExpired:
         return False, (f"tests did not finish within {timeout}s — NO verdict on this "
                        "candidate, which is not the same as a red suite. Raise "
@@ -2772,9 +2838,19 @@ def _train_run_unleased(report=None):
                             continue
                         scanned += 1
                         result["risk"][risk] += 1
-                        outcome = _integrate_card(
-                            card, slug, task, proj, repo_override=integration_repo
-                        )
+                        _pname_ = proj.get("name") or str(pid)
+                        _card_t0 = time.time()
+                        _IN_FLIGHT[_pname_] = (slug, _card_t0)
+                        print(f"merge_train [{_pname_}] card {scanned}: {slug[:80]}",
+                              flush=True)
+                        try:
+                            outcome = _integrate_card(
+                                card, slug, task, proj, repo_override=integration_repo
+                            )
+                        finally:
+                            _IN_FLIGHT.pop(_pname_, None)
+                        print(f"merge_train [{_pname_}] card {scanned}: {outcome} "
+                              f"in {time.time() - _card_t0:.0f}s", flush=True)
                         if outcome in ATTEMPT_OUTCOMES:
                             used[risk] += 1
                         if outcome == "merged":
@@ -3054,6 +3130,20 @@ if __name__ == "__main__":
             sys.stderr.write(f"merge_train: WATCHDOG — pass exceeded {_budget:.0f}s; "
                              f"dumping all threads and exiting so the single-flight lock "
                              f"is released for the next pass\n")
+            # NAME WHAT IS STILL IN FLIGHT. The thread dump gives line numbers; it does
+            # not say which PROJECT or which CARD, and that is the question an operator
+            # has when a pass burns its whole budget and merges nothing. See _IN_FLIGHT.
+            try:
+                if _IN_FLIGHT:
+                    for _pname, (_slug, _since) in sorted(_IN_FLIGHT.items()):
+                        sys.stderr.write(
+                            f"merge_train: WATCHDOG in-flight — {_pname} on {_slug} "
+                            f"for {time.time() - _since:.0f}s\n")
+                else:
+                    sys.stderr.write("merge_train: WATCHDOG — no card in flight; the "
+                                     "budget went somewhere outside _integrate_card\n")
+            except Exception:
+                pass
             sys.stderr.flush()
             try:
                 faulthandler.dump_traceback(all_threads=True)
