@@ -47,7 +47,31 @@ RULES = [
             r"unauthorized practice|privilege guard|attorney[- ]client privilege|"
             r"work[- ]product strategy|avoid(?:s|ing)?\s+(?:CFTC|SEC|money transmission|"
             r"broker[- ]dealer|investment adviser|DCM|SEF|legal advice|custody)|"
-            r"not\s+(?:custody|money transmission|legal advice|securities|broker[- ]dealer))\b",
+            # A DISCLAIMER IS NOT A PLAYBOOK.
+            #
+            # "not legal advice" used to be in this alternation, and it blocked nine
+            # apparently-law releases on 2026-09-02:
+            #
+            #   [gate:copy] public-copy disclosure gate red — self-heal queued:
+            #   - app/pages/for/ai-data.vue:21 [legal_strategy]:
+            #     Informational only not legal advice.
+            #
+            # The line it flagged is the bar-required attorney-advertising disclaimer:
+            # "Attorney advertising. Informational only, not legal advice. No
+            # attorney-client relationship is formed by using this site." It appears in
+            # at least eight places across that site, every one of them mandatory.
+            #
+            # The distinction this rule is for: a STRATEGY says how the company avoids a
+            # regulator, which `avoid(s|ing) ... legal advice` above still catches. A
+            # DISCLAIMER says what the product is not, to protect the reader -- the
+            # opposite of a disclosure risk, and in this case a legal obligation.
+            #
+            # NOTE for whoever reads this next: "not custody", "not money transmission",
+            # "not securities" and "not a broker-dealer" below are the same shape --
+            # standard disclaimers a fintech page is expected to carry. They are left in
+            # because nothing has yet blocked on them and this is the operator's
+            # compliance policy to set, not mine.
+            r"not\s+(?:custody|money transmission|securities|broker[- ]dealer))\b",
             re.I,
         ),
         "Describe compliance value generally; do not publish the legal/regulatory playbook.",
