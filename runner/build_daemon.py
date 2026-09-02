@@ -13,6 +13,7 @@ Runs as a periodic job.
 """
 import os, sys, subprocess, json, time, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import build_slots     # this daemon runs REAL production builds; they need a slot
 import db
 
 WARM_WORKTREE_COUNT = int(os.environ.get("ORCH_WARM_WORKTREES", "5"))
@@ -162,8 +163,16 @@ def _check_build(repo, result):
             scripts = pkg.get("scripts", {})
             if "build" in scripts:
                 try:
-                    r = subprocess.run(["npm", "run", "build"], cwd=repo,
-                                       capture_output=True, text=True, timeout=600)
+                    # BOUND THE BUILD. This is a full production build, the same cost as
+                    # the one build_gate runs, and it was outside the fleet's limiter.
+                    # Measured on this host 2026-09-02: FOUR concurrent `nuxt build`s with
+                    # ORCH_MAX_CONCURRENT_BUILDS=2, because only build_gate ever took a
+                    # slot -- the others came from build_daemon (here) and the periodic
+                    # clean-clone sweep. A limiter wired into one of N callers is not a
+                    # limit; it is a comment. See build_slots.
+                    with build_slots.hold("build_daemon %s" % os.path.basename(str(repo))):
+                        r = subprocess.run(["npm", "run", "build"], cwd=repo,
+                                           capture_output=True, text=True, timeout=600)
                     if r.returncode != 0:
                         result["issues"].append(f"build failed: {(r.stderr or r.stdout or '')[-200:]}")
                         return False

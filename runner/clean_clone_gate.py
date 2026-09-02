@@ -30,6 +30,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import build_slots     # the pristine build below is a real one; it needs a slot
 import db
 import guard_tasks
 import proof_graph
@@ -383,7 +384,14 @@ def verify(repo, ref=None, project=None, force=False, cache_only=False):
                     result["failed_step"] = "install"
                     return result
         if bcmd:
-            rc, out = _step(bcmd, work, BUILD_TIMEOUT, env)
+            # This is the fleet's most expensive build: a pristine export, a real
+            # install, then the project's real build command. It ran with no bound on
+            # how many of its peers were building at the same moment -- the periodic
+            # sweep is one of the three producers behind the four-concurrent-build
+            # measurement in build_slots. Fails open, so a busy machine still gets a
+            # verdict; it just gets it one build at a time. See build_slots.
+            with build_slots.hold("clean-clone %s" % os.path.basename(str(repo))):
+                rc, out = _step(bcmd, work, BUILD_TIMEOUT, env)
             parts.append("$ %s\n%s" % (bcmd, out))
             if rc != 0:
                 result["log"] = "\n\n".join(parts)
