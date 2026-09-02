@@ -14,6 +14,32 @@ import tarfile
 import tempfile
 import time
 
+try:
+    import scratch
+except ImportError:  # module imported from outside runner/ (tests, tooling)
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import scratch
+
+
+def _mkdtemp(prefix):
+    """Durable scratch, not /tmp.
+
+    A build overlay holds an exact commit for the length of a production build —
+    twenty-five minutes on a loaded Mac. TMPDIR is empty on these machines, so
+    tempfile.mkdtemp() was putting that in /tmp, which macOS purges MID-SESSION:
+    on 2026-09-01 it deleted two live worktrees and an unpushed commit. A build
+    losing its own source tree half way through surfaces as an unreproducible
+    error that looks like a code fault.
+
+    Falls back to tempfile only if the durable root cannot be created, because a
+    build that runs in a risky directory still beats a fleet that cannot build.
+    """
+    try:
+        return scratch.mkdtemp(prefix=prefix)
+    except Exception:
+        return tempfile.mkdtemp(prefix=prefix)
+
 
 def _git(repo, *args, timeout=60):
     return subprocess.run(["git", *args], cwd=repo, capture_output=True,
@@ -43,7 +69,7 @@ def materialize(repo, ref, destination=None):
     if resolved.returncode:
         raise RuntimeError((resolved.stderr or "candidate commit missing")[-500:])
     commit = resolved.stdout.strip()
-    destination = destination or tempfile.mkdtemp(prefix="orch-overlay-")
+    destination = destination or _mkdtemp("orch-overlay-")
     os.makedirs(destination, exist_ok=True)
     archive = subprocess.Popen(["git", "archive", "--format=tar", commit], cwd=repo,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -75,7 +101,7 @@ def materialize(repo, ref, destination=None):
 
 @contextlib.contextmanager
 def checkout(repo, ref, prefix="orch-overlay-"):
-    root = tempfile.mkdtemp(prefix=prefix)
+    root = _mkdtemp(prefix)
     try:
         yield materialize(repo, ref, root)
     finally:
