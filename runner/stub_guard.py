@@ -622,6 +622,79 @@ def _code_files(repo):
     return files
 
 
+# ---------------------------------------------------------------- pre-existing attribution
+
+# scan_shadowed and scan_fabricated walk the ENTIRE working tree (_code_files), not the
+# candidate's diff. On the merge path that meant a stub already sitting on the base branch
+# blocked every card in that project, forever, whatever the card contained.
+#
+# Measured 2026-09-02 on darwn: a clean detached checkout of orchestrator/dev -- zero card
+# changes applied -- produced 1 BLOCK violation (src/utils/zkPrivilegeProof.ts:13,
+# fabricated_critical_return, a file that has been on dev since before any of these cards
+# existed). 76 REGRESSFAILs in the live merge-train log cite exactly that path; tomorrow had
+# 35 more citing server/utils/otc/ecp/reputationPrivacy. The gate was not catching anything
+# a candidate did -- it was refusing the whole project.
+#
+# So on the merge path a whole-tree finding on a file the candidate did not touch is
+# DOWNGRADED to "warn": still reported, still filed and remediated by the periodic sweep
+# (run(), which passes no base and keeps full blocking behaviour), but it no longer blames a
+# card for code it never wrote. Anything the candidate DID touch still blocks, which is the
+# shape the guard was built for. Diff-derived codes (body_replaced_by_constant,
+# stub_commit_message) and guard_error are never downgraded -- they are already attributed.
+_TREE_SCAN_BLOCKING = {"stub_shadows_reexport", "fabricated_critical_return"}
+
+
+def _violation_relpath(repo, path):
+    """Strip the repo prefix and any trailing ':<line>' from a violation path."""
+    p = (path or "").strip()
+    if not p:
+        return ""
+    if p.startswith(repo):
+        p = p[len(repo):].lstrip("/")
+    return re.sub(r":\d+$", "", p)
+
+
+def _paths_touched_vs_base(repo, base):
+    """Repo-relative paths differing from `base` in this checkout, or None if unknowable.
+
+    `git diff --name-only <base>` compares base to the working tree, which is what the merge
+    path actually scans (an overlay checkout of the rebased candidate, possibly dirty). None
+    means the comparison failed -- callers must then change nothing and stay fail-closed.
+    """
+    if not base:
+        return None
+    rc, out, _ = _git(repo, "diff", "--name-only", base, "--")
+    if rc != 0:
+        return None
+    touched = set(x.strip() for x in out.split("\n") if x.strip())
+    rc2, out2, _ = _git(repo, "ls-files", "--others", "--exclude-standard")
+    if rc2 == 0:
+        touched.update(x.strip() for x in out2.split("\n") if x.strip())
+    return touched
+
+
+def attribute_to_candidate(repo, base, violations):
+    """Downgrade whole-tree BLOCK findings on files the candidate did not touch.
+
+    Mutates and returns `violations`. No-op when base is absent or the diff cannot be read.
+    """
+    touched = _paths_touched_vs_base(repo, base)
+    if touched is None:
+        return violations
+    for v in violations:
+        if v.get("severity") != "block":
+            continue
+        if v.get("code") not in _TREE_SCAN_BLOCKING:
+            continue
+        rel = _violation_relpath(repo, v.get("path"))
+        if rel and rel not in touched:
+            v["severity"] = "warn"
+            v["pre_existing"] = True
+            v["detail"] = ("PRE-EXISTING on %s (this candidate does not touch %s) -- advisory, "
+                           "not attributed to this card. %s" % (base, rel, v.get("detail", "")))
+    return violations
+
+
 def check_repo(repo, branch=None, project=None, base=None):
     """Scan a repo for every stub shape. Returns a result dict; never raises."""
     result = {"project": project, "repo": repo, "branch": branch, "base": base,
@@ -638,6 +711,7 @@ def check_repo(repo, branch=None, project=None, base=None):
         result["violations"].extend(scan_shadowed(repo, files))
         result["violations"].extend(scan_fabricated(repo, files))
         if base:
+            attribute_to_candidate(repo, base, result["violations"])
             result["violations"].extend(scan_commit_messages(repo, base, branch or "HEAD"))
             result["violations"].extend(scan_diff_replacements(repo, base, branch or "HEAD"))
     except (OSError, ValueError, TypeError, re.error) as e:
