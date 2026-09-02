@@ -1023,15 +1023,30 @@ def _repair_regenerable_only_merge(worktree):
     for name in regenerable:
         taken = subprocess.run(["git", "checkout", "--ours", "--", name], cwd=worktree,
                                capture_output=True, text=True, timeout=30)
-        if taken.returncode != 0:
-            # A file deleted on one side has no --ours; removing it is the same
-            # resolution for a cache.
-            subprocess.run(["git", "rm", "-q", "--", name], cwd=worktree,
-                           capture_output=True, text=True, timeout=30)
-    added = subprocess.run(["git", "add", "-A", "--", *files], cwd=worktree,
-                           capture_output=True, text=True, timeout=30)
-    if added.returncode != 0:
-        return False, "could not stage resolved machine output"
+        if taken.returncode == 0:
+            staged = subprocess.run(["git", "add", "--", name], cwd=worktree,
+                                    capture_output=True, text=True, timeout=30)
+            if staged.returncode != 0:
+                return False, "could not stage resolved cache file %s" % name
+            continue
+        # MODIFY/DELETE. There is no "ours" stage when one side deleted the file, which
+        # is the NORMAL case here now that the cache is untracked on the integration
+        # branch: git reports "deleted in HEAD and modified in origin/main". Removing it
+        # is the same resolution -- the side that deleted it did so deliberately.
+        removed = subprocess.run(["git", "rm", "-q", "--ignore-unmatch", "--", name],
+                                 cwd=worktree, capture_output=True, text=True, timeout=30)
+        if removed.returncode != 0:
+            return False, ("could not resolve modify/delete on %s: %s"
+                           % (name, (removed.stderr or "")[-160:]))
+    # NO BLANKET `git add -A -- <every file>` HERE. Each path above is staged by the
+    # step that resolved it -- _union_merge_file() adds, `git rm` stages its own
+    # deletion -- and a pathspec that no longer exists makes `git add` fail outright:
+    #
+    #   fatal: pathspec '.aider.tags.cache.v4/cache.db' did not match any files
+    #
+    # which is exactly how this returned "could not stage resolved machine output" on
+    # the first real conflict it was pointed at, AFTER having resolved every file
+    # correctly. Verified against pasch's live dev/main conflict on 2026-09-02.
     remaining = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"],
                                cwd=worktree, capture_output=True, text=True, timeout=30)
     if (remaining.stdout or "").strip():

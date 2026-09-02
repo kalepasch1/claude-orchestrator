@@ -251,3 +251,69 @@ def test_the_transcript_is_still_not_classified_as_regenerable():
 ])
 def test_append_only_classification(path, expected):
     assert release_train._is_append_only(path) is expected
+
+
+# ── modify/delete, which is now the NORMAL shape ─────────────────────────────
+#
+# Once the cache is untracked on the integration branch, a refresh no longer produces a
+# content conflict on it -- it produces:
+#
+#   CONFLICT (modify/delete): .aider.tags.cache.v4/cache.db deleted in HEAD and
+#   modified in origin/main.
+#
+# There is no "ours" stage for that, so `git checkout --ours` fails and the file has to
+# be removed instead. Verified against pasch's live dev/main conflict on 2026-09-02:
+# the first version resolved every file correctly and then returned False, because a
+# blanket `git add -A -- <every file>` was still listing paths `git rm` had removed:
+#
+#   fatal: pathspec '.aider.tags.cache.v4/cache.db' did not match any files
+#
+# Each path is now staged by the step that resolved it, and nothing re-adds them.
+
+def _conflicted_modify_delete(tmp_path, path, keep_side="theirs"):
+    """A repo where one side DELETED `path` and the other modified it."""
+    repo = tmp_path / "md"
+    if repo.exists():
+        import shutil
+        shutil.rmtree(repo)
+    repo.mkdir()
+    _git(str(repo), "init", "-q", "-b", "main", ".")
+    _git(str(repo), "config", "user.email", "t@t")
+    _git(str(repo), "config", "user.name", "t")
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("base\n")
+    (repo / "keep.txt").write_text("x\n")
+    _git(str(repo), "add", "-A")
+    _git(str(repo), "commit", "-qm", "base")
+    _git(str(repo), "checkout", "-q", "-b", "other")
+    target.write_text("modified on the other side\n")
+    _git(str(repo), "commit", "-qam", "other modifies")
+    _git(str(repo), "checkout", "-q", "main")
+    _git(str(repo), "rm", "-q", "--", path)
+    _git(str(repo), "commit", "-qm", "main deletes")
+    merged = _git(str(repo), "merge", "--no-ff", "other")
+    assert merged.returncode != 0, "the fixture did not conflict"
+    return str(repo)
+
+
+def test_a_deleted_cache_modified_upstream_is_resolved(tmp_path):
+    repo = _conflicted_modify_delete(tmp_path, CACHE)
+    ok, note = release_train._repair_regenerable_only_merge(repo)
+    assert ok, note
+    assert not _git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+
+
+def test_the_deleted_cache_stays_deleted(tmp_path):
+    """The side that untracked it did so deliberately; the merge must not resurrect it."""
+    repo = _conflicted_modify_delete(tmp_path, CACHE)
+    release_train._repair_regenerable_only_merge(repo)
+    tracked = _git(repo, "ls-tree", "--name-only", "HEAD", CACHE).stdout.strip()
+    assert tracked == "", "the untracked cache came back through the merge"
+
+
+def test_a_modify_delete_on_real_source_is_still_refused(tmp_path):
+    repo = _conflicted_modify_delete(tmp_path, "lib/commerce/coppa.ts")
+    ok, note = release_train._repair_regenerable_only_merge(repo)
+    assert ok is False
+    assert "coppa.ts" in note
