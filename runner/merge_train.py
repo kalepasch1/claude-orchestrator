@@ -1107,9 +1107,79 @@ def _load_note(per_core):
 
 #: Marker written into a task's note carrying the previous rebase attempt's conflicting
 #: file set, so the next attempt can tell "the same collision again" from "progress".
-#: A tag rather than a column: tasks has no field for this and adding one is a schema
-#: change on a live fleet, while the note is already where the train explains itself.
+#: Kept for humans reading the note, and read as a fallback -- but NOT the store of
+#: record. See _conflict_ledger_get.
 _CONFLICT_SIG_TAG = "[conflict-files:"
+
+#: Durable home for the same signature, because `note` turned out not to be one.
+#:
+#: The tag was originally appended to the note on the theory that "the note is already
+#: where the train explains itself". Measured 2026-09-02, two days after that shipped:
+#: 0 of 902 task rows updated in the previous 48h carried the tag, and the guard had
+#: fired 0 times against 71 redo events that repeated a signature the attempt before
+#: had already produced. The note is a shared free-text field -- the preflight/refine
+#: stage rewrites it downstream, appending "; scope: ...; ambiguities: ...;
+#: pipeline:preflight-gate; ..." -- so a marker parked at the end of it is gone by the
+#: time the next attempt reads it. Example, live:
+#:   agentic-repair:conflict; scope: This task will modify ... ; ambiguities: ...
+#: The tag this train wrote is nowhere in that string.
+#:
+#: So the signature lives in a small JSON ledger the train owns outright. Only one
+#: merge_train pass runs at a time (the watchdog enforces it) and within it the writers
+#: are the per-project worker threads, so a threading.Lock plus an atomic replace is
+#: enough; there is no cross-process contention to lock against.
+_CONFLICT_LEDGER_TTL_S = 14 * 86400
+_CONFLICT_LEDGER_LOCK = threading.Lock()
+
+
+def _conflict_ledger_path():
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        ".runtime", "merge_train_conflict_sigs.json")
+
+
+def _conflict_ledger_load():
+    try:
+        with open(_conflict_ledger_path()) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _conflict_ledger_get(task):
+    """The signature the PREVIOUS attempt recorded for this task, or ""."""
+    tid = str((task or {}).get("id") or "")
+    if not tid:
+        return ""
+    row = _conflict_ledger_load().get(tid)
+    if not isinstance(row, dict):
+        return ""
+    if time.time() - float(row.get("at") or 0) > _CONFLICT_LEDGER_TTL_S:
+        return ""
+    return str(row.get("sig") or "")
+
+
+def _conflict_ledger_put(task, sig):
+    """Record this attempt's signature. Best-effort: never raises into the train."""
+    tid = str((task or {}).get("id") or "")
+    if not tid or not sig:
+        return False
+    path = _conflict_ledger_path()
+    now = time.time()
+    with _CONFLICT_LEDGER_LOCK:
+        data = _conflict_ledger_load()
+        data = {k: v for k, v in data.items()
+                if isinstance(v, dict) and now - float(v.get("at") or 0) <= _CONFLICT_LEDGER_TTL_S}
+        data[tid] = {"sig": sig, "at": now, "slug": (task or {}).get("slug") or ""}
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
 
 
 def _conflict_signature(conflict_detail):
@@ -1131,7 +1201,14 @@ def _conflict_signature(conflict_detail):
 
 
 def _recorded_conflict_signature(task):
-    """The signature the PREVIOUS attempt recorded in this task's note, if any."""
+    """The signature the PREVIOUS attempt recorded, ledger first, note as fallback.
+
+    The note fallback is kept so rows tagged before the ledger existed still resolve,
+    and so a signature written by an older build of this file is not silently ignored.
+    """
+    from_ledger = _conflict_ledger_get(task)
+    if from_ledger:
+        return from_ledger
     note = str((task or {}).get("note") or "")
     i = note.rfind(_CONFLICT_SIG_TAG)
     if i < 0:
@@ -2579,6 +2656,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                            f"code, run tests, and commit.{files_hint}"))
             patch["transient_retries"] = tr + 1
             if sig:
+                _conflict_ledger_put(task, sig)
                 patch["note"] = (str(patch.get("note") or "") + f" {_CONFLICT_SIG_TAG}{sig}]")[:480]
             _task_patch(task, patch)
             _retire_card(card.get("id"), "redo")
