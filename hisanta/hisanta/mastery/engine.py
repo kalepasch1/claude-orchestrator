@@ -1,6 +1,25 @@
 """H1 Mastery Engine - quest execution and progress tracking."""
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict, Sequence
+import sys, os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+# Same import spelling as gifting.protocol and kindness.mint so every module in
+# the stack lands on the ONE canonical contracts module, not a second copy.
+from hisanta.contracts.family import MasteryEfficacyMetric, RewardSchedule
+
+#: A quest is "done" for scheduling purposes when it says so. Both the local
+#: Quest below and contracts.family.Quest expose `.completed`, so the review /
+#: weekly helpers accept either without caring which one it got.
+MAX_DIFFICULTY = 10
+MIN_DIFFICULTY = 1
+#: Review interval growth on a successful recall (SM-2 style, deliberately
+#: gentle: 2.5x, floored at 1 day so a quest never falls out of rotation).
+REVIEW_GROWTH = 2.5
+#: An average above this raises difficulty; below the lower bound drops it.
+#: Exactly on a boundary changes nothing — a single boundary score is noise.
+DIFFICULTY_UP_ABOVE = 0.8
+DIFFICULTY_DOWN_BELOW = 0.4
 
 
 @dataclass
@@ -58,90 +77,76 @@ class MasteryEngine:
     def get_all_progress(self) -> Dict[str, Progress]:
         return dict(self._progress)
 
-    # --- H1 spaced repetition / adaptive difficulty -----------------------
-    # These operate on hisanta.contracts.family.Quest (the domain contract),
-    # which is a different type from the local execution-record Quest above.
-    # Neither is annotated here so the two can coexist without collision.
+    # ── Spaced repetition ────────────────────────────────────────────────────
 
-    def schedule_review(self, quest, last_interval: int = 1, success: bool = True) -> int:
-        """Next review interval in days. Success expands 2.5x, failure resets to 1.
+    def schedule_review(self, quest: Any, last_interval: int, success: bool) -> int:
+        """Days until this quest should come round again.
 
-        A failed recall means the item is not learned, so the interval collapses
-        rather than decaying — the whole point of spaced repetition.
+        Success stretches the interval by REVIEW_GROWTH; a miss resets it to 1.
+        The floor of 1 also absorbs a zero or negative `last_interval`, so a
+        bad caller cannot schedule a review in the past or never.
         """
-        try:
-            if not success:
-                return 1
-            return max(1, int(max(1, int(last_interval)) * 2.5))
-        except Exception:
+        if not success:
             return 1
+        return max(1, int(last_interval * REVIEW_GROWTH))
 
-    def adaptive_difficulty(self, current: int, recent_scores) -> int:
-        """Nudge difficulty by one step on sustained success/struggle. Clamped 1..10.
+    def adaptive_difficulty(self, current: int, recent_scores: Sequence[float]) -> int:
+        """Nudge difficulty one step from recent performance.
 
-        Boundaries are strict (>0.8 up, <0.4 down) so a learner sitting exactly on
-        the threshold is left where they are instead of oscillating.
+        No scores means no evidence, so difficulty is unchanged — never guess
+        a child up or down from an empty history. Moves one step at a time and
+        clamps to [MIN_DIFFICULTY, MAX_DIFFICULTY].
         """
-        try:
-            level = int(current)
-            scores = [float(s) for s in (recent_scores or [])]
-            if not scores:
-                return max(1, min(10, level))
-            average = sum(scores) / len(scores)
-            if average > 0.8:
-                level += 1
-            elif average < 0.4:
-                level -= 1
-            return max(1, min(10, level))
-        except Exception:
-            try:
-                return max(1, min(10, int(current)))
-            except Exception:
-                return 1
+        if not recent_scores:
+            return current
+        average = sum(recent_scores) / len(recent_scores)
+        if average > DIFFICULTY_UP_ABOVE:
+            return min(MAX_DIFFICULTY, current + 1)
+        if average < DIFFICULTY_DOWN_BELOW:
+            return max(MIN_DIFFICULTY, current - 1)
+        return current
 
-    def complete_weekly_quests(self, quests) -> Dict:
-        """Open at most ONE advent door per week, and only if every quest is done.
+    def complete_weekly_quests(self, quests: Sequence[Any]) -> Dict[str, Any]:
+        """Open at most ONE advent door for a fully-completed week.
 
-        One door regardless of how many quests were completed: the reward is for
-        finishing the week, not for volume, so there is nothing to farm.
+        Exactly one, however many quests were finished: the door is the weekly
+        reward, and letting a big week open several doors turns a fixed
+        schedule into a variable-ratio one, which is the pattern the
+        constitution forbids. An empty week opens nothing.
         """
-        try:
-            items = list(quests or [])
-            all_done = bool(items) and all(getattr(q, "completed", False) for q in items)
-            return {"advent_door_opened": all_done, "doors_opened": 1 if all_done else 0}
-        except Exception:
-            return {"advent_door_opened": False, "doors_opened": 0}
+        all_complete = bool(quests) and all(getattr(q, "completed", False) for q in quests)
+        return {
+            "advent_door_opened": all_complete,
+            "doors_opened": 1 if all_complete else 0,
+            "quests_considered": len(quests),
+        }
 
-    def create_reward_schedule(self, schedule_type: str = "fixed",
-                               coupled_to_purchase: bool = False):
-        """Build a RewardSchedule, refusing variable-ratio coupled to purchase.
+    def create_reward_schedule(
+        self, schedule_type: str, coupled_to_purchase: bool = False
+    ) -> Optional[RewardSchedule]:
+        """Build a reward schedule, refusing the loot-box combination.
 
-        Variable-ratio reinforcement tied to spending is the slot-machine pattern.
-        It is refused outright (returns None) rather than merely discouraged.
+        A variable-ratio schedule coupled to a purchase is the loot box: it is
+        rejected outright (None) rather than created-and-flagged, so no caller
+        can build one and then decide to use it anyway. The flag is meaningless
+        for any other schedule type and is stored as False there.
         """
-        try:
-            from hisanta.contracts.family import RewardSchedule as _RewardSchedule
-            if schedule_type == "variable_ratio" and coupled_to_purchase:
-                return None
-            return _RewardSchedule(
-                schedule_type=schedule_type,
-                variable_ratio_coupled_to_purchase=(
-                    schedule_type == "variable_ratio" and coupled_to_purchase),
-            )
-        except Exception:
+        is_variable_ratio = schedule_type == "variable_ratio"
+        if is_variable_ratio and coupled_to_purchase:
             return None
+        return RewardSchedule(
+            schedule_type=schedule_type,
+            variable_ratio_coupled_to_purchase=False,
+        )
 
-    def get_efficacy_metrics(self, subject: str, scores):
-        """Mean score and attempt count for a subject."""
-        from hisanta.contracts.family import MasteryEfficacyMetric
-        try:
-            values = [float(s) for s in (scores or [])]
-            if not values:
-                return MasteryEfficacyMetric(subject=subject, score=0.0, attempts=0)
-            return MasteryEfficacyMetric(
-                subject=subject,
-                score=sum(values) / len(values),
-                attempts=len(values),
-            )
-        except Exception:
-            return MasteryEfficacyMetric(subject=subject, score=0.0, attempts=0)
+    def get_efficacy_metrics(
+        self, subject: str, scores: Sequence[float]
+    ) -> MasteryEfficacyMetric:
+        """Mean score and attempt count for one subject.
+
+        No attempts reports 0.0 rather than raising or reporting a fabricated
+        score — "we have not measured this yet" must be readable as such.
+        """
+        attempts = len(scores)
+        mean = sum(scores) / attempts if attempts else 0.0
+        return MasteryEfficacyMetric(subject=subject, score=mean, attempts=attempts)

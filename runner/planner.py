@@ -63,13 +63,15 @@ def _apply_tdd_gating(tasks):
     This is a no-op if ORCH_TDD_REQUIRED_KINDS is empty.
     """
     try:
-        gated_kinds = tdd_gate.get_required_kinds()
-        if not gated_kinds and tdd_gate.is_tdd_enabled():
-            # Two config paths reach this gate: ORCH_TDD_REQUIRED_KINDS (fleet_config only) and
-            # the older ORCH_TDD_ENABLED + ORCH_TDD_TASK_KINDS pair, which also honors env vars.
-            # Consulting only the first meant a fleet configured the documented way had TDD
-            # silently off — the gate reported "not configured" instead of gating.
-            gated_kinds = tdd_gate.get_task_kinds()
+        # Two config paths reach this gate: ORCH_TDD_REQUIRED_KINDS (fleet_config only) and
+        # the older ORCH_TDD_ENABLED + ORCH_TDD_TASK_KINDS pair, which also honors env vars.
+        # Consulting only the first meant a fleet configured the documented way had TDD
+        # silently off — the gate reported "not configured" instead of gating.
+        #
+        # That resolution now lives in tdd_gate.gated_kinds(), because it was inlined HERE
+        # and not in tdd_gate.is_tdd_gated() — which this function calls a few lines down.
+        # So the fallback computed a correct set and the per-task check then ignored it.
+        gated_kinds = tdd_gate.gated_kinds()
     except Exception:
         return tasks
     if not gated_kinds:

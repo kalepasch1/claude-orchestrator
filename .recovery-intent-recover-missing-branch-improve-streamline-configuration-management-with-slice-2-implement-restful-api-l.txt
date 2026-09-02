@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-improve-streamline-configuration-management-with-slice-2-implement-restful-api-l
-template: 964241931772
-intent: 07041728 07130635 07190257 20251001 53375a0cecde __init__ acceptance active adapt addition advice after agent agentic agnostic analysis apierror approval artifacts authn author available b4fa25c7 barks batch because beethoven before behavior below branch broad broadening bugfix build build_fix cache canonical category cause change changes changing checks claim class claud claude clear cloud coder commit completion concrete config config_api config_approval_engine configstore configuration context continue contract coordination cowork credential credits cross currently custody debate_compress deepseek delete denied dependencies deployfix designed diffs directive discoverable dispatch
-base: master

@@ -135,7 +135,16 @@ class CrashLoopDetectorTest(unittest.TestCase):
             return {"id": "row-%d" % len(inserted)}
 
         fake_db.insert.side_effect = _insert
+        # guard_tasks has to be patched too. cld._file_task does not write the task
+        # itself — it hands the finding to guard_tasks' filer, and guard_tasks holds
+        # its OWN `import db`. Patching only cld.db left that write pointed at the
+        # live control plane, so this test filed a real remediation task on every
+        # run until the circuit breaker tripped, and then looked for the row in its
+        # own list and found nothing. The StopIteration was the symptom; a
+        # production write from a unit test was the actual problem.
+        import guard_tasks
         with patch.object(cld, "db", fake_db), \
+             patch.object(guard_tasks, "db", fake_db), \
              patch.object(cld, "_orchestrator_project", return_value={"id": "p1", "name": "beethoven"}):
             summary = cld.run(log_dir=self.dir)
         self.assertEqual(summary["tasks_filed"], 1)

@@ -1,0 +1,71 @@
+PROJECT: smarter
+
+- id: chatgpt-local-reconcile-smarter-f77e8fc1aead
+  title: Reconcile local ChatGPT/Codex build evidence for smarter
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `f77e8fc1aead4247028b1c0dbca7ea99c2452f574c2c2af9a77e9fea3424ed1e`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "branch": "DETACHED",
+        "change_count": 295,
+        "changes_digest": "06da9b699f68a7beea5ee0701c444e44d5cd232f0e55f31af46a601345b3d059",
+        "changes_sample": [
+          ".deploy-canary",
+          ".gitignore.bak",
+          ".recovery-intent-adversarial-second-opinion-split-the-build-task-in-slice-5-match-prior-artifact.txt",
+          ".recovery-intent-backlog-batch-smarter-4109d59.txt",
+          ".recovery-intent-backlog-batch-smarter-70d19d8.txt",
+          ".recovery-intent-batch-mech-backlog-batch-beethoven-b040840-resolve-merge-conflicts-in-darwin-kernel-3.txt",
+          ".recovery-intent-consensus-engine-spec-fix-auto-filer-409-handler.txt",
+          ".recovery-intent-cont-34e96f.txt",
+          ".recovery-intent-cont-49a5d9.txt",
+          ".recovery-intent-cont-cb7e0d.txt",
+          ".recovery-intent-cont-e555f3.txt",
+          ".recovery-intent-contracts-smarter.txt",
+          ".recovery-intent-copyfix-smarter-07180848-slice-1.txt",
+          ".recovery-intent-curation-snapshot-diff-alerts.txt",
+          ".recovery-intent-dropbox-smarter-embeddable-core-apparently-pareto-real-member-identi-1-embeddable-core-the-hard-blocker-first.txt",
+          ".recovery-intent-dropbox-smarter-embeddable-core-apparently-pareto-real-member-identi-master-task.txt",
+          ".recovery-intent-qafix-smarter-2bb54956eba4.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-fix-app-store-typescript-errors.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-fix-error-handling-test-typescript-error.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-fix-implicit-any-in-htsparkline.txt",
+          ".recovery-intent-qafix-smarter-9c3a08b5d8dd-remove-duplicate-code-pricinggridreconst.txt",
+          ".recovery-intent-qafix-smarter-llm-api-retry-test-adapt-patch-template.txt",
+          ".recovery-intent-recover-missing-branch-copyfix-smarter-07190105-slice-3.txt",
+          ".recovery-intent-recover-missing-branch-copyfix-smarter-07190105-slice-4-create-patch.txt",
+          ".recovery-intent-recover-missing-branch-copyfix-smarter-07190105-slice-4-integration-validation.txt",
+          ".recovery-intent-recover-missing-branch-remediate-secret-cont-1c7ac65f-047f094-e4ae63.txt",
+          ".recovery-intent-recover-missing-branch-rework-legal-rework-legal-court-efiling-engine-6ed453e-940db0e.txt",
+          ".recovery-intent-recover-missing-branch-rework-secret-rework-secret-cade-negotiation-determine-sm-b615c90-86706d6.txt",
+          ".recovery-intent-relfix-smarter-07182307-apply-adapted-dedup-patch.txt",
+          ".recovery-intent-relfix-smarter-07182307-integrate-patch-locate-patch-template-references.txt"
+        ],
+        "changes_total": 100,
+        "head": "f1f9914a00ed88687d8227445cd977ade620308f",
+        "kind": "dirty_worktree",
+        "newest_change_mtime": 0,
+        "path": "/private/tmp/merge-qa-xqxhwu3f/candidate"
+      }
+    ]

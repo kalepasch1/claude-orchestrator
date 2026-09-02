@@ -285,8 +285,8 @@ def evaluate(provider, model):
 # compares a new model against the REAL model in use, not against nothing.
 _TIER_DEFAULTS = {
     "OPENAI_CHEAP_MODEL": "gpt-5.4-nano", "OPENAI_FAST_MODEL": "gpt-5.4-mini",
-    "OPENAI_STRONG_MODEL": "gpt-5.4", "GEMINI_CHEAP_MODEL": "gemini-2.5-flash-lite-preview-09-2025",
-    "GEMINI_MODEL": "gemini-2.5-flash", "GEMINI_STRONG_MODEL": "gemini-2.5-pro",
+    "OPENAI_STRONG_MODEL": "gpt-5.4", "GEMINI_CHEAP_MODEL": "gemini-3.1-flash-lite",
+    "GEMINI_MODEL": "gemini-2.5-flash", "GEMINI_STRONG_MODEL": "gemini-3.1-pro-preview",
     "DEEPSEEK_CHEAP_MODEL": "deepseek-v4-flash", "DEEPSEEK_REASONER_MODEL": "deepseek-v4-pro",
 }
 

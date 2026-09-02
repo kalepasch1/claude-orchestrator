@@ -44,10 +44,10 @@ _DEFAULT_CATALOG = [
      "models": ["gpt-5.5", "gpt-5.4-mini", "o3"], "exec_method": "aider"},
     {"name": "gemini-sub", "vendor": "google", "tier": "advanced", "monthly_cost": 20,
      "est_calls_hour": 60, "est_calls_day": 400,
-     "models": ["gemini-2.5-pro", "gemini-2.0-flash"], "exec_method": "aider"},
+     "models": ["gemini-3.1-pro-preview", "gemini-2.5-flash"], "exec_method": "aider"},
     {"name": "deepseek-sub", "vendor": "deepseek", "tier": "pro", "monthly_cost": 10,
      "est_calls_hour": 120, "est_calls_day": 800,
-     "models": ["deepseek-r1", "deepseek-v3"], "exec_method": "aider"},
+     "models": ["deepseek-v4-pro", "deepseek-v4-flash"], "exec_method": "aider"},
 ]
 
 

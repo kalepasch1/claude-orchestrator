@@ -242,6 +242,10 @@ onMounted(async () => {
       <div><span>Queued</span><b>{{ taskCounts.queued }}</b></div>
       <div><span>Needs attention</span><b>{{ taskCounts.attention }}</b></div>
       <NuxtLink to="/queue">View the full queue <span>↗</span></NuxtLink>
+      <!-- The terminal had no inbound link from anywhere in the app. It is the
+           surface an operator reaches for when the queue is not moving, so it
+           was the worst possible thing to leave undiscoverable. -->
+      <NuxtLink to="/orchestrators/terminal">Open the terminal <span>↗</span></NuxtLink>
     </section>
 
     <section class="operating-system">

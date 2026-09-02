@@ -2,34 +2,65 @@
 """Tests for causal attribution integration in eval_harness.py.
 
 20+ tests: attribution correctly isolates a routing-change-caused delta from a
-concurrent-unrelated-event delta in synthetic data, fail-soft when causal_attribution
-errors (falls back to raw before/after, doesn't block eval_harness entirely).
+concurrent-unrelated-event delta in synthetic data, fail-soft when
+causal_attribution errors (falls back to raw before/after, doesn't block
+eval_harness entirely).
+
+STUBBING (rewritten 2026-08-25). This file used to install synthetic `db`,
+`causal_attribution` and `claude_cli` modules into sys.modules at IMPORT time,
+and ten of its twenty-two tests were failing. runner/tests/conftest.py now
+restores real control-plane modules on collectstart — deliberately, because
+import-time stubs installed by one file were leaking into every module collected
+after it — so the fake `db` was swapped back before any test in this file ran.
+
+A module that binds `import db` at its own import keeps working against such a
+fake, which is what that conftest note says. eval_harness does not:
+_try_causal_attribution does `import db` INSIDE the function, so it resolved the
+restored real module, db.select raised, and the function's fail-soft arm
+returned the raw delta with attributed=False. Every concurrent-noise assertion
+then compared 0.0 against the expected lift.
+
+So the double is installed per test against the real module instead of by
+replacing it. That survives any sys.modules restoration, and it is also the
+honest shape: the code under test does a runtime lookup, and the test now
+exercises that lookup. All three stubbed modules exist for real
+(runner/causal_attribution.py, runner/claude_cli.py), so nothing needed
+inventing.
 """
-import sys, os, types, unittest
+import os
+import sys
+import unittest
+from unittest import mock
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Stub db and causal_attribution for isolated testing
+import db
+import eval_harness
+
+#: Rows db.select("committee_experiments", ...) will return. Tests rebind it.
 _fake_experiments = []
 
-_db_mod = types.ModuleType("db")
+
 def _fake_select(table, params=None):
     if table == "committee_experiments":
         return list(_fake_experiments)
     return []
-_db_mod.select = _fake_select
-_db_mod.insert = lambda *a, **k: None
-_db_mod.update = lambda *a, **k: None
-sys.modules["db"] = _db_mod
 
-_ca_mod = types.ModuleType("causal_attribution")
-sys.modules["causal_attribution"] = _ca_mod
 
-# Stub claude_cli
-_cli_mod = types.ModuleType("claude_cli")
-_cli_mod.run = lambda *a, **k: {"returncode": 0, "text": "ok"}
-sys.modules["claude_cli"] = _cli_mod
+def setUpModule():
+    global _patchers
+    _patchers = [
+        mock.patch.object(db, "select", _fake_select),
+        mock.patch.object(db, "insert", lambda *a, **k: None),
+        mock.patch.object(db, "update", lambda *a, **k: None),
+    ]
+    for p in _patchers:
+        p.start()
 
-import eval_harness
+
+def tearDownModule():
+    for p in _patchers:
+        p.stop()
 
 
 class TestCausalAttribution(unittest.TestCase):
@@ -108,6 +139,14 @@ class TestCausalAttribution(unittest.TestCase):
         ]
         r = eval_harness._try_causal_attribution(0.5, 0.7, context=None)
         self.assertAlmostEqual(r["noise_delta"], 0.1)
+        # The failure this file spent a session chasing was not in the arithmetic:
+        # `db` here and sys.modules["db"] had become two different module objects,
+        # so setUpModule patched one while _try_causal_attribution's runtime
+        # `import db` read the other. Asserting the identity turns that into a
+        # one-line diagnosis instead of a wrong number.
+        self.assertIs(db, sys.modules.get("db"),
+                      "sys.modules['db'] is a different object than this module "
+                      "patched — an earlier test left a duplicate db behind")
 
     def test_experiment_with_none_lift_skipped(self):
         """Experiments without a lift value are skipped."""
@@ -121,31 +160,34 @@ class TestCausalAttribution(unittest.TestCase):
 
     # --- Fail-soft tests ---
     def test_failsoft_db_import_error(self):
-        """If db module is broken, falls back to raw delta."""
-        old = sys.modules.get("db")
-        sys.modules["db"] = None  # will cause import to fail in some paths
-        # Force a fresh call that won't use cached module
-        r = eval_harness._try_causal_attribution(0.5, 0.8)
-        # Should not raise, should return raw delta
+        """If the db module cannot be imported at all, fall back to raw delta.
+
+        patch.dict, not a manual save/restore: the previous version reassigned
+        sys.modules["db"] and put it back on the line AFTER the assertion, so a
+        failing assertion left `db` set to None for the rest of the session and
+        every later test that imports it. That is the leak runner/tests/conftest.py
+        exists to clean up after; a test should not be creating work for it.
+        """
+        with mock.patch.dict(sys.modules, {"db": None}):
+            r = eval_harness._try_causal_attribution(0.5, 0.8)
         self.assertAlmostEqual(r["raw_delta"], 0.3)
-        sys.modules["db"] = old
+        self.assertAlmostEqual(r["causal_delta"], 0.3)
+        self.assertFalse(r["attributed"])
 
     def test_failsoft_returns_raw_on_exception(self):
         """Any exception in attribution returns raw delta, not error."""
-        old_select = _db_mod.select
-        _db_mod.select = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down"))
-        r = eval_harness._try_causal_attribution(0.5, 0.8)
+        with mock.patch.object(db, "select", side_effect=RuntimeError("db down")):
+            r = eval_harness._try_causal_attribution(0.5, 0.8)
         self.assertAlmostEqual(r["raw_delta"], 0.3)
+        self.assertAlmostEqual(r["causal_delta"], 0.3)
         self.assertFalse(r["attributed"])
-        _db_mod.select = old_select
+        self.assertAlmostEqual(r["noise_delta"], 0.0)
 
     def test_failsoft_does_not_block_eval(self):
         """Even with broken attribution, evaluate_with_attribution still works."""
-        old_select = _db_mod.select
-        _db_mod.select = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down"))
-        result = eval_harness.evaluate_with_attribution(0.8, 0.5)
+        with mock.patch.object(db, "select", side_effect=RuntimeError("db down")):
+            result = eval_harness.evaluate_with_attribution(0.8, 0.5)
         self.assertTrue(result["adopt"])  # candidate > current
-        _db_mod.select = old_select
 
     # --- evaluate_with_attribution tests ---
     def test_adopt_when_causal_positive(self):

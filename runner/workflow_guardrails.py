@@ -151,9 +151,32 @@ def check_worktree_count(repo_path):
     # Re-read from env each call so fleet_config updates take effect without restart
     _mode = os.environ.get("ORCH_GUARDRAIL_MODE", "warn")
     _max_wt = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
-    if count > _max_wt:
-        v = _violation("worktree_cap", f"{count} active worktrees (limit {_max_wt})",
-                       {"count": count, "limit": _max_wt})
+
+    # THE CAP AND THE WARM POOL ARE COUPLED, so read them together.
+    #
+    # build_daemon pre-creates a worktree for each of the first
+    # ORCH_WARM_WORKTREES queued tasks, per repo. Those are provisioned
+    # capacity, not runaway creation — this guardrail exists to catch the
+    # latter. But it counted them, so raising the pool ate into the leak
+    # budget without anyone saying so.
+    #
+    # That is what happened here: the pool default is 5 and the cap was set to
+    # 40 against it; the pool was later raised to 15 and the cap was not. The
+    # orchestrator repo sat at 40-45 worktrees during entirely normal
+    # operation, and with ORCH_GUARDRAIL_MODE=block every claim was refused
+    # with "44 active worktrees (limit 40)". A well-provisioned fleet was
+    # blocking itself, and the message read like a leak.
+    #
+    # Adding the pool to the budget keeps the guardrail measuring the thing it
+    # is named for, and means a future change to the pool size cannot quietly
+    # re-break the cap.
+    _warm = int(os.environ.get("ORCH_WARM_WORKTREES", "5"))
+    _budget = _max_wt + max(0, _warm)
+    if count > _budget:
+        v = _violation(
+            "worktree_cap",
+            f"{count} active worktrees (limit {_max_wt} + {_warm} warm = {_budget})",
+            {"count": count, "limit": _max_wt, "warm": _warm, "budget": _budget})
         return {"passed": _mode != "block", "count": count, "violation": v}
     return {"passed": True, "count": count}
 

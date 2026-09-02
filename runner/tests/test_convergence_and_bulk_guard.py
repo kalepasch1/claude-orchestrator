@@ -15,16 +15,27 @@ _RUNNER = os.path.dirname(_HERE)
 sys.path.insert(0, _RUNNER)
 
 # Stub db before importing the modules under test so no test touches the network.
-if "db" not in sys.modules:
-    _db = types.ModuleType("db")
-    _db.select = lambda *a, **k: []
-    _db.insert = lambda *a, **k: None
-    _db.update = lambda *a, **k: None
-    _db.count = lambda *a, **k: 0
-    sys.modules["db"] = _db
+#
+# WAS `if "db" not in sys.modules: sys.modules["db"] = _db`, which was wrong in
+# both directions. Under pytest, conftest has already imported db, so the guard
+# skipped and the modules under test got the REAL client -- the isolation this
+# block advertises never happened in a suite run. Standalone the guard fired and
+# the stub was never removed, replacing db for every test collected afterwards.
+#
+# modules_during_import installs it unconditionally for the two imports that need
+# it and restores whatever was there before. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
 
-import bulk_update_guard
-import deployment_terminal
+_db = types.ModuleType("db")
+_db.select = lambda *a, **k: []
+_db.insert = lambda *a, **k: None
+_db.update = lambda *a, **k: None
+_db.count = lambda *a, **k: 0
+
+with modules_during_import(db=_db):
+    import bulk_update_guard
+    import deployment_terminal
 
 
 class ConvergenceGateTest(unittest.TestCase):

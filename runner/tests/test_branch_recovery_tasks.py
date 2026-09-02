@@ -59,7 +59,13 @@ class TestTask1BranchStatusVerification(unittest.TestCase):
              patch.object(branch_recovery_tasks, "_git") as mock_git:
 
             def git_side_effect(repo, *args):
-                if "--verify" in args:
+                # `rev-parse` WITHOUT --verify is the call that reads the sha,
+                # and this fake used to fall through to the catch-all and return
+                # "". last_commit_sha was then falsy, `if last_commit_sha:`
+                # skipped the cat-file check entirely, and the corruption this
+                # test exists to detect was never looked for. Both rev-parse
+                # forms answer with the sha now.
+                if "rev-parse" in args:
                     return 0, "corrupted_sha", ""
                 if "cat-file" in args:
                     return 1, "", "not found"
@@ -70,7 +76,23 @@ class TestTask1BranchStatusVerification(unittest.TestCase):
             status = branch_recovery_tasks._get_branch_status("/repo", "corrupt-branch")
 
             self.assertTrue(status["exists"])
+            self.assertEqual(status["last_commit_sha"], "corrupted_sha")
             self.assertIn("commit_object_missing", status["corruption_flags"])
+
+    def test_a_ref_that_resolves_to_nothing_is_flagged(self):
+        """rev-parse rc=0 with empty output used to come back reported clean.
+
+        last_commit_sha was "", so the cat-file check was skipped and no flag
+        was added -- the one shape of damage that produced an empty
+        corruption_flags list.
+        """
+        with patch.object(branch_recovery_tasks, "_is_git_repo", return_value=True), \
+             patch.object(branch_recovery_tasks, "_git") as mock_git:
+            mock_git.side_effect = lambda repo, *args: (0, "", "")
+            status = branch_recovery_tasks._get_branch_status("/repo", "hollow-branch")
+
+        self.assertTrue(status["exists"])
+        self.assertIn("empty_commit_sha", status["corruption_flags"])
 
     def test_branch_orphaned(self):
         """Branch status detects orphaned branches."""
@@ -118,26 +140,58 @@ class TestTask1PatchArtifactRetrieval(unittest.TestCase):
     """Task 1: Patch artifact retrieval."""
 
     def test_artifact_loaded_and_verified(self):
-        """Patch artifact is loaded and hash verified."""
-        with patch("sys.modules") as mock_modules:
-            mock_lib = MagicMock()
-            mock_lib.list_patches.return_value = [
-                {
-                    "template_id": "06b43339ce93",
-                    "id": "06b43339ce93",
-                    "content": b"patch content here",
-                }
-            ]
-            mock_modules.__contains__.return_value = True
-            mock_modules.__getitem__.return_value = mock_lib
+        """Patch artifact is loaded and hash verified.
 
-            with patch.object(sys, "modules", mock_modules):
+        WAS: `with patch("sys.modules") as mock_modules:` -- replacing the whole
+        module registry with a MagicMock -- against library_path
+        "/path/to/library.py". _load_patch_artifact's very first line is
+        `if not os.path.exists(library_path)`, so it returned
+        {"found": False, "error": "library not found: ..."} before any of that
+        elaborate setup could matter. The test asserted found is True and never
+        executed a line of the retrieval it was written for.
+
+        A real (empty) file on disk and patch.dict on sys.modules get it to the
+        subject. patch.dict also restores the registry afterwards, which
+        replacing sys.modules wholesale does not reliably do.
+        """
+        import tempfile
+        template_id = "06b43339ce93"
+        mock_lib = MagicMock()
+        mock_lib.list_patches.return_value = [
+            {"template_id": template_id, "id": template_id,
+             "content": b"patch content here"}
+        ]
+
+        with tempfile.TemporaryDirectory() as library_dir:
+            library_path = os.path.join(library_dir, "merged_diff_library.py")
+            with open(library_path, "w", encoding="utf-8") as fh:
+                fh.write("")
+            with patch.dict(sys.modules, {"merged_diff_library": mock_lib}):
                 result = branch_recovery_tasks._load_patch_artifact(
-                    "/path/to/library.py", "06b43339ce93"
-                )
+                    library_path, template_id)
 
-                self.assertTrue(result["found"])
-                self.assertIsNotNone(result["patch_data"])
+        self.assertTrue(result["found"], result.get("error"))
+        self.assertIsNotNone(result["patch_data"])
+        self.assertEqual(result["patch_data"]["template_id"], template_id)
+        self.assertIn("hash_verified", result)
+
+    def test_artifact_missing_from_a_library_that_exists(self):
+        """A present library with no matching template is not "found"."""
+        import tempfile
+        mock_lib = MagicMock()
+        mock_lib.list_patches.return_value = [
+            {"template_id": "something-else", "id": "something-else", "content": b"x"}
+        ]
+        with tempfile.TemporaryDirectory() as library_dir:
+            library_path = os.path.join(library_dir, "merged_diff_library.py")
+            with open(library_path, "w", encoding="utf-8") as fh:
+                fh.write("")
+            with patch.dict(sys.modules, {"merged_diff_library": mock_lib}):
+                result = branch_recovery_tasks._load_patch_artifact(
+                    library_path, "06b43339ce93")
+
+        self.assertFalse(result["found"])
+        self.assertIn("06b43339ce93", result["error"])
 
     def test_artifact_not_found(self):
         """Missing patch artifact returns error."""

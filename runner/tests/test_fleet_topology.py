@@ -64,18 +64,52 @@ class TestDetectCoworkTerminals(unittest.TestCase):
 
 
 class TestRecommendTopology(unittest.TestCase):
-    """Basic smoke test for recommend_topology output shape."""
+    """The shape `recommend_topology` returns, as its caller actually reads it.
 
-    def test_returns_list(self):
-        topo = fleet_topology.FleetTopology()
-        recs = topo.recommend_topology(target_tasks_hour=10)
-        self.assertIsInstance(recs, list)
+    These two tests asserted a bare list and had been failing for long enough
+    that the red was ambient. The implementation returns a dict, and so does
+    the contract its only production caller relies on —
+    `sub_recommend_tick.tick()` does `reco.get("recommendations", [])[:3]` and
+    then reads `r["action"]` off each entry. Code and caller agree; the test
+    was the outlier, so the test is what moves.
 
-    def test_recommendations_have_action_key(self):
-        topo = fleet_topology.FleetTopology()
-        recs = topo.recommend_topology(target_tasks_hour=10)
-        for rec in recs:
+    Pinned here as the caller reads it, so a change that breaks
+    sub_recommend_tick fails here first.
+    """
+
+    def _topo(self):
+        return fleet_topology.FleetTopology().recommend_topology(
+            target_tasks_hour=10)
+
+    def test_returns_a_mapping(self):
+        self.assertIsInstance(self._topo(), dict)
+
+    def test_carries_the_keys_the_caller_reads(self):
+        topo = self._topo()
+        for key in ("current", "target_tasks_hour", "gap", "recommendations"):
+            self.assertIn(key, topo)
+
+    def test_recommendations_is_a_list(self):
+        self.assertIsInstance(self._topo()["recommendations"], list)
+
+    def test_every_recommendation_has_an_action(self):
+        # sub_recommend_tick indexes r["action"] directly — a missing key is a
+        # KeyError in a scheduled job, where nobody is watching.
+        for rec in self._topo()["recommendations"]:
             self.assertIn("action", rec)
+
+    def test_every_recommendation_has_a_rationale(self):
+        # Read as r.get("rationale", "") and printed to the operator; an entry
+        # with no reason is a recommendation nobody can act on.
+        for rec in self._topo()["recommendations"]:
+            self.assertTrue(str(rec.get("rationale") or "").strip(),
+                            f"no rationale on {rec.get('action')!r}")
+
+    def test_the_target_is_echoed_back(self):
+        self.assertEqual(self._topo()["target_tasks_hour"], 10)
+
+    def test_gap_is_never_negative(self):
+        self.assertGreaterEqual(self._topo()["gap"], 0)
 
 
 if __name__ == "__main__":

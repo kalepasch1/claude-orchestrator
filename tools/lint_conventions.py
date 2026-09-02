@@ -17,6 +17,24 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Set
 
 
+#: A regex EXTENSION GROUP -- `(?:`, `(?=`, `(?!`, `(?<`, `(?P<`. Deliberately NOT the
+#: looser markers (\b, \d, [A-Z], .*), which do occur inside real key material; keying
+#: on those would blind the rule to genuine leaks. An extension group is grammar, not
+#: content: credentials do not contain "(?" followed by one of ":=!<P".
+_REGEX_EXTENSION_GROUP_RE = re.compile(r'\(\?[:=!<P]')
+
+
+def _is_regex_source(value: str) -> bool:
+    """True when a literal is the source of a PATTERN rather than a value.
+
+    Mirrors _is_regex_source in tools/convention_lint.py. Both linters carry it
+    because both fired on the redaction pattern in runner/patch_templates.py --
+    the regex that keeps prompt credentials out of the shared patch-template
+    store -- and on their own detectors.
+    """
+    return bool(_REGEX_EXTENSION_GROUP_RE.search(str(value or '')))
+
+
 class ConventionViolation:
     def __init__(self, filepath: str, lineno: int, rule: str, message: str, severity: str = "error"):
         self.filepath = filepath
@@ -77,19 +95,21 @@ class ConventionChecker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Check function definitions for error handling, naming, and singleton pattern."""
+        """Check function definitions for naming and the singleton pattern.
+
+        Error handling is NOT checked here: visit_Try already fires for every try/except
+        in the module. See _check_error_handling for what the extra walk was costing.
+        """
         self.function_context.append(node.name)
         self._check_function_naming(node)
-        self._check_error_handling(node)
         self._check_module_singleton_pattern(node)
         self.generic_visit(node)
         self.function_context.pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        """Check async function definitions."""
+        """Check async function definitions (see visit_FunctionDef)."""
         self.function_context.append(node.name)
         self._check_function_naming(node)
-        self._check_error_handling(node)
         self._check_module_singleton_pattern(node)
         self.generic_visit(node)
         self.function_context.pop()
@@ -199,7 +219,19 @@ class ConventionChecker(ast.NodeVisitor):
                     ))
 
     def _check_error_handling(self, node: ast.FunctionDef) -> None:
-        """Check for fail-soft error handling patterns."""
+        """Report fail-soft violations for one function subtree, without the visitor.
+
+        NOT called during a normal visit, and deliberately so. It used to run from
+        visit_FunctionDef, walking the whole function body for Try nodes — while
+        visit_Try was already reporting every one of them. Every handler inside a
+        function was therefore filed TWICE, and a handler inside a nested function
+        three times (outer walk + inner walk + visit_Try), so both the printed output
+        and the ratchet baseline carried a ~2x phantom multiplier on FAIL_SOFT_ERROR,
+        and adding one try/except moved the count by an unpredictable 1-3.
+
+        Kept as a standalone entry point for callers that want the check on a single
+        function subtree; visit_Try is the one that runs during a file scan.
+        """
         for child in ast.walk(node):
             if isinstance(child, ast.Try):
                 self._check_try_except(child)
@@ -220,10 +252,19 @@ class ConventionChecker(ast.NodeVisitor):
         pass
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
-        """Check for hardcoded secrets in variables with sensitive names."""
+        """Check for hardcoded secrets in variables with sensitive names.
+
+        A literal that is the SOURCE OF A PATTERN is excluded (see
+        _is_regex_source): this rule keys off the target name alone, so a regex
+        written to FIND credentials satisfies it by construction and every
+        secret scanner in this repo reported its own detector as a hardcoded
+        secret. The rule punished exactly the code written to enforce it.
+        """
         secret_keywords = ('password', 'token', 'secret', 'key', 'api_key')
 
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            if _is_regex_source(node.value.value):
+                return
             if node.value.value and not node.value.value.startswith('$'):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
@@ -365,10 +406,12 @@ def write_baseline(counts, path=None):
     target = Path(path or BASELINE_PATH)
     payload = {
         "_comment": (
-            "Grandfathered convention-lint counts. The hook fails only when a rule's count "
-            "RISES above these numbers, so the gate is enforceable today without a "
-            "9,780-violation cleanup patch. Lower these as violations are fixed; never "
-            "raise one to make a commit pass."
+            "Grandfathered convention-lint counts, from a whole-tree scan of "
+            "`runner tools scripts`. The hook fails only when a rule's count RISES above "
+            "these numbers, so the gate is enforceable today without a repo-wide cleanup "
+            "patch. Lower these as violations are fixed; never raise one to make a commit "
+            "pass. Regenerate with: python tools/lint_conventions.py --update-baseline "
+            "runner tools scripts"
         ),
         "counts": {k: int(v) for k, v in sorted(counts.items())},
         "total": int(sum(counts.values())),
@@ -383,13 +426,18 @@ def main():
     """Main entry point for the linter.
 
     RATCHET, not a cliff. A bare `exit(1) if any violations` gate is unusable here: the
-    tree carries ~9,780 pre-existing violations, so the pre-commit hook failed on every
-    commit and the only way to work was `--no-verify` — which disables every OTHER hook
-    too. A gate that is always red is not a gate.
+    tree carries thousands of pre-existing violations, so the pre-commit hook failed on
+    every commit and the only way to work was `--no-verify` — which disables every OTHER
+    hook too. A gate that is always red is not a gate.
 
-    So the hook now fails when a rule's count RISES above the recorded baseline. New
-    violations are blocked from the first commit; existing ones are visible, counted, and
-    can only go down. Same shape as the repo's .tsc-error-baseline ratchet.
+    So the hook fails when a rule's count RISES above the recorded baseline: existing
+    violations are visible, counted, and can only go down. Same shape as the repo's
+    .tsc-error-baseline ratchet.
+
+    This only holds for a WHOLE-TREE scan, because the baseline holds whole-tree totals.
+    Invoked on a subset of files — which is what `pass_filenames: true` in
+    .pre-commit-config.yaml does today — the comparison is vacuous and every run passes;
+    that path prints a NOTE saying so instead of a green OK.
 
     `--update-baseline` rewrites the file (use after fixing violations, or when adding a
     rule). `--strict` ignores the baseline entirely, for a full audit.
@@ -402,12 +450,14 @@ def main():
         sys.exit(1)
 
     all_violations = []
+    scanned_a_directory = False
 
     for target in args:
         target_path = Path(target).resolve()
         if target_path.is_file():
             all_violations.extend(check_file(str(target_path)))
         elif target_path.is_dir():
+            scanned_a_directory = True
             all_violations.extend(scan_directory(str(target_path)))
         else:
             print(f"Warning: {target} is not a file or directory", file=sys.stderr)
@@ -427,10 +477,26 @@ def main():
         sys.exit(1 if all_violations else 0)
 
     baseline = load_baseline()
+
+    # The baseline holds WHOLE-TREE totals, so it can only be compared against a
+    # whole-tree scan. .pre-commit-config.yaml sets `pass_filenames: true`, which means
+    # the hook invokes this with just the staged files — a handful of violations
+    # compared against a five-thousand ceiling, so it can never regress and the gate
+    # has been passing unconditionally. A brand-new file containing nothing but a
+    # silent `except: pass` is reported as "grandfathered" and exits 0. Say so rather
+    # than printing a reassuring OK: an invisible no-op gate is worse than no gate,
+    # because people believe it. The fix is `pass_filenames: false` with fixed targets
+    # (`runner tools scripts`) in the hook, which is what this scan is baselined on.
+    if baseline and not scanned_a_directory:
+        print("convention-lint: NOTE — ratchet skipped. The baseline is a whole-tree "
+              "count and this run only saw the files passed to it, so nothing can "
+              "exceed it. Run `python tools/lint_conventions.py runner tools scripts` "
+              "for the real gate.", file=sys.stderr)
+
     over = regressions(counts, baseline)
     if over:
-        # Print only the offending rules' violations: a 9,780-line dump buries the
-        # handful of lines the author actually needs to fix.
+        # Print only the offending rules' violations: a full several-thousand-line dump
+        # buries the handful of lines the author actually needs to fix.
         offending = {rule for rule, _c, _a in over}
         for violation in all_violations:
             if violation.rule in offending:

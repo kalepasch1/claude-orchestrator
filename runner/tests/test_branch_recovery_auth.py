@@ -134,8 +134,20 @@ class TestBranchFleetRecoveryWithAuth:
                     assert result["recovered"] is True
                     assert result["strategy"] == "fetched_remote"
 
-    def test_recover_branch_with_pat_unavailable(self):
-        """recover_branch skips recovery when PAT is unavailable."""
+    def test_recover_branch_requeues_even_without_a_pat(self):
+        """A missing PAT must not cancel the requeue; it only qualifies the note.
+
+        Was: asserted strategy == "pat_unavailable". That assertion and the gate
+        it described landed in the same commit (9d400d9b), so it documented the
+        gate rather than this module's contract, which is "If missing everywhere
+        or auth fails, requeue task for re-execution". The requeue is three
+        database calls; a PAT is a git credential and gates none of them. On a
+        host without one, every fleet-wide-lost branch was silently abandoned.
+
+        Note also that the old test never reached a database call at all -- it
+        left db unmocked and returned before touching it, so it could not have
+        noticed. This one mocks db and asserts the row that gets written.
+        """
         from branch_fleet_recovery import recover_branch
 
         task = {
@@ -150,14 +162,26 @@ class TestBranchFleetRecoveryWithAuth:
         with patch("branch_fleet_recovery.git_auth.pat_available") as mock_pat:
             with patch("branch_fleet_recovery._branch_exists_local") as mock_local:
                 with patch("branch_fleet_recovery._branch_exists_remote") as mock_remote:
-                    mock_pat.return_value = False
-                    mock_local.return_value = False
-                    mock_remote.return_value = False
+                    with patch("branch_fleet_recovery.db.select") as mock_select:
+                        with patch("branch_fleet_recovery.db.insert") as mock_insert:
+                            with patch("branch_fleet_recovery.db.update"):
+                                mock_pat.return_value = False
+                                mock_local.return_value = False
+                                mock_remote.return_value = False
+                                mock_select.return_value = []
 
-                    result = recover_branch(task, "/tmp")
+                                result = recover_branch(task, "/tmp")
 
-                    assert result["recovered"] is False
-                    assert result["strategy"] == "pat_unavailable"
+        assert result["recovered"] is True
+        assert result["strategy"] == "requeued"
+        assert result["detail"] == "recover-no-pat"
+
+        row = mock_insert.call_args[0][1]
+        assert row["slug"] == "recover-no-pat"
+        assert row["state"] == "QUEUED"
+        # The uncertainty the old gate refused over is recorded, not discarded:
+        # without a PAT, origin's silence is not proof the branch is gone.
+        assert "ORCH_GIT_PAT" in row["note"]
 
     def test_recover_branch_fetch_failure_graceful(self):
         """recover_branch handles fetch failures gracefully."""
@@ -198,10 +222,13 @@ class TestBranchFleetRecoveryWithAuth:
             "base_branch": "master",
         }
 
-        with patch.dict(os.environ, {"ORCH_FLEET_RECOVERY_DRY_RUN": "true"}):
-            import importlib
-            importlib.reload(branch_fleet_recovery)
-
+        # WAS: patch.dict(os.environ, ...) + importlib.reload(branch_fleet_recovery).
+        # The env var was restored on exit; the module was NOT reloaded back, so
+        # DRY_RUN stayed True for the rest of the process. Every later test that
+        # expected a requeue got "dry_run" instead -- including in other files,
+        # since the poisoned module lives in sys.modules. patch.object scopes the
+        # flag to this test and needs no reload at all.
+        with patch.object(branch_fleet_recovery, "DRY_RUN", True):
             with patch("branch_fleet_recovery.git_auth.fetch_branch") as mock_fetch:
                 with patch("branch_fleet_recovery._branch_exists_local") as mock_local:
                     with patch("branch_fleet_recovery._branch_exists_remote") as mock_remote:
@@ -234,26 +261,70 @@ class TestGitAuthWithInvalidCredentials:
         with tempfile.TemporaryDirectory() as td:
             subprocess.run(["git", "init", td], capture_output=True)
 
-            with patch.dict(os.environ, {"ORCH_GIT_PAT": "invalid_pat_123"}):
-                import importlib
-                importlib.reload(git_auth)
-
+            # WAS: importlib.reload(git_auth) inside patch.dict, with no reload
+            # back. The env var was restored; git_auth._PAT was not, so every
+            # later test in the process ran with _PAT == "invalid_pat_123".
+            with patch.object(git_auth, "_PAT", "invalid_pat_123"):
                 ok, err = git_auth.fetch_branch(td, "branch", "origin")
                 assert ok is False
                 assert isinstance(err, str)
 
-    def test_run_git_command_error_safe(self):
-        """run_git error messages don't leak credentials."""
+    def test_run_git_never_returns_the_pat_it_was_given(self):
+        """git echoes the credential back in its own errors; strip it there.
+
+        Was: `assert "token" not in err.lower() or "[REDACTED]" in err`, over the
+        stderr "fatal: could not authenticate with token". That string contains
+        no credential -- the test banned an English word that git uses in
+        perfectly clean messages, so it could only ever fail on innocent output
+        while a real leak in a different sentence sailed through.
+
+        The leak that actually happens is the URL form below: git puts the PAT
+        into the remote it failed to reach, run_git handed result.stderr back
+        verbatim, and callers write that into task notes and log lines.
+        """
         import git_auth
-        with patch("git_auth.subprocess.run") as mock_run:
-            mock_error = subprocess.CompletedProcess(
-                ["git"], 128, "", "fatal: could not authenticate with token"
-            )
-            mock_run.return_value = mock_error
+        pat = "ghp_" + "A" * 36
+        for stderr in (
+            "fatal: unable to access 'https://x-access-token:%s@github.com/o/r/'" % pat,
+            "remote: Invalid username or password for %s" % pat,
+        ):
+            with patch.object(git_auth, "_PAT", pat):
+                with patch("git_auth.subprocess.run") as mock_run:
+                    mock_run.return_value = subprocess.CompletedProcess(
+                        ["git"], 128, "", stderr)
+                    rc, out, err = git_auth.run_git(["fetch"], "/tmp")
 
-            rc, out, err = git_auth.run_git(["fetch"], "/tmp")
+            assert pat not in err, "the PAT survived into returned stderr"
+            assert "[REDACTED]" in err
+            assert "github.com" in err or "Invalid username" in err, \
+                "redaction must not swallow the error itself"
 
-            assert "token" not in err.lower() or "[REDACTED]" in err
+    def test_run_git_redacts_a_pat_whose_format_it_does_not_recognise(self):
+        """A self-hosted token matches none of db.redact_secrets' patterns.
+
+        The literal _PAT replacement is the only thing that catches it, which is
+        why redaction is two passes and not one.
+        """
+        import git_auth
+        pat = "not-a-shape-anyone-publishes-4815162342"
+        with patch.object(git_auth, "_PAT", pat):
+            with patch("git_auth.subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    ["git"], 128, "", "fatal: auth failed for %s" % pat)
+                _, _, err = git_auth.run_git(["fetch"], "/tmp")
+        assert pat not in err
+        assert "[REDACTED]" in err
+
+    def test_redaction_leaves_clean_git_output_alone(self):
+        """The word "token" in a clean message is not a leak and stays put."""
+        import git_auth
+        message = "fatal: could not authenticate with token"
+        with patch.object(git_auth, "_PAT", "ghp_" + "B" * 36):
+            with patch("git_auth.subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    ["git"], 128, "", message)
+                _, _, err = git_auth.run_git(["fetch"], "/tmp")
+        assert err == message
 
     def test_branch_exists_remote_handles_auth_error(self):
         """branch_exists_remote returns False on auth errors."""
@@ -383,8 +454,14 @@ class TestBranchRecoveryIntegration:
                                 # When fetch fails but PAT available, should attempt requeue
                                 assert result["recovered"] is not None
 
-    def test_no_recovery_without_pat_and_no_remote(self):
-        """No recovery attempt when PAT missing and branch not on remote."""
+    def test_recovery_still_happens_without_pat_and_no_remote(self):
+        """Missing PAT + branch not on remote is the case recovery exists FOR.
+
+        Was: asserted strategy == "pat_unavailable" -- i.e. that the fleet drops
+        the task. See test_recover_branch_requeues_even_without_a_pat above for
+        why that was the gate talking and not the contract. A branch that is on
+        no machine and not on origin is precisely a branch that has to be rebuilt.
+        """
         from branch_fleet_recovery import recover_branch
 
         task = {
@@ -399,13 +476,22 @@ class TestBranchRecoveryIntegration:
         with patch("branch_fleet_recovery.git_auth.pat_available") as mock_pat:
             with patch("branch_fleet_recovery._branch_exists_local") as mock_local:
                 with patch("branch_fleet_recovery._branch_exists_remote") as mock_remote:
-                    mock_pat.return_value = False
-                    mock_local.return_value = False
-                    mock_remote.return_value = False
+                    with patch("branch_fleet_recovery.db.select") as mock_select:
+                        with patch("branch_fleet_recovery.db.insert") as mock_insert:
+                            with patch("branch_fleet_recovery.db.update") as mock_update:
+                                mock_pat.return_value = False
+                                mock_local.return_value = False
+                                mock_remote.return_value = False
+                                mock_select.return_value = []
 
-                    result = recover_branch(task, "/tmp")
+                                result = recover_branch(task, "/tmp")
 
-                    assert result["strategy"] == "pat_unavailable"
+        assert result["strategy"] == "requeued"
+        assert mock_insert.called, "the replacement task must actually be written"
+        # The original DONE row is annotated too, so the trail from the lost
+        # branch to its replacement is readable without joining on slug.
+        assert mock_update.called
+        assert "recover-no-remote" in mock_update.call_args[0][2]["note"]
 
 
 class TestErrorMessageSafety:

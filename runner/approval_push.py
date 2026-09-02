@@ -23,11 +23,222 @@ SECURITY POSTURE (2026-08-13 rework; the previous version was quarantined)
   * No owner email address is hardcoded; with no audience configured, no email row is written.
   * Everything printed or handed to a notifier goes through scrub(): signatures never leak.
 """
-import os, re, sys, time, hmac, hashlib, json
+import os, re, sys, time, hmac, hashlib, json, threading
+from collections.abc import Mapping
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 _TRUTHY = ("1", "true", "yes", "on")
+
+
+class ApprovalBatcher:
+    """Thread-safe singleton for time-window-based approval digest batching.
+
+    Accumulates approval cards and sends them in a batched digest when either:
+    - The time window expires (ORCH_APPROVAL_BATCH_WINDOW_MS, default 30s)
+    - The item count threshold is reached (ORCH_APPROVAL_BATCH_SIZE, default 50)
+
+    Whichever triggers first sends the batch. All I/O happens outside the lock.
+    Errors are logged and swallowed (fail-soft) — never raised.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.queue = []
+        self.timer = None
+        self._items_queued = 0
+        self._batches_sent = 0
+        self._last_flush_time = None
+        self._init_config()
+
+    def _init_config(self):
+        """Load batch configuration from env vars."""
+        try:
+            self.window_ms = int(os.environ.get("ORCH_APPROVAL_BATCH_WINDOW_MS", "30000"))
+        except (TypeError, ValueError):
+            self.window_ms = 30000
+        try:
+            self.size_threshold = int(os.environ.get("ORCH_APPROVAL_BATCH_SIZE", "50"))
+        except (TypeError, ValueError):
+            self.size_threshold = 50
+        self.window_ms = max(100, self.window_ms)
+        self.size_threshold = max(1, self.size_threshold)
+
+    def append(self, cards):
+        """Add cards to batch queue. Returns count actually queued; 0 if nothing was.
+
+        Anything that is not a mapping is REJECTED here, at the door, and never reaches the
+        queue. This used to accept any truthy non-list as a pseudo-card — append("not a list")
+        queued the string — and the consequence was not local to the bad caller. The queue is
+        shared: build_digest() walks every queued item calling .get() on it, a non-mapping
+        raises AttributeError there, _send_batch() catches that around the whole build_digest
+        call and returns, and by then the batch has already been lifted out of self.queue. So
+        one malformed append silently destroyed the ENTIRE pending batch — every valid card
+        other callers had queued in that window went with it, and the only trace was one
+        fail-soft line about a digest error.
+
+        A card the batcher cannot render is worth dropping. The other callers' cards are not,
+        so the check has to happen before the two are mixed together.
+        """
+        if not cards:
+            return 0
+        try:
+            pending_flush = None
+            items = cards if isinstance(cards, list) else [cards]
+            valid = [c for c in items if isinstance(c, Mapping)]
+            rejected = len(items) - len(valid)
+            if rejected:
+                print(f"approval_batcher append: dropped {rejected} non-mapping item(s) "
+                      f"(build_digest needs .get(); a non-card would take the whole pending "
+                      f"batch down with it); fail-soft")
+            if not valid:
+                return 0
+            with self.lock:
+                card_count = len(valid)
+                self.queue.extend(valid)
+                self._items_queued += card_count
+
+                if len(self.queue) == card_count:
+                    self._start_timer_locked()
+
+                if len(self.queue) >= self.size_threshold:
+                    pending_flush = self.queue[:]
+                    self.queue = []
+                    if self.timer:
+                        self.timer.cancel()
+                        self.timer = None
+
+            if pending_flush:
+                self._send_batch(pending_flush)
+
+            return card_count
+        except Exception as e:
+            print(f"approval_batcher append error ({type(e).__name__}: {e}); fail-soft")
+            return 0
+
+    def _start_timer_locked(self):
+        """Start timer to flush after window expires. Must be called with lock held."""
+        if self.timer:
+            self.timer.cancel()
+        try:
+            self.timer = threading.Timer(
+                self.window_ms / 1000.0,
+                self._on_timer
+            )
+            self.timer.daemon = True
+            self.timer.start()
+        except Exception as e:
+            print(f"approval_batcher timer start error ({type(e).__name__}: {e}); fail-soft")
+            self.timer = None
+
+    def _on_timer(self):
+        """Timer callback: flush pending batch if any."""
+        try:
+            with self.lock:
+                if not self.queue:
+                    return
+                pending_flush = self.queue[:]
+                self.queue = []
+                self.timer = None
+            self._send_batch(pending_flush)
+        except Exception as e:
+            print(f"approval_batcher timer callback error ({type(e).__name__}: {e}); fail-soft")
+
+    def get_pending(self):
+        """Return copy of pending items (for testing/monitoring)."""
+        try:
+            with self.lock:
+                return self.queue[:] if self.queue else []
+        except Exception as e:
+            print(f"approval_batcher get_pending error ({type(e).__name__}: {e}); fail-soft")
+            return []
+
+    def flush(self):
+        """Manually trigger flush of pending batch. Returns items flushed."""
+        try:
+            pending_flush = None
+            with self.lock:
+                if self.queue:
+                    pending_flush = self.queue[:]
+                    self.queue = []
+                    if self.timer:
+                        self.timer.cancel()
+                        self.timer = None
+            if pending_flush:
+                self._send_batch(pending_flush)
+            return pending_flush if pending_flush else []
+        except Exception as e:
+            print(f"approval_batcher flush error ({type(e).__name__}: {e}); fail-soft")
+            return []
+
+    def _send_batch(self, cards):
+        """Send batch digest to notifiers (called outside lock)."""
+        if not cards:
+            return
+        try:
+            d_title, d_body = build_digest(cards)
+        except Exception as e:
+            print(f"approval_batcher build_digest error ({type(e).__name__}: {e}); fail-soft")
+            return
+
+        try:
+            db.insert("notifications", {
+                "channel": "digest", "audience": AUDIENCE,
+                "kind": "digest", "title": d_title[:180],
+                "body": d_body[:4000],
+                "approval_id": cards[0]["id"], "sent": False
+            })
+        except Exception as e:
+            print(f"approval_batcher db insert error ({type(e).__name__}: {e}); fail-soft")
+
+        try:
+            import notify
+            notify.send(scrub(d_title))
+        except Exception as e:
+            print(f"approval_batcher notify.send error ({type(e).__name__}: {e}); fail-soft")
+
+        with self.lock:
+            self._batches_sent += 1
+            self._last_flush_time = time.time()
+
+    def stats(self):
+        """Return statistics dict for operator monitoring."""
+        try:
+            with self.lock:
+                return {
+                    "items_queued": self._items_queued,
+                    "items_pending": len(self.queue),
+                    "batches_sent": self._batches_sent,
+                    "last_flush_time": self._last_flush_time,
+                    "window_ms": self.window_ms,
+                    "size_threshold": self.size_threshold
+                }
+        except Exception as e:
+            print(f"approval_batcher stats error ({type(e).__name__}: {e}); fail-soft")
+            return {}
+
+
+_approval_batcher = ApprovalBatcher()
+
+
+def append_to_batch(cards):
+    """Module-level function: append cards to batch queue."""
+    return _approval_batcher.append(cards)
+
+
+def get_pending_approvals():
+    """Module-level function: get pending batched items."""
+    return _approval_batcher.get_pending()
+
+
+def flush_approvals():
+    """Module-level function: manually flush pending batch."""
+    return _approval_batcher.flush()
+
+
+def approval_batcher_stats():
+    """Module-level function: get batcher statistics."""
+    return _approval_batcher.stats()
 
 # No personal address is baked into source. Unset -> no email audience, and the email
 # rows are simply not written; the Supabase ledger and Smarter still see every card.
@@ -51,7 +262,7 @@ LINK_TTL_S = _ttl_seconds()
 
 # A signing key must be long enough to be a key. The previous code fell back to "" when
 # the env var was missing and signed anyway — an empty-key HMAC is publicly computable,
-# so anyone could mint an "approve" link for any approval id. Refusing to sign is the
+# so anyone could forge an approve link. Refusing to sign is the
 # only safe behaviour; the digest degrades to an unsigned cockpit pointer instead.
 _MIN_KEY_LEN = 32
 
@@ -195,6 +406,17 @@ def run(limit=50):
             continue
         title = ("Decision: " if is_decision else "Action: ") + (a.get("title") or "")[:140]
         bj = a.get("brief_json") or {}
+        # brief_json is a jsonb column, but it reaches callers as a raw JSON *string* often
+        # enough that the rest of the fleet decodes it defensively (see
+        # decision_confidence_autodecide.sweep and db._ev_rank_map), and this function
+        # already does exactly that for the sibling `alternatives` column in _links_block().
+        # Without this, a text-encoded brief_json silently dropped the one narrow QUESTION
+        # the owner is being asked — the single most important line in the email.
+        if isinstance(bj, str):
+            try:
+                bj = json.loads(bj)
+            except Exception:
+                bj = {}
         parts = [f"[{a.get('project') or '-'}] {a.get('title') or ''}"]
         if isinstance(bj, dict) and bj.get("question"):
             parts.append(f"QUESTION: {bj['question']}")
@@ -215,23 +437,24 @@ def run(limit=50):
         batched.append(a)
         pushed += 1
 
-    # DIGEST BATCHING: one ping per run, not one per card. A burst of decisions used to
-    # produce a burst of immediate notify.send() calls, which is both noisy and how the
-    # signed link bodies leaked into notifier logs.
+    # DIGEST BATCHING: one outbound ping per RUN summarising every card pushed, not one per
+    # card. The batch is queued and then flushed before returning — it is NOT left to the
+    # batcher's window timer.
+    #
+    # That flush is not belt-and-braces, it is the delivery. run() is invoked as a one-shot
+    # process (`python3 periodic.py pushdecisions`, see periodic.run_pushdecisions), and
+    # ApprovalBatcher arms its window with a threading.Timer marked `daemon = True`. A daemon
+    # thread does not hold the interpreter open, so the process exits within milliseconds of
+    # run() returning and the 30-second timer never fires. Meanwhile the per-card
+    # `notifications` ledger rows have already been written, so the next run reads those ids
+    # into `already` and skips the same cards — the digest ping for them was not delayed, it
+    # was lost, permanently and silently.
+    #
+    # The window and size threshold still do their job for a long-lived caller batching
+    # within a single process; they just cannot be what a one-shot run depends on.
     if batched and _digest_enabled():
-        d_title, d_body = build_digest(batched)
-        try:
-            db.insert("notifications", {"channel": "digest", "audience": AUDIENCE,
-                                        "kind": "digest", "title": d_title[:180],
-                                        "body": d_body[:4000],
-                                        "approval_id": batched[0]["id"], "sent": False})
-        except Exception:
-            pass
-        try:
-            import notify
-            notify.send(scrub(d_title))       # scrubbed: never hand a signature to a notifier
-        except Exception:
-            pass
+        append_to_batch(batched)
+        flush_approvals()
     elif batched:
         for a in batched:
             try:

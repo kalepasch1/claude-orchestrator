@@ -49,6 +49,7 @@ def test_active_slug_consolidates_duplicate_without_second_writer():
         [{"id": "duplicate", "slug": "dropbox-same", "state": "PHANTOM_UNVERIFIED",
           "prompt": "Improve it", "note": "audit"}],
         [],
+        [],                       # fleet-wide evidenced scan: nothing carries evidence
         [{"id": "keeper", "slug": "dropbox-same", "state": "QUEUED"}],
     ]
     database.update.side_effect = [None, [{"id": "duplicate", "state": "DECOMPOSED"}]]
@@ -70,8 +71,9 @@ def test_staged_artifact_is_restored_to_merged_without_regeneration():
         "project_id": "p1", "artifact_commit": "a" * 40,
         "prompt": "Implement it", "note": "old recovery",
     }
-    # PHANTOM query empty, stranded-artifact query returns the old requeued row.
-    database.select.side_effect = [[], [staged]]
+    # PHANTOM query empty, stranded-artifact query returns the old requeued row,
+    # fleet-wide evidenced scan empty.
+    database.select.side_effect = [[], [staged], []]
     database.update.return_value = [{"id": "t1", "state": "MERGED"}]
 
     with patch.object(phantom_recovery, "db", database), \
@@ -100,7 +102,7 @@ def test_existing_unintegrated_artifact_is_done_and_recarded():
         "project_id": "p1", "artifact_commit": "b" * 40,
         "prompt": "Implement it", "note": "audit",
     }
-    database.select.side_effect = [[row], []]
+    database.select.side_effect = [[row], [], []]
     database.update.return_value = [{"id": "t1", "state": "DONE"}]
 
     with patch.object(phantom_recovery, "db", database), \
@@ -127,7 +129,7 @@ def test_infrastructure_error_never_requeues_artifact():
         "project_id": "p1", "artifact_commit": "c" * 40,
         "prompt": "Implement it", "note": "audit",
     }
-    database.select.side_effect = [[row], []]
+    database.select.side_effect = [[row], [], []]
 
     with patch.object(phantom_recovery, "db", database), \
          patch.object(phantom_recovery.merge_truth, "resolve_target",

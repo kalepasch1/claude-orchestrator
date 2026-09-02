@@ -6,7 +6,8 @@ Acceptance: can query test pipeline health with per-task-type pass rates;
 pipeline metrics match actual task transitions; merge train summary includes
 test-pipeline impact.
 """
-import os, sys, unittest
+import contextlib
+import os, subprocess, sys, tempfile, unittest
 from unittest.mock import patch, MagicMock, ANY
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -134,6 +135,41 @@ class TestGetHealth(unittest.TestCase):
 
 # ── merge train + pipeline_metrics integration ────────────────────────────────
 
+def _init_repo(path):
+    """A REAL git repo with the base and one agent branch.
+
+    merge_train's git helpers are stubbed here, but the collaborators it grew
+    since these tests were written are not — regression_guard runs an actual
+    `git diff orchestrator/dev..agent/<slug>` and reported REGRESSFAIL for every
+    card when handed an empty directory. Six git commands buy back the fidelity
+    that stubbing each new collaborator one at a time would keep costing.
+    """
+    def git(*args):
+        subprocess.run(["git", "-C", path] + list(args),
+                       capture_output=True, timeout=30, check=False)
+    git("init", "-q", "-b", "orchestrator/dev")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    open(os.path.join(path, "README"), "w").write("base\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    # The agent branch must be genuinely AHEAD of the base. Branched at the same
+    # commit, merge_train correctly reports "ALREADY (present in
+    # orchestrator/dev; no ref advance)" and never reaches the merge it is being
+    # asked to record a metric for.
+    git("checkout", "-q", "-b", "agent/feat-x")
+    open(os.path.join(path, "feature.txt"), "w").write("work\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "feat-x")
+    git("checkout", "-q", "orchestrator/dev")
+
+
+@contextlib.contextmanager
+def _in_place_repo(repo_path, _owner, *a, **kw):
+    """Stand-in for integration_runtime.isolated_repo: no worktree, same path."""
+    yield repo_path
+
+
 PROJECTS_DATA = [{"id": "p1", "name": "alpha", "repo_path": "/tmp/fake-repo",
                   "default_base": "main", "test_cmd": "true"}]
 
@@ -145,24 +181,68 @@ class MergeTrainMetricsCase(unittest.TestCase):
         self.updates = []
         self.cards = []
         self.tasks = []
+        # A REAL directory. The pass touches the repo path on disk before any of
+        # the git helpers below are reached, so a nonexistent "/tmp/fake-repo"
+        # raised FileNotFoundError and every card was skipped as
+        # "worktree-vanished: transient" — a pass that reported 0 merged for a
+        # reason that had nothing to do with what these tests assert.
+        self._repo = tempfile.TemporaryDirectory()
+        self.addCleanup(self._repo.cleanup)
+        self.repo_path = self._repo.name
+        _init_repo(self.repo_path)
 
         self.mock_db = MagicMock()
         self.mock_db.select.side_effect = self._select
+        # select_all() must be a real function too. As a bare MagicMock it returned
+        # a MagicMock, merge_train saw "not a list", printed "paged approval scan
+        # unavailable ... degrading to a bounded dual-order window" and took its
+        # FALLBACK path — so these tests were measuring the degraded scan, not the
+        # one the train actually uses.
+        self.mock_db.select_all.side_effect = \
+            lambda table, params=None, **kw: self._select(table, params)
         self.mock_db.update.side_effect = \
             lambda table, match, patch: self.updates.append((table, match, patch))
+        # A MagicMock here becomes a path segment: the real function returns the
+        # repo path, localized to this machine's home when it needs to be.
+        self.mock_db.localize_repo_path.side_effect = lambda p: p
 
+        # The production build gate is fail-CLOSED by design: with no build_cmd
+        # it returns "no production build command could be determined for this
+        # repo" rather than skipping, so every card in a fixture repo is
+        # BUILDFAIL. Use the gate's own documented opt-out rather than patching
+        # an internal — what is under test here is the metric recording.
         patches = [
+            patch.dict(os.environ, {"ORCH_MERGE_BUILD_GATE": "false"}, clear=False),
             patch.object(merge_train, "db", self.mock_db),
             patch.object(merge_train, "_branch_exists", return_value=True),
             patch.object(merge_train, "_refresh_base", return_value=None),
-            patch.object(merge_train, "_rebase_onto_base", return_value=True),
+            # (ok, conflict_detail), not a bool: _rebase_onto_base returns the
+            # newline-separated conflicting filenames alongside the verdict so a
+            # repair directive can name them. Stubbed as a bare True, the caller's
+            # unpack raised "cannot unpack non-iterable bool object", merge_train
+            # counted a PROJECT-ERROR, and all five tests saw 0 merged.
+            patch.object(merge_train, "_rebase_onto_base", return_value=(True, "")),
             patch.object(merge_train, "_run_tests", return_value=(True, "green")),
             patch.object(merge_train, "_ff_base", return_value=True),
             patch.object(merge_train, "_push_base", return_value=""),
+            # _push_base is stubbed, so nothing reaches an origin — and _verify_push
+            # then compares local `base` against `origin/base` and reports
+            # PUSH-VERIFY-FAILED. That guard exists because a push returning 0 while
+            # origin did not move desynced the DB from GitHub; it is real, and it is
+            # not what these tests measure. "" is its success value.
+            patch.object(merge_train, "_verify_push", return_value=""),
             patch.object(merge_train, "_delete_branch", return_value=None),
             patch.object(merge_train.approval_merge, "_free_branch", return_value=None),
             patch.object(merge_train, "_paused", return_value=False),
             patch.object(merge_train.os.path, "isdir", return_value=True),
+            # merge_train runs each card inside an integration_runtime worktree
+            # now. Unstubbed, isolated_repo() built a real path out of the
+            # MagicMock db — ".../MagicMock/mock.localize_repo_path()/4449048272"
+            # — which does not exist, so every card was skipped as
+            # "worktree-vanished: transient" and the pass reported 0 merged. The
+            # worktree is not what these tests are about; yield the repo in place.
+            patch.object(merge_train.integration_runtime, "isolated_repo",
+                         _in_place_repo),
         ]
         self.mocks = {}
         for p in patches:
@@ -172,14 +252,34 @@ class MergeTrainMetricsCase(unittest.TestCase):
             if name:
                 self.mocks[name] = m
 
+    @staticmethod
+    def _slugs_in(params):
+        """Slugs named by a PostgREST filter, for `eq.` and `in.(...)` alike.
+
+        This used to be `params.get("slug", "eq.").split("eq.", 1)[1]`, which
+        assumes the filter is always an equality. merge_train batches its task
+        lookup — `slug=in.(feat-x)` — so the split found no "eq." and raised
+        IndexError, and all five metric tests died inside the fake rather than in
+        the code under test. A fake that only understands one operator fails the
+        moment the caller reasonably uses another.
+        """
+        raw = str((params or {}).get("slug") or "")
+        if raw.startswith("in.("):
+            return [p.strip().strip('"') for p in raw[4:].rstrip(")").split(",") if p.strip()]
+        if raw.startswith("eq."):
+            return [raw[3:]]
+        return []
+
     def _select(self, table, params=None):
         if table == "approvals":
             return list(self.cards)
         if table == "projects":
-            return list(PROJECTS_DATA)
+            return [dict(p, repo_path=self.repo_path) for p in PROJECTS_DATA]
         if table == "tasks":
-            slug = (params or {}).get("slug", "eq.").split("eq.", 1)[1]
-            return [t for t in self.tasks if t["slug"] == slug]
+            wanted = self._slugs_in(params)
+            if not wanted:
+                return list(self.tasks)
+            return [t for t in self.tasks if t["slug"] in wanted]
         if table == "controls":
             return []
         return []
@@ -223,7 +323,7 @@ class TestMergeTrainRecordsMetrics(MergeTrainMetricsCase):
 
     def test_no_metric_on_rebase_conflict(self):
         """Conflict before tests run must not record a test metric."""
-        self.mocks["_rebase_onto_base"].return_value = False
+        self.mocks["_rebase_onto_base"].return_value = (False, "src/app.ts")
         mock_pm = MagicMock()
         self.cards = [self._card("c1", "feat-x")]
         self.tasks = [self._task("t1", "feat-x")]

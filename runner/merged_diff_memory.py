@@ -491,7 +491,16 @@ def capture_merge(commit_hash: str, branch: str, cwd: str) -> bool:
     author = _safe_run(["git", "log", "-1", "--format=%an", commit_hash], cwd=cwd)
     date = _safe_run(["git", "log", "-1", "--format=%aI", commit_hash], cwd=cwd)
     message = _safe_run(["git", "log", "-1", "--format=%s", commit_hash], cwd=cwd)
-    files = _safe_run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash], cwd=cwd)
+    # `-m --first-parent` is required. For a MERGE commit a plain diff-tree prints
+    # NOTHING at all (git has no single parent to diff against), so files_affected came
+    # back [] for every true merge commit — and the production caller,
+    # continuous_merger._capture_merge_memory(), passes exactly those merge SHAs. The
+    # identical bug was already found and fixed in assemble_merge_summaries() below;
+    # this copy of the git read was missed. --first-parent diffs against the branch we
+    # merged INTO, i.e. "what this merge brought in". Ordinary single-parent commits are
+    # unaffected by the extra flags.
+    files = _safe_run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r",
+                       "-m", "--first-parent", commit_hash], cwd=cwd)
 
     merges.append({
         "commit": commit_hash,

@@ -52,10 +52,17 @@ class FakeTemplateStore:
             rows = [r for r in rows if r["kind"] == wanted]
         return [dict(r) for r in rows]
 
-    def insert(self, table, row, resolution=None):
+    def insert(self, table, row, upsert=False):
+        # Signature copied from the real runner/db.py: insert(table, row,
+        # upsert=False).  It used to be `resolution=None`, matching the keyword
+        # prompt_evolver was passing and the real db has never accepted — so this
+        # fake made a call that raises TypeError in production look correct here.
         if table != "prompt_templates":
             return
-        # `merge-duplicates` upserts on (kind, template_id) — accumulate, don't append.
+        assert upsert, ("prompt_templates accumulates per (kind, template_id); "
+                        "a plain insert would append a new row per trial")
+        # upsert=True sends Prefer: resolution=merge-duplicates, which upserts on
+        # (kind, template_id) — accumulate, don't append.
         for existing in self.rows:
             if (existing["kind"], existing["template_id"]) == (row["kind"], row["template_id"]):
                 existing["total_reward"] += row["total_reward"]
@@ -148,23 +155,67 @@ def test_record_is_a_noop_when_no_arm_was_selected(store, runner_module):
     assert store.rows == []
 
 
-def test_prompt_evolves_across_runs(store, runner_module):
-    """Over repeated runs the bandit explores every arm, then favors the winner."""
-    winner = "chain_of_thought"
-    seen = []
+def test_cold_start_round_robin_reaches_every_arm(store, runner_module):
+    """The one path by which an arm ever gets its first trial.
 
-    # Explore: settle one full pipeline pass per arm. Only `winner` ships a real
-    # artifact, so only `winner` earns reward.
-    for _ in prompt_evolver.TEMPLATE_IDS:
-        _, template_id = _run_once(
-            runner_module, "code_gen", "prompt", integrated=True,
-            artifact_for=lambda tid: "abc123" if tid == winner else "",
-        )
+    prompt_evolver deliberately does NOT seed absent arms into the aggregate
+    (see the CORRECTED 2026-08-12 note in select_template): a seeded arm has
+    n_trials == 0, scores +inf under UCB1, is never written back, and therefore
+    wins every call forever — a bandit that cannot exploit.  Fifteen tests in
+    test_prompt_evolver.py pin that decision.
+
+    So an arm enters only through the cold-start round-robin, which runs while
+    the kind has no rows at all.  That is what this asserts.
+    """
+    kind = "cold_start_kind"
+    chosen = [prompt_evolver.select_template(kind, "prompt")[1]
+              for _ in prompt_evolver.TEMPLATE_IDS]
+    assert set(chosen) == set(prompt_evolver.TEMPLATE_IDS)
+    assert store.rows == [], "select_template must not write rows; record_outcome does"
+
+
+def test_once_an_arm_has_history_the_round_robin_stops(store, runner_module):
+    """The consequence of that design, stated so it cannot be rediscovered as a
+    surprise.
+
+    The round-robin is gated on the kind having NO rows.  The first recorded
+    outcome creates one, and from the next call on, selection is UCB1 over the
+    arms that have history — so in a strictly SEQUENTIAL select -> record loop
+    only the first arm is ever explored.  Arms two and three get their first
+    trial from concurrent cold starts (several tasks selecting before the first
+    outcome lands), not from repeating this loop.
+
+    This is not asserted as desirable.  It is asserted so that a future change
+    to the exploration policy fails here and has to be deliberate.
+    """
+    seen = []
+    for _ in range(4):
+        _, template_id = _run_once(runner_module, "code_gen", "prompt", integrated=True)
         seen.append(template_id)
 
-    assert set(seen) == set(prompt_evolver.TEMPLATE_IDS), (
-        "every arm must be reachable — an unseeded arm can never be selected"
+    assert seen[0] == prompt_evolver.TEMPLATE_IDS[0]
+    assert set(seen[1:]) == {seen[0]}, (
+        "after the first recorded outcome the round-robin is over and UCB1 scores "
+        "only arms with history; a change here is a change of exploration policy"
     )
+
+
+def test_prompt_evolves_toward_the_arm_that_delivers(store, runner_module):
+    """Once every arm has history, the bandit converges on the winner.
+
+    The explore phase records each arm directly rather than driving a pipeline
+    pass per arm: a sequential pass-per-arm cannot reach arms two and three, for
+    the reason the test above pins.  What is under test here is convergence, and
+    that starts from the state a concurrently-started fleet actually produces —
+    every arm carrying trials.
+    """
+    winner = "chain_of_thought"
+
+    for template_id in prompt_evolver.TEMPLATE_IDS:
+        prompt_evolver.record_outcome(
+            "code_gen", template_id, merged_first_try=True,
+            artifact_commit="abc123" if template_id == winner else "")
+
     assert all(store.trials(tid) >= 1 for tid in prompt_evolver.TEMPLATE_IDS)
 
     # Exploit: keep running until every arm is well sampled, with only `winner`

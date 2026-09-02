@@ -107,6 +107,7 @@ if __name__ == "__main__":
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
 import provider_banner
+import stderr_digest
 import prompt_assembler
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
@@ -158,6 +159,7 @@ import agentic_repair
 import cowork_dispatch
 import worktree_isolation
 import common_utils
+import repo_hygiene
 try:
     import warm_pool
 except ImportError:
@@ -214,6 +216,40 @@ POOL = account_pool.AccountPool()
 _sem = threading.Semaphore(int(os.environ.get("ORCH_SEM_MAX", "48")))
 _projects = {}
 MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "36000"))
+
+
+TASK_TIMEOUT_DEFAULT = 3600
+
+
+def _task_timeout(default=TASK_TIMEOUT_DEFAULT):
+    """Seconds to allow one agent run, read fail-soft from TASK_TIMEOUT.
+
+    The three call sites that launch a coder used to inline the environment
+    read and the int() conversion directly. os.environ.get returns the
+    DEFAULT only when the key is absent; when the key is present and empty --
+    `TASK_TIMEOUT=` in a .env, or a fleet_config row whose value was blanked --
+    it returns "" and int("") raises ValueError. That exception is raised at the
+    moment of launching the agent subprocess, so a single blank config value
+    stops every task on the fleet from starting, and the traceback names int()
+    rather than the setting that caused it.
+
+    TASK_TIMEOUT is operator-tunable through the control plane
+    (config_applier, fleet_control, fleet_contracts all list it), so a value
+    this function cannot parse is a routine outcome, not a programming error.
+    Anything unparseable falls back to the default and says so once.
+    """
+    raw = os.environ.get("TASK_TIMEOUT", "")
+    if not str(raw).strip():
+        return default
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        _log.warning("TASK_TIMEOUT=%r is not an integer — using %ss", raw, default)
+        return default
+    if val <= 0:
+        _log.warning("TASK_TIMEOUT=%r is not positive — using %ss", raw, default)
+        return default
+    return val
 
 
 def projects(project_id=None):
@@ -473,7 +509,8 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             if bcmd:
                 ok, blog = build_gate.run_build(repo, branch, bcmd)
                 if not ok:
-                    print(f"[integrate] build RED for {branch} -> not merging: {blog[-160:]}")
+                    print(f"[integrate] build RED for {branch} -> not merging: "
+                          f"{stderr_digest.digest(blog, 160)}")
                     try:
                         import build_fixer
                         build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
@@ -536,6 +573,36 @@ def _branch_exists(repo, branch):
         return subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
                               capture_output=True).returncode == 0
     except OSError:
+        return False
+
+
+def _already_on_origin(repo, branch):
+    """True when origin's copy of `branch` already contains this clone's tip.
+
+    Pure check — it reads refs/remotes/origin/<branch> and does NOT fetch. The
+    caller fetches first, deliberately: the fetch has to be visible at the push
+    site (that is the thing that was missing), and doing it here as well would
+    pay for the same round trip twice per attempt.
+
+    "origin already has our commits" is a SUCCESS. The branch-share loop used to
+    treat it as a failed push and replay the push twice more, which is a third
+    of the 710/709 failure record this exists to fix: two Macs share one queue,
+    so the other one having already pushed our ref is the normal case, not an
+    error.
+    """
+    if not repo or not branch:
+        return False
+    try:
+        head = subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
+                              capture_output=True, text=True, timeout=30)
+        if head.returncode != 0 or not head.stdout.strip():
+            return False
+        anc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", head.stdout.strip(),
+             f"refs/remotes/origin/{branch}"],
+            cwd=repo, capture_output=True, text=True, timeout=30)
+        return anc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -673,6 +740,11 @@ def _commit_agent_work(wt, slug, prompt, base="main"):
            "GIT_AUTHOR_NAME": _git_name, "GIT_AUTHOR_EMAIL": _git_email,
            "GIT_COMMITTER_NAME": _git_name, "GIT_COMMITTER_EMAIL": _git_email}
     try:
+        try:
+            import write_guard as _wg
+            _wg.install_repo_excludes(wt)   # git ignores tool scratch before any add -A
+        except Exception:
+            pass
         _quarantine_garbage_paths(wt, slug, env)
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         # commit any uncommitted changes the agent left staged
@@ -739,7 +811,8 @@ def _durable_share_branch(wt, slug, env=None, attempts=3):
                 except Exception:
                     pass
                 return True
-            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: {err[-160:]}")
+            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: "
+                  f"{stderr_digest.digest(err, 160)}")
         except Exception as e:
             print(f"[branch-durability] push {branch} attempt {attempt+1} error: {e}")
         time.sleep(2 * (attempt + 1))
@@ -1864,7 +1937,7 @@ def run_task(t):
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
                                 cwd=wt,
-                                timeout=int(os.environ.get("TASK_TIMEOUT", "3600")),
+                                timeout=_task_timeout(),
                                 mode=_swarm_mode,
                             )
                             r["coder"] = f"swarm:{_swarm_provider}"
@@ -1880,13 +1953,13 @@ def run_task(t):
                             r = agentic_coders.run(coder, draft_prompt, model,
                                                    cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
-                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
+                                                   timeout=_task_timeout())
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
                                                cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
-                                               timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
+                                               timeout=_task_timeout())
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 if _agentic_repair_continue(
@@ -2280,6 +2353,45 @@ def run_task(t):
             except Exception as e:
                 _log.debug("hook speculative_exec failed: %s", e)
 
+            # TEMPLATE COMPILE GATE — deliberately ahead of every skip above.
+            #
+            # cache-bypass, speculative-exec and graduated-autonomy L4 all say
+            # some version of "we have seen this pass before". None of them is
+            # evidence about the edit actually in front of us, and a component
+            # that does not compile is not a judgement call — it breaks the
+            # build and the local dev server for whoever works next.
+            #
+            # 2026-08-29: an agent converting 421 hardcoded hex values to design
+            # tokens across 59 .vue files appended an attribute to elements that
+            # already had one, six times. Nothing noticed until a dev server
+            # refused to serve a page. The repair loop below hands the compiler
+            # output back to the agent that wrote it, so the task cannot be
+            # reported done over a broken tree.
+            #
+            # Costs about a second, and runs before the model gates so we never
+            # pay a judge to review code that cannot compile. Silent no-op in
+            # repos that declare no checker. See repo_hygiene.check_vue_templates.
+            _vue_ok, _vue_detail = repo_hygiene.check_vue_templates(wt)
+            if not _vue_ok:
+                if _agentic_repair_continue(
+                    t, "vue-templates", _vue_detail[:2000], attempt,
+                    "A Vue component in your diff does not compile. The compiler output names "
+                    "the file and line. The usual cause is an attribute added to an element that "
+                    "already had one — two `class`, two `:style`, or static classes left outside "
+                    "a `:class` array. Merge the value into the attribute that is already there "
+                    "rather than adding a second one, then re-run the check and commit.",
+                ):
+                    continue
+                set_state(t["id"], state="BLOCKED", note="vue templates: will not compile")
+                approval(name, "verify", f"Vue component will not compile: {slug}",
+                         why=_vue_detail[:1000],
+                         risk="breaks the production build and the local dev server",
+                         detail=_vue_detail[:3000])
+                regression.record(name, slug, kind, t["prompt"][:500],
+                                  "vue templates: will not compile", _vue_detail[:500])
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0,
+                       cost=run_cost); return
+
             if _autonomy_skip.get("skip_all"):
                 # Graduated autonomy Level 4: skip ALL gates — proven pattern
                 v = {"verdict": "pass", "notes": "graduated-autonomy L4: proven pattern"}
@@ -2453,10 +2565,33 @@ def run_task(t):
                 # cause of local-only branches that later got GC'd → recover-missing-branch churn).
                 # Verify the ref actually landed on origin; if it never does, leave a durable marker
                 # so the branch is NOT eligible for local GC (governor now refuses to delete unshared).
+                # FETCH FIRST, EVERY ATTEMPT (2026-08-16 measurement, fixed 2026-08-25).
+                # 710 branch-share pushes on the live fleet, 709 failures. 374 were
+                # non-fast-forward and 333 were refused by author_identity_guard, and both
+                # are the same missing fetch: this clone's remote-tracking refs predate the
+                # other Mac's push, so the push is rejected as diverged, and the guard's
+                # `<local> --not --remotes` scope reads commits ALREADY on origin as newly
+                # pushed. The loop then replayed the IDENTICAL command twice more, which
+                # cannot succeed — nothing about the rejection changes by repeating it.
+                #
+                # Now each attempt refreshes the ref before deciding, so a retry is a
+                # genuinely different attempt, and "origin already has our tip" is
+                # recognised as success instead of being retried into the failure log.
+                # The push stays non-forcing on purpose: a diverged ref means another
+                # writer has work here, and overwriting it is the one outcome worse than
+                # a failed push. test_source_does_fetch_before_pushing pins that too, by
+                # scanning this block for the forcing flag.
                 _shared = False
+                _share_branch = f"agent/{slug}"
                 for _attempt in range(3):
                     try:
-                        _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
+                        subprocess.run(["git", "fetch", "origin",
+                                        f"+refs/heads/{_share_branch}:refs/remotes/origin/{_share_branch}"],
+                                       cwd=repo, capture_output=True, text=True, timeout=120)
+                        if _already_on_origin(repo, _share_branch):
+                            _shared = True
+                            break
+                        _pr = subprocess.run(["git", "push", "-u", "origin", _share_branch],
                                              cwd=repo, capture_output=True, text=True, timeout=180)
                         if _pr.returncode == 0:
                             _shared = True
@@ -2465,9 +2600,10 @@ def run_task(t):
                         if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
                             _shared = True
                             break
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {(_pr.stderr or '')[-160:]}")
+                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} failed: "
+                              f"{stderr_digest.digest(_pr.stderr, 160)}")
                     except Exception as _pe:
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
+                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} error: {_pe}")
                     time.sleep(2 * (_attempt + 1))
                 if not _shared:
                     print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
@@ -3171,6 +3307,15 @@ _SCHEDULE = [
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
     ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
     ("portfolioautopilot-night","portfolioautopilot",    "daily",    (1, 0)),  # nightly: cold-start idle apps, auto-tune distribution, digest
+    # Compliance subsystem. compliance_periodic.DEFAULT_INTERVALS documents these four
+    # cadences as "the values registered in runner._SCHEDULE" — and they were registered
+    # neither here nor in periodic.JOBS, so evidence_bus's durable outbox had no clock at
+    # all and drained only when some caller happened to call flush(). Keep the intervals
+    # in step with DEFAULT_INTERVALS; the rationale for each number lives there.
+    ("complianceoutbox-120",    "complianceoutbox",    "interval", 120),  # drain the durable evidence outbox
+    ("compliancescorecard-900", "compliancescorecard", "interval", 900),  # recompute fleet compliance scorecards
+    ("complianceanomaly-600",   "complianceanomaly",   "interval", 600),  # z-score sweep over composite scores
+    ("compliancehealth-60",     "compliancehealth",    "interval", 60),   # readiness snapshot + degraded alert
 ]
 _sched_last: dict = {}
 
@@ -3207,7 +3352,12 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "surge_planner.py", "service_agent.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "batch_completion.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
-                     "cost_intelligence.py", "improvement_roadmap.py"}
+                     "cost_intelligence.py", "improvement_roadmap.py",
+                     # Observation must not stop when the fleet pauses — a paused fleet is
+                     # exactly when an undrained evidence outbox goes unnoticed. These four
+                     # only read, deliver already-captured evidence and record metrics.
+                     "complianceoutbox", "compliancescorecard", "complianceanomaly",
+                     "compliancehealth"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
@@ -3402,17 +3552,34 @@ def _is_still_running(job):
     so with a 60s scheduler tick they were guaranteed to overlap and accumulate. Any interval
     job whose runtime can exceed its own interval has this same latent bug. Fix: don't launch a
     new instance while the last one is still alive; let it finish (or let the properly-scaled
-    reaper below kill it if it's truly stuck) instead of stacking duplicates."""
+    reaper below kill it if it's truly stuck) instead of stacking duplicates.
+
+    THE RESTART HOLE (2026-08-25). This used to consult only _PERIODIC_PIDS,
+    which records what THIS process launched. A runner restart empties it, so
+    every job left running by the previous runner was invisible and a duplicate
+    was launched on the next tick -- the regression that produced 14 concurrent
+    legal_docket.py copies.
+
+    _external_instance_running() was written to close exactly that hole, and
+    `grep -n _external_instance_running runner/runner.py` found its definition
+    and NO CALLER. The launcher below only ever asks _is_still_running, so the
+    check has to be reachable from here or it is decoration. It also adopts the
+    orphan into _PERIODIC_PIDS, which is what lets _reap_stale_periodic give it
+    a proper lease instead of an instant kill.
+
+    Both no-record paths fall through to it: a dead tracked pid alongside a live
+    external copy is still a duplicate waiting to happen.
+    """
     info = _PERIODIC_PIDS.get(job)
     if not info:
-        return False
+        return _external_instance_running(job)
     pid, _launch_t = info
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         del _PERIODIC_PIDS[job]
-        return False
+        return _external_instance_running(job)
 
 
 def _external_instance_running(job):
@@ -3516,34 +3683,52 @@ def _reap_zombie_tasks():
         for t in running:
             if (t.get("account") or "").startswith("cowork-"):
                 continue
-            account = str(t.get("account") or "")
-            dead_runner_claim = (bool(live_runner_ids)
-                                 and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
-                                 and account not in live_runner_ids
-                                 and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
-            if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
-                patch = agentic_repair.repair_patch(
-                    t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
-                        else "zombie-reaper: stale RUNNING >30min"),
-                    category="orphaned-running",
-                    directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
-                db.update("tasks", {"id": t["id"]}, patch)
-                reclaimed += 1
+            # Per-row isolation. One unusable row -- a task whose repair patch cannot be
+            # built, a write PostgREST rejects, a naive `updated_at` that will not compare
+            # against an aware cutoff -- used to abort the whole cycle from the outer
+            # handler below, taking the remaining orphans AND the retry promoter with it.
+            # That is the failure mode that produced the orphan backlog in the first place:
+            # a reaper that throws on one bad id abandons the rest of the batch (the same
+            # rule zombie_reaper.terminate_expired() is built on). Log the row, keep going.
+            try:
+                account = str(t.get("account") or "")
+                dead_runner_claim = (bool(live_runner_ids)
+                                     and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
+                                     and account not in live_runner_ids
+                                     and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
+                if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
+                    patch = agentic_repair.repair_patch(
+                        t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
+                            else "zombie-reaper: stale RUNNING >30min"),
+                        category="orphaned-running",
+                        directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
+                    db.update("tasks", {"id": t["id"]}, patch)
+                    reclaimed += 1
+            except Exception as e:
+                print(f"[zombie-reaper] task {t.get('id')} not reclaimed: {e}")
         if reclaimed:
             print(f"[zombie-reaper] reclaimed {reclaimed} stale RUNNING tasks")
         retry_cutoff = (datetime.datetime.now(datetime.timezone.utc)
                         - datetime.timedelta(seconds=int(os.environ.get("ORCH_RETRY_PROMOTE_AFTER_S", "120")))).isoformat()
         retries = db.select("tasks", {"select": "id,note,updated_at", "state": "eq.RETRY",
                                        "updated_at": f"lt.{retry_cutoff}", "limit": "250"}) or []
+        promoted = 0
         for task in retries:
-            note = str(task.get("note") or "")
-            new_note = common_utils.truncate_string_at_bytes(f"{note} | retry-promoter", 1000)
-            db.update("tasks", {"id": task["id"]}, {
-                "state": "QUEUED", "updated_at": "now()",
-                "note": new_note,
-            })
-        if retries:
-            print(f"[retry-promoter] returned {len(retries)} elapsed RETRY tasks to QUEUED")
+            # Same rule as the reclaim loop: RETRY is not claimable, so a row that cannot
+            # be promoted must not strand every RETRY behind it in the same limbo this
+            # promoter exists to drain.
+            try:
+                note = str(task.get("note") or "")
+                new_note = common_utils.truncate_string_at_bytes(f"{note} | retry-promoter", 1000)
+                db.update("tasks", {"id": task["id"]}, {
+                    "state": "QUEUED", "updated_at": "now()",
+                    "note": new_note,
+                })
+                promoted += 1
+            except Exception as e:
+                print(f"[retry-promoter] task {task.get('id')} not promoted: {e}")
+        if promoted:
+            print(f"[retry-promoter] returned {promoted} elapsed RETRY tasks to QUEUED")
     except Exception as e:
         print(f"[zombie-reaper] error: {e}")
 

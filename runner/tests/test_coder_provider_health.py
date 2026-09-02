@@ -56,6 +56,21 @@ class ProviderExtractionTest(unittest.TestCase):
     def test_no_model_argument_at_all(self):
         self.assertEqual(ac.coder_provider({"name": "x", "cmd": "some-tool --run"}), "")
 
+    def test_a_known_vendor_cli_is_resolved_by_its_binary_name(self):
+        # `codex` IS OpenAI's CLI. It carries no --model flag, so this returned
+        # "" and the health gate failed open on it for the whole outage.
+        self.assertEqual(
+            ac.coder_provider({"name": "codex", "cmd": "codex exec --full-auto"}),
+            "openai")
+        self.assertEqual(
+            ac.coder_provider({"name": "codex", "cmd": "/usr/local/bin/codex exec"}),
+            "openai")
+
+    def test_an_unknown_binary_still_has_no_provider(self):
+        # Only names whose vendor is certain may be mapped; everything else
+        # keeps failing open.
+        self.assertEqual(ac.coder_provider({"name": "x", "cmd": "somecli run"}), "")
+
     def test_malformed_entries_do_not_raise(self):
         for bad in ({}, {"cmd": None}, {"cmd": 5}, {"name": None, "cmd": "--model "}):
             self.assertIsInstance(ac.coder_provider(bad), str)
@@ -70,10 +85,41 @@ class HealthGateTest(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"provider_failover_sla": _sla({"xai"})}):
             self.assertTrue(ac._provider_healthy(GEMINI))
 
-    def test_claude_is_never_gated_out(self):
-        # claude is the fallback of last resort; gating it would strand the queue
+    def test_a_demoted_claude_is_ALSO_gated_out(self):
+        """Reversed 2026-08-24. This used to assert the opposite.
+
+        The old reasoning — "claude is the fallback of last resort; gating it
+        would strand the queue" — assumed Claude cannot be the thing that is
+        broken. It can: a subscription at its weekly limit is exactly as
+        unusable as an API key with no credit. On 2026-08-24 Claude was demoted
+        for that reason and stayed selectable anyway, so six of seven canary
+        tasks routed to it, hit the limit banner, produced no edits, and came
+        back as unexplained empty runs. The exemption did not prevent a stranded
+        queue — it hid one.
+
+        Stranding is the correct outcome when nothing can run. It is loud, it is
+        accurate, and `_substitute_if_dead` still hands the work to any healthy
+        coder that does exist before giving up.
+        """
         with mock.patch.dict(sys.modules, {"provider_failover_sla": _sla({"claude"})}):
+            self.assertFalse(ac._provider_healthy(CLAUDE))
+
+    def test_a_healthy_claude_is_still_selectable(self):
+        with mock.patch.dict(sys.modules, {"provider_failover_sla": _sla({"xai"})}):
             self.assertTrue(ac._provider_healthy(CLAUDE))
+
+    def test_a_vendor_cli_resolves_to_its_vendor(self):
+        """`codex` carries no `--model provider/…`, so the gate failed open on it
+        straight through an OpenAI account that had no credits left."""
+        with mock.patch.dict(sys.modules, {"provider_failover_sla": _sla({"openai"})}):
+            self.assertFalse(ac._provider_healthy(
+                {"name": "codex", "cmd": "codex exec --full-auto {prompt}"}))
+
+    def test_local_coders_survive_a_total_hosted_outage(self):
+        dead = {"openai", "google", "gemini", "claude", "deepseek", "xai"}
+        with mock.patch.dict(sys.modules, {"provider_failover_sla": _sla(dead)}):
+            self.assertTrue(ac._provider_healthy(
+                {"name": "ollama", "cmd": "aider --model ollama/codestral:22b"}))
 
     def test_unknown_provider_stays_eligible(self):
         with mock.patch.dict(sys.modules, {"provider_failover_sla": _sla({"xai"})}):

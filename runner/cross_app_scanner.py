@@ -18,10 +18,36 @@ import os, sys, json, re, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# Directories a source scan must never descend into.
+#
+# `--include "*.py"` filters which files grep READS; it does not stop grep from
+# WALKING every directory first. On these repos that means every nested
+# node_modules, every .git object store and every agent worktree — millions of
+# entries, for a handful of matches. A `grep -rl` from this module was observed
+# sitting in uninterruptible disk wait long enough to stall the whole pytest run
+# at 59%, and subprocess timeout= cannot interrupt a process blocked in the
+# kernel on I/O, so the timeout= below did not save it either.
+#
+# Excluding them is also just correct: a dependency's source is not this repo's
+# architecture, and counting it as such skewed every signal this scanner emits.
+GREP_EXCLUDE_DIRS = (
+    "node_modules", ".git", ".nuxt", ".output", "dist", "build", ".next",
+    "coverage", ".venv", "venv", "__pycache__", ".pytest_cache", "vendor",
+    "_to_delete", "_dormant", ".spine-wt",
+)
+
+
+def _grep_excludes():
+    """--exclude-dir flags for every directory a source scan should skip."""
+    return [f"--exclude-dir={d}" for d in GREP_EXCLUDE_DIRS]
+
 # Repo paths are read from the projects table (repo_path column).
 # This fallback is used ONLY when the projects table has no repo_path for an app.
+# "apparently" is not a repo. The app of that name is served by kalepasch1/smarter
+# from _layers/apparently/; the repo that carries the name is an archived ancestor
+# that deploys nowhere. Pointing a scan at it produced findings against dead code.
 _FALLBACK_REPOS = {
-    "apparently": "/Users/kpasch/Documents/apparently",
+    "apparently": "/Users/kpasch/Documents/smarter",
     "tomorrow":   "/Users/kpasch/Documents/tomorrow/tomorrow",
     "smarter":    "/Users/kpasch/Documents/smarter",
     "beethoven":  os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -63,7 +89,7 @@ def scan_supabase_tables(repo_path, lang):
     ext = "*.ts" if lang == "typescript" else "*.py"
     try:
         result = subprocess.run(
-            ["grep", "-rh", "--include", ext, "-oE",
+            ["grep", "-rh", *_grep_excludes(), "--include", ext, "-oE",
              r"(from|\.from)\s*\(\s*['\"][a-z_]+['\"]",
              repo_path],
             capture_output=True, text=True, timeout=30
@@ -102,7 +128,7 @@ def scan_realtime_patterns(repo_path, lang):
     for key, regex in checks.items():
         try:
             result = subprocess.run(
-                ["grep", "-rl", "--include", ext, "-E", regex, repo_path],
+                ["grep", "-rl", *_grep_excludes(), "--include", ext, "-E", regex, repo_path],
                 capture_output=True, text=True, timeout=15
             )
             patterns[key] = bool(result.stdout.strip())
@@ -123,7 +149,7 @@ def scan_event_bus_instances(repo_path, lang):
     for pat in bus_patterns:
         try:
             result = subprocess.run(
-                ["grep", "-rlE", "--include", ext, pat, repo_path],
+                ["grep", "-rlE", *_grep_excludes(), "--include", ext, pat, repo_path],
                 capture_output=True, text=True, timeout=15
             )
             for f in result.stdout.strip().splitlines():

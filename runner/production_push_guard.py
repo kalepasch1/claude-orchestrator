@@ -14,6 +14,7 @@ So the gate now requires both. See verify_tests().
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -98,8 +99,14 @@ def verify(repo, commit):
     if os.environ.get("ORCH_ALLOW_UNVERIFIED_PROD_PUSH", "").lower() in {"1", "true", "yes", "on"}:
         return True, "BREAK-GLASS override: ORCH_ALLOW_UNVERIFIED_PROD_PUSH is set"
     return False, (
-        f"No green release-train proof exists for exact commit {commit[:12]} using `{command}`.\n"
-        "Push the change to orchestrator/dev and let release_train verify/promote it.\n"
+        f"No green build proof exists for exact commit {commit[:12]} using `{command}`.\n"
+        "\n"
+        "Earn one — it runs the real build in THIS checkout, and records nothing if it fails:\n"
+        f"    python3 {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'prove_build.py')} --repo {repo}\n"
+        "\n"
+        "Or push to orchestrator/dev and let release_train verify/promote it — but note the\n"
+        "train records its proofs against an isolated integration worktree, so a proof it\n"
+        "earns will not match a push from this path.\n"
         "Emergency only: set ORCH_ALLOW_UNVERIFIED_PROD_PUSH=1 after independently verifying the committed tree."
     )
 
@@ -238,10 +245,150 @@ def _wait_for_quiet_machine(max_wait=None, per_cpu=None):
         time.sleep(5)
 
 
+#: Seconds a full suite gets before the gate gives up on it. The old inline default
+#: was 1800, which is SHORTER than this repo's own suite (~2330s for 14,352 tests),
+#: so the gate could not finish the run it exists to perform.
+TEST_GATE_TIMEOUT_DEFAULT = 3600
+
+
+def _gate_timeout():
+    """Seconds the suite gets, read at call time so fleet_config edits apply live.
+
+    Fail-soft on a bad value, like _task_timeout in runner.py: an absent, empty or
+    unparseable ORCH_TEST_GATE_TIMEOUT means "nobody set this", not "give the suite
+    zero seconds". A non-positive number would make every run time out instantly
+    and read as an unverifiable suite, so it falls back too.
+    """
+    # str(CONSTANT), not "", so scripts/gen_env_example.py can resolve and document
+    # the real default; the fail-soft parse below still covers a SET but bad value.
+    raw = str(os.environ.get("ORCH_TEST_GATE_TIMEOUT",
+                             str(TEST_GATE_TIMEOUT_DEFAULT))).strip()
+    try:
+        seconds = int(raw)
+    except ValueError:
+        return TEST_GATE_TIMEOUT_DEFAULT
+    return seconds if seconds > 0 else TEST_GATE_TIMEOUT_DEFAULT
+
+
+class _SuiteTimedOut:
+    """Stands in for a CompletedProcess that never completed.
+
+    `returncode` is None, which no real CompletedProcess ever is, so a caller that
+    checks `!= 0` treats an unfinished suite as not-green — the safe reading — and a
+    caller that wants to say something more precise can test for None.
+    """
+
+    returncode = None
+
+    def __init__(self, seconds):
+        self.seconds = seconds
+        self.stdout = ""
+        self.stderr = ""
+
+
 def _run_suite(repo, command):
-    return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
-                          capture_output=True, text=True,
-                          timeout=int(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "1800")))
+    """Run COMMAND in REPO. Returns a CompletedProcess, or _SuiteTimedOut.
+
+    A timeout used to escape as an uncaught subprocess.TimeoutExpired straight out
+    of the pre-push hook. It blocked the push, which is right, but it reported a
+    traceback rather than a diagnosis — and the diagnosis is the whole story: the
+    clock was shorter than the suite, so nothing at all was learned about the code.
+    """
+    seconds = _gate_timeout()
+    try:
+        return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
+                              capture_output=True, text=True, timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return _SuiteTimedOut(seconds)
+
+
+def _tracked_content_still_matches(repo, commit):
+    """True when HEAD is still `commit` and no TRACKED file has been modified.
+
+    The POST-run counterpart to _tree_is_exactly, and deliberately weaker in one
+    respect: it ignores untracked files. Plenty of test commands legitimately write
+    into the repo while they run — coverage output, junit.xml, a scratch file — and
+    a check that counted those would mean any such project could never earn a proof
+    at all. Those artifacts also cannot retroactively change what the suite already
+    measured, and the PRE-run _tree_is_exactly has already established that the run
+    STARTED from a clean tree at this commit.
+
+    What it does catch is the thing that matters: a tracked file edited, or HEAD
+    moved, while the suite was running — which makes the result describe code that
+    is not the commit being pushed.
+    """
+    try:
+        head = _git(repo, "rev-parse", "HEAD")
+        modified = _git(repo, "status", "--porcelain", "--untracked-files=no")
+    except (subprocess.CalledProcessError, OSError):
+        return False   # cannot confirm the tree held: refuse to certify
+    return head == commit and modified == ""
+
+
+def _tree_drifted_verdict(commit):
+    """The message an operator needs when the tree moved under a running suite."""
+    return (
+        f"A tracked file changed WHILE the suite was running, so the result does not "
+        f"describe {commit[:12]} and no proof has been recorded for it.\n"
+        "Re-run with a clean tree checked out at that commit. (This is the same rule the "
+        "pre-run check enforces — a suite only attests the tree it ran against — applied "
+        "to the other end of a run that can take the better part of an hour. Untracked "
+        "files the run itself writes are ignored; only tracked content and HEAD count.)"
+    )
+
+
+#: pytest's end-of-run summary lines. Anything else falls back to the output tail.
+_FAILED_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
+
+#: How many flaked test ids to name before saying "and N more". A flake list long
+#: enough to scroll is a different problem, and the count says so faster than the
+#: names do.
+_MAX_NAMED_FLAKES = 20
+
+
+def _failing_tests(output):
+    """Test ids a run reported as failing, in order, deduplicated."""
+    names = []
+    for match in _FAILED_LINE_RE.finditer(str(output or "")):
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _flake_report(first_output):
+    """What flaked on the first attempt, for a run the re-run then passed.
+
+    The re-run exists to separate the machine from the code, and it does. But until
+    now a push allowed on the second attempt threw the FIRST attempt's output away:
+    the operator was told "the failures were environmental" and "worth a look if it
+    keeps happening", with nothing whatsoever to look at. The comment above the
+    re-run claims both runs are reported; only the fact of them was.
+
+    On this repo a first-run red costs a ~48-minute suite, and it has now happened
+    twice in one day. Naming the tests is what makes the pattern visible: the same
+    id recurring is a test to fix, a different one each time is a machine to fix.
+    """
+    names = _failing_tests(first_output)
+    if not names:
+        tail = str(first_output or "").strip().splitlines()[-10:]
+        return "\n".join(tail) if tail else "(the first attempt produced no parseable failures)"
+    shown = names[:_MAX_NAMED_FLAKES]
+    report = "\n".join("  " + name for name in shown)
+    if len(names) > len(shown):
+        report += "\n  ... and %d more" % (len(names) - len(shown))
+    return report
+
+
+def _timed_out_verdict(command, seconds):
+    """The message an operator needs when the suite never finished."""
+    return (
+        f"`{command}` did not finish within {seconds}s, so this guard has NO verdict on the "
+        "suite. That is NOT the same as a red run — nothing here says the code is broken.\n"
+        "Either the gate clock is shorter than the suite's real runtime (raise "
+        "ORCH_TEST_GATE_TIMEOUT in runner/.env or fleet_config), or something is hanging. "
+        "Blocking the push: an unfinished suite is not a green one."
+    )
 
 
 def verify_tests(repo, commit):
@@ -266,6 +413,15 @@ def verify_tests(repo, commit):
     print(f"production_push_guard: no test proof for {commit[:12]} — running `{command}`", file=sys.stderr)
     proc = _run_suite(repo, command)
 
+    # A TIMEOUT IS NOT A RED RUN, AND IT IS NOT RE-RUN.
+    #
+    # The flake re-run below exists because a red result under load can be the
+    # machine. A timeout is different in kind: no result was produced at all, so
+    # there is nothing to separate flake from failure, and a second attempt would
+    # cost another full clock to learn the same nothing. Report it and stop.
+    if proc.returncode is None:
+        return False, _timed_out_verdict(command, proc.seconds)
+
     # A RED FIRST RUN IS NOT YET A VERDICT.
     #
     # This gate runs inside a pre-push hook, on whatever the machine happens to be
@@ -284,19 +440,43 @@ def verify_tests(repo, commit):
               file=sys.stderr)
         _wait_for_quiet_machine()
         second = _run_suite(repo, command)
+        if second.returncode is None:
+            return False, _timed_out_verdict(command, second.seconds)
         if second.returncode == 0:
+            if not _tracked_content_still_matches(repo, commit):
+                return False, _tree_drifted_verdict(commit)
             try:
                 proof_graph.record_verification(repo, commit, command, "test", True)
             except (AttributeError, TypeError):
                 pass
+            flaked = _flake_report(proc.stdout + proc.stderr)
+            print("production_push_guard: these passed on the re-run, so they are flakes, "
+                  "not failures:\n" + flaked, file=sys.stderr)
             return True, (
                 f"full suite green for {commit[:12]} ON RE-RUN — the first attempt was red and the "
-                "second was clean, which means the failures were environmental, not code. "
-                "Worth a look if it keeps happening."
+                "second was clean, which means the failures were environmental, not code.\n"
+                "Red on the first attempt, green on the second:\n" + flaked + "\n"
+                "The same id recurring is a test to fix; a different one each time is a machine "
+                "to fix."
             )
         proc = second
 
+    # THE TREE MUST STILL BE THE COMMIT WE JUST TESTED.
+    #
+    # _tree_is_exactly runs BEFORE the suite, and until now nothing checked the
+    # other end. On this repo the suite takes ~40 minutes, so that pre-check
+    # guaranteed nothing about a live development machine: any edit landing during
+    # the run made the result describe a tree that is not the commit being pushed.
+    # Worse than a one-off wrong verdict, the result is RECORDED in proof_graph and
+    # handed back later by reusable_verification -- a green proof for a commit whose
+    # suite was never run against it.
+    #
+    # TRACKED content only: a test command that writes coverage output or a scratch
+    # file into the repo is doing its job, and counting that would mean such a
+    # project could never earn a proof. See _tracked_content_still_matches.
     passed = proc.returncode == 0
+    if not _tracked_content_still_matches(repo, commit):
+        return False, _tree_drifted_verdict(commit)
     try:
         proof_graph.record_verification(repo, commit, command, "test", passed)
     except (AttributeError, TypeError):
@@ -416,6 +596,80 @@ def verify_immutable_ref(local_ref, local_sha, repo):
     )
 
 
+STAGING_BRANCH = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+
+
+def _push_remote(repo):
+    """The remote this push is going to. `origin` unless the repo has no origin."""
+    try:
+        remotes = _git(repo, "remote").splitlines()
+    except subprocess.CalledProcessError:
+        return "origin"
+    return "origin" if "origin" in remotes else (remotes[0] if remotes else "origin")
+
+
+def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main"):
+    """Production is a fast-forward of staging, never a side entrance.
+
+    Every project in this fleet develops on feature branches and integrates on
+    `orchestrator/dev`. When a commit reaches main or master without passing
+    through that branch, two things are lost at once: the integration merge that
+    would have surfaced a conflict against everyone else's in-flight work, and
+    the release train's verification of the *merged* result. The commit builds
+    and its own suite passes — both gates below stay green — and it still ships a
+    tree nobody integrated. That is how the same fix gets written twice in two
+    places, and how a branch that was ahead of production silently stopped being
+    merged at all.
+
+    So: the commit being pushed to main/master must already be contained in the
+    remote staging branch. Merge into orchestrator/dev, let it settle there, then
+    promote — at which point this check is a fast-forward and costs nothing.
+
+    A repo whose remote has no staging branch is not held to this. The rule
+    describes the flow the fleet actually uses; bricking a repo that never
+    adopted it would only teach people to reach for the override.
+    """
+    remote = _push_remote(repo)
+    tracking = f"refs/remotes/{remote}/{STAGING_BRANCH}"
+    try:
+        _git(repo, "fetch", "--quiet", remote,
+             f"+refs/heads/{STAGING_BRANCH}:{tracking}")
+    except subprocess.CalledProcessError:
+        pass  # offline, or no such branch upstream — both resolved by the rev-parse below
+    try:
+        staging_sha = _git(repo, "rev-parse", "--verify", f"{tracking}^{{commit}}")
+    except subprocess.CalledProcessError:
+        return True, f"no {remote}/{STAGING_BRANCH} on this remote — staging rule does not apply here"
+
+    if commit == staging_sha:
+        return True, f"promoting the tip of {remote}/{STAGING_BRANCH}"
+
+    contained = subprocess.run(["git", "merge-base", "--is-ancestor", commit, staging_sha],
+                               cwd=repo, env=_clean_git_env(), capture_output=True, text=True,
+                               timeout=30)
+    if contained.returncode == 0:
+        return True, f"contained in {remote}/{STAGING_BRANCH}"
+
+    try:
+        ahead = _git(repo, "rev-list", "--count", f"{staging_sha}..{commit}")
+    except subprocess.CalledProcessError:
+        ahead = "?"
+    return False, (
+        f"{commit[:12]} is not contained in {remote}/{STAGING_BRANCH} — {ahead} commit(s) "
+        f"would reach production without ever being integrated on staging.\n"
+        f"Production is promoted from {STAGING_BRANCH}, not pushed to directly, so that every\n"
+        f"change meets the rest of the in-flight work in one place and conflicts are resolved\n"
+        f"there rather than discovered in production.\n\n"
+        f"    git fetch {remote}\n"
+        f"    git checkout -B {STAGING_BRANCH} {remote}/{STAGING_BRANCH}\n"
+        f"    git merge {commit[:12]}        # resolve conflicts HERE, keeping the better side\n"
+        f"    git push {remote} HEAD:refs/heads/{STAGING_BRANCH}\n"
+        f"    git push {remote} <new-dev-sha>:{remote_ref}\n\n"
+        f"Emergency only: ORCH_ALLOW_DIRECT_PROD_PUSH=1. That is a separate switch from the\n"
+        f"build and test overrides on purpose — skipping integration is its own decision."
+    )
+
+
 def main(stdin=None):
     repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
     updates = guarded_updates(stdin if stdin is not None else sys.stdin)
@@ -433,6 +687,22 @@ def main(stdin=None):
             print("production_push_guard: BLOCKED — mutable source ref", file=sys.stderr)
             print(ref_log, file=sys.stderr)
             return 1
+
+        # Structural, like the ref check above, and for the same reason: no amount
+        # of green build or green suite can substitute for having been integrated.
+        staged_ok, staged_log = verify_promoted_from_staging(repo, commit, remote_ref)
+        if not staged_ok:
+            if os.environ.get("ORCH_ALLOW_DIRECT_PROD_PUSH", "").lower() in {"1", "true", "yes", "on"}:
+                print("production_push_guard: BYPASSING STAGING — ORCH_ALLOW_DIRECT_PROD_PUSH is set",
+                      file=sys.stderr)
+                print(staged_log, file=sys.stderr)
+            else:
+                print("production_push_guard: BLOCKED — production push that never met staging",
+                      file=sys.stderr)
+                print(staged_log, file=sys.stderr)
+                return 1
+        else:
+            print(f"production_push_guard: INTEGRATED — {staged_log}", file=sys.stderr)
 
         content_ok, content_log = verify_content(repo, remote_commit, commit)
         if not content_ok:

@@ -29,16 +29,22 @@ MARK = "PATCH TRANSPLANT"
 #: gate is FAIL-CLOSED — the one place in this module that refuses rather than
 #: degrades, because a silently-relocated security change is worse than no
 #: transplant at all.
+#: The credential nouns are bounded by `(?<![A-Za-z0-9])`/`(?![A-Za-z0-9])`, NOT by `\b`.
+#: `\b` treats `_` as a word character, so `\bAPI[_-]?KEY\b` matched a bare `API_KEY` but
+#: silently missed `AWS_API_KEY`, `STRIPE_SECRET_KEY` and `GITHUB_ACCESS_TOKEN` — the shapes
+#: real config actually uses, and exactly the ones a fail-closed gate exists to stop. Treating
+#: `_` as a separator closes that hole; the cost is a few more refusals, which is the side
+#: this gate is documented to err on.
 SECURITY_SENSITIVE = re.compile(
     r"""(?x)
     ORCH_[A-Z0-9_]*SECURITY_GATE      # the gate this check was stubbed for
-    | \bSECRET(?:_KEY)?\b
-    | \bAPI[_-]?KEY\b
-    | \bACCESS[_-]?TOKEN\b
-    | \bPRIVATE[_-]?KEY\b
-    | \bPASSWORD\b
+    | (?<![A-Za-z0-9])SECRET(?:[_-]?KEY)?(?![A-Za-z0-9])
+    | (?<![A-Za-z0-9])API[_-]?KEY(?![A-Za-z0-9])
+    | (?<![A-Za-z0-9])ACCESS[_-]?TOKEN(?![A-Za-z0-9])
+    | (?<![A-Za-z0-9])PRIVATE[_-]?KEY(?![A-Za-z0-9])
+    | (?<![A-Za-z0-9])PASSWORD(?![A-Za-z0-9])
     | BEGIN\s+(?:RSA\s+|OPENSSH\s+|EC\s+)?PRIVATE\s+KEY
-    | \bAUTHORIZATION\b
+    | (?<![A-Za-z0-9])AUTHORIZATION(?![A-Za-z0-9])
     | \bchmod\s+(?:\+s|777)
     | \bsudo\b
     """,

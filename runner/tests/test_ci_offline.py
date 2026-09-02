@@ -158,10 +158,41 @@ class TestLegacyKillSwitchClamp(unittest.TestCase):
     the right order is not a safety interlock, and this host silently took the switch once."""
 
     def test_non_positive_limit_is_declined(self):
-        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "merge_train.py"), encoding="utf-8").read()
-        self.assertIn('if int(str(limit).strip().strip(\'"\')) <= 0:', src)
-        self.assertIn('limit = "3000"', src)
+        """Asserted on BEHAVIOUR now, not on the source text that implemented it.
+
+        This used to require two exact substrings —
+        `if int(str(limit).strip().strip('"')) <= 0:` and `limit = "3000"` — from
+        the version of _pick_cards that clamped a scan WINDOW. That window is
+        gone: the scan pages to exhaustion through db.select_all, and the setting
+        became a cap on how many rows one pass reads. The clamp survived the
+        rewrite and the assertion did not, so this failed while the guard it
+        names works. A test that pins an implementation's characters cannot tell
+        a refactor from a regression; one that calls the function can.
+        """
+        import merge_train
+        from unittest.mock import patch
+
+        for declined in ("0", "-1", " 0 ", '"0"', "", "not-a-number"):
+            with patch.dict(os.environ, {"MERGE_TRAIN_SCAN_LIMIT": declined}):
+                self.assertIsNone(
+                    merge_train._scan_max_rows(),
+                    f"MERGE_TRAIN_SCAN_LIMIT={declined!r} must not bound the scan")
+
+        # The other half: a positive value is a real operator override and is honoured,
+        # including the quoted spelling fleet_config stores.
+        for raw, expected in (("3000", 3000), (' "500" ', 500), ("1", 1)):
+            with patch.dict(os.environ, {"MERGE_TRAIN_SCAN_LIMIT": raw}):
+                self.assertEqual(merge_train._scan_max_rows(), expected)
+
+    def test_an_absent_limit_is_also_a_full_scan(self):
+        """No setting at all must behave like the declined kill switch, not like 0 rows."""
+        import merge_train
+
+        env = dict(os.environ)
+        env.pop("MERGE_TRAIN_SCAN_LIMIT", None)
+        from unittest.mock import patch
+        with patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(merge_train._scan_max_rows())
 
 
 class TestCaseCollisions(unittest.TestCase):

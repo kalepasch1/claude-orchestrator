@@ -48,12 +48,27 @@ import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization
                         # imported -> every train_run() crashed with NameError before integrating
                         # anything (the silent integration-stall root cause).
 import concurrent.futures   # FIX 2026-07-28: used by the multi-project ThreadPoolExecutor path, never imported
+import stderr_digest       # keep the CAUSE of a git failure, not its last 160 bytes
 import repo_hygiene         # FIX 2026-07-28: used pre-test-run (stray .js cleanup), never imported (fail-soft masked it)
 import semantic_merge       # FIX 2026-07-28: used by the auto-merge path, never imported
 try:
     import pipeline_metrics as _pm
 except Exception:
     _pm = None
+
+def emit(kind, **fields):
+    """Public fail-soft event adapter used by integrations and diagnostics.
+
+    THE OTHER HALF OF A MIGRATION (added 2026-08-25). `import events` above has
+    been here without a single use, and runner/tests/test_event_stream.py's
+    TestMigratedEmitters expects merge_train.emit alongside sentinel.emit and
+    resource_governor.emit — both of which are exactly this two-line adapter.
+    The import landed and the adapter did not, so the train was the one migrated
+    emitter that could not emit, and anything reaching for merge_train.emit got
+    AttributeError.
+    """
+    return events.emit(kind, **fields)
+
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 # Non-code policy decisions are terminal approval artifacts, not merge work.  If
@@ -62,13 +77,44 @@ MARK = "train"                                   # decided_by prefix => handled 
 SKIP_PREFIXES = ("merge-handler", "train", "auto-policy")
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
+HEALTH_LOOKBACK_MINUTES = 60
+
+
+def _test_pipeline_health(metrics, lookback_minutes=HEALTH_LOOKBACK_MINUTES):
+    """Pass-rate / gate-decision block for the run summary, or None if unavailable.
+
+    None keeps the key out of the summary entirely, which is what the previous
+    fail-soft did — a partially-populated health block would be read as real.
+    """
+    try:
+        return metrics.get_health(lookback_minutes=lookback_minutes)
+    except Exception:
+        return None
+
+
+#: Seconds a gated suite gets. The old default was 300, shorter than the suite of
+#: the largest repo this train gates (~2330s), so every candidate for that repo was
+#: rejected on the clock and the rejection read as "tests failed".
+TEST_TIMEOUT_DEFAULT = 3600
+
 
 def _test_timeout():
-    """Read at call time so fleet_config changes take effect without restart."""
+    """Read at call time so fleet_config changes take effect without restart.
+
+    Fail-soft on a bad value: absent, empty or unparseable means "nobody set this",
+    and a non-positive number would reject every candidate instantly, so both fall
+    back to the default rather than being taken literally.
+    """
+    # str(CONSTANT), not "", so scripts/gen_env_example.py can resolve and document
+    # the real default; the fail-soft parse below still covers a SET but bad value.
+    raw = str(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT",
+                             str(TEST_TIMEOUT_DEFAULT))).strip()
     try:
-        return int(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "300"))
+        seconds = int(raw)
     except ValueError:
-        return 300
+        return TEST_TIMEOUT_DEFAULT
+    return seconds if seconds > 0 else TEST_TIMEOUT_DEFAULT
+
 
 TEST_TIMEOUT = _test_timeout()  # backward-compat module-level ref
 MERGING_STATE = os.environ.get("MERGE_TRAIN_STATE", "RUNNING")
@@ -154,6 +200,91 @@ def _remote_agent_branch_maybe(repo, branch):
     return True if names is None else (branch in names)
 
 
+#: Parsed `git worktree list` per repo: {repo: (expires_monotonic, {branch: sha})}.
+#: One listing answers the question for every card in a pass, the same way
+#: _REMOTE_AGENT_REFS does for origin. A worktree created mid-pass is picked up on
+#: the next pass, which can defer a recovery by one cycle and never skips one.
+_WORKTREE_BRANCHES = {}
+_WORKTREE_LOCK = threading.Lock()
+WORKTREE_LIST_TTL_S = int(os.environ.get("ORCH_MERGE_WORKTREE_TTL_S", "30"))
+
+
+def _worktree_branch_map(repo):
+    """{branch: commit} for every branch a worktree of `repo` has checked out.
+
+    Parses `git worktree list --porcelain`, whose records are
+
+        worktree /path/to/wt
+        HEAD <sha>
+        branch refs/heads/<name>
+
+    so the HEAD line has to be remembered until the branch line identifies the
+    record. Fail-soft: any error yields {}, i.e. "no worktree holds anything",
+    which sends the caller on to the remote path it would have taken anyway.
+    """
+    now = time.monotonic()
+    with _WORKTREE_LOCK:
+        entry = _WORKTREE_BRANCHES.get(repo)
+        if entry and entry[0] > now:
+            return entry[1]
+    found = {}
+    try:
+        out = _git(repo, "worktree", "list", "--porcelain", timeout=30)
+        if out.returncode == 0:
+            head = ""
+            for line in (out.stdout or "").splitlines():
+                line = line.strip()
+                if line.startswith("HEAD "):
+                    head = line[len("HEAD "):].strip()
+                elif line.startswith("branch refs/heads/"):
+                    name = line[len("branch refs/heads/"):].strip()
+                    if head:
+                        found[name] = head
+                    head = ""
+                elif not line:
+                    head = ""
+    except Exception:
+        # Cache the empty answer as well: a repo whose worktree listing errors
+        # would otherwise re-run the subprocess for every card in the pass.
+        with _WORKTREE_LOCK:
+            _WORKTREE_BRANCHES[repo] = (time.monotonic() + WORKTREE_LIST_TTL_S, {})
+        return {}
+    with _WORKTREE_LOCK:
+        _WORKTREE_BRANCHES[repo] = (time.monotonic() + WORKTREE_LIST_TTL_S, found)
+    return found
+
+
+def _worktree_commit_for(repo, branch):
+    """The commit a worktree has checked out for `branch`, or "" if none does."""
+    return _worktree_branch_map(repo).get(branch, "")
+
+
+def _recover_branch_from_worktree(repo, branch):
+    """Re-create a missing local ref from a worktree that still holds the commit.
+
+    STEP 2 WAS DOCUMENTED AND MISSING (restored 2026-08-25). The docstring below
+    has always listed worktree recovery as the middle step of the resolution
+    order, and runner/tests/test_materialize_branch_worktree.py has always
+    asserted it. There was no such code: the function went straight from the
+    local-ref check to the remote path.
+
+    That is not a cosmetic gap. The remote path begins with the agent/* ls-remote
+    short-circuit, which returns False for any branch origin does not have — and
+    a branch that lives only in a local worktree is exactly such a branch. So a
+    commit sitting on this machine, reachable with no network at all, produced
+    `return False` and the card waited forever for a push that had already been
+    superseded by the work being local.
+    """
+    commit = _worktree_commit_for(repo, branch)
+    if not commit:
+        return False
+    try:
+        _git(repo, "branch", branch, commit, timeout=30)
+    except Exception:
+        return False
+    return _branch_exists(repo, branch)
+
+
 def _materialize_branch(repo, branch):
     """Fleet-aware branch lookup with worktree recovery.
 
@@ -167,6 +298,11 @@ def _materialize_branch(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
         return False
+    # Step 2, and it must run BEFORE the agent/* remote short-circuit below:
+    # a worktree-held branch that was never pushed is precisely what that
+    # short-circuit rejects, and it costs no network to check.
+    if _recover_branch_from_worktree(repo, branch):
+        return True
     # THE TRAIN'S REAL WALL-CLOCK SINK (measured 2026-08-06).
     #
     # Cards get filed by ensure_integration_card as soon as work is approved, which is often
@@ -217,7 +353,8 @@ def _freeze_integration_identity(repo, branch, task, slug):
     import task_refs
     rebased_result = _git(repo, "rev-parse", branch)
     if rebased_result.returncode:
-        raise RuntimeError(rebased_result.stderr[-160:] or "rebased commit missing")
+        raise RuntimeError(stderr_digest.digest(rebased_result.stderr, 160)
+                           or "rebased commit missing")
     rebased = rebased_result.stdout.strip()
     identity = task_refs.publish(repo, task.get("id") or slug,
                                  task.get("attempt") or 1, rebased,
@@ -472,10 +609,7 @@ def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, 
                                "note": patch.get("note", head)[:900]})
         except Exception:
             pass
-    try:
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSFAIL"})
-    except Exception:
-        pass
+    _retire_card(card.get("id"), "REGRESSFAIL")
     _attribute_train_outcome(slug, task, "regressfail", integrated=False)
     try:
         import json as _json, time as _time
@@ -675,7 +809,11 @@ def _ensure_node_deps(repo, test_cmd=""):
     (MERGE_TRAIN_NPM_TOTAL_TIMEOUT, default 900s) across all installs triggered by a single
     call, so a monorepo with many nested packages can't multiply timeouts into an effectively
     unbounded hold on the repo lock."""
-    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "180"))
+    # The docstring above says this default is 900s; the code said 180s. 180 is far
+    # under a Nuxt `npm ci`, so every install started here timed out and returned
+    # with node_modules still absent — silently, because TimeoutExpired just
+    # `continue`s. Match the documented contract.
+    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "900"))
     per_install_cap = int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600"))
     deadline = time.monotonic() + total_budget
     # The gate runs in repo unless the command explicitly changes directory or
@@ -710,6 +848,97 @@ def _ensure_node_deps(repo, test_cmd=""):
         pass
 
 
+def _primary_checkout_of(repo):
+    """The main working tree of `repo`'s git repository, or None.
+
+    An integration worktree is a linked worktree: its `--git-common-dir` is the
+    primary checkout's .git. That primary checkout is where a human works, so it
+    is the one place in the fleet whose node_modules is reliably warm.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=20)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    common = (result.stdout or "").strip()
+    if not common.endswith(".git"):
+        return None
+    primary = os.path.dirname(common)
+    return primary if os.path.isdir(primary) and primary != repo else None
+
+
+def _warm_shared_runtime(repo, candidate):
+    """Warm one dependency snapshot and link it in. True when that path worked."""
+    try:
+        import dependency_prewarm
+        dependency_prewarm.ensure_all(repo, reason="merge_train:qa-overlay")
+        dependency_prewarm.link_shared_runtime(repo, candidate)
+        return True
+    except Exception as exc:
+        print(f"merge_train: dependency_prewarm unavailable for overlay ({exc}); "
+              "falling back to a direct symlink", flush=True)
+        return False
+
+
+def _share_deps_into_overlay(repo, candidate, test_cmd=""):
+    """Give the branch-exact QA overlay a usable node_modules. Never raises.
+
+    THE BUG THIS FIXES (2026-08-30)
+    -------------------------------
+    This used to be a bare `os.symlink(repo/node_modules, candidate/node_modules)`
+    guarded by `if os.path.exists(src)`. Integration worktrees are fresh checkouts
+    and have NO node_modules, so the guard was false, no link was made, and the
+    overlay ran its suite against nothing:
+
+        vitest.config.ts (1:325) [UNRESOLVED_IMPORT] Could not resolve 'vitest/config'
+
+    Every branch reported TESTFAIL. On the first unblocked merge_train pass, 17 of
+    25 tomorrow cards "failed tests" — every one of them with that identical line.
+    Not one test had run. A gate that cannot start reports the same verdict as a
+    gate that ran and found a real defect, which is how three weeks of stranded
+    work looked like three weeks of bad work.
+
+    `_ensure_node_deps` did not save it either: the recursive call reaches it with
+    the OVERLAY as `repo`, so it tried a fresh `npm ci` per overlay under a 180s
+    cumulative budget — far under a Nuxt install — timed out, and moved on.
+
+    dependency_prewarm already solves this properly, and build_gate already uses
+    it: warm ONE immutable snapshot per manifest and link it into each ephemeral
+    worktree. Use that, and keep the old symlink as the fallback.
+    """
+    _warm_shared_runtime(repo, candidate)
+
+    # Fallback: link a warm node_modules from the first donor that has one.
+    #
+    # `repo` is an integration worktree and is normally cold, so the original
+    # code (which only ever looked at `repo`) linked nothing. The repo's PRIMARY
+    # checkout is the same git repository at a different commit — the one a human
+    # works in, kept warm — so its node_modules is exactly what this overlay needs
+    # and costs a symlink instead of a several-minute `npm ci` per card.
+    for donor in (repo, _primary_checkout_of(repo)):
+        if not donor:
+            continue
+        src, dst = os.path.join(donor, "node_modules"), os.path.join(candidate, "node_modules")
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                os.symlink(src, dst)
+                break
+            except OSError:
+                pass
+
+    if os.path.isfile(os.path.join(candidate, "package.json")) \
+            and not os.path.exists(os.path.join(candidate, "node_modules")):
+        # Last resort: install in place. Loud, because reaching here means the
+        # snapshot path failed and the next run will pay this cost again.
+        print(f"merge_train: overlay {candidate} still has no node_modules after "
+              "prewarm+symlink; installing in place", flush=True)
+        _ensure_node_deps(candidate, test_cmd)
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -719,13 +948,7 @@ def _run_tests(repo, test_cmd, ref=None):
             import commit_overlay
             with commit_overlay.checkout(repo, ref, prefix="merge-qa-overlay-") as overlay:
                 candidate = overlay["path"]
-                for shared in ("node_modules",):
-                    src, dst = os.path.join(repo, shared), os.path.join(candidate, shared)
-                    if os.path.exists(src) and not os.path.exists(dst):
-                        try:
-                            os.symlink(src, dst)
-                        except OSError:
-                            pass
+                _share_deps_into_overlay(repo, candidate, test_cmd)
                 ok, detail = _run_tests(candidate, test_cmd)
                 return ok, f"overlay:{overlay['commit'][:12]} {detail}"
         except Exception as exc:
@@ -744,15 +967,39 @@ def _run_tests(repo, test_cmd, ref=None):
         except Exception:
             pass
         _ensure_node_deps(repo, test_cmd)
+        # 2026-08-29: a bulk token conversion across 59 .vue files left several
+        # components with a duplicated attribute -- each a hard compile error.
+        # TypeScript-only lints do not read templates, so these passed every
+        # gate and surfaced inside the production build minutes into a deploy.
+        # Compile them here, where the message names the file and line, rather
+        # than reading it out of a build log. See repo_hygiene.check_vue_templates.
+        # No guard needed: check_vue_templates never raises (see its docstring).
+        vue_ok, vue_detail = repo_hygiene.check_vue_templates(repo)
+        if not vue_ok:
+            return False, ("a Vue component does not compile — the tests were not run, "
+                           "because this breaks the build and the dev server too:\n"
+                           f"{vue_detail[:4000]}")
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return False, f"tests timed out after {timeout}s"
+        return False, (f"tests did not finish within {timeout}s — NO verdict on this "
+                       "candidate, which is not the same as a red suite. Raise "
+                       "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
+                       "what is hanging.")
     if r.returncode != 0:
         tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
-        if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
+        # Node says "cannot find module"; vite/rollup — which is what actually runs
+        # a vitest suite — says "[UNRESOLVED_IMPORT] Could not resolve 'vitest/config'".
+        # None of the original four strings matched that, so the one self-heal that
+        # would have caught the missing-node_modules outage never fired on any of
+        # the 17 branches it hit on 2026-08-30.
+        if any(s in tail.lower() for s in ("cannot find module", "module not found",
+                                           "eresolve", "command not found",
+                                           "unresolved_import", "could not resolve",
+                                           "failed to resolve import",
+                                           "cannot find package")):
             _ensure_node_deps(repo)
             try:
                 r2 = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
@@ -761,7 +1008,10 @@ def _run_tests(repo, test_cmd, ref=None):
                     return True, "green (after dep install)"
                 return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
             except subprocess.TimeoutExpired:
-                return False, f"tests timed out after {timeout}s"
+                return False, (f"tests did not finish within {timeout}s — NO verdict on this "
+                       "candidate, which is not the same as a red suite. Raise "
+                       "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
+                       "what is hanging.")
         return False, tail
     return True, "green"
 
@@ -939,10 +1189,7 @@ def _quarantine_build_failure(repo, card, slug, task, pname, branch, base, detai
                                "note": patch.get("note", head)[:900]})
         except Exception:
             pass
-    try:
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:BUILDFAIL"})
-    except Exception:
-        pass
+    _retire_card(card.get("id"), "BUILDFAIL")
     _attribute_train_outcome(slug, task, "buildfail", integrated=False)
     if _pm:
         try:
@@ -1454,11 +1701,9 @@ def _select_batch(group):
     for card, slug, task in group:
         keep = newest_by_slug.get(slug)
         if keep is not None and card.get("id") != keep[0].get("id"):
-            try:
-                db.update("approvals", {"id": card["id"]},
-                          {"decided_by": f"{MARK}:dup-card", "status": "approved"})
-            except Exception:
-                pass
+            # Explicitly re-writing status="approved" here is what kept 18,518 duplicate
+            # cards in the pool: invisible to the train, invisible to dedup, immortal.
+            _retire_card(card.get("id"), "dup-card")
     annotated = [(card, slug, task, _risk_level(card, task))
                  for card, slug, task in newest_by_slug.values()]
     # FIX 2026-07-28: value_scores was referenced but never defined (latent NameError on the
@@ -1488,6 +1733,110 @@ def _select_batch(group):
                                   -value_scores.get(str(e[2].get("id") or e[2].get("slug") or ""), 0),
                                   str(e[0].get("created_at") or "")))
     return annotated
+
+
+#: Status a card carries once the train has finished with it. _find_existing_card and
+#: _pick_cards both look only at status in (pending, approved), so anything outside that
+#: set means "no longer a live card" to every reader.
+#:
+#: It must be a member of the `approval_status` enum, which is
+#: (pending, approved, denied, superseded) — verified against the live schema on
+#: 2026-08-24, where 50,340 integrate cards already carry `superseded` against 3,990 still
+#: `approved`. An invented value such as "closed" is rejected by Postgres, so every retire
+#: would have fallen through to the decided_by-only path, i.e. exactly the behaviour this
+#: was written to replace. "denied" would be wrong in the other direction: it means a human
+#: refused the change, and this is the train finishing with a card it already acted on.
+TERMINAL_STATUS = "superseded"
+
+#: Train outcomes that mean the work behind this slug is finished or unusable, so a card
+#: filed for the same slug moments later is a duplicate rather than new work. Everything
+#: else the train stamps (TESTFAIL, BUILDFAIL, REGRESSFAIL, redo, conflict-exhausted,
+#: branch-missing, no-repo, ...) is a RETRYABLE outcome: the task is re-queued or waiting
+#: on a human, and when it produces new work it must be able to file a fresh card.
+FINAL_OUTCOMES = ("MERGED", "ALREADY_INTEGRATED", "dup-card", "no-slug", "no-task")
+
+
+def _card_cooldown_s():
+    """Read at call time so fleet_config changes take effect without a restart."""
+    try:
+        return max(0, int(os.environ.get("MERGE_CARD_REFILE_COOLDOWN_S", "3600")))
+    except (TypeError, ValueError):
+        return 3600
+
+
+def _retire_card(card_id, outcome):
+    """Record a terminal train outcome AND take the card out of the approved pool.
+
+    Returns True when the card was fully retired, False when nothing could be written.
+
+    THE CARD AMPLIFIER (2026-08-16). Terminal outcomes used to write `decided_by` and
+    leave `status='approved'`. _pick_cards() skips decided_by=train:*, so the train never
+    looked at the card again — but _find_existing_card() skips train:* too, so the next
+    producer could not see it either and filed a REPLACEMENT, forever. Measured on the
+    live fleet: 37,012 approved integrate cards over 4,474 slugs, 100% train-authored;
+    train:dup-card alone held 18,518 cards across 221 slugs (83.8 copies per slug, worst
+    slug 144), growing at ~150-300 cards/hour. A card the train is done with has to leave
+    the pool, not just get a note attached to it.
+
+    Fail-soft in two steps because this runs inside the merge path: if the status write is
+    rejected (an older approvals table, a CHECK constraint on status) the outcome is still
+    recorded with the decided_by stamp alone, which is exactly the pre-fix behaviour, and
+    the duplicate loop is still broken by the _recently_finalised cooldown below. Nothing
+    here may raise: a bookkeeping failure must never abort an integration.
+    """
+    if not card_id:
+        return False
+    stamp = f"{MARK}:{outcome}"
+    try:
+        db.update("approvals", {"id": card_id},
+                  {"decided_by": stamp, "status": TERMINAL_STATUS, "decided_at": "now()"})
+        return True
+    except Exception as exc:
+        print(f"merge_train: could not retire card {card_id} ({exc}); "
+              f"recording the outcome only", flush=True)
+    try:
+        db.update("approvals", {"id": card_id}, {"decided_by": stamp})
+    except Exception:
+        pass
+    return False
+
+
+def _recently_finalised(slug):
+    """The most recent FINAL train outcome for `slug` inside the refile cooldown, else None.
+
+    The second half of the amplifier fix. Retiring cards stops the train from re-reading
+    them, but a producer that keeps finishing the same slug would still file a fresh card
+    every pass now that the retired one is invisible to dedup. A slug the train merged (or
+    resolved as a duplicate / unusable) minutes ago does not need another card; a slug that
+    failed its tests does, as soon as the repaired work lands.
+
+    Fail-open by construction: any lookup failure returns None. One duplicate card is a
+    nuisance, whereas refusing to file a card strands finished work with no way back into
+    the train — the failure mode CARD_FAILED exists to make visible.
+    """
+    if not slug:
+        return None
+    try:
+        rows = db.select("approvals", {
+            "select": "id,slug,kind,status,decided_by,decided_at",
+            "slug": f"eq.{slug}", "kind": f"in.({','.join(MERGE_KINDS)})",
+            "order": "decided_at.desc", "limit": "5"}) or []
+    except Exception as exc:
+        print(f"merge_train: refile cooldown lookup failed for {slug} ({exc}); "
+              f"allowing the card", flush=True)
+        return None
+    cooldown = _card_cooldown_s()
+    for row in rows:
+        decided_by = str((row or {}).get("decided_by") or "")
+        if not decided_by.startswith(f"{MARK}:"):
+            continue
+        if decided_by.split(":", 1)[1] not in FINAL_OUTCOMES:
+            continue
+        if not row.get("decided_at"):
+            continue          # undatable stamp: cannot say it is recent, so do not block
+        if _age_seconds(row.get("decided_at")) <= cooldown:
+            return row
+    return None
 
 
 CARD_CREATED = "created"
@@ -1562,6 +1911,12 @@ def ensure_integration_card_result(project, slug, *, kind="integrate", title=Non
         existing = _find_existing_card(slug)
     except Exception:
         existing = None
+    finalised = None if existing else _recently_finalised(slug)
+    if finalised:
+        # The train finished this slug moments ago and retired its card. Filing another
+        # one here is the duplicate loop, not new work — see _recently_finalised. The
+        # producer is told CARD_EXISTED because the work IS accounted for.
+        return CARD_EXISTED
     if existing:
         patch = {}
         if existing.get("status") != status:
@@ -1602,6 +1957,54 @@ def ensure_integration_card(project, slug, **kwargs):
 
 
 # ── the train ─────────────────────────────────────────────────────────────────
+
+def _scan_max_rows():
+    """Safety cap for the paged approval scan.
+
+    MERGE_TRAIN_SCAN_LIMIT no longer selects a scan WINDOW (there is no window any more);
+    a positive value now caps how many rows the paged scan will read before it reports
+    truncation, so an operator can still bound one pass. Non-positive means "meant for the
+    legacy hosts, not for me" — see the kill-switch note in _pick_cards — and defers to
+    db.select_all's own SELECT_ALL_MAX_ROWS.
+    """
+    try:
+        value = int(str(os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "")).strip().strip('"'))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _scan_approvals(params):
+    """Every approval row matching `params`, paged to exhaustion.
+
+    Degrades rather than dies. Not every host in this fleet runs this db module — the
+    cross-host version skew that keeps showing up in these comments is the same reason
+    `select_all` is reached through getattr and its answer is type-checked instead of
+    trusted: an older db.py has no paging at all, and a broken one is worse than none.
+    Either way the fallback is the bounded dual-order window this scan used to be, so the
+    head and the tail of the backlog are still looked at.
+    """
+    max_rows = _scan_max_rows()
+    page_all = getattr(db, "select_all", None)
+    if callable(page_all):
+        try:
+            rows = page_all("approvals", params, order="created_at.asc",
+                            **({"max_rows": max_rows} if max_rows else {}))
+            if isinstance(rows, list):
+                return rows
+            reason = f"select_all returned {type(rows).__name__}, not a list"
+        except Exception as exc:
+            reason = str(exc)
+    else:
+        reason = "this db module has no select_all"
+    print(f"merge_train: paged approval scan unavailable ({reason}); "
+          f"degrading to a bounded dual-order window", flush=True)
+    page = str(max_rows or getattr(db, "PAGE_SIZE", 1000))
+    rows = []
+    for order in ("created_at.asc", "created_at.desc"):
+        rows.extend(db.select("approvals", {**params, "order": order, "limit": page}) or [])
+    return rows
+
 
 def _pick_cards():
     """Approved merge-kind cards not yet handled by any integration path.
@@ -1667,14 +2070,15 @@ def _pick_cards():
     # Current code has integration_owner and does not need this switch to police itself, so it
     # declines to be disabled by it. Operators wanting a genuine local override set a positive
     # MERGE_TRAIN_SCAN_LIMIT; non-positive means "meant for the legacy hosts, not for me".
-    limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
-    try:
-        if int(str(limit).strip().strip('"')) <= 0:
-            limit = "3000"
-    except (TypeError, ValueError):
-        limit = "3000"
+    # PAGE, DO NOT WIDEN (2026-08-16, third and final half of the same bug). The scan above
+    # still asked for `limit=MERGE_TRAIN_SCAN_LIMIT` (3,000) in ONE request, and PostgREST
+    # caps a single response at 1,000 rows however large the limit is — so the setting never
+    # widened the window, it only hid the truncation, exactly as db.py's scan-window note
+    # says (it names this function as one of the four outage-class instances). db.select_all
+    # is the prescribed FULL SCAN path: it pages until the server stops returning rows, so
+    # the candidate set is bounded by the FILTER instead of by one page.
     base = {"select": "*", "status": "eq.approved",
-            "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
+            "kind": f"in.({','.join(MERGE_KINDS)})"}
     unhandled = "or=(decided_by.is.null,and({}))".format(
         ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES))
     _k, _v = unhandled.split("=", 1)
@@ -1683,9 +2087,7 @@ def _pick_cards():
     cards, seen = [], set()
     for params in scans:
         try:
-            got = []
-            for order in ("created_at.asc", "created_at.desc"):
-                got.extend(db.select("approvals", {**params, "order": order}) or [])
+            got = _scan_approvals(params)
         except Exception as e:
             # A server that will not accept the predicate must not take the train down with it.
             print(f"merge_train: unhandled-card filter unavailable ({e}); "
@@ -1764,7 +2166,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     branch = f"agent/{slug}"
 
     if not repo or not os.path.isdir(repo):
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:no-repo"})
+        _retire_card(card.get("id"), "no-repo")
         _log(pname, slug, "SKIP", "repo missing")
         return "no-repo"
 
@@ -1804,7 +2206,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         # Terminal for THIS card: mark it handled so it stops re-entering every pick cycle
         # (a completed recovery task files a fresh card). Unmarked missing-branch cards were
         # re-selected on every run and starved cards whose branches exist.
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:branch-missing"})
+        _retire_card(card.get("id"), "branch-missing")
         _log(pname, slug, "BLOCKED", "branch missing")
         return "branch-missing"
 
@@ -1815,8 +2217,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _task_patch(task, {"state": "MERGED",
                            "artifact_commit": integrated_sha,
                            "note": f"train: already integrated in {base} @ {integrated_sha[:12]}"})
-        db.update("approvals", {"id": card["id"]},
-                  {"decided_by": f"{MARK}:ALREADY_INTEGRATED"})
+        _retire_card(card.get("id"), "ALREADY_INTEGRATED")
         _attribute_merge_outcome(slug, task)
         _attribute_train_outcome(slug, task, "already-integrated", integrated=True)
         approval_merge._free_branch(repo, branch)
@@ -1826,6 +2227,40 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     _orig_fork = _git(repo, "merge-base", branch, base).stdout.strip()  # pre-rebase fork point
     rebase_ok, conflict_detail = _rebase_onto_base(repo, branch, base)  # (2)
+    if not rebase_ok:
+        # (2b) MINIMAL EXTRACTION BEFORE PAYING FOR A REBUILD.
+        #
+        # The branch that failed to rebase is frequently not carrying a real content
+        # conflict — it is carrying the agent's leftovers alongside the change. Every
+        # extra file in the range is another chance to collide with a base that has
+        # moved. minimal_commit.extract() rebuilds the branch from the task's own
+        # artifact commit onto the current base, keeping only that task's files, and
+        # refuses (leaving the branch untouched) on anything it cannot do safely:
+        # more than max_files paths, any generated tree, a patch that will not apply.
+        #
+        # This runs only on the path that was already going to DELETE the branch and
+        # spend an agent rebuild, so the downside of an attempt is a few git commands.
+        # Everything downstream is unchanged: post-fork regression, the content
+        # regression gate and the test run all still have to pass afterwards. Set
+        # ORCH_MINIMAL_COMMIT_ON_CONFLICT=0 to skip it.
+        if os.environ.get("ORCH_MINIMAL_COMMIT_ON_CONFLICT", "1").strip().lower() \
+                not in ("0", "false", "no", "off"):
+            try:
+                import minimal_commit
+                extracted = minimal_commit.extract(repo, branch, base, task)
+            except Exception as exc:  # noqa: BLE001 — never let recovery break integration
+                extracted = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+            if extracted.get("ok"):
+                rebase_ok, conflict_detail = _rebase_onto_base(repo, branch, base)
+                _log(pname, slug, "MINIMAL",
+                     "extracted {0} file(s) onto {1} @ {2}; rebase {3}".format(
+                         len(extracted.get("files") or []), base,
+                         str(extracted.get("commit") or "")[:12],
+                         "clean" if rebase_ok else "still conflicts"))
+            else:
+                _log(pname, slug, "MINIMAL",
+                     f"not extracted ({extracted.get('reason')}); falling through to rebuild")
+
     if not rebase_ok:
         # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
         # on the new base, not rot as CONFLICT (that's what stalled the queue before).
@@ -1841,12 +2276,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                            f"code, run tests, and commit.{files_hint}"))
             patch["transient_retries"] = tr + 1
             _task_patch(task, patch)
-            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
+            _retire_card(card.get("id"), "redo")
             _log(pname, slug, "REDO", f"rebase conflict{files_hint}, rebuild on fresh {base} ({tr+1}/{cap})")
             return "redo"
         _task_patch(task, {"state": "CONFLICT",
                            "note": f"train: still conflicts after {cap} redos - needs manual rebase.{files_hint}"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+        _retire_card(card.get("id"), "conflict-exhausted")
         _attribute_train_outcome(slug, task, "conflict", integrated=False)
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted{files_hint}")
         return "conflict"
@@ -1857,7 +2292,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     if not reg_ok:
         _task_patch(task, {"state": "BLOCKED",
                            "note": ("train: REGRESSION-RISK — clean rebase deletes recently-merged improvements: " + reg_detail)[:480]})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSION-RISK"})
+        _retire_card(card.get("id"), "REGRESSION-RISK")
         _log(pname, slug, "BLOCKED", f"regression-risk: {reg_detail[:120]}")
         try:
             import json as _json, time as _time
@@ -1933,7 +2368,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                 pass
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:TESTFAIL"})
+        _retire_card(card.get("id"), "TESTFAIL")
         _attribute_train_outcome(slug, task, "testfail", integrated=False)
         _log(pname, slug, "TESTFAIL", tail[:120])
         return "testfail"
@@ -1969,11 +2404,11 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                 directive=f"Rebuild the same task on fresh {base}, preserve the intended diff, run tests, and commit.")
             patch["transient_retries"] = tr + 1
             _task_patch(task, patch)
-            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
+            _retire_card(card.get("id"), "redo")
             _log(pname, slug, "REDO", f"ff refused ({tr+1}/{cap})")
             return "redo"
         _task_patch(task, {"state": "CONFLICT", "note": f"train: base won't fast-forward after {cap} redos"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+        _retire_card(card.get("id"), "conflict-exhausted")
         _attribute_train_outcome(slug, task, "ff-conflict", integrated=False)
         _log(pname, slug, "CONFLICT", "ff refused, cap exhausted")
         return "conflict"
@@ -2007,7 +2442,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     _task_patch(task, {"state": "MERGED",
                        "artifact_commit": current_candidate_sha,
                        "note": f"train: MERGED into {base} @ {str(current_candidate_sha)[:12]}"})
-    db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
+    _retire_card(card.get("id"), "MERGED")
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
     if _pm:
@@ -2127,12 +2562,12 @@ def _train_run_unleased(report=None):
     for c in cards:
         slug, t = _resolve_task(c, tasks_by_slug)
         if not slug:
-            db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-slug"})
+            _retire_card(c.get("id"), "no-slug")
             _r("skipped", f"card:{c.get('id')}", "no-slug: card resolves to no task slug")
             continue
         _r("consider", slug)
         if not t:
-            db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-task"})
+            _retire_card(c.get("id"), "no-task")
             _r("skipped", slug, "no-task: no task row for this slug")
             continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
@@ -2198,6 +2633,15 @@ def _train_run_unleased(report=None):
                 with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
                     for card, slug, task, risk in _select_batch(group):
                         if used[risk] >= caps[risk] or scanned >= scan_cap:
+                            # FIX 2026-08-24: the PassReport was told about this card but the
+                            # summary counter was not, so a pass that deferred every card to
+                            # the next bounded pass reported "0 merged, 0 skipped" — the
+                            # shape that is indistinguishable from a pass that never ran, and
+                            # the exact confusion merge_train_report exists to remove.
+                            # _train_run_unleased's own docstring defines skipped as
+                            # "branches skipped (cap reached or repo locked)"; the repo-lock
+                            # half counted, this half did not.
+                            result["skipped"] += 1
                             _r("skipped", slug,
                                f"cap: {risk} batch cap {caps[risk]} reached"
                                if used[risk] >= caps[risk]
@@ -2312,6 +2756,18 @@ def _train_run_unleased(report=None):
         except Exception as e:
             print(f"merge_train: auto-conflict-resolver error: {e}")
     summary["auto_resolved"] = auto_resolved
+
+    # TEST-PIPELINE HEALTH. Restored 2026-08-25: added in 85f4aa95 and lost in a
+    # later merge, leaving pipeline_metrics.get_health() with no caller anywhere
+    # in the repository while _pm.record() kept feeding it. Every pass has been
+    # writing the samples and nothing has been reading them, so the pass-rate and
+    # gate-decision breakdown this module collects reached no one.
+    # runner/tests/test_pipeline_observability.py has been red on the missing
+    # summary key since.
+    if _pm:
+        _health = _test_pipeline_health(_pm)
+        if _health is not None:
+            summary["test_pipeline"] = _health
 
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "

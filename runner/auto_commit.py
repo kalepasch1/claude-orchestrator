@@ -87,6 +87,50 @@ def generate_commit_message(changed_files, slug="", prefix="auto"):
     return f"{prefix}{slug_part}: {summary}"
 
 
+#: Files a coding tool writes about ITSELF. None of them are ever product, and a
+#: repo without a .gitignore has no defence: `git add -A` sweeps them straight in.
+#:
+#: Measured 2026-08-24 on a controlled fleet verification. Ten canary tasks each
+#: asked for one line in one file. What came back on agent/canary-...-a1 was
+#:
+#:     .aider.chat.history.md
+#:     .aider.input.history
+#:     .aider.tags.cache.v4/cache.db          (a SQLite database)
+#:     .aider.tags.cache.v4/cache.db-shm
+#:     .aider.tags.cache.v4/cache.db-wal
+#:     .recovery-intent-canary-...-a1.txt
+#:
+#: 378 insertions across 6 files, README.md untouched, and the requested string
+#: present ONLY inside the aider chat transcript — the agent was told to do it,
+#: discussed it, and committed the conversation instead of the change.
+#:
+#: This is also where the `recovery-intent-stub` commits polluting other repos'
+#: histories come from: a stub plus a pile of scratch, wearing an agent commit
+#: message.
+
+
+def _unstage_tool_artifacts(repo):
+    """Remove agent-tool leavings from the index. Returns what was taken back.
+
+    Defers to write_guard._is_tool_artifact so there is ONE definition of what a
+    tool artifact is. runner._commit_agent_work quarantines them before staging;
+    this is the second net, for commit paths that do not go through that.
+    """
+    staged, _, rc = _git(repo, "diff", "--cached", "--name-only")
+    if rc != 0 or not (staged or "").strip():
+        return []
+    try:
+        import write_guard
+    except ImportError:
+        return []
+
+    excluded = [p for p in (l.strip() for l in staged.splitlines())
+                if p and write_guard._is_tool_artifact(p)]
+    for path in excluded:
+        _git(repo, "reset", "-q", "HEAD", "--", path)
+    return excluded
+
+
 def stage_and_commit(repo, slug="", message=None, dry_run=False):
     """Stage all changes and commit with an auto-generated message.
 
@@ -121,10 +165,30 @@ def stage_and_commit(repo, slug="", message=None, dry_run=False):
                 "message": message,
             }
 
-        # Stage all changes
+        # Stage all changes, then take back the coding tool's own leavings.
         _, err, rc = _git(repo, "add", "-A")
         if rc != 0:
             return {"status": "error", "committed": False, "error": f"git add failed: {err}"}
+
+        excluded = _unstage_tool_artifacts(repo)
+
+        # If the only thing that changed was the tool's own scratch, the agent
+        # produced NOTHING. Committing here would manufacture an artifact commit
+        # out of a transcript, and everything downstream — merge_truth, the proof
+        # ledger, the journey gate — would then be reasoning about a delivery that
+        # never happened. Say so instead.
+        staged, _, _ = _git(repo, "diff", "--cached", "--name-only")
+        if not (staged or "").strip():
+            _log.warning("auto_commit: refusing to commit — the only changes were agent-tool "
+                         "artifacts (%s). The task produced no product change.",
+                         ", ".join(excluded[:6]) or "none")
+            return {"status": "no_product_change", "committed": False,
+                    "excluded": excluded,
+                    "message": "only agent-tool artifacts changed; nothing committed"}
+
+        if excluded:
+            _log.info("auto_commit: excluded %d agent-tool artifact(s): %s",
+                      len(excluded), ", ".join(excluded[:6]))
 
         # Commit
         _, err, rc = _git(repo, "commit", "-m", message, "--no-verify")

@@ -147,13 +147,26 @@ const TOOLS: Anthropic.Tool[] = [
 
 // --- Tool execution layer ---
 
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 import { readFile, writeFile, mkdir, readdir, stat, access } from 'node:fs/promises'
 import { join, dirname, resolve } from 'node:path'
+import {
+  BLOCKED_PATTERNS,
+  resolveInside,
+  serverlessRefusal,
+  tokenize,
+} from '../../utils/terminalGuards'
 import { promisify } from 'node:util'
 import { createClient } from '@supabase/supabase-js'
 
 const execAsync = promisify(exec)
+/**
+ * execFile does NOT spawn a shell: argv is passed to the process directly, so
+ * no amount of quoting, $(), backticks or ; in an argument can start a second
+ * command. Every place that interpolates caller-controlled text into a command
+ * must use this, not execAsync.
+ */
+const execFileAsync = promisify(execFile)
 
 /** Detect whether we're running inside Vercel's serverless runtime. */
 function isServerless(): boolean {
@@ -170,16 +183,6 @@ function projectRoot(): string {
   return parent
 }
 
-// Safety: prevent obviously dangerous commands
-const BLOCKED_PATTERNS = [
-  /\brm\s+-rf\s+[\/~]/i,
-  /\bmkfs\b/i,
-  /\bdd\s+if=/i,
-  /\b:(){.*};:/,
-  /\bshutdown\b/i,
-  /\breboot\b/i,
-  /\bcurl\b.*\|\s*(sh|bash)/i,
-]
 
 async function execTool(name: string, input: any): Promise<string> {
   const root = projectRoot()
@@ -190,29 +193,37 @@ async function execTool(name: string, input: any): Promise<string> {
       if (!cmd) return 'Error: empty command'
       if (BLOCKED_PATTERNS.some(p => p.test(cmd))) return 'Error: command blocked for safety'
 
-      // In serverless (Vercel), shell execution is sandboxed. Allow safe read-only
-      // commands but block anything that writes or installs.
+      // In serverless (Vercel) the runtime is meant to be read-only. Enforce that
+      // with an argv allowlist rather than a prefix regex, and run without a shell.
       if (isServerless()) {
-        // Allow a curated set of read-only commands in serverless
-        const SERVERLESS_ALLOWED = /^\s*(echo|cat|head|tail|wc|sort|uniq|date|env|node\s+-e|node\s+--version|npm\s+--version|ls|pwd|which|whoami|printenv|git\s+(log|status|diff|show|branch|rev-parse|remote|config))/
-        if (!SERVERLESS_ALLOWED.test(cmd)) {
-          return `⚠ Shell command not available in production (Vercel serverless).\n` +
-            `Available in production: git log/status/diff, ls, cat, echo, node -e, env inspection.\n` +
-            `For full shell access, use the terminal in development mode (npm run dev).\n` +
-            `Tip: Use the read_file, write_file, search_code tools instead — they work everywhere.`
-        }
+        const refusal = serverlessRefusal(cmd)
+        if (refusal) return refusal
       }
 
-      const cwd = input.cwd ? resolve(root, input.cwd) : root
+      const cwd = input.cwd ? resolveInside(root, input.cwd) : root
+      if (!cwd) return 'Error: cwd outside project'
       const timeout = Math.min(Number(input.timeout) || 30_000, isServerless() ? 10_000 : 120_000)
 
       try {
-        const { stdout, stderr } = await execAsync(cmd, {
-          cwd,
-          timeout,
-          maxBuffer: 2 * 1024 * 1024,
-          env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
-        })
+        // Dev keeps a real shell — that is the point of a dev terminal, and the
+        // operator already has the machine. Production runs the vetted argv with
+        // no shell at all, so the allowlist above cannot be talked around.
+        const { stdout, stderr } = isServerless()
+          ? await (async () => {
+              const argv = tokenize(cmd)
+              return execFileAsync(argv[0], argv.slice(1), {
+                cwd,
+                timeout,
+                maxBuffer: 2 * 1024 * 1024,
+                env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+              })
+            })()
+          : await execAsync(cmd, {
+              cwd,
+              timeout,
+              maxBuffer: 2 * 1024 * 1024,
+              env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+            })
         const parts: string[] = []
         if (stdout.trim()) parts.push(stdout.trim())
         if (stderr.trim()) parts.push(`[stderr]\n${stderr.trim()}`)
@@ -227,8 +238,8 @@ async function execTool(name: string, input: any): Promise<string> {
     }
 
     case 'read_file': {
-      const filePath = resolve(root, String(input.path || ''))
-      if (!filePath.startsWith(root)) return 'Error: path outside project'
+      const filePath = resolveInside(root, input.path)
+      if (!filePath) return 'Error: path outside project'
       try {
         const content = await readFile(filePath, 'utf8')
         const lines = content.split('\n')
@@ -247,8 +258,8 @@ async function execTool(name: string, input: any): Promise<string> {
       if (isServerless()) {
         return '⚠ File writing is disabled in production (read-only filesystem).\nUse the terminal in development mode (npm run dev) for file modifications.'
       }
-      const filePath = resolve(root, String(input.path || ''))
-      if (!filePath.startsWith(root)) return 'Error: path outside project'
+      const filePath = resolveInside(root, input.path)
+      if (!filePath) return 'Error: path outside project'
       try {
         await mkdir(dirname(filePath), { recursive: true })
         await writeFile(filePath, input.content, 'utf8')
@@ -263,8 +274,8 @@ async function execTool(name: string, input: any): Promise<string> {
       if (isServerless()) {
         return '⚠ File editing is disabled in production (read-only filesystem).\nUse the terminal in development mode (npm run dev) for file modifications.'
       }
-      const filePath = resolve(root, String(input.path || ''))
-      if (!filePath.startsWith(root)) return 'Error: path outside project'
+      const filePath = resolveInside(root, input.path)
+      if (!filePath) return 'Error: path outside project'
       try {
         const content = await readFile(filePath, 'utf8')
         if (!content.includes(input.oldText)) return `Error: old text not found in ${input.path}`
@@ -279,26 +290,37 @@ async function execTool(name: string, input: any): Promise<string> {
     case 'search_code': {
       const pattern = String(input.pattern || '')
       if (!pattern) return 'Error: empty search pattern'
-      const searchPath = input.path ? resolve(root, input.path) : root
-      if (!searchPath.startsWith(root)) return 'Error: path outside project'
+      const searchPath = input.path ? resolveInside(root, input.path) : root
+      if (!searchPath) return 'Error: path outside project'
       const maxResults = Math.min(Number(input.maxResults) || 30, 100)
-      const fileFilter = input.filePattern ? `--include='${input.filePattern}'` : ''
+
+      // This used to build a shell string with the caller's pattern interpolated
+      // via JSON.stringify. JSON.stringify emits DOUBLE quotes, and bash expands
+      // $(...) inside double quotes — so `pattern: "$(id)"` executed. It was also
+      // the only tool with no isServerless() guard, which made it the way around
+      // every other production restriction. execFile takes argv directly and
+      // starts no shell, so the pattern is data and can only ever be a pattern.
+      const argv = ['-rn', '--max-count=' + maxResults, '-E', pattern, '.']
+      if (input.filePattern) argv.splice(1, 0, '--include=' + String(input.filePattern))
 
       try {
-        const { stdout } = await execAsync(
-          `grep -rn ${fileFilter} --max-count=${maxResults} -E ${JSON.stringify(pattern)} . 2>/dev/null | head -${maxResults}`,
-          { cwd: searchPath, timeout: 15_000, maxBuffer: 1024 * 1024 }
-        )
-        return stdout.trim() || 'No matches found'
+        const { stdout } = await execFileAsync('grep', argv, {
+          cwd: searchPath,
+          timeout: 15_000,
+          maxBuffer: 1024 * 1024,
+        })
+        const lines = stdout.trim().split('\n').slice(0, maxResults)
+        return lines.join('\n') || 'No matches found'
       } catch (e: any) {
+        // grep exits 1 for "no matches" and 2 for a genuine error.
         if (e.code === 1) return 'No matches found'
-        return `Search error: ${e.message}`
+        return `Search error: ${e.stderr?.trim() || e.message}`
       }
     }
 
     case 'list_directory': {
-      const dirPath = resolve(root, String(input.path || ''))
-      if (!dirPath.startsWith(root)) return 'Error: path outside project'
+      const dirPath = resolveInside(root, input.path)
+      if (!dirPath) return 'Error: path outside project'
       try {
         const entries = await readdir(dirPath, { withFileTypes: true })
         const results: string[] = []

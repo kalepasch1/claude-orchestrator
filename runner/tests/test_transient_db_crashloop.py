@@ -129,6 +129,18 @@ class TestJobsExitZeroWhenSupabaseIsDown(unittest.TestCase):
             "SUPABASE_SERVICE_KEY": "test-key-not-real",
             "ORCH_SUPABASE_TIMEOUT": "1",
             "HTTP_RETRIES": "0",
+            # ...and NOTHING ELSE listens either. db.py's transport failover
+            # (added 2026-08-05) tries ORCH_SUPABASE_FALLBACK_URLS when the
+            # primary refuses a connection, and db.py's .env loader
+            # setdefault()s that key into the environment -- so an env dict that
+            # simply omits it inherits the operator's real relay endpoints from
+            # runner/.env. This "Supabase is down" simulation was therefore
+            # reaching the LIVE control plane and being told 401 Invalid API key,
+            # which is a permanent 4xx and not the transient failure the test
+            # means to inject. batch_completion exited 1 on it and looked like a
+            # product defect; it is not one. Setting the key empty, rather than
+            # omitting it, is what makes setdefault a no-op.
+            "ORCH_SUPABASE_FALLBACK_URLS": "",
         }
         return subprocess.run(
             [sys.executable, str(RUNNER / f"{module}.py")],

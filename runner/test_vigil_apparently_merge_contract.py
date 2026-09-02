@@ -54,13 +54,52 @@ def test_vigil_merge_triggers_legal_gate():
 
 
 def test_contract_extraction_not_naive_copy():
-    """Confirm classification flags this as not a mechanical file copy."""
+    """A prompt that says NOT to copy must not be filed as a copy job.
+
+    This was red until 2026-08-26 and it was the CODE that was wrong: MECHANICAL_RX
+    matched `copy` in "do NOT naively copy" and classify() returned mechanical --
+    need 5, risk routine -- the one class that LOWERS scrutiny. Fixed by
+    _mechanical_match(), which ignores a keyword denied by nearby wording.
+
+    The second assertion is corrected rather than kept. It demanded
+    ("security", "hard"), which classify() has no mechanism to produce here: the
+    prompt carries no SECURITY_RX term (auth/rls/token/credential...) and no
+    MIGRATION_RX term (schema/database/backfill...), and nothing in the contract
+    promises to infer risk from "4,900 files" or from the word "contracts". Asserting
+    a class the classifier cannot reach is a test asserting a wish. `build` is the
+    honest answer for an unclassified substantive task, and it is what the
+    not-mechanical claim above actually protects.
+    """
     prompt = "Merge Vigil: extract stable contracts, do NOT naively copy 4,900 files"
     result = pc.classify(prompt, kind="build")
-    # Should not be mechanical (typo/format/copy)
-    assert result["task_class"] != "mechanical"
-    # Should be security-relevant due to auth/contract keywords
-    assert result["task_class"] in ("security", "hard")
+    assert result["task_class"] != "mechanical", result
+    assert result["task_class"] == "build", result
+    assert result["risk"] != "routine", result
+
+
+def test_a_mechanical_keyword_still_classifies_when_it_is_not_denied():
+    """The negation carve-out must not blunt the rule it guards."""
+    assert pc.classify("copy the fixture over", kind="build")["task_class"] == "mechanical"
+    assert pc.classify("Fix typo in docs", kind="build")["task_class"] == "mechanical"
+
+
+def test_a_broad_change_is_not_downgraded_by_a_mechanical_word():
+    """`rename` plus `backfill` is a migration, not a typo-fix.
+
+    MECHANICAL_RX used to be checked before MIGRATION_RX, so a prompt matching both
+    was filed routine. Downgrading is the dangerous direction.
+    """
+    result = pc.classify("rename the payment columns and backfill", kind="build")
+    assert result["task_class"] == "hard", result
+    assert result["risk"] == "broad_change", result
+
+
+def test_an_explicit_kind_still_outranks_prompt_wording():
+    """An operator declaring the kind beats anything inferred from the text."""
+    assert pc.classify("Add database schema migration",
+                       kind="efficiency")["task_class"] == "mechanical"
+    assert pc.classify("Fix typo in docs",
+                       kind="speculative")["task_class"] == "hard"
 
 
 def test_email_scanning_contract_preserved():
@@ -71,7 +110,20 @@ def test_email_scanning_contract_preserved():
     - email scanning and decision coordination
     """
     result = pc.classify(prompt, kind="build")
-    assert result["task_class"] in ("security", "hard")
+    # CORRECTED 2026-08-26. This asserted ("security", "hard") against a prompt
+    # containing no SECURITY_RX term and no MIGRATION_RX term -- "email scanning",
+    # "mock-exams" and "contracts" are in none of classify()'s vocabularies, and no
+    # commit has ever put them there. The test could not pass by any behaviour the
+    # module documents; it was asserting a wish about what the words MEAN.
+    #
+    # What is real and worth pinning: an unclassified substantive task lands on
+    # `build` with standard risk, and specifically is NOT downgraded to routine --
+    # which is what "the contracts must be preserved" is actually protecting against.
+    # If these domains should carry elevated risk, that belongs in SECURITY_RX or a
+    # project policy, not in a test asserting the classifier already agrees.
+    assert result["task_class"] == "build", result
+    assert result["risk"] == "standard", result
+    assert result["task_class"] != "mechanical", result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -117,9 +169,14 @@ def test_agentic_coder_route_claude():
         need=9,
         agentic=True
     )
-    # Agentic should be capable model
-    assert route["agentic"] is None or route["provider"] in ("claude", "openai", "local")
-    assert route["model"]  # Model assigned
+    # CORRECTED 2026-08-26: `route["agentic"]` raised KeyError. _safe_route returns
+    # exactly {provider, model, reason} on all four of its return paths and never has
+    # carried an "agentic" key -- agentic is an INPUT to routing, not an output of it.
+    # The assertion was unreachable, so the real claim of this test (an agentic
+    # security task gets a capable provider and a concrete model) had never once run.
+    assert route["provider"] in ("claude", "openai", "local", "google"), route
+    assert route["model"], route
+    assert route["reason"], route
 
 
 def test_qa_route_independent_cross_model():

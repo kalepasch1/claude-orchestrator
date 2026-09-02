@@ -1,0 +1,388 @@
+branch,commits_ahead,files,superseded_files,superseded_pct,age_days,last_subject
+origin/agent/chatgpt-local-reconcile-apparently-a2f314acdd4a,3,6,0,0.0,7,"docs(recovery-ledgers): run notes for a2f314acdd4a — why the reconciler never finished, an"
+origin/agent/dropbox-prompt-smarter-capability-bridge-group-1-mirror-from-smarter,2,7,0,0.0,7,agent: dropbox-prompt-smarter-capability-bridge-group-1-mirror-from-smarter
+origin/agent/adjudicate-e3e1-hive-entity-relationship,1,2,0,0.0,6,"recover(gaming-enablement): support-relationship source, at a path that does not collide"
+origin/agent/apparently-followup-relocate-nested-racefeed-worktree,1,1,0,0.0,6,chore(hygiene): relocate the nested racefeed-wt/ worktree out of the apparently tree
+origin/agent/apparently-followup-unwired-review-passes-ratchet-test,1,1,0,0.0,6,agent: apparently-followup-unwired-review-passes-ratchet-test
+origin/agent/chatgpt-local-reconcile-apparently-45ad3511beea,1,1,0,0.0,7,agent: chatgpt-local-reconcile-apparently-45ad3511beea
+origin/agent/chatgpt-local-reconcile-apparently-a247e9203406,1,2,0,0.0,6,agent: chatgpt-local-reconcile-apparently-a247e9203406 — 419/419 evidence items classified
+origin/agent/chatgpt-local-reconcile-apparently-a83f1ae61092,1,1,0,0.0,6,agent: chatgpt-local-reconcile-apparently-a83f1ae61092
+origin/agent/chatgpt-local-reconcile-apparently-a9a36f735dd4,1,6,0,0.0,7,agent: chatgpt-local-reconcile-apparently-a9a36f735dd4
+origin/agent/chatgpt-local-reconcile-apparently-aa57938d532f,1,2,0,0.0,6,agent: chatgpt-local-reconcile-apparently-aa57938d532f — 420/420 evidence items classified
+origin/agent/chatgpt-local-reconcile-apparently-f2a260545d27,1,2,0,0.0,13,agent: chatgpt-local-reconcile-apparently-f2a260545d27
+origin/agent/chatgpt-local-reconcile-smarter-0217b18e9390-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-0217b18e9390-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-14b86f01709c-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-14b86f01709c-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-1a7ea8205196-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-1a7ea8205196-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-24cb02fba3d6-mirror-from-smarter,1,4,0,0.0,6,agent: recover 4 orphaned supabase migrations from refs/orch-rescue
+origin/agent/chatgpt-local-reconcile-smarter-3c3a1943233a-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-3c3a1943233a-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-4862358243f1-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-4862358243f1-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-524fe512010e-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-524fe512010e-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-5576fa096e27-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-5576fa096e27-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-74529c7b89a1-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-74529c7b89a1-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-8e8055b75d1e-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-8e8055b75d1e-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-a6b636dd32b4-mirror-from-smarter,1,2,0,0.0,6,agent: chatgpt-local-reconcile-smarter-a6b636dd32b4-mirror-from-smarter
+origin/agent/chatgpt-local-reconcile-smarter-b251bde66605-mirror-from-smarter,1,3,0,0.0,6,agent: chatgpt-local-reconcile-smarter-b251bde66605-mirror-from-smarter
+origin/agent/contracts-apparently-development-session-embed,1,2,0,0.0,6,agent: contracts-apparently-development-session-embed
+origin/agent/copyfix-apparently-08191300,1,2,0,0.0,6,agent: copyfix-apparently-08191300
+origin/agent/copyfix-apparently-08240406,1,3,0,0.0,6,agent: copyfix-apparently-08240406
+origin/agent/dropbox-apparently-apparently-treasury-the-business-risk-management--consumer-simple-ux-bar-a-cfo-gc-must-grasp-the-w,1,9,0,0.0,7,agent: dropbox-apparently-apparently-treasury-the-business-risk-management--consumer-simpl
+origin/agent/dropbox-apparently-apparently-treasury-the-business-risk-management--department-coordination-material-treasury-decisi,1,3,0,0.0,7,agent: dropbox-apparently-apparently-treasury-the-business-risk-management--department-coo
+origin/agent/dropbox-apparently-apparently-treasury-the-business-risk-management--risk-lineage-12-8-5-headline-feature-name-it-tha,1,3,0,0.0,7,agent: dropbox-apparently-apparently-treasury-the-business-risk-management--risk-lineage-1
+origin/agent/dropbox-apparently-apparently-treasury-the-business-risk-management--the-tab-composes-existing-queued-surfaces-into-o,1,4,0,0.0,7,agent: dropbox-apparently-apparently-treasury-the-business-risk-management--the-tab-compos
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-bundle-entitlement-service,1,3,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-bundle-entitle
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-client-matter-permissioning,1,3,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-client-matter-
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-contracts,1,4,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-contracts
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-counterparty-anticipator,1,4,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-counterparty-a
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-downstream-consequence-engine,1,2,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-downstream-con
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-feature-parity-invariant-hivemind,1,6,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-feature-parity
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-firm-knowledge-search,1,6,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-firm-knowledge
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-harvey-parity-catalog,1,5,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-harvey-parity-
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-overnight-associate-brief,1,5,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-overnight-asso
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-seat-management-ui,1,5,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-seat-managemen
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-smarter-decoy-pricing-waitlist,1,6,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-smarter-decoy-
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-vault-matter-workspaces,1,6,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-vault-matter-w
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-workflow-builder-surface,1,5,0,0.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-workflow-build
+origin/agent/dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-apparently-govern-bots,1,1,0,0.0,6,agent: dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-apparently-gov
+origin/agent/dropbox-prompt-smarter-capability-bridge-contracts-mirror-from-smarter,1,3,0,0.0,7,agent: dropbox-prompt-smarter-capability-bridge-contracts-mirror-from-smarter
+origin/agent/dropbox-prompt-smarter-capability-bridge-group-2-mirror-from-smarter,1,7,0,0.0,7,agent: dropbox-prompt-smarter-capability-bridge-group-2-mirror-from-smarter
+origin/agent/dropbox-prompt-smarter-capability-bridge-group-3-mirror-from-smarter,1,4,0,0.0,7,agent: dropbox-prompt-smarter-capability-bridge-group-3-mirror-from-smarter
+origin/agent/dropbox-prompt-smarter-capability-bridge-group-4-mirror-from-smarter,1,5,0,0.0,7,agent: dropbox-prompt-smarter-capability-bridge-group-4-mirror-from-smarter
+origin/agent/dropbox-prompt-smarter-capability-bridge-group-5-mirror-from-smarter,1,4,0,0.0,7,agent: dropbox-prompt-smarter-capability-bridge-group-5-mirror-from-smarter
+origin/agent/dropbox-v5-final-additions-sm-3-leave-timing-optimizer-ap-6-live-reg-ap6a-portal,1,8,0,0.0,5,agent: dropbox-v5-final-additions-sm-3-leave-timing-optimizer-ap-6-live-reg-ap6a-portal
+origin/agent/exchange-book-and-bids,1,6,0,0.0,6,"exchange: implement book and bids, and make the recovered suite test them"
+origin/agent/focused-adjudicate-75769db7-g01,1,1,0,0.0,6,adjudicate 75769db7-g01: a module that looked lost had only been moved
+origin/agent/focused-adjudicate-75769db7-g02,1,1,0,0.0,6,adjudicate 75769db7-g02: all eleven refs are deletion-only
+origin/agent/focused-adjudicate-75769db7-g03,1,1,0,0.0,6,adjudicate 75769db7-g03: all eleven refs are deletion-only
+origin/agent/focused-adjudicate-75769db7-g04,1,1,0,0.0,6,adjudicate 75769db7-g04: all eleven refs are deletion-only
+origin/agent/focused-adjudicate-75769db7-g05,1,3,0,0.0,6,adjudicate 75769db7-g05: nine of the eleven refs would delete the repository
+origin/agent/focused-adjudicate-75769db7-g06,1,1,0,0.0,6,adjudicate 75769db7-g06: all eleven refs are deletion-only
+origin/agent/focused-adjudicate-75769db7-g07,1,1,0,0.0,6,"adjudicate 75769db7-g07: ten empty sweeps, and one ref that needed reading"
+origin/agent/focused-adjudicate-75769db7-g08,1,1,0,0.0,6,adjudicate 75769db7-g08: all eleven refs are deletion-only
+origin/agent/focused-adjudicate-75769db7-g09,1,1,0,0.0,6,"adjudicate 75769db7-g09: twelve refs that all carried content, all superseded"
+origin/agent/focused-adjudicate-75769db7-g10,1,1,0,0.0,6,"adjudicate 75769db7-g10: four refs would delete a shipped subsystem, and they look reviewa"
+origin/agent/focused-adjudicate-75769db7-worktree-2,1,1,0,0.0,6,"adjudicate 75769db7-worktree-2: kv.ts is not missing, it moved"
+origin/agent/focused-adjudicate-f4ebda-rls-audit-divergence,1,1,0,0.0,6,recovery(f4ebda): record RLS-audit divergence verdict — both sandbox files are older snaps
+origin/agent/reconcile-apparently-coverage-once,1,4,0,0.0,6,recovery: measure what the reconcile ledgers cover before running a seventh pass
+origin/agent/recover-apparently-rescue-00041707,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/9813bbb3-6887-44eb-ac14-804fbb832c59/0001/0fca5fde
+origin/agent/recover-apparently-rescue-00bce7d7,1,1658,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/00bce7d74992b84406d31a5481688643d575f0d1
+origin/agent/recover-apparently-rescue-012ebebe,1,3399,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/012ebebe6d30e057813e819cc708d5112d0aa415
+origin/agent/recover-apparently-rescue-0326f9c7,1,509,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/0326f9c7ceca8410f3d1dd78b1eff7d59467deed
+origin/agent/recover-apparently-rescue-04d74d7f,1,1713,0,0.0,6,recover: refs/archive/stash/1786826405/8
+origin/agent/recover-apparently-rescue-07aaa03b,1,3294,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/07aaa03b648dcd44dd47b6fd8c191d314105f7e2
+origin/agent/recover-apparently-rescue-09785230,1,1712,0,0.0,6,recover: refs/archive/stash/1786826405/6
+origin/agent/recover-apparently-rescue-0a580a79,1,3294,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/0a580a798df47827fc7324c7520766338e288d6a
+origin/agent/recover-apparently-rescue-0ca1b598,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/0ca1b59830ed639069c8c6b988b52c5c6d878db7
+origin/agent/recover-apparently-rescue-0da0b5d1,1,3295,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/0da0b5d153c9a56f5d4d75f826adbcc125292642
+origin/agent/recover-apparently-rescue-13d0a48e,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/13d0a48ed92739df787d6b9ed6d47df202a00231
+origin/agent/recover-apparently-rescue-13dd2ca5,1,3294,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/13dd2ca55204ac650371657cc85325259feee9a6
+origin/agent/recover-apparently-rescue-1599579e,1,791,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/1599579e426c41cc2d0804076d785760f0633bba
+origin/agent/recover-apparently-rescue-179e22ef,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/54534f19-1b96-409a-8fcd-d2905d5f4c72/0001/6db151d8
+origin/agent/recover-apparently-rescue-1859cf5b,1,1559,0,0.0,6,recover: consolidation/dev-20260823
+origin/agent/recover-apparently-rescue-192a986f,1,1437,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/192a986f31532ef3171756557c09cef0813a8f7e
+origin/agent/recover-apparently-rescue-19728ec3,1,3294,0,0.0,6,recover: refs/orchestrator/integrations/3b370ef8-0578-4c0a-9251-b0c3d567124a/0001/6c4c6d38
+origin/agent/recover-apparently-rescue-1a629908,1,1428,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/1a6299084c30f56c053bd797c1dfc08c05392a64
+origin/agent/recover-apparently-rescue-1d3aea68,1,509,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/1d3aea68a042b402b2a4e75070d328a406c5da24
+origin/agent/recover-apparently-rescue-1dfe4765,1,7249,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/1dfe4765369f944344e8b1df028562e4bb824360
+origin/agent/recover-apparently-rescue-20bebf3e,1,1429,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/20bebf3e04dc288fa9399faf72cd82056a1c566a
+origin/agent/recover-apparently-rescue-2347632b,1,3294,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/2347632b6fde682c2a6c7db64b5991b89695236e
+origin/agent/recover-apparently-rescue-25bbb630,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/25bbb630b183a085bc9005e61ece40a6196c2738
+origin/agent/recover-apparently-rescue-269283b9,1,942,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/269283b9d0e22b3eacef9e45820ec656611e1689
+origin/agent/recover-apparently-rescue-29f9f84b,1,7248,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/29f9f84b96dabc3b2864f8090a54da38c74a844c
+origin/agent/recover-apparently-rescue-2b609fb2,1,3300,0,0.0,6,recover: refs/orchestrator/integrations/88415531-9ade-47a6-bf89-a506b3da4822/0003/a80a1ca5
+origin/agent/recover-apparently-rescue-2b6bfec3,1,1648,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/2b6bfec36242f188b4dc7701b172f85f007c6f72
+origin/agent/recover-apparently-rescue-2c7f7ee2,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/1a992313-c7f8-47e7-880c-60416fafd26c/0001/a6d71445
+origin/agent/recover-apparently-rescue-2e5ccdaf,1,1704,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/2e5ccdaf42c821894d474dfd01f95f10f774f43a
+origin/agent/recover-apparently-rescue-30a09ea5,1,1438,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/30a09ea504cfd659ba8f597f1832d78d796ea4c9
+origin/agent/recover-apparently-rescue-3151f220,1,3554,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/3151f22046cd30dd5d8c74aecde55f46123a6a0d
+origin/agent/recover-apparently-rescue-3194685d,1,1494,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/3194685d53389ca29e8361d3d655f1d4d284e116
+origin/agent/recover-apparently-rescue-3418c43e,1,986,0,0.0,6,recover: refs/orch-rescue/20260806T144343-apparently-3418c43e
+origin/agent/recover-apparently-rescue-363faeff,1,2950,0,0.0,6,recover: refs/orchestrator/integrations/2f31ba88-6b34-4e3c-bc6c-1a93d8c727b0/0001/182fcff7
+origin/agent/recover-apparently-rescue-375e73b5,1,1565,0,0.0,6,recover: consolidation/verified-merges-20260817
+origin/agent/recover-apparently-rescue-387a2668,1,1704,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/387a266842af7f71534c000eeb7c2a0f6d200126
+origin/agent/recover-apparently-rescue-38c65243,1,3296,0,0.0,6,recover: refs/orchestrator/integrations/472f78ad-5b62-4fc0-89e5-077dd337df37/0001/72ebfd2f
+origin/agent/recover-apparently-rescue-39101f3e,1,1713,0,0.0,6,recover: refs/orchestrator/tasks/7837b5e7-05bd-4d7b-b1b9-a375fb22bce0/0001/138f43801988989
+origin/agent/recover-apparently-rescue-3a675996,1,7248,0,0.0,6,recover: refs/orch-rescue/20260813T104526-work-20260813b-3a675996
+origin/agent/recover-apparently-rescue-3a6cd791,1,1465,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/3a6cd791cc646670bb070aa7422d85bc811c1245
+origin/agent/recover-apparently-rescue-3abb17b5,1,1055,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/3abb17b528086300d52c75d33368319083129384
+origin/agent/recover-apparently-rescue-3c205aec,1,1434,0,0.0,6,recover: refs/archive/agent/dropbox-policy-waterfall-engine-every-approved-change-ripples-
+origin/agent/recover-apparently-rescue-3cfab1d8,1,1038,0,0.0,6,recover: refs/archive/agent/backlog-batch-apparently-0d157dd-recover-kpi-dashboard-via-ada
+origin/agent/recover-apparently-rescue-3f5ef855,1,3294,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/3f5ef8559aa24902f2aecfb7c2874a3dfd99ce8b
+origin/agent/recover-apparently-rescue-4475bc92,1,3300,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/4475bc92e82b4c94e08d3be5bb2c6d96e67f4e4c
+origin/agent/recover-apparently-rescue-45f55e12,1,3301,0,0.0,6,recover: refs/orchestrator/integrations/029acff4-170b-492a-af8c-db2e647702a0/0001/a71652fb
+origin/agent/recover-apparently-rescue-49114b27,1,3300,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/49114b2743e9bb01a9f8a67b8d13a34c31d7be51
+origin/agent/recover-apparently-rescue-50faa929,1,3296,0,0.0,6,recover: refs/orchestrator/integrations/a29c9273-8889-4764-80c4-324ac68d4510/0002/2e66bf42
+origin/agent/recover-apparently-rescue-526084af,1,1435,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/526084af805abed8f0a3f0664f568e632b892693
+origin/agent/recover-apparently-rescue-54ab7d16,1,6440,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/54ab7d16bc035974beedcc2e89c9bf0ea33e549a
+origin/agent/recover-apparently-rescue-5e984ace,1,1703,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/5e984ace7676221d0677f9fb93c03546ea130164
+origin/agent/recover-apparently-rescue-6039f593,1,3296,0,0.0,6,recover: refs/archive/sfin/15
+origin/agent/recover-apparently-rescue-63713726,1,3399,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/637137268f29803e2f8c896f0bcb361f6fb2adde
+origin/agent/recover-apparently-rescue-63ffab06,1,3297,0,0.0,6,recover: refs/orchestrator/integrations/5bdf82c8-c4b2-48fd-848d-8429a60fd936/0001/d4e5d24e
+origin/agent/recover-apparently-rescue-64f10e41,1,3295,0,0.0,6,recover: refs/orchestrator/integrations/a5ea3ba6-3e36-4494-a0a3-a0afb730dcac/0002/ce086bbb
+origin/agent/recover-apparently-rescue-6602ddcb,1,1648,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/6602ddcb3abcf3b7277b2d7a180b1548cc8b8d1d
+origin/agent/recover-apparently-rescue-661a074c,1,3297,0,0.0,6,recover: refs/orchestrator/integrations/3b370ef8-0578-4c0a-9251-b0c3d567124a/0002/6c4c6d38
+origin/agent/recover-apparently-rescue-67138a23,1,3420,0,0.0,6,recover: refs/archive/sfin/17
+origin/agent/recover-apparently-rescue-678e4f94,1,612,0,0.0,6,recover: refs/orch-rescue/20260819T125823-dev-merge-678e4f94
+origin/agent/recover-apparently-rescue-6bf5fa78,1,805,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/6bf5fa78300a83b39a3072087e75d802fad13143
+origin/agent/recover-apparently-rescue-6f187e2f,1,3295,0,0.0,6,recover: refs/orchestrator/integrations/007df72b-c752-42c4-b226-302276163174/0005/1597018f
+origin/agent/recover-apparently-rescue-71352acc,1,791,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/71352accb64242c542b3179c9ecbc798b77de424
+origin/agent/recover-apparently-rescue-726d5060,1,7262,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/726d5060d03732054cb8ab331a1022c547e314ba
+origin/agent/recover-apparently-rescue-756ec70c,1,1417,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/756ec70c76dd8419d478f7275e1fefa3110a489b
+origin/agent/recover-apparently-rescue-76d19ff0,1,3299,0,0.0,6,recover: refs/orchestrator/integrations/51375c5d-3624-4649-90bc-0456bd2773fa/0002/5cfb4b63
+origin/agent/recover-apparently-rescue-7c77facf,1,2380,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/7c77facf948acab6c4d8d46b2de2b13f46432d0a
+origin/agent/recover-apparently-rescue-7fd0c8cf,1,3294,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/7fd0c8cf0bb3fd9bf9e8699f230e262c5e935cc7
+origin/agent/recover-apparently-rescue-806f4197,1,2348,0,0.0,6,recover: refs/archive/sfin/11
+origin/agent/recover-apparently-rescue-81532ed9,1,1417,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/81532ed94941743f5fe1a8e0dc411b176a4b3bba
+origin/agent/recover-apparently-rescue-86bd11e6,1,805,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/86bd11e6181d9a274e7b6f4aa4074322d8c6fba0
+origin/agent/recover-apparently-rescue-8782d46a,1,505,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/8782d46a3eb19349097feaa953c93ef499c6a3a2
+origin/agent/recover-apparently-rescue-890df2fb,1,1665,0,0.0,6,recover: refs/archive/stash/1786826405/9
+origin/agent/recover-apparently-rescue-8a35fdd3,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/4833d0eb-f482-49e3-ae7b-59a37e47b936/0001/4f5f3ddc
+origin/agent/recover-apparently-rescue-8b20530b,1,1055,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/8b20530b66245d95a3a541d5e263defb162147c2
+origin/agent/recover-apparently-rescue-8cf5d2af,1,1306,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/8cf5d2af9c5ae76cc15202d71db31d812760faf9
+origin/agent/recover-apparently-rescue-8ef35adc,1,1561,0,0.0,6,recover: orchestrator/dev
+origin/agent/recover-apparently-rescue-8f93323b,1,1022,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/8f93323b287e01ac072331ac2b646b90ba320a60
+origin/agent/recover-apparently-rescue-9091e292,1,506,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/9091e29231e915b8281dfbab55448fc539956d0e
+origin/agent/recover-apparently-rescue-9676097f,1,3297,0,0.0,6,recover: refs/orchestrator/integrations/406a7d77-1fa8-42d2-a0b6-7c2b7fd1bd3b/0001/cb9c8909
+origin/agent/recover-apparently-rescue-995c99a5,1,3287,0,0.0,6,recover: refs/orchestrator/integrations/95bc7f79-d600-4ae1-b790-e9c0fe70e194/0001/d087c020
+origin/agent/recover-apparently-rescue-9a5ff79b,1,2386,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/9a5ff79be51676c1461b57c1f81b57bf95d86f38
+origin/agent/recover-apparently-rescue-9c962193,1,3297,0,0.0,6,recover: refs/orchestrator/integrations/0c41f9c3-a745-4080-b920-3def2a99b342/0001/68538459
+origin/agent/recover-apparently-rescue-9cdde87a,1,2435,0,0.0,6,recover: refs/archive/stash/1786826405/12
+origin/agent/recover-apparently-rescue-9e63821c,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/9e63821c3221962c7459e7acf561340b748e0de8
+origin/agent/recover-apparently-rescue-a0e74021,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/a0e740210e45f891eaed025235e0af4f709cd006
+origin/agent/recover-apparently-rescue-a66858a2,1,3296,0,0.0,6,recover: refs/archive/stash/1786826405/23
+origin/agent/recover-apparently-rescue-adb19f92,1,3386,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/adb19f929fc6396933aefd57806427b342010e1a
+origin/agent/recover-apparently-rescue-b034e126,1,1704,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/b034e126a10725bc43a862611fbfeb46fd98c831
+origin/agent/recover-apparently-rescue-b037d0fb,1,1119,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/b037d0fb7917140b9b99f24a07e458742f87ad37
+origin/agent/recover-apparently-rescue-b18c89f6,1,3299,0,0.0,6,recover: refs/orchestrator/integrations/200c8c58-b621-454c-b0de-e844949dea28/0001/caafd694
+origin/agent/recover-apparently-rescue-b92391a1,1,1145,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/b92391a1996729ee9d1cc87ebfe74a58ee0d055c
+origin/agent/recover-apparently-rescue-ba76dfc5,1,1148,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/ba76dfc54cc2d06cf9c7441929763d58b55d4470
+origin/agent/recover-apparently-rescue-ba7e0c5c,1,3405,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/ba7e0c5ce03ebcc590321c9b6966ccbed4477dbe
+origin/agent/recover-apparently-rescue-bd8f8ef6,1,1417,0,0.0,6,recover: refs/orch-rescue/20260805T145520-dropbox-terminal-permissions-framework-admin-set
+origin/agent/recover-apparently-rescue-bfc73a0b,1,3298,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/bfc73a0b218fec7aa1344737cb9002061f08eddf
+origin/agent/recover-apparently-rescue-c093e15a,1,3296,0,0.0,6,recover: refs/orchestrator/integrations/51375c5d-3624-4649-90bc-0456bd2773fa/0001/5cfb4b63
+origin/agent/recover-apparently-rescue-c15632aa,1,1417,0,0.0,6,recover: refs/archive/agent/dropbox-cross-app-hivemind-federation-one-market-s-slice-3/178
+origin/agent/recover-apparently-rescue-c2b08afa,1,2513,0,0.0,6,recover: refs/orch-rescue/20260805T110457-hive-support-entity-relationship-source-c2b08afa
+origin/agent/recover-apparently-rescue-c3389d3a,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/c3389d3a5f83718e782ae166041e7bbf61e3ad57
+origin/agent/recover-apparently-rescue-cadc178f,1,875,0,0.0,6,recover: refs/orch-rescue/20260818T053736-apparently-cadc178f
+origin/agent/recover-apparently-rescue-cb1121de,1,1055,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/cb1121dea855c05baabc6230271b7c8791848e77
+origin/agent/recover-apparently-rescue-cddaa609,1,3297,0,0.0,6,recover: refs/orchestrator/integrations/88415531-9ade-47a6-bf89-a506b3da4822/0002/a80a1ca5
+origin/agent/recover-apparently-rescue-d05eac27,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/a5ea3ba6-3e36-4494-a0a3-a0afb730dcac/0003/ce086bbb
+origin/agent/recover-apparently-rescue-d0fd5972,1,3299,0,0.0,6,recover: refs/orchestrator/integrations/a29c9273-8889-4764-80c4-324ac68d4510/0003/2e66bf42
+origin/agent/recover-apparently-rescue-d2508eb6,1,3295,0,0.0,6,recover: refs/orchestrator/integrations/00a812fb-dba5-4152-b304-c786dd8b02d8/0001/e1e2f986
+origin/agent/recover-apparently-rescue-d29be3a3,1,3472,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/d29be3a3609b575d6616582bc53ef06fbb78707a
+origin/agent/recover-apparently-rescue-d4f6675c,1,505,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/d4f6675c1527876d610b891aee7e160e014a23bb
+origin/agent/recover-apparently-rescue-d73a0d13,1,3297,0,0.0,6,recover: refs/orchestrator/integrations/a4f33659-7d4e-426e-be23-cbad8b846241/0001/b06b3579
+origin/agent/recover-apparently-rescue-d84ef0e0,1,539,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/d84ef0e0b0654c7112aa30774b841e8f63213f8b
+origin/agent/recover-apparently-rescue-d879de78,1,3385,0,0.0,6,recover: refs/archive/sfin/22
+origin/agent/recover-apparently-rescue-da3b53a4,1,1650,0,0.0,6,recover: refs/recovery/git-write-20260729T115526Z/da3b53a46037c98721fed55a209fdc50a1eaa21a
+origin/agent/recover-apparently-rescue-da4eecf0,1,1418,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/da4eecf0f4ef1603dbf373aed3a9007947e68f3d
+origin/agent/recover-apparently-rescue-daae2a33,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/14872261-b4ed-47d8-8ef6-7a438c81bbf4/0001/59cce468
+origin/agent/recover-apparently-rescue-dac42a03,1,1022,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/dac42a0387a96d0e7788dac1f9eacffc0d2b7e86
+origin/agent/recover-apparently-rescue-dbc7ccf1,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/976d8115-ecff-477c-a562-0cb1d596f9c9/0002/fca86397
+origin/agent/recover-apparently-rescue-de002d03,1,1435,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/de002d03296da723173f309e023c74ab79187096
+origin/agent/recover-apparently-rescue-dea7b695,1,3297,0,0.0,6,recover: refs/orchestrator/integrations/80dadc03-0673-4d2e-81f8-879f6586b6ec/0001/2d878b01
+origin/agent/recover-apparently-rescue-df34f680,1,1703,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/df34f6806740008e15e5d237f254d73f09887ac9
+origin/agent/recover-apparently-rescue-e0f92605,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/e0f92605ce58e7cd012ce3ecccf7deb1802a484a
+origin/agent/recover-apparently-rescue-e5ec98ee,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/e5ec98ee97caa091a54fc9d8958b5eb2becd2b2b
+origin/agent/recover-apparently-rescue-e703f54c,1,3299,0,0.0,6,recover: refs/orchestrator/integrations/472f78ad-5b62-4fc0-89e5-077dd337df37/0002/72ebfd2f
+origin/agent/recover-apparently-rescue-e713a612,1,3399,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/e713a61234200fefb68dd931b5c368f1d711dc8a
+origin/agent/recover-apparently-rescue-e78462d3,1,986,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/e78462d37ca7e17404bf4643eecff12634910efa
+origin/agent/recover-apparently-rescue-ed91aec2,1,3298,0,0.0,6,recover: refs/orchestrator/integrations/3f27f142-c2a5-4389-89a4-424eeeca82ca/0001/2cabf47c
+origin/agent/recover-apparently-rescue-ef3370b6,1,1657,0,0.0,6,recover: review/agent-access
+origin/agent/recover-apparently-rescue-f00e7021,1,1419,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/f00e7021fcd565bde18ea686c51ef3c8b5a61be4
+origin/agent/recover-apparently-rescue-f43ad1ff,1,794,0,0.0,6,recover: refs/recovery/git-write-20260819T012834Z/f43ad1ffda2e2efe4313af314760b6ac54b7ed59
+origin/agent/recover-apparently-rescue-fa80ff4b,1,542,0,0.0,6,recover: refs/recovery/git-write-20260811T151154Z/fa80ff4bb5a322436ce9769f56afe0b29563a128
+origin/agent/recover-apparently-rescue-facd3832,1,1075,0,0.0,6,recover: refs/recovery/git-write-20260807T032716Z/facd38324f1f7b9435986e8d505444ad2b5b5317
+origin/agent/recover-apparently-rescue-fafedc61,1,3085,0,0.0,6,recover: refs/recovery/git-write-20260724T042601Z/fafedc61cffda9f18c206a4362adfd7d4a22fed9
+origin/agent/recover-apparently-rescue-fc9bfdf9,1,3289,0,0.0,6,recover: refs/orchestrator/integrations/2651ee67-a743-40d3-82e9-48cdb8858d8d/0001/1e268d30
+origin/agent/recover-apparently-rescue-febd79d7,1,2950,0,0.0,6,recover: refs/orchestrator/integrations/20e7f80e-bbf9-47fc-ba01-23375d1e25a6/0001/e0c9c830
+origin/agent/recover-d4a2-shared-artifact-writes-suite,1,2,0,0.0,6,test(hive): cover the persistence half of shared-artifacts (recovered from ef3370b6)
+origin/agent/recover-f4ebda-stash-1ef4684a-dashboard-deps-engines,1,1,0,0.0,6,"recover 1ef4684a: every apparent gap resolves to a rename, an extraction or a rollback"
+origin/agent/recover-f4ebda-stash-8f762085-ai-utils,1,2,0,0.0,6,"recover 8f762085: nothing to port, and a guard for the reason why"
+origin/agent/recover-f4ebda-stash-mixed-modified-families,1,1,0,0.0,6,recovery(f4ebda): close the enforcement-velocity stash pair as superseded; triage the othe
+origin/agent/recover-missing-branch-adjudicate-e3e1-53file-hive-entity-relationship-per-subsystem,1,2,0,0.0,6,agent: recover-missing-branch-adjudicate-e3e1-53file-hive-entity-relationship-per-subsyste
+origin/agent/recover-missing-branch-chatgpt-local-reconcile-apparently-1496b47486e5,1,2,0,0.0,6,agent: recover-missing-branch-chatgpt-local-reconcile-apparently-1496b47486e5
+origin/agent/recover-stash-e71961458a2a,1,5,0,0.0,6,"recover(stash e71961458a2a): three enrichments that never landed, and the two master had l"
+origin/agent/chatgpt-reconcile-apparently-recover-stash-6,1,18,1,5.6,17,agent: chatgpt-reconcile-apparently-recover-stash-6
+origin/agent/chatgpt-local-reconcile-apparently-0e1cc2a8fedb,1,17,1,5.9,7,agent: chatgpt-local-reconcile-apparently-0e1cc2a8fedb
+origin/agent/chatgpt-local-reconcile-apparently-273d5080d933,1,17,1,5.9,7,agent: chatgpt-local-reconcile-apparently-273d5080d933
+origin/agent/chatgpt-local-reconcile-apparently-a850156833b8,1,17,1,5.9,7,agent: chatgpt-local-reconcile-apparently-a850156833b8
+origin/agent/chatgpt-local-reconcile-apparently-da2df2cc83c3,1,17,1,5.9,7,agent: chatgpt-local-reconcile-apparently-da2df2cc83c3
+origin/agent/chatgpt-local-reconcile-apparently-db51b507e335,1,17,1,5.9,7,agent: chatgpt-local-reconcile-apparently-db51b507e335
+origin/agent/chatgpt-local-reconcile-apparently-f0e1050c5578,1,17,1,5.9,7,agent: chatgpt-local-reconcile-apparently-f0e1050c5578
+origin/agent/chatgpt-local-reconcile-apparently-1cfdd050a366,13,15,1,6.7,7,agent: chatgpt-local-reconcile-apparently-1cfdd050a366
+origin/agent/chatgpt-local-reconcile-apparently-e29bff4ffee5,1,15,1,6.7,7,agent: chatgpt-local-reconcile-apparently-e29bff4ffee5
+origin/agent/chatgpt-local-reconcile-apparently-1d24378a0b2b,12,14,1,7.1,7,agent: chatgpt-local-reconcile-apparently-1d24378a0b2b
+origin/agent/chatgpt-local-reconcile-apparently-94d8475fafc0,12,14,1,7.1,7,agent: chatgpt-local-reconcile-apparently-94d8475fafc0
+origin/agent/chatgpt-local-reconcile-apparently-e662dd17aca9,12,14,1,7.1,7,agent: chatgpt-local-reconcile-apparently-e662dd17aca9
+origin/agent/chatgpt-local-reconcile-apparently-111fae52d019,11,13,1,7.7,7,agent: chatgpt-local-reconcile-apparently-111fae52d019
+origin/agent/chatgpt-local-reconcile-apparently-23466d48585e,11,13,1,7.7,7,agent: chatgpt-local-reconcile-apparently-23466d48585e
+origin/agent/chatgpt-local-reconcile-apparently-336671e5d308,11,13,1,7.7,7,agent: chatgpt-local-reconcile-apparently-336671e5d308
+origin/agent/chatgpt-local-reconcile-apparently-0ce11f04b1c9,10,12,1,8.3,7,agent: chatgpt-local-reconcile-apparently-0ce11f04b1c9
+origin/agent/chatgpt-local-reconcile-apparently-0ec8438fc6f7,10,12,1,8.3,7,agent: chatgpt-local-reconcile-apparently-0ec8438fc6f7
+origin/agent/chatgpt-local-reconcile-apparently-809d3845cb88,10,12,1,8.3,7,agent: chatgpt-local-reconcile-apparently-809d3845cb88
+origin/agent/chatgpt-local-reconcile-apparently-a202ae269529,10,12,1,8.3,7,agent: chatgpt-local-reconcile-apparently-a202ae269529
+origin/agent/chatgpt-local-reconcile-apparently-239b5bc882ef,9,11,1,9.1,7,agent: chatgpt-local-reconcile-apparently-239b5bc882ef
+origin/agent/chatgpt-local-reconcile-apparently-7f48207527db,9,11,1,9.1,7,agent: chatgpt-local-reconcile-apparently-7f48207527db
+origin/agent/chatgpt-local-reconcile-apparently-c5ab289d19a0,9,11,1,9.1,7,agent: chatgpt-local-reconcile-apparently-c5ab289d19a0
+origin/agent/chatgpt-local-reconcile-apparently-e334afdef055,9,11,1,9.1,7,agent: chatgpt-local-reconcile-apparently-e334afdef055
+origin/agent/chatgpt-local-reconcile-apparently-209a14b63017,8,10,1,10.0,7,agent: chatgpt-local-reconcile-apparently-209a14b63017
+origin/agent/chatgpt-local-reconcile-apparently-878a14d89d76,8,10,1,10.0,7,agent: chatgpt-local-reconcile-apparently-878a14d89d76
+origin/agent/chatgpt-local-reconcile-apparently-897bbff06986,8,10,1,10.0,7,agent: chatgpt-local-reconcile-apparently-897bbff06986
+origin/agent/chatgpt-local-reconcile-apparently-a7ed6c0f41e4,8,10,1,10.0,7,agent: chatgpt-local-reconcile-apparently-a7ed6c0f41e4
+origin/agent/chatgpt-local-reconcile-apparently-9b551522b973,1,10,1,10.0,7,agent: chatgpt-local-reconcile-apparently-9b551522b973
+origin/agent/chatgpt-local-reconcile-apparently-cb28ff74b9cd,1,10,1,10.0,7,agent: chatgpt-local-reconcile-apparently-cb28ff74b9cd
+origin/agent/chatgpt-local-reconcile-apparently-f5142345bae1,1,10,1,10.0,7,agent: chatgpt-local-reconcile-apparently-f5142345bae1
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-tabular-multidoc-review,1,10,1,10.0,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-tabular-multid
+origin/agent/chatgpt-local-reconcile-apparently-26a1afcb9f1e,7,9,1,11.1,7,agent: chatgpt-local-reconcile-apparently-26a1afcb9f1e
+origin/agent/chatgpt-local-reconcile-apparently-7f644772e550,7,9,1,11.1,7,agent: chatgpt-local-reconcile-apparently-7f644772e550
+origin/agent/chatgpt-local-reconcile-apparently-ba2975a4bb6d,7,9,1,11.1,7,agent: chatgpt-local-reconcile-apparently-ba2975a4bb6d
+origin/agent/chatgpt-local-reconcile-apparently-f65c908f04a5,7,9,1,11.1,7,agent: chatgpt-local-reconcile-apparently-f65c908f04a5
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-anticipation-swarm-core,1,9,1,11.1,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-anticipation-s
+origin/agent/chatgpt-local-reconcile-apparently-3c5cb4e153b9,6,8,1,12.5,7,agent: chatgpt-local-reconcile-apparently-3c5cb4e153b9
+origin/agent/chatgpt-local-reconcile-apparently-6616d69df31c,6,8,1,12.5,7,agent: chatgpt-local-reconcile-apparently-6616d69df31c
+origin/agent/chatgpt-local-reconcile-apparently-7b5541bf7d1b,6,8,1,12.5,7,agent: chatgpt-local-reconcile-apparently-7b5541bf7d1b
+origin/agent/chatgpt-local-reconcile-apparently-9029227dcc3b,1,8,1,12.5,7,agent: chatgpt-local-reconcile-apparently-9029227dcc3b
+origin/agent/chatgpt-local-reconcile-apparently-a3a1958a6947,1,8,1,12.5,7,agent: chatgpt-local-reconcile-apparently-a3a1958a6947
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-office-addin-wiring,1,8,1,12.5,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-office-addin-w
+origin/agent/chatgpt-local-reconcile-apparently-c62cc6695ad3,5,7,1,14.3,7,agent: chatgpt-local-reconcile-apparently-c62cc6695ad3
+origin/agent/chatgpt-local-reconcile-apparently-e101f01e0ee1,5,7,1,14.3,7,agent: chatgpt-local-reconcile-apparently-e101f01e0ee1
+origin/agent/chatgpt-local-reconcile-apparently-f35d17901d35,5,7,1,14.3,7,agent: chatgpt-local-reconcile-apparently-f35d17901d35
+origin/agent/chatgpt-local-reconcile-apparently-01327c3452a7,1,14,2,14.3,7,agent: chatgpt-local-reconcile-apparently-01327c3452a7
+origin/agent/chatgpt-local-reconcile-apparently-15b5887e21b5,1,14,2,14.3,7,agent: chatgpt-local-reconcile-apparently-15b5887e21b5
+origin/agent/chatgpt-local-reconcile-apparently-1642adece5ac,1,14,2,14.3,7,agent: chatgpt-local-reconcile-apparently-1642adece5ac
+origin/agent/chatgpt-local-reconcile-apparently-1fbb570b9ae8,1,14,2,14.3,7,agent: chatgpt-local-reconcile-apparently-1fbb570b9ae8
+origin/agent/chatgpt-local-reconcile-apparently-35466abf8054,1,14,2,14.3,7,agent: chatgpt-local-reconcile-apparently-35466abf8054
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-assistant-workflows-surface,1,7,1,14.3,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-assistant-work
+origin/agent/dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-smarter-exclusivity-switch,1,7,1,14.3,7,agent: dropbox-apparently-harvey-feature-parity-clean-room-the-network-bund-smarter-exclus
+origin/agent/chatgpt-local-reconcile-apparently-450dbd769304,1,13,2,15.4,7,agent: chatgpt-local-reconcile-apparently-450dbd769304
+origin/agent/chatgpt-local-reconcile-apparently-74a2706ed7c6,1,13,2,15.4,7,agent: chatgpt-local-reconcile-apparently-74a2706ed7c6
+origin/agent/chatgpt-local-reconcile-apparently-5262544dd62f,4,6,1,16.7,7,agent: chatgpt-local-reconcile-apparently-5262544dd62f
+origin/agent/chatgpt-local-reconcile-apparently-9a1baf677449,4,6,1,16.7,7,agent: chatgpt-local-reconcile-apparently-9a1baf677449
+origin/agent/chatgpt-local-reconcile-apparently-ac3359cb4859,4,6,1,16.7,7,agent: chatgpt-local-reconcile-apparently-ac3359cb4859
+origin/agent/chatgpt-local-reconcile-apparently-c29f31f6db0a,4,6,1,16.7,7,agent: chatgpt-local-reconcile-apparently-c29f31f6db0a
+origin/agent/backlog-batch-apparently-015d6d4-authority-roster,1,6,1,16.7,6,"feat(seed): authority roster — 130 curated, sourced domain authorities"
+origin/agent/chatgpt-local-reconcile-apparently-61c419b6eeba,1,12,2,16.7,7,agent: chatgpt-local-reconcile-apparently-61c419b6eeba
+origin/agent/chatgpt-local-reconcile-apparently-7510f300c1b6,1,6,1,16.7,7,agent: chatgpt-local-reconcile-apparently-7510f300c1b6
+origin/agent/chatgpt-local-reconcile-apparently-91bdec725353,1,6,1,16.7,7,agent: chatgpt-local-reconcile-apparently-91bdec725353
+origin/agent/p0-unblock-ci-a11y-and-restore-autosync-20260811,1,6,1,16.7,7,agent: p0-unblock-ci-a11y-and-restore-autosync-20260811
+origin/agent/recover-stash-d879de782eda,1,6,1,16.7,6,agent: recover-stash-d879de782eda
+origin/agent/chatgpt-local-reconcile-apparently-35b12b363a58,1,11,2,18.2,7,agent: chatgpt-local-reconcile-apparently-35b12b363a58
+origin/agent/chatgpt-local-reconcile-apparently-544b319ebabb,1,11,2,18.2,7,agent: chatgpt-local-reconcile-apparently-544b319ebabb
+origin/agent/chatgpt-local-reconcile-apparently-de237e7727c4,3,5,1,20.0,7,agent: chatgpt-local-reconcile-apparently-de237e7727c4
+origin/agent/chatgpt-local-reconcile-apparently-029605c5e4ce,1,10,2,20.0,7,agent: chatgpt-local-reconcile-apparently-029605c5e4ce
+origin/agent/chatgpt-local-reconcile-apparently-65d9259bb825,1,5,1,20.0,7,agent: chatgpt-local-reconcile-apparently-65d9259bb825
+origin/agent/p0-standing-eval-harness-and-entropy-detector-20260811,1,10,2,20.0,18,agent: p0-standing-eval-harness-and-entropy-detector-20260811
+origin/agent/part9-distribution-conformance-sdk-20260811,1,10,2,20.0,18,agent: part9-distribution-conformance-sdk-20260811
+origin/agent/rung-evidence-gated-climb-and-auto-demotion-20260811,1,5,1,20.0,19,agent: rung-evidence-gated-climb-and-auto-demotion-20260811
+origin/agent/v2-plan-intelligence-rail-and-renames,2,9,2,22.2,7,agent: v2-plan-intelligence-rail-and-renames — fix dead nav links introduced by the v2 sid
+origin/agent/selfimp-capability-index-antiduplication-gate-20260811,1,9,2,22.2,18,agent: selfimp-capability-index-antiduplication-gate-20260811
+origin/agent/chatgpt-local-reconcile-apparently-d10e15217b00,2,4,1,25.0,7,docs: reconciliation ledger report for audit d10e15217b00
+origin/agent/p0-migration-drift-ci-guard-20260811,2,8,2,25.0,18,agent: p0-migration-drift-ci-guard-20260811 — drop stray ledger snapshot artifact
+origin/agent/ux-orchestra-undo-and-blast-radius-20260811,2,8,2,25.0,18,agent: ux-orchestra-undo-and-blast-radius-20260811
+origin/agent/backlog-batch-apparently-0d157dd-recover-kpi-dashboard-via-adapted-diffs-apply-p,1,4,1,25.0,24,agent: backlog-batch-apparently-0d157dd-recover-kpi-dashboard-via-adapted-diffs-apply-p
+origin/agent/chatgpt-local-reconcile-apparently-269d6457c125,1,4,1,25.0,14,agent: chatgpt-local-reconcile-apparently-269d6457c125
+origin/agent/chatgpt-local-reconcile-apparently-26b70b499ea9,1,4,1,25.0,13,agent: chatgpt-local-reconcile-apparently-26b70b499ea9
+origin/agent/chatgpt-local-reconcile-apparently-31c7725a2bb3,1,4,1,25.0,13,agent: chatgpt-local-reconcile-apparently-31c7725a2bb3
+origin/agent/chatgpt-local-reconcile-apparently-641ce6a80f47,1,4,1,25.0,14,agent: chatgpt-local-reconcile-apparently-641ce6a80f47
+origin/agent/chatgpt-local-reconcile-apparently-73f0ceff2f65,1,4,1,25.0,13,agent: chatgpt-local-reconcile-apparently-73f0ceff2f65
+origin/agent/chatgpt-local-reconcile-apparently-d0dc7d131068,1,4,1,25.0,7,agent: chatgpt-local-reconcile-apparently-d0dc7d131068
+origin/agent/chatgpt-local-reconcile-apparently-e5e677403f2f,1,4,1,25.0,13,agent: chatgpt-local-reconcile-apparently-e5e677403f2f
+origin/agent/dropbox-tomorrow-apparently-pareto-bridges-perpetual-spine-v1-unifie-group-5-imp,1,4,1,25.0,25,agent: dropbox-tomorrow-apparently-pareto-bridges-perpetual-spine-v1-unifie-group-5-imp
+origin/agent/migration-dryrun-harness,1,4,1,25.0,6,migrations: a dry-run harness the next migration can also use
+origin/agent/recover-missing-branch-chatgpt-local-reconcile-apparently-0b7363db6dcc,1,4,1,25.0,6,agent: recover-missing-branch-chatgpt-local-reconcile-apparently-0b7363db6dcc
+origin/agent/recover-missing-branch-migration-dryrun-harness-from-45ad3511beea,1,4,1,25.0,6,agent: recover-missing-branch-migration-dryrun-harness-from-45ad3511beea
+origin/agent/selfimp-closed-loop-metrics-generator-ratio-20260811,1,8,2,25.0,18,agent: selfimp-closed-loop-metrics-generator-ratio-20260811
+origin/agent/artifact-email-triage-dashboard,1,7,2,28.6,19,agent: artifact-email-triage-dashboard
+origin/agent/p0-migration-history-repair-20260811,1,7,2,28.6,19,agent: p0-migration-history-repair-20260811
+origin/agent/recover-stash-1ef4684aae0e,1,7,2,28.6,17,recover: stash 1ef4684aae0e — coherent subset onto current master
+origin/agent/foulkon-regulated-app-scaffold-20260811,5,24,7,29.2,18,agent: foulkon-regulated-app-scaffold-20260811
+origin/agent/chatgpt-local-reconcile-apparently-4748f09445d4,4,3,1,33.3,17,docs(recovery-ledger): reconcile all 31 refs/stash entries for 4748f09445d4
+origin/agent/chatgpt-local-reconcile-apparently-377b03d6f0fa,3,3,1,33.3,17,docs(recovery-ledger): reconcile 81 live evidence items for 377b03d6f0fa
+origin/agent/backlog-batch-apparently-0ef7cd6-kpi-dashboard-recovery-implement-kpi-logic,1,3,1,33.3,24,feat: integrate KPI metrics data layer into dashboard
+origin/agent/backlog-batch-apparently-45cc243-patch-transplant,1,3,1,33.3,24,agent: backlog-batch-apparently-45cc243-patch-transplant
+origin/agent/chatgpt-local-reconcile-apparently-72b7b924f4c2,1,3,1,33.3,18,agent: chatgpt-local-reconcile-apparently-72b7b924f4c2
+origin/agent/chatgpt-local-reconcile-apparently-82ff722a1839,1,3,1,33.3,15,agent: chatgpt-local-reconcile-apparently-82ff722a1839
+origin/agent/chatgpt-local-reconcile-apparently-ac5cfd557e10,1,3,1,33.3,18,agent: chatgpt-local-reconcile-apparently-ac5cfd557e10
+origin/agent/chatgpt-local-reconcile-apparently-be189d2d8abb,1,3,1,33.3,18,agent: chatgpt-local-reconcile-apparently-be189d2d8abb
+origin/agent/chatgpt-local-reconcile-apparently-c2e9526889e1,1,3,1,33.3,18,agent: chatgpt-local-reconcile-apparently-c2e9526889e1
+origin/agent/chatgpt-local-reconcile-apparently-e0ddfad5e546,1,3,1,33.3,18,agent: chatgpt-local-reconcile-apparently-e0ddfad5e546
+origin/agent/consilium-forced-diversity-all-seats-20260811,1,3,1,33.3,19,agent: consilium-forced-diversity-all-seats-20260811
+origin/agent/focused-adjudicate-75769db7-worktree-1,1,3,1,33.3,6,gitignore: the scratch rules were narrower than the rule they encode
+origin/agent/recover-evidence-2d01e4879857,1,3,1,33.3,17,agent: recover-evidence-2d01e4879857
+origin/agent/recover-evidence-81d4a98131b5,1,3,1,33.3,17,agent: recover-evidence-81d4a98131b5
+origin/agent/recover-f4ebda-stash-5d1e94f7-hive-legal-infra,1,3,1,33.3,6,recover 5d1e94f7: vertical-spawner on master was a stub calling an undefined function
+origin/agent/recovered-kpi-dashboard-metrics,1,3,1,33.3,18,agent: recovered-kpi-dashboard-metrics
+origin/agent/ux-conductor-with-triage-approvals-onepage-20260811,1,6,2,33.3,18,agent: ux-conductor-with-triage-approvals-onepage-20260811
+origin/agent/jbf-global-tribal-jurisdiction-expansion-20260811,1,11,4,36.4,19,agent: jbf-global-tribal-jurisdiction-expansion-20260811
+origin/agent/p0-emptiness-fails-the-build-ci-20260811,1,5,2,40.0,18,agent: p0-emptiness-fails-the-build-ci-20260811
+origin/agent/synthesis-loop-v0-single-cell-20260811,2,10,5,50.0,18,agent: synthesis-loop-v0-single-cell-20260811
+origin/agent/apparently-reconcile-followup-reverted-rescue-slices,1,2,1,50.0,6,test(fabric): pin the change-ledger jurisdiction contract; adjudicate the reverted rescue 
+origin/agent/backlog-batch-apparently-efab898,1,2,1,50.0,32,feat: add coverage radar and regulatory debt schemas to hive ops dashboard
+origin/agent/dropbox-vigil-apparently-gaming-regulator-portal-build-now-group-3,1,4,2,50.0,6,agent: dropbox-vigil-apparently-gaming-regulator-portal-build-now-group-3
+origin/agent/recover-evidence-1092b37c3f0e,1,2,1,50.0,6,recover(license-os): export robotsPermits and test the crawl-permission boundary
+origin/agent/recover-f4ebda-conflicts-rescue-refs,1,2,1,50.0,15,agent: recover-f4ebda-conflicts-rescue-refs
+origin/agent/recover-missing-branch-remediate-dropbox-smarter-embeddable-core-apparently-pareto-real-member-identi-m,1,2,1,50.0,17,agent: recover-missing-branch-remediate-dropbox-smarter-embeddable-core-apparently-pareto-
+origin/agent/remediate-relfix-v15-apparently-b77888,1,2,1,50.0,17,agent: remediate-relfix-v15-apparently-b77888
+origin/agent/ux-nearest-yes-and-frontier-dial-20260811,1,8,4,50.0,18,agent: ux-nearest-yes-and-frontier-dial-20260811
+origin/agent/recover-evidence-983b0b23321f,1,5,3,60.0,6,agent: recover-evidence-983b0b23321f
+origin/agent/hive-support-entity-relationship-source-extract-proven-patch-from-library,2,8,5,62.5,28,fix: repair pre-existing build break and 9 failing tests
+origin/agent/dropbox-apparently-filings-as-code-deadline-omnisc-slice-3,2,3,2,66.7,24,agent: dropbox-apparently-filings-as-code-deadline-omnisc-slice-3
+origin/agent/dropbox-terminal-permissions-framework-admin-set-f-slice-1,1,3,2,66.7,25,agent: terminal permissions simple mode — replace the ReDoS-prone URN matcher with a linea
+origin/agent/recover-evidence-0f75de5741da,1,3,2,66.7,6,agent: recover-evidence-0f75de5741da
+origin/agent/recover-f4ebda-005feb89595c,1,3,2,66.7,6,agent: recover-f4ebda-005feb89595c
+origin/agent/recover-f4ebda-stash-a66858a2-cade-router,1,3,2,66.7,6,recover a66858a2: five cron handlers existed and nothing called them
+origin/agent/recover-apparently-rescue-b1be5957,1,215,150,69.8,6,recover: refs/orch-rescue/20260817T052229-chatgpt-local-reconcile-apparently-e3e116932582-
+origin/agent/p1-improvement-proposals-category-vocabulary-drift-20260812,1,10,7,70.0,18,agent: p1-improvement-proposals-category-vocabulary-drift-20260812
+origin/agent/recover-f4ebda-stash-legal-holds-checker,2,4,3,75.0,13,"recover(legal-holds-checker): restore from stash and wire it in, replacing the hook's unca"
+origin/agent/p0-security-advisor-had-never-been-run-20260811,1,4,3,75.0,18,agent: p0-security-advisor-had-never-been-run-20260811
+origin/agent/smarter-5-95,4,22,17,77.3,13,"feat: add proof-surface widgets to legal-opinions, licenses, regulators, pricing"
+origin/agent/chatgpt-local-reconcile-apparently-63703ea90c5a,4,15,12,80.0,17,agent: chatgpt-local-reconcile-apparently-63703ea90c5a
+origin/agent/p0-tribal-code-scheme-reconciliation-20260811,1,5,4,80.0,18,agent: p0-tribal-code-scheme-reconciliation-20260811
+origin/agent/p0-scoped-tsc-recipe-is-vacuous-for-server,1,7,6,85.7,18,agent: p0-scoped-tsc-recipe-is-vacuous-for-server
+origin/agent/recover-apparently-rescue-1ef817b2,1,312,284,91.0,6,recover: refs/recovery/git-write-20260819T012834Z/1ef817b2deb02ce53f726e13d25d91cce0e177f4
+origin/agent/factory-unblock-chatgpt-reconcile-apparently-recover-stash-17,1,23,21,91.3,6,agent: factory-unblock-chatgpt-reconcile-apparently-recover-stash-17
+origin/agent/recover-f4ebda-5b8f8d2350a2,1,12,11,91.7,6,agent: recover-f4ebda-5b8f8d2350a2
+origin/agent/recover-apparently-rescue-0bc4674f,1,145,134,92.4,6,recover: refs/recovery/git-write-20260819T012834Z/0bc4674fcf9f05ee4346df168a0111d45ed59c22
+origin/rescue/landing-revamp-uncommitted-20260813,4,32,30,93.8,17,rescue: preserve 19 uncommitted landing-revamp-20260811 files (read-only capture)
+origin/agent/recover-apparently-rescue-f00236a4,1,145,136,93.8,6,recover: refs/recovery/git-write-20260819T012834Z/f00236a449aeefa8010819270b7c46e43e9d29b1
+origin/agent/recover-apparently-rescue-0057bc12,1,206,197,95.6,6,recover: refs/orch-rescue/20260814T013330-work-20260813b-0057bc12
+origin/agent/recover-apparently-rescue-12a89c64,1,381,370,97.1,6,recover: refs/recovery/git-write-20260819T012834Z/12a89c64c69367bc458b0a0422a44c418037fe2d
+origin/agent/recover-apparently-rescue-5036ad75,1,381,370,97.1,6,recover: refs/recovery/git-write-20260819T012834Z/5036ad75691a6639efc693c85c6e189430b3bb25
+origin/agent/recover-apparently-rescue-80fc7aae,1,376,365,97.1,6,recover: refs/recovery/git-write-20260819T012834Z/80fc7aaee0a737f340eef41361b172afaea3d53b
+origin/agent/recover-apparently-rescue-083881b5,1,397,386,97.2,6,recover: refs/recovery/git-write-20260819T012834Z/083881b59a6319070c15295d981b2c58718eb35a
+origin/agent/recover-apparently-rescue-2a925c94,1,359,349,97.2,6,recover: landing-improve-20260819
+origin/agent/recover-apparently-rescue-61651ebc,1,397,386,97.2,6,recover: refs/recovery/git-write-20260819T012834Z/61651ebc35735a3a3badc05a9e9f82d98c220a53
+origin/agent/dropbox-cross-app-hivemind-federation-one-market-shaped-intelligence-50-500x-extensions-build-all,4,12,12,100.0,25,agent: dropbox-cross-app-hivemind-federation-one-market-shaped-intelligence-50-500x-extens
+origin/agent/chatgpt-local-reconcile-apparently-45166d7f9f7a,3,12,12,100.0,17,agent: chatgpt-local-reconcile-apparently-45166d7f9f7a
+origin/agent/dropbox-cross-app-hivemind-federation-one-market-s-slice-2,3,6,6,100.0,25,agent: make the federation barrel rule enforceable (completeness + import discipline)
+origin/agent/dropbox-tomorrow-apparently-pareto-bridges-perpetu-slice-4,3,5,5,100.0,25,agent: dropbox-tomorrow-apparently-pareto-bridges-perpetu-slice-4
+origin/agent/chatgpt-local-reconcile-apparently-1500f0de3751,2,9,9,100.0,17,agent: chatgpt-local-reconcile-apparently-1500f0de3751
+origin/agent/chatgpt-local-reconcile-smarter-b53fc2827873-mirror-from-smarter,2,3,3,100.0,18,agent: chatgpt-local-reconcile-smarter-b53fc2827873-mirror-from-smarter
+origin/agent/filing-warranty,2,7,7,100.0,38,Merge branch 'recover-missing-branch-perpetual-memo-binding-slice-4-implement-recovery-acc
+origin/agent/recovered-sister-landing-20260806,2,4,4,100.0,24,design(landing): dark surface variant for the sister system
+origin/agent/act-e2e-usable-smoke,1,2,2,100.0,32,fix(e2e): resolve Playwright test timeout and race condition issues
+origin/agent/chatgpt-local-reconcile-smarter-6966499391f3-mirror-from-smarter,1,2,2,100.0,18,agent: chatgpt-local-reconcile-smarter-6966499391f3-mirror-from-smarter
+origin/agent/chatgpt-reconcile-apparently-recover-stash-17,1,24,24,100.0,17,agent: chatgpt-reconcile-apparently-recover-stash-17
+origin/agent/chatgpt-reconcile-apparently-recover-stash-2,1,2,2,100.0,16,agent: chatgpt-reconcile-apparently-recover-stash-2
+origin/agent/cont-229e06,1,2,2,100.0,36,agent: cont-229e06
+origin/agent/copyfix-smarter-08240405-mirror-from-smarter,1,2,2,100.0,6,agent: copyfix-smarter-08240405-mirror-from-smarter
+origin/agent/dropbox-apparently-1-click-filing-activation-from-risk-gradient-opti-contracts,1,1,1,100.0,31,recovery-intent-stub: dropbox-apparently-1-click-filing-activation-from-risk-gradient-opti
+origin/agent/dropbox-apparently-consilium-continuous-operation-audit-then-guarant-contracts,1,1,1,100.0,31,recovery-intent-stub: dropbox-apparently-consilium-continuous-operation-audit-then-guarant
+origin/agent/factory-unblock-relfix-apparently-07250017,1,1,1,100.0,36,fix: update hero verticals on index page
+origin/agent/hive-arbitrage-enforcement-hook,1,2,2,100.0,24,"agent: hive arbitrage enforcement hook — commit it, test it, fix the two bugs the tests fo"
+origin/agent/hive-support-entity-relationship-source-extract-and-apply-beethoven-patch,1,2,2,100.0,28,agent: hive-support-entity-relationship-source-extract-and-apply-beethoven-patch
+origin/agent/improve-mesh-apparently-regulatory-intelligence-ma-slice-5-refactor-for-maintain,1,1,1,100.0,24,agent: improve-mesh-apparently-regulatory-intelligence-ma-slice-5-refactor-for-maintain
+origin/agent/jurisdiction-coverage-gate-and-namespace-remediation-20260812,1,4,4,100.0,17,agent: jurisdiction-coverage-gate-and-namespace-remediation-20260812
+origin/agent/recover-evidence-03957c959663,1,2,2,100.0,6,agent: recover-evidence-03957c959663
+origin/agent/recover-evidence-2644606363fe,1,6,6,100.0,17,agent: recover-evidence-2644606363fe
+origin/agent/recover-evidence-f753cc2c1e11,1,1,1,100.0,6,agent: recover-evidence-f753cc2c1e11
+origin/agent/recover-f4ebda-conflicts-stashes,1,2,2,100.0,15,agent: recover-f4ebda-conflicts-stashes
+origin/agent/recover-missing-branch-apparently-recover-otc-payoff-slice1-bridge-marked-applied,1,3,3,100.0,6,agent: recover-missing-branch-apparently-recover-otc-payoff-slice1-bridge-marked-applied
+origin/agent/recover-missing-branch-p0-scoped-typecheck-trusted-a-placeholder-config-20260812,1,3,3,100.0,17,"fix(scoped-typecheck): prove the gate can still fail, every run"
+origin/agent/recover-otc-payoff-slice1-bridge-marked-applied,1,2,2,100.0,6,fix(otc): the confidence gate could never reject anything
+origin/agent/recover-stash-5d1536dcab08,1,4,4,100.0,17,agent: recover-stash-5d1536dcab08
+origin/agent/recover-stash-5e4c1bee9da5,1,3,3,100.0,17,recover(stash 5e4c1bee9da5): hive arbitrage enforcement hook + legal holds checker
+origin/agent/recover-stash-ac18c82dc0f7,1,1,1,100.0,6,agent: recover-stash-ac18c82dc0f7
+origin/agent/recovered-racefeed-free-play-launch-slice-1,1,3,3,100.0,25,agent: dropbox-racefeed-galop-free-play-launch-apparently-slice-1
+origin/agent/recovered-salvage-enforcement-velocity,1,1,1,100.0,24,salvage: in-flight tracked edits blocking auto_conflict_resolver (enforcement-velocity.ts)
+origin/agent/recovered-smarter-5-95-decision-budget-lint,1,6,6,100.0,24,fix(lint): restore decision budget lint and implementation for smarter-5-95

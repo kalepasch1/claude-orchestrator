@@ -7,4 +7,4 @@ Recovered or prepared patches, not yet applied. Each has a companion
 
 | Patch | Files | Hunks | +/- | Purpose |
 | --- | --- | --- | --- | --- |
-| [`economic-scheduler-revenue.patch`](economic-scheduler-revenue.patch.md) | 1 | 1 | +6/-2 | Located/reconstructed 2026-08-06 per backlog-batch-beethoven-e63dfee (locate-and-prepare step; the apply step is a separate task). |
+| [`economic-scheduler-revenue.patch`](economic-scheduler-revenue.patch.md) | 1 | 1 | +6/-1 | Located/reconstructed 2026-08-06 per backlog-batch-beethoven-e63dfee (locate-and-prepare step; the apply step is a separate task). |

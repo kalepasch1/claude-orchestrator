@@ -41,6 +41,10 @@ runner/.preopt_cache/
 
 runner/*.bak.wedgefix
 intake/*.md
+# The chatgpt bridge writes here, one level deeper than the line above
+# reaches, so 91 generated records were showing as untracked and blocking
+# prove_build on a dirty tree.
+intake/processed/
 node_modules
 
 # Machine-local release and legal-output artifacts

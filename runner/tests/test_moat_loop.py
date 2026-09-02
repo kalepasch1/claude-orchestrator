@@ -13,16 +13,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Stub db before importing modules under test
 # ---------------------------------------------------------------------------
 import types as _types
+from env_during_import import modules_during_import
+
 _fake_db = _types.ModuleType("db")
 _fake_db.select = lambda *a, **kw: []
 _fake_db.insert = lambda *a, **kw: None
 _fake_db.update = lambda *a, **kw: None
 _fake_db.upsert = lambda *a, **kw: None
-sys.modules["db"] = _fake_db
 
-import moat_loop
-import moat_activate
-import ingest_fulltext
+# WAS a bare `sys.modules["db"] = _fake_db` before these imports. pytest imports
+# every test module during COLLECTION, so that did not scope the stub to this
+# file -- it replaced the real database client for every test that ran afterwards
+# in the same process, with no way to put it back. See
+# runner/tests/test_sys_modules_shadowing.py for what that cost.
+#
+# The context manager is deliberate rather than import_with_stubs(): these three
+# modules import each other, and giving each its own private copy would hand
+# moat_activate a DIFFERENT moat_loop than the one these tests hold. They bind
+# the stub as before; sys.modules is left exactly as it was found.
+with modules_during_import(db=_fake_db):
+    import moat_loop
+    import moat_activate
+    import ingest_fulltext
 
 
 # ── moat_loop tests ──────────────────────────────────────────────────────────
@@ -90,13 +102,39 @@ class TestMoatActivate:
         moat_activate.reset_stats()
 
     def test_activation_from_seed_file(self):
-        """Activation from seed file produces records."""
+        """Activation from the committed seed produces one engagement record.
+
+        This asserted `len(records) == 3` and that records[0]["source"] was
+        "federal_register" or "edgar" — the shape _fetch_federal_register()
+        returns, not the shape the seed has. The committed seed is a single CFTC
+        engagement object, and _load_seed handed the dict straight back, so
+        len() was counting its five KEYS. Both halves are now what is actually
+        on disk: one engagement, stamped source="seed" by the loader so every
+        consumer can read the field regardless of where a record came from.
+        """
         seed_path = os.path.join(os.path.dirname(__file__), "..",
                                  "seeds", "golden_engagements_seed.json")
         records = moat_activate.trigger_once(seed_path=seed_path, live=False)
-        assert len(records) == 3
-        assert records[0]["source"] in ("federal_register", "edgar")
-        assert all("id" in r for r in records)
+        assert len(records) == 1
+        assert all(isinstance(r, dict) for r in records), records
+        assert records[0]["source"] == "seed"
+        assert records[0]["matter_id"] == "cftc-prediction-markets-2026"
+        assert len(records[0]["stages"]) == 4
+
+    def test_a_seed_holding_a_list_is_loaded_as_that_list(self, tmp_path):
+        """The other accepted shape — a file with several engagements."""
+        seed = tmp_path / "many.json"
+        seed.write_text(json.dumps([{"matter_id": "a"}, {"matter_id": "b"}]))
+        records = moat_activate.trigger_once(seed_path=str(seed), live=False)
+        assert [r["matter_id"] for r in records] == ["a", "b"]
+        assert all(r["source"] == "seed" for r in records)
+
+    def test_a_seed_record_keeps_its_own_source(self, tmp_path):
+        """The stamp is a default, not an override."""
+        seed = tmp_path / "sourced.json"
+        seed.write_text(json.dumps([{"matter_id": "a", "source": "edgar"}]))
+        records = moat_activate.trigger_once(seed_path=str(seed), live=False)
+        assert records[0]["source"] == "edgar"
 
     def test_activation_missing_seed_returns_empty(self):
         """Missing seed file returns empty list gracefully."""
@@ -111,7 +149,10 @@ class TestMoatActivate:
         moat_activate.trigger_once(seed_path=seed_path, live=False)
         s = moat_activate.stats()
         assert s["activations"] >= 1
-        assert s["seed_records"] >= 3
+        # seed_records counts ENGAGEMENTS. The committed seed holds one, and this
+        # asserted >= 3 only because the old loader counted the seed object's
+        # five keys — a stat that grew when someone added a metadata field.
+        assert s["seed_records"] == 1
 
 
 # ── ingest_fulltext tests ────────────────────────────────────────────────────

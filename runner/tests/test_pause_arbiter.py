@@ -15,31 +15,33 @@ _ks = types.ModuleType("kill_switch")
 _ks.pause = lambda **kw: None
 _ks.resume = lambda **kw: None
 _ks.is_paused = lambda *a: _paused["v"]
-sys.modules["kill_switch"] = _ks
 
 # Stub db for escalation approval filing
 _approvals = []
 _db = types.ModuleType("db")
 _db.insert = lambda table, row: _approvals.append(row)
 _db.select = lambda *a, **kw: []
-sys.modules["db"] = _db
 
 # Stub subscription_guard
 _sg = types.ModuleType("subscription_guard")
 _sg.audit = lambda: {"api_keys_present": False}
-sys.modules["subscription_guard"] = _sg
 
-import pause_arbiter
+# WAS three bare `sys.modules[...] = ...` assignments followed by a hand-rolled
+# restore loop over _real_modules. The restore was correct -- this file was one
+# of the few that put things back -- but it is exactly what
+# env_during_import.modules_during_import() does, including the "the name was
+# absent before" case, and doing it by hand in every file is how the other
+# thirteen got it wrong. See runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
+
+with modules_during_import(kill_switch=_ks, db=_db, subscription_guard=_sg):
+    import pause_arbiter
+
 # Bind the test doubles explicitly as well as through import injection. This
 # keeps the suite hermetic when another test imported pause_arbiter first.
 pause_arbiter.kill_switch = _ks
 pause_arbiter.db = _db
 pause_arbiter.subscription_guard = _sg
-for _name, _module in _real_modules.items():
-    if _module is not None:
-        sys.modules[_name] = _module
-    else:
-        sys.modules.pop(_name, None)
 
 
 class TestPauseArbiterBasic(unittest.TestCase):

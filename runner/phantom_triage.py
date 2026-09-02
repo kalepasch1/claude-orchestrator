@@ -38,10 +38,18 @@ THE THREE CLASSES
 
 SAFETY
 ------
-Dry run by default. `--apply` closes ONLY class (b), and only rows still in
-PHANTOM_UNVERIFIED at write time. Nothing is promoted by this script: promotion
-requires an artifact_commit and belongs to phantom_recovery, so "no task
-promoted without landed evidence" holds by construction.
+Dry run by default. `--apply` does exactly two things, and only to rows still in
+PHANTOM_UNVERIFIED at write time:
+
+  * class (a): records `artifact_commit` from the git evidence. STATE UNCHANGED.
+    Skips any row that already carries evidence, and any sha another task
+    already cites — merge_truth refuses to certify two tasks with one commit, so
+    recording it here would only manufacture a rejection later.
+  * class (b): sets CLOSED.
+
+Nothing is promoted by this script: promotion requires an artifact_commit AND a
+merge_truth reachability check, and that belongs to phantom_recovery. "No task
+promoted without landed evidence" still holds by construction.
 
 Usage:
     python3 phantom_triage.py --project apparently
@@ -138,6 +146,12 @@ def main():
     ap.add_argument("--project", required=True)
     ap.add_argument("--limit", type=int, default=0, help="0 = all")
     ap.add_argument("--json", dest="json_out", default="")
+    ap.add_argument("--state", default="PHANTOM_UNVERIFIED",
+                    help="which state to classify (default PHANTOM_UNVERIFIED). "
+                         "Any other state is DIAGNOSTIC AND EVIDENCE-RECORDING ONLY: "
+                         "the class (b) close refuses to run outside "
+                         "PHANTOM_UNVERIFIED, because closing a MERGED row is "
+                         "reclassification and belongs to phantom_reclassify.")
     ap.add_argument("--apply", action="store_true",
                     help="close class (b) NO_TRACE rows. Never promotes anything.")
     args = ap.parse_args()
@@ -157,12 +171,12 @@ def main():
 
     rows = db.select_all("tasks", {
         "project_id": "eq.%s" % project_id,
-        "state": "eq.PHANTOM_UNVERIFIED",
+        "state": "eq.%s" % args.state,
         "select": "id,slug,note,artifact_commit,artifact_branch",
     }, max_rows=args.limit or None)
 
-    print("phantom triage: %d PHANTOM_UNVERIFIED row(s) in %s (repo %s)."
-          % (len(rows), args.project, repo))
+    print("phantom triage: %d %s row(s) in %s (repo %s)."
+          % (len(rows), args.state, args.project, repo))
     print("  Indexing refs and commit messages...")
     refs = all_ref_names(repo)
     body_blob = commit_body_index(repo)
@@ -209,6 +223,63 @@ def main():
         print("\nDry run. Re-run with --apply to close the class (b) rows. Nothing was written.")
         return 0
 
+    # ---- class (a): persist the evidence so phantom_recovery has something to
+    # reconcile. This step was specified in this module's own header ("Promotable:
+    # persist the sha, then let phantom_recovery reconcile it") and in
+    # phantom_reclassify's closing comment ("set artifact_commit to it, and only
+    # then set MERGED"), and it did not exist. --apply closed class (b) and did
+    # nothing else, so every run re-derived the same shas and threw them away.
+    #
+    # Measured on smarter: 5 rows sat in PHANTOM_UNVERIFIED with an empty
+    # artifact_commit while find_evidence named the exact commit that delivered
+    # them, on every run, for as long as the backlog has existed.
+    #
+    # STATE IS NOT TOUCHED HERE. "Nothing is promoted by this script" still holds
+    # by construction: this writes evidence, and promotion remains
+    # phantom_recovery's job through merge_truth.
+    recorded = 0
+    for item in buckets[LANDED]:
+        sha = (item.get("evidence") or "").strip()
+        if not sha:
+            continue
+        current = db.select("tasks", {"id": "eq.%s" % item["id"],
+                                      "select": "id,state,artifact_commit"})
+        # The re-check asks "has this row moved since the scan?", so it compares
+        # against the state that was SCANNED. Hardcoding PHANTOM_UNVERIFIED here
+        # made --state MERGED skip every row and report nothing recorded, which
+        # reads as "no evidence found" rather than "the guard ate it".
+        if not current or current[0].get("state") != args.state:
+            continue
+        if (current[0].get("artifact_commit") or "").strip():
+            continue                      # never clobber evidence already recorded
+        # merge_truth refuses to certify two tasks with one commit, so recording a
+        # sha another task already cites would only manufacture a rejection later.
+        cited = db.select("tasks", {"artifact_commit": "eq.%s" % sha,
+                                    "select": "id,slug", "limit": "1"}) or []
+        if cited and cited[0].get("id") != item["id"]:
+            print("  skipped %s: %s is already the artifact_commit of %s"
+                  % (item["slug"][:48], sha[:12], cited[0].get("slug")))
+            continue
+        db.update("tasks", {"id": item["id"]}, {
+            "artifact_commit": sha,
+            "note": ("phantom_triage: landed evidence recorded from git - %s. "
+                     "State deliberately unchanged; promotion belongs to "
+                     "phantom_recovery via merge_truth." % item.get("detail", "")[:400]),
+        })
+        recorded += 1
+    if recorded:
+        print("\nRecorded artifact_commit on %d landed row(s). None promoted - "
+              "run phantom_recovery.py to reconcile them." % recorded)
+
+    if args.state != "PHANTOM_UNVERIFIED":
+        print("\nEvidence recording only: --state %s. The class (b) close is refused "
+              "outside PHANTOM_UNVERIFIED." % args.state)
+        print("Closing a %s row is RECLASSIFICATION, not triage -- it changes what the "
+              "fleet claims it shipped, and belongs to phantom_reclassify.py, which is "
+              "the job that created this backlog in the first place and knows how to "
+              "record that it did." % args.state)
+        return 0
+
     closable = buckets[NO_TRACE]
     if not closable:
         print("\nNothing safely closable.")
@@ -218,6 +289,9 @@ def main():
     for item in closable:
         # Re-check at write time: this cannot clobber a row that has progressed
         # since the scan, the same guard phantom_reclassify uses.
+        # Pinned to PHANTOM_UNVERIFIED rather than args.state, and deliberately:
+        # the guard above already refused any other state before reaching here, so
+        # this is the second lock on the only write that ends a task.
         current = db.select("tasks", {"id": "eq.%s" % item["id"], "select": "id,state"})
         if not current or current[0].get("state") != "PHANTOM_UNVERIFIED":
             continue

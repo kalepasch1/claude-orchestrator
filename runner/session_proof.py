@@ -25,8 +25,17 @@ Pure functions: only subprocess for git, no db access, no model calls.
 import re
 import subprocess
 
+# The stall phrases are PATTERNS, not three literal strings. The original list spelled out
+# "what would you like to work on" and missed the form the CLI actually emits most of the
+# time — "what would you like ME to work on" — so the single commonest no-instructions reply
+# in the fleet sailed through the check this module exists to perform, and those sessions were
+# still scored as completed runs. The optional "me"/"us" and the alternation over
+# work on / do / help with cover the phrasings of the same non-answer.
 STALL_RX = re.compile(
-    r"what would you like to work on|i'm ready to help|i don't have a specific task",
+    r"what would you like (?:me |us )?to (?:work on|do|help with|start with)|"
+    r"what (?:should|would) i (?:work on|do) (?:next|first)?|"
+    r"i['’]m ready to help|"
+    r"i don['’]t have a specific task",
     re.IGNORECASE)
 
 TESTS_PASS_RX = re.compile(
@@ -44,8 +53,20 @@ SIG_WORD_MIN_LEN = 6     # "significant" = longer than 5 chars
 
 
 def _is_noise(path):
-    p = path.strip()
-    return p.startswith(NOISE_PREFIXES) or p.endswith(NOISE_SUFFIXES)
+    """True for paths that are agent scratch rather than work product.
+
+    NOISE_PREFIXES are matched at every path COMPONENT, not just at the repo root. The check
+    used to be startswith() alone, which meant `.claude/` counted as scratch only for a
+    single-package repo checked out at its own root. In a monorepo the agent's settings live
+    at apps/web/.claude/settings.local.json — startswith(".claude/") is False for that path,
+    so a session that touched nothing but its own settings file produced a "real" diff of one
+    file and was certified as having done work. That is precisely the session this module was
+    written to catch.
+    """
+    p = str(path or "").strip()
+    if p.endswith(NOISE_SUFFIXES):
+        return True
+    return p.startswith(NOISE_PREFIXES) or any("/" + n in p for n in NOISE_PREFIXES)
 
 
 def _diff_numstat(repo, branch, base):

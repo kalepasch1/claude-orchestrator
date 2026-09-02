@@ -234,10 +234,14 @@ def _alert(finding):
     except Exception as exc:
         _log_event({"event": "notify_error", "error": str(exc)})
     try:
+        # Columns are `title`/`status`, not `summary`/`state`. Writing the wrong
+        # names returned HTTP 400 on every alert and the except below swallowed it,
+        # so this detector correctly found vigil 18 days silent and filed NOTHING.
+        # `status` is lower-case in this table ('pending'/'approved'/'superseded').
         db.insert("approvals", {
             "kind": "deploy_silence", "project": finding["project"],
-            "summary": headline[:300], "detail": finding["reason"][:2000],
-            "state": "OPEN"}, upsert=False)
+            "title": headline[:300], "detail": finding["reason"][:2000],
+            "status": "pending"}, upsert=False)
     except Exception as exc:
         _log_event({"event": "approval_error", "error": str(exc)})
     return headline

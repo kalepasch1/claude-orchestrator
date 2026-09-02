@@ -177,6 +177,137 @@ def first_try_yield(days: int = 30) -> dict:
     return result
 
 
+STAGE_METRIC_WINDOWS = (5, 30)   # meta_loop reads eq.30 for baselines, eq.5 for regressions
+
+
+def _iso_cutoff(days):
+    """The ISO-8601 instant `days` ago, as PostgREST wants it in a gte. filter."""
+    return (datetime.datetime.utcnow()
+            - datetime.timedelta(days=days)).isoformat()
+
+
+def _write_stage_metric(row):
+    """Upsert one stage_metrics row. Returns None on success, else the error text.
+
+    Fail-soft with the reason kept. The relation is created by
+    runner/migrations/004_stage_metrics.sql (applied 2026-08-25); if it is ever
+    unreachable again, "wrote 0 rows" without saying why is exactly how a
+    producer that CANNOT work looks like one with nothing to say.
+    """
+    try:
+        db.insert("stage_metrics", row, upsert=True)
+        return None
+    except Exception as exc:
+        return str(exc)[:200]
+
+
+def stage_metrics(windows=STAGE_METRIC_WINDOWS) -> dict:
+    """Populate the `stage_metrics` table meta_loop's auto-tuner reads.
+
+    NOBODY WROTE THIS TABLE. meta_loop._stage_metrics_summary() selects from
+    `stage_metrics` for window_days=30, and _plan_auto_tune_decisions() selects
+    it again for window_days=5 to detect cycle-time regressions -- and
+    `grep -rn '"stage_metrics"' runner` finds those two reads and no insert
+    anywhere in the repository. _stage_metrics_summary() therefore returned {}
+    on every call, the `for (proj_id, kind), data in metrics.items()` loop below
+    it never entered, and the pipeline auto-tuner has never emitted a single
+    decision in its life. It could not have: its input did not exist.
+
+    This module already computes both halves -- cycle_time_by_kind() and
+    first_try_yield() -- but keyed by kind and by model, not by the
+    (project_id, kind, window_days) triple the consumer selects on. This
+    function is that same arithmetic at the grain the consumer asks for.
+
+    Cycle time is task.created_at -> the task's LAST outcome.created_at rather
+    than tasks.updated_at, because updated_at moves for reasons that are not
+    delivery (a note, a state fix, a janitor sweep) and would quietly inflate
+    every window.
+
+    The `stage_metrics` relation is created by
+    runner/migrations/004_stage_metrics.sql, applied 2026-08-25. If it is ever
+    absent, _write_stage_metric() returns the error text and this reports a
+    written count of 0 WITH the reason named, rather than pretending it wrote --
+    a distinction that matters, because "0 written, no errors" is also what a
+    correct run over an empty window looks like.
+    """
+    # WINDOW SERVER-SIDE, AND PAGE THE REST.
+    #
+    # The first version of this used db.select() with no limit and no order for
+    # both reads. PostgREST caps a single response at 1,000 rows, so against
+    # 4,534 MERGED tasks (oldest 2020-01-01) it returned an arbitrary page that
+    # happened to contain nothing inside the 30-day cutoff -- and the function
+    # reported "stage_metrics_written: 0, errors: []", i.e. a clean run that
+    # measured nothing. db.py's own comment above select() lists four
+    # outage-class failures from exactly this; this was very nearly a fifth.
+    #
+    # Both reads now filter on created_at server-side over the WIDEST window and
+    # page to exhaustion, and the narrower windows are cut from that one fetch.
+    widest = max(windows) if windows else 0
+    if not widest:
+        return {"stage_metrics_written": 0, "windows": list(windows), "errors": []}
+    horizon = _iso_cutoff(widest)
+
+    tasks = db.select_all("tasks", {
+        "select": "id,project_id,kind,created_at,remediation_count,state",
+        "state": "eq.MERGED",
+        "created_at": f"gte.{horizon}",
+    }) or []
+    # An outcome is recorded at or after its task's creation, so the same horizon
+    # bounds it: anything older cannot belong to a task inside any window.
+    outcomes = db.select_all("outcomes", {
+        "select": "task_id,created_at",
+        "created_at": f"gte.{horizon}",
+    }) or []
+
+    finished = {}
+    for row in outcomes:
+        stamp = _parse_ts(row.get("created_at") or "")
+        task_id = row.get("task_id")
+        if task_id and stamp >= 0:
+            finished[task_id] = max(finished.get(task_id, stamp), stamp)
+
+    written, errors = 0, []
+    for window in windows:
+        cutoff = _parse_ts(_iso_cutoff(window))
+        groups = {}
+        for task in tasks:
+            created = _parse_ts(task.get("created_at") or "")
+            if created < 0 or created < cutoff:
+                continue
+            key = (task.get("project_id"), task.get("kind") or "build")
+            bucket = groups.setdefault(key, {"seconds": 0.0, "timed": 0,
+                                             "total": 0, "first_try": 0})
+            bucket["total"] += 1
+            if int(task.get("remediation_count") or 0) == 0:
+                bucket["first_try"] += 1
+            done = finished.get(task.get("id"))
+            if done is not None and done >= created:
+                bucket["seconds"] += done - created
+                bucket["timed"] += 1
+
+        for (project_id, kind), bucket in groups.items():
+            row = {
+                "project_id": project_id,
+                "kind": kind,
+                "window_days": window,
+                "avg_cycle_time_seconds": (round(bucket["seconds"] / bucket["timed"], 1)
+                                           if bucket["timed"] else 0.0),
+                "first_try_yield_pct": round(
+                    100.0 * bucket["first_try"] / bucket["total"], 1),
+                "sample_count": bucket["total"],
+                "computed_at": datetime.datetime.utcnow().isoformat(),
+            }
+            error = _write_stage_metric(row)
+            if error is None:
+                written += 1
+            else:
+                errors.append(error)
+
+    return {"stage_metrics_written": written,
+            "windows": list(windows),
+            "errors": errors[:3]}
+
+
 def load_tuning_state() -> dict:
     """Load persisted pipeline tuning state; return defaults if missing or corrupt."""
     try:

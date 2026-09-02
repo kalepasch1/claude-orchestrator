@@ -36,8 +36,15 @@ _PATTERNS = [
      re.compile(r"(?i)(rate.?limit|429|too many requests|throttl|quota exceeded|resource_exhausted)", re.S), 0.95),
     ("exhaustion", "account_quota",
      re.compile(r"(?i)(insufficient.?quota|billing|credit|payment.?required|account.?(suspend|disabl))", re.S), 0.90),
+    # `FAIL(ED)?:?\s` used to match the bare word anywhere, so "npm ERR! Build
+    # failed with exit code 1" classified as a test failure and was routed to
+    # constrain_retry instead of build_fix. A test failure announces itself at
+    # the start of a line ("FAILED tests/x.py::y") or with a colon
+    # ("FAIL: test_thing"); a build failure mentions "failed" mid-sentence.
     ("test_failure", "assertion",
-     re.compile(r"(?i)(FAIL(ED)?:?\s|assert(ion)?.*error|test.*fail|pytest|unittest.*fail|expect.*to\s)", re.S), 0.90),
+     re.compile(r"(?i)(^\s*FAIL(ED)?\b|\bFAIL(ED)?:\s|assert(ion)?.*error"
+                r"|\btests?\s+fail|pytest|unittest.*fail|expect.*to\s)",
+                re.S | re.M), 0.90),
     ("merge_conflict", "git",
      re.compile(r"(CONFLICT|<{7}\s|>{7}\s|merge conflict|cannot merge|rebase.*fail)", re.S), 0.92),
     ("import_error", "module_not_found",
@@ -53,6 +60,7 @@ _PATTERNS = [
 ]
 
 _CLASS_TO_REMEDIATION = {
+    "model_gone":       "repin_model",
     "rate_limit":       "wait_and_retry",
     "exhaustion":       "rotate_account",
     "test_failure":     "constrain_retry",
@@ -86,6 +94,28 @@ def classify(error_text, task=None):
                 "confidence": 0.0, "remediation": "escalate_model"}
     try:
         text = str(error_text or "")
+        # provider_banner is the single source of truth for what a vendor's
+        # error banner means; its docstring exists because this vocabulary had
+        # already drifted across three files. _PATTERNS below is a fourth copy
+        # that was never folded in — and it is the one that misfired: it tests
+        # "rate_limit" BEFORE "exhaustion", so "Error code: 429 ... your
+        # prepayment credits are depleted" came back as wait_and_retry.
+        # Waiting does not refill an account. Ask the shared module first,
+        # because its ordering puts the terminal verdicts ahead of the
+        # transient one. Fail-soft: if it has no opinion, fall through.
+        try:
+            import provider_banner
+            verdict = provider_banner.classify(text)
+        except Exception:
+            verdict = None
+        if verdict == "model_gone":
+            _increment("model_gone")
+            return {"error_class": "model_gone", "subclass": "retired_id",
+                    "confidence": 0.95, "remediation": "repin_model"}
+        if verdict == "exhausted":
+            _increment("exhaustion")
+            return {"error_class": "exhaustion", "subclass": "account_quota",
+                    "confidence": 0.95, "remediation": "rotate_account"}
         for err_cls, sub, pattern, conf in _PATTERNS:
             if pattern.search(text):
                 _increment(err_cls)

@@ -1,71 +1,28 @@
-"""Re-export shim: the canonical family contracts live at hisanta/contracts/family.py.
+"""Re-export shim.  The family contracts are defined once, in
+`hisanta/contracts/family.py`.
 
-This file used to be a second, independently-maintained copy of the same domain.
-The two drifted: the nested copy grew the quest/grandma/gifting/school types
-while the top-level one grew the approval/kindness types, and because every
-consumer imports `hisanta.contracts.family` (absolute), the nested definitions
-were unreachable dead code that still had to be kept in sync by hand.
+Both this directory and its parent can end up on sys.path as the `hisanta`
+package, so `hisanta.contracts.family` and `hisanta.hisanta.contracts.family`
+are two spellings of one domain.  This module re-exports — it never declares —
+so the two spellings are the SAME objects and an isinstance check or an enum
+comparison cannot fail just because a caller arrived by the nested path.
 
-The canonical module was already written to be the *union* — every symbol either
-file ever exported is defined there, with a shape that satisfies both sets of
-callers. So this module is now a pure re-export. Behaviour is preserved exactly:
-`hisanta.hisanta.contracts.family.X is hisanta.contracts.family.X` for every X,
-which means an isinstance check or an enum identity comparison cannot fail just
-because a caller reached the domain by the nested path.
+Deliberately a plain `import`, not an importlib load-by-path: loading the
+canonical file under a private third module name would give it a second set of
+classes, which is the exact defect this shim exists to prevent.
 
-Same convention as the root `merged_diff_library.py` shim over
-`runner/merged_diff_library.py`. Do not add definitions here — add them to
-hisanta/contracts/family.py and extend the re-export list below.
+Do not add definitions here.  Add them to `hisanta/contracts/family.py`; this
+file picks them up from `__all__` with no edit.
 """
 
-from __future__ import annotations
+import hisanta.contracts.family as _canonical
 
-from hisanta.contracts.family import (  # noqa: F401  (re-export)
-    ApprovalStatus,
-    ClassroomCohort,
-    ConstitutionAction,
-    ConstitutionVerdict,
-    CoppaConsent,
-    DENY_ACTIONS,
-    ESCALATE_ACTIONS,
-    GiftLane,
-    GrandmaStorySlot,
-    MasteryEfficacyMetric,
-    MatchJar,
-    MilestoneReaction,
-    PII_FREE_FIELDS,
-    ParentApproval,
-    ParentVerificationReceipt,
-    Quest,
-    QuestKind,
-    RewardCoin,
-    RewardCoins,
-    RewardSchedule,
-    SchoolQuest,
-    constitution_check,
-)
+#: The module the names come from.  Tests assert both import paths land here,
+#: which is the check that keeps the duplicate from growing back.
+CANONICAL_MODULE = _canonical
+CANONICAL_PATH = _canonical.__file__
 
-__all__ = [
-    "ApprovalStatus",
-    "ClassroomCohort",
-    "ConstitutionAction",
-    "ConstitutionVerdict",
-    "CoppaConsent",
-    "DENY_ACTIONS",
-    "ESCALATE_ACTIONS",
-    "GiftLane",
-    "GrandmaStorySlot",
-    "MasteryEfficacyMetric",
-    "MatchJar",
-    "MilestoneReaction",
-    "PII_FREE_FIELDS",
-    "ParentApproval",
-    "ParentVerificationReceipt",
-    "Quest",
-    "QuestKind",
-    "RewardCoin",
-    "RewardCoins",
-    "RewardSchedule",
-    "SchoolQuest",
-    "constitution_check",
-]
+__all__ = list(_canonical.__all__)
+for _name in __all__:
+    globals()[_name] = getattr(_canonical, _name)
+del _name

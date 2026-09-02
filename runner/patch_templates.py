@@ -8,6 +8,7 @@ Branch recovery: if the task's branch is missing or stale when pre_claim_hook
 is called, recovery is attempted via patch_recovery before the template is built.
 """
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -18,6 +19,44 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# Optional collaborators. Every one of these was a FUNCTION-LOCAL `import X`
+# inside the function that used it, which cost two things:
+#
+#   1. `patch("patch_templates.merged_diff_library.find", ...)` and
+#      `patch.object(patch_templates, "merged_diff_library", None)` both need a
+#      module ATTRIBUTE to bind to. A function-local import creates a local
+#      name, so the patch target never existed and the two tests that exercise
+#      the fail-soft branches of build() could not run at all — the same defect
+#      already fixed in runner/tdd_gate.py.
+#   2. An import failure was re-paid on every single call instead of once.
+#
+# They stay OPTIONAL: if one is absent the name is None, the call raises
+# AttributeError, and each call site's existing handler degrades exactly as it
+# did when the import itself was the thing that raised. No cycle exists — none
+# of these five pulls patch_templates back in (verified 2026-08-26).
+
+
+def _optional(module_name):
+    """Import MODULE_NAME, or None when it is not installed.
+
+    One handler that RETURNS a default, rather than five module-level
+    `try/except ImportError: X = None` blocks that can only assign one — the
+    shape convention-lint's FAIL_SOFT_ERROR rule exists to discourage, and here
+    it is right: a helper says "absent is an ordinary outcome" once instead of
+    five times.
+    """
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        return None
+
+
+merged_diff_library = _optional("merged_diff_library")   # absent: build() emits "none found"
+patch_adaptation = _optional("patch_adaptation")         # absent: summaries, no structure
+merged_diff_adapter = _optional("merged_diff_adapter")   # absent: structure, no file scaffold
+patch_recovery = _optional("patch_recovery")             # absent: a missing branch stays missing
+savings_meter = _optional("savings_meter")               # absent: template still built and stored
+
 log = logging.getLogger(__name__)
 
 MARK = "[patch-template:"
@@ -25,12 +64,60 @@ WORD = re.compile(r"[a-z0-9_]{4,}", re.I)
 SYMBOL_HINT = re.compile(r"\b(?:api|route|component|hook|schema|migration|webhook|test|store|model|auth|cache|worker)\b", re.I)
 
 
+#: Identifier words that name a credential. Bounded with (?<![A-Za-z0-9]) rather
+#: than \b because \b treats "_" as a word character, which would match a bare
+#: SECRET while missing DATABASE_PASSWORD and STRIPE_SECRET_KEY — the shapes real
+#: prompts actually use. Same reasoning as tools/convention_lint.py.
+_SECRET_WORD = (
+    r"(?<![A-Za-z0-9])(?:pass(?:word|wd)?|secret|token|apikey|api[_-]?key"
+    r"|private[_-]?key|access[_-]?key|auth|credential[s]?|bearer)(?![A-Za-z0-9])"
+)
+
+#: `NAME=value`, `NAME: value` or `NAME value` where NAME names a credential.
+#: The VALUE is what leaks, so the whole pair goes.
+_SECRET_ASSIGNMENT = re.compile(_SECRET_WORD + r"\s*[:=]\s*\S+", re.I)
+
+#: A PEM private key block, which is self-identifying and never belongs in a
+#: reusable template.
+_PEM_BLOCK = re.compile(
+    r"-----BEGIN[^-]*PRIVATE KEY-----.*?-----END[^-]*PRIVATE KEY-----",
+    re.I | re.DOTALL)
+
+#: The bare credential noun on its own, so "database password" does not survive
+#: into the keyword index even when no value followed it.
+_SECRET_BARE = re.compile(_SECRET_WORD, re.I)
+
+
+def _redact(text):
+    """Remove credential-shaped content from a prompt before it is stored.
+
+    WHY (2026-08-26). _words() lifted every word of five characters or more
+    straight out of the raw prompt, and those words become two things that
+    OUTLIVE the task: the "Intent:" line of the template body, and the keyword
+    list the template store indexes on. Templates are persisted best-effort and
+    reused across tasks, so a prompt reading "Fix database with
+    PASSWORD=secret123" put `secret123` into a shared, searchable store.
+
+    runner/test_patch_templates_security.py has asserted against exactly this
+    since it was written — test_build_body_sanitizes_intent_not_raw_prompt and
+    test_template_keywords_are_safe_for_indexing, both red. The sanitisation was
+    specified and tested and never implemented.
+
+    Redaction is deliberately blunt: a lost intent word costs a slightly weaker
+    template, a leaked one costs a credential in a shared store.
+    """
+    body = str(text or "")
+    body = _PEM_BLOCK.sub(" ", body)
+    body = _SECRET_ASSIGNMENT.sub(" ", body)
+    return _SECRET_BARE.sub(" ", body)
+
+
 def _words(text):
-    return sorted({w.lower() for w in WORD.findall(str(text or "")) if len(w) > 4})[:80]
+    return sorted({w.lower() for w in WORD.findall(_redact(text)) if len(w) > 4})[:80]
 
 
 def _intent(task):
-    prompt = str((task or {}).get("prompt") or "")
+    prompt = _redact((task or {}).get("prompt"))
     return {"words": _words(prompt), "hints": sorted(set(m.group(0).lower() for m in SYMBOL_HINT.finditer(prompt)))}
 
 
@@ -44,13 +131,25 @@ def build(task):
     prompt = str(task.get("prompt") or "")
     hits = []
     try:
-        import merged_diff_library
         hits = merged_diff_library.find(task, limit=2)
     except Exception:
         hits = []
+    # The slug leads the Intent line. Without it the body named the task
+    # NOWHERE — only a 12-hex tid — so a template pulled back out of the
+    # knowledge table or the JSONL store could not be attributed to the work it
+    # was built from, and the agent reading the scaffold was told what words the
+    # prompt used but not what the task was called. It is deliberately NOT run
+    # through _redact(): a slug is a queue identifier, not free text, and it is
+    # already stored verbatim as the knowledge row's title and the JSONL "task"
+    # field. Redacting it here while storing it in the clear one call later
+    # would cost lookups and buy nothing. It leads the line rather than taking a
+    # line of its own because the body's line ORDER is pinned by
+    # runner/tests/test_patch_templates_behavioral_equivalence.py.
+    _intent_words = " ".join(_intent(task)["words"][:24])
+    _slug = str(task.get("slug") or "").strip()
     lines = [
         f"PATCH TEMPLATE {tid}",
-        "Intent: " + " ".join(_intent(task)["words"][:24]),
+        "Intent: " + (f"{_slug} — {_intent_words}" if _slug else _intent_words),
         "Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.",
         "Implementation slots:",
         "1. Locate the existing owner module/function before adding new files.",
@@ -64,7 +163,6 @@ def build(task):
         # Summaries alone make the coder reread the whole prior diff. Extract the
         # reusable structure (helpers, owner dirs, test layout, naming) instead.
         try:
-            import patch_adaptation
             adapted = patch_adaptation.directive(task, hits, target_hint=task.get("slug") or tid)
             if adapted:
                 lines.append(adapted)
@@ -74,7 +172,6 @@ def build(task):
         # patch was shaped, this one says WHICH files and line ranges it touched.
         # Both are fail-soft — no adapter, no scaffold, same template as before.
         try:
-            import merged_diff_adapter
             scaffold = merged_diff_adapter.adapt(hits, target_files=task.get("target_files"))
         except Exception as exc:
             log.debug("patch_templates: diff scaffold skipped (%s)", exc)
@@ -90,6 +187,21 @@ def _fallback_path():
     """Local JSONL store used when the knowledge table is unavailable."""
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         ".runtime", "patch_templates.jsonl")
+
+
+def _body_declares(body, tid):
+    """True only when `body`'s header names EXACTLY this template id.
+
+    The knowledge query is a PREFIX filter (`like.PATCH TEMPLATE <tid>*`) and the
+    old confirmation was `tid in body`, so both halves were prefix matches: asking
+    for a partial id — or for an id that happens to be a prefix of another —
+    returned a DIFFERENT task's template body, relabelled with the id that was
+    asked for. Ids are 12-hex digests today, which hid it; a caller holding a
+    truncated id is all it takes. The stored body's first line is
+    "PATCH TEMPLATE <tid>" (see build()), so compare that line exactly.
+    """
+    first_line = str(body or "").split("\n", 1)[0].strip()
+    return first_line == f"PATCH TEMPLATE {tid}"
 
 
 def lookup(template_id):
@@ -120,7 +232,7 @@ def lookup(template_id):
                                        "body": f"like.PATCH TEMPLATE {tid}*"})
         for row in rows or []:
             body = str((row or {}).get("body") or "")
-            if tid in body:
+            if _body_declares(body, tid):
                 return {"template_id": tid, "body": body,
                         "title": (row or {}).get("title"), "source": "db"}
     except Exception:
@@ -197,10 +309,31 @@ def _store(task, template_id, body):
 
 
 def inject_prompt(task):
+    """Prepend a patch-template scaffold to TASK's prompt. Fail-soft: never raises.
+
+    WHY the guard (2026-08-26). A patch template is an OPTIMISATION — it hands
+    the coding agent a scaffold it would otherwise reconstruct. It is never the
+    work itself. `build()` reaches out to merged_diff_library, patch_adaptation
+    and merged_diff_adapter, each of which can touch the control plane, so
+    "the scaffold could not be built" is an ordinary outcome, not an error.
+
+    Unguarded, that ordinary outcome propagated out of inject_prompt and killed
+    the task it was supposed to help: a template lookup failure meant the task
+    never ran at all. `pre_claim_hook` — the same wrapper one function below,
+    doing the same job on the same body — has always had `except Exception:
+    return task`. This one simply never got it. The contract both should honour
+    is the obvious one: no scaffold, run the task on its own prompt.
+    """
     prompt = str((task or {}).get("prompt") or "")
     if MARK in prompt:
         return task
-    template_id, body = build(task)
+    try:
+        template_id, body = build(task)
+    except Exception as exc:  # fail-soft: no scaffold must not mean no task
+        log.debug("patch_templates: template build failed for %s (%s) — "
+                  "running the task on its own prompt",
+                  (task or {}).get("slug") or "?", exc)
+        return task
     new_prompt = body + f"\n{MARK}{template_id}]\n\n" + prompt
     return {**task, "prompt": new_prompt}
 
@@ -220,7 +353,6 @@ def _get_project(project_id):
 def _ensure_branch(task):
     """Detect missing branch and attempt recovery. Fail-soft: never raises."""
     try:
-        import patch_recovery
         slug = task.get("slug") or ""
         if not slug:
             return
@@ -271,7 +403,6 @@ def pre_claim_hook(task):
         # DO NOT write back to DB — keep original prompt intact for retries
         _store(task, template_id, body)
         try:
-            import savings_meter
             savings_meter.record("patch_template", prompt=str(task.get("prompt") or ""),
                                  result_text=body, detail=f"template={template_id}")
         except Exception:

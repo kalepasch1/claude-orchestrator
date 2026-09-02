@@ -84,7 +84,30 @@ def is_paused(project=None):
     return False
 
 
-def pause(scope="global", project=None, reason="manual stop", by="dashboard"):
+def _with_expiry_marker(reason, ttl_hours):
+    """Append an advisory [expires ...] marker. Never blocks the pause itself."""
+    if not ttl_hours:
+        return reason
+    try:
+        import pause_ttl
+        return pause_ttl.embed_expiry(reason, ttl_hours)
+    except Exception:
+        return reason
+
+
+def pause(scope="global", project=None, reason="manual stop", by="dashboard",
+          ttl_hours=None):
+    """Pause a scope. `ttl_hours` states when the author expects to lift it.
+
+    The TTL is advisory and is stored as an `[expires ...]` marker inside `reason`
+    (see pause_ttl.py). It does NOT auto-resume: a pause is the control that stops
+    spend and stops autonomous merging, so lifting it stays a human decision. What
+    the TTL buys is that `pause_ttl.report()` can tell a hold that is still within
+    its stated window from one that expired 22 days ago — which is exactly the
+    distinction that was invisible when apparently sat paused behind the word
+    "(reversible)" from 2026-08-08 to 2026-08-30.
+    """
+    reason = _with_expiry_marker(reason, ttl_hours)
     row = {"scope": scope, "project": project, "paused": True,
            "reason": reason, "updated_by": by,
            "updated_at": datetime.datetime.utcnow().isoformat()}

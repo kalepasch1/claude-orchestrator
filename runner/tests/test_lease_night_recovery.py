@@ -138,8 +138,19 @@ class DbRetryTest(unittest.TestCase):
 
     # ---- permanent / non-retryable -> surfaced --------------------------------
     def test_permanent_status_is_not_retried(self):
+        """A 4xx surfaces on the first attempt — as RequestRejectedError, by design.
+
+        This asserted urllib.error.HTTPError, which db no longer lets escape for a
+        permanent status. urllib raises HTTPError with the response body UNREAD,
+        so re-raising it throws away the only part of a 400 that says what went
+        wrong — the reason phantom_recovery once crash-looped nine times printing
+        `HTTP Error 400: Bad Request` and nothing else. db.RequestRejectedError
+        carries status, payload and SQLSTATE instead. The half of this test that
+        matters, "not retried", is the call count, and it never moved.
+        """
         result, m = self.call("GET", TABLE, [_http_error(400), _Response()])
-        self.assertIsInstance(result, urllib.error.HTTPError)
+        self.assertIsInstance(result, db.RequestRejectedError)
+        self.assertEqual(result.status, 400)
         self.assertEqual(m.call_count, 1)
 
     def test_non_core_rpc_post_is_single_attempt(self):

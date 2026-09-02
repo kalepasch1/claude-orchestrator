@@ -135,6 +135,28 @@ class PipelineContractValidator:
         self.legal_results = []
         all_clear = True
 
+        # A DIFF THAT IS NOT TEXT FAILS THE GATE, IT DOES NOT CRASH IT (2026-08-26).
+        #
+        # This went straight to `trigger.lower() in diff_content.lower()`, so
+        # check_legal_gates(None) raised AttributeError out of a compliance gate on
+        # the merge path. An exception there is the worst of the three outcomes: the
+        # gate neither passes nor blocks, it just breaks its caller, and whether the
+        # change was reviewed depends on how that caller happens to handle errors.
+        #
+        # Failing CLOSED rather than treating it as clear, for the reason build_gate
+        # states about its own undeterminable case: a gate that cannot see the change
+        # has not cleared it. An empty STRING is different and still scans normally —
+        # "no changes" is a real answer, "the diff never arrived" is not.
+        if not isinstance(diff_content, str):
+            self.legal_results = [LegalGateResult(
+                gate_name="diff_unavailable",
+                triggered=True,
+                reason=(f"diff_content was {type(diff_content).__name__}, not text; "
+                        "the legal gates had nothing to scan"),
+                required_approver="owner",
+            )]
+            return False, self.legal_results
+
         for gate_name, gate_def in opc.LEGAL_GATES.items():
             triggered = False
             reason = ""
@@ -338,6 +360,126 @@ def check_legal_gates(diff_content: str) -> Tuple[bool, List[Dict[str, Any]]]:
     validator = PipelineContractValidator()
     all_clear, results = validator.check_legal_gates(diff_content)
     return all_clear, [r.to_dict() for r in results]
+
+
+# ── Config-key legal gates ────────────────────────────────────────────────────
+#
+# runner/tests/test_contract_validator.py has imported these three names since
+# it was written; they were never implemented, so the whole file failed at
+# COLLECTION — pytest reported one error and refused to run the suite at all,
+# which is why the gap survived. The 409-line test is a complete specification,
+# and this is the implementation it describes.
+#
+# check_legal_gates() above scans a DIFF. These scan a CONFIG KEY, which is the
+# other half: the fleet applies config changes without producing a diff, so a
+# licence key could be cleared without anything diff-shaped to inspect.
+#
+# Everything here fails SOFT (permit, empty reason) on bad input. A validator
+# that raises inside a config applier converts a questionable change into an
+# outage, which is strictly worse than the change.
+
+# Substring matched against a lowercased key. Deliberately substring, not token:
+# UNLICENSED_MODE and HOMEOWNER_POLICY must both trip, and a key naming scheme
+# nobody has invented yet should trip too. False positives here cost one
+# approval click; false negatives cost a licence.
+_CONTRACT_TRIGGERS = {
+    'license':      ('license',),
+    'registration': ('registration', 'enroll'),
+    'custody':      ('custody', 'owner', 'steward'),
+    'transmission': ('transmission', 'transfer', 'migration'),
+    'advice':       ('advice', 'recommendation', 'guidance'),
+}
+
+# Credential markers. Separate from the contract families above because the
+# rules differ: rotating or removing a secret is ordinary operations, whereas
+# clearing a licence is a legal event. Both require the gate; only one is
+# refused outright.
+_CREDENTIAL_MARKERS = ('password', 'token', 'secret', 'key', 'pat', 'credential')
+
+
+def _matched_contract_family(key: str) -> Optional[str]:
+    """Contract family a key belongs to, or None. Assumes key is already lowered."""
+    for family, words in _CONTRACT_TRIGGERS.items():
+        if any(w in key for w in words):
+            return family
+    return None
+
+
+def detect_legal_trigger(key: Any) -> bool:
+    """
+    True when a config key touches a licensing, registration, custody,
+    transmission or advice contract, or carries a credential.
+
+    Case-insensitive substring match. Non-string input is False, not an error:
+    callers iterate raw config dicts that may hold non-string keys.
+    """
+    if not isinstance(key, str) or not key:
+        return False
+    lowered = key.lower()
+    if _matched_contract_family(lowered) is not None:
+        return True
+    return any(marker in lowered for marker in _CREDENTIAL_MARKERS)
+
+
+def validate_contract_change(old_value: Any, new_value: Any, key: Any) -> Tuple[bool, str]:
+    """
+    Decide whether one config change may proceed.
+
+    Returns (permitted, reason). Reason is '' when permitted.
+
+    Refused:
+      - clearing a contract value (licence, registration, custody/owner,
+        transmission, advice). Revocation must be deliberate and leave an audit
+        trail, not fall out of a config apply.
+      - switching transmission on from an unset state. There is no prior value
+        to show anyone that the transfer was ever authorised.
+
+    Permitted: everything else, including replacing one contract value with
+    another — that is an amendment, and it keeps its audit trail.
+
+    Credential keys gate (detect_legal_trigger is True) but are not refused
+    here: rotating a secret is routine, and blocking it would push operators
+    toward editing config out of band.
+    """
+    try:
+        if not isinstance(key, str) or not key:
+            return True, ''
+        lowered = key.lower()
+        family = _matched_contract_family(lowered)
+        if family is None:
+            return True, ''
+
+        if new_value is None and old_value is not None:
+            return False, (
+                f"Refusing to clear {family} value '{key}': revoking a {family} "
+                f"contract requires an explicit, audited action, not a config apply."
+            )
+
+        if family == 'transmission' and old_value is None and new_value:
+            return False, (
+                f"Refusing to enable transmission via '{key}' from an unset state: "
+                f"there is no prior value evidencing that the transfer was authorised."
+            )
+
+        return True, ''
+    except Exception:
+        # Fail soft. See the module note above.
+        return True, ''
+
+
+def legal_gate_required(changes: Any) -> bool:
+    """
+    True when any key in a config change set needs the legal gate.
+
+    Non-dict input is False rather than an error, and non-string keys are
+    skipped, because this runs over config payloads assembled elsewhere.
+    """
+    if not isinstance(changes, dict) or not changes:
+        return False
+    try:
+        return any(detect_legal_trigger(k) for k in changes)
+    except Exception:
+        return False
 
 
 def check_coordination_rules(repo_path: str, branch: str) -> Tuple[bool, List[Dict[str, Any]]]:

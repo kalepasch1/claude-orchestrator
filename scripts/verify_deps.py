@@ -25,6 +25,7 @@ IMPORT_NAME = {
     "python-dotenv": "dotenv",
     "prometheus-client": "prometheus_client",
     "pytest-timeout": "pytest_timeout",
+    "GitPython": "git",
 }
 
 

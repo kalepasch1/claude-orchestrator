@@ -1,615 +1,660 @@
 #!/usr/bin/env python3
 """
-test_idea_miner.py - Comprehensive tests for idea_miner module.
+test_idea_miner.py - tests for the idea_miner module.
 
-Tests cover: normal parsing, malformed logs, missing sources, deduplication,
-confidence filtering, dry-run validation, env var configuration, and all
-signal sources (errors, analytics, backlog, support).
+REWRITTEN 2026-08-24. The previous version of this file tested an API idea_miner.py has
+never had: it built `idea_miner.IdeaMiner()` and called mine_errors_from_logs(),
+mine_analytics(), mine_backlog(), mine_support_issues(), deduplicate(), write_task() and
+run(), and reached for module names `_extract_timestamp`, `_extract_error_message`,
+`LOOKBACK_HOURS` and `idea_miner.sqlite3`. None of those exist. The real module is
+function-based with a single `IdeaMinerState` singleton behind `acquire()`, reads JSON-lines
+runner logs and a JSON-lines support queue, and is configured through IDEA_MINER_* env vars.
+29 of the 32 tests failed on AttributeError at the first line of their body.
 
-15+ test cases covering acceptance criteria.
+The three that "passed" were worse than the failures: TestEnvironmentConfiguration set an
+env var and then asserted on its own `os.getenv` call, and TestDryRun's
+test_dry_run_includes_all_required_fields asserted that a dict literal defined two lines
+above contained its own keys. Neither imported anything from idea_miner. They are replaced
+below with checks against the module's actual configuration constants and actual output.
+
+Two whole classes had no counterpart in the product at all: idea_miner has no analytics/
+sqlite funnel mining and no intake/backlog scanning — it has exactly two signal sources,
+error logs and the support queue. SUBSTITUTION: TestAnalyticsMining and TestBacklogMining
+are replaced by TestSupportQueueSignal, which covers the real second source with the same
+intents (a signal above threshold is surfaced, a missing source degrades to [], a malformed
+source is skipped, a below-threshold signal is not surfaced).
+
+No test here touches the network or a database; every path is a tmp_path.
 """
+
+import csv
+import importlib.util
+import json
+import logging
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-import json
-import tempfile
-import os
-from pathlib import Path
-from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock, mock_open
-import sys
-import sqlite3
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
+if _RUNNER_DIR not in sys.path:
+    # Append, never insert(0): runner/runner.py shadows the runner/ package at sys.path[0]
+    # and takes the whole session's collection down with it. See the repo-root conftest.
+    sys.path.append(_RUNNER_DIR)
+
 import idea_miner
 
-
-class TestErrorParsing:
-    """Test error log parsing."""
-
-    def test_mine_errors_normal_above_threshold(self):
-        """Test parsing normal log with errors above ERROR_THRESHOLD."""
-        miner = idea_miner.IdeaMiner()
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".log", delete=False
-        ) as f:
-            now = datetime.utcnow()
-            f.write(f"{now.isoformat()} INFO: Task started\n")
-            f.write(f"{now.isoformat()} ERROR: Connection timeout\n")
-            f.write(f"{now.isoformat()} ERROR: Connection timeout\n")
-            f.write(f"{now.isoformat()} ERROR: Connection timeout\n")
-            f.write(f"{now.isoformat()} ERROR: Database lock\n")
-            f.write(f"{now.isoformat()} ERROR: Database lock\n")
-            f.write(f"{now.isoformat()} ERROR: Database lock\n")
-            f.flush()
-            temp_path = f.name
-
-        try:
-            with patch("builtins.open", mock_open(read_data=open(temp_path).read())):
-                with patch.object(Path, "exists", return_value=True):
-                    suggestions = miner.mine_errors_from_logs()
-
-            # Should find errors with >= ERROR_THRESHOLD occurrences
-            assert len(suggestions) > 0
-            for sugg in suggestions:
-                assert sugg["signal_type"] == "error"
-                assert sugg["confidence"] >= 0.70
-                assert "suggested_title" in sugg
-                assert "signal_id" in sugg
-                assert "evidence" in sugg
-        finally:
-            os.unlink(temp_path)
-
-    def test_mine_errors_no_log_file(self):
-        """Test graceful handling when log file is missing."""
-        miner = idea_miner.IdeaMiner()
-
-        with patch("builtins.open", side_effect=FileNotFoundError):
-            with patch.object(Path, "exists", return_value=False):
-                suggestions = miner.mine_errors_from_logs()
-                assert suggestions == []
-
-    def test_mine_errors_below_threshold(self):
-        """Test that errors below ERROR_THRESHOLD are not suggested."""
-        miner = idea_miner.IdeaMiner()
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".log", delete=False
-        ) as f:
-            now = datetime.utcnow()
-            f.write(f"{now.isoformat()} ERROR: Rare error\n")
-            f.write(f"{now.isoformat()} ERROR: Rare error\n")
-            f.flush()
-            temp_path = f.name
-
-        try:
-            with patch("builtins.open", mock_open(read_data=open(temp_path).read())):
-                with patch.object(Path, "exists", return_value=True):
-                    suggestions = miner.mine_errors_from_logs()
-
-            # ERROR_THRESHOLD is 3, we only have 2 occurrences
-            assert len(suggestions) == 0
-        finally:
-            os.unlink(temp_path)
-
-    def test_mine_errors_outside_lookback_window(self):
-        """Test that errors outside lookback window are ignored."""
-        miner = idea_miner.IdeaMiner()
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".log", delete=False
-        ) as f:
-            old = datetime.utcnow() - timedelta(hours=48)
-            f.write(f"{old.isoformat()} ERROR: Old error\n")
-            f.write(f"{old.isoformat()} ERROR: Old error\n")
-            f.write(f"{old.isoformat()} ERROR: Old error\n")
-            f.flush()
-            temp_path = f.name
-
-        try:
-            with patch("builtins.open", mock_open(read_data=open(temp_path).read())):
-                with patch.object(Path, "exists", return_value=True):
-                    with patch("idea_miner.LOOKBACK_HOURS", 24):
-                        suggestions = miner.mine_errors_from_logs()
-
-            assert len(suggestions) == 0
-        finally:
-            os.unlink(temp_path)
-
-    def test_extract_timestamp_iso_format(self):
-        """Test timestamp extraction from ISO format."""
-        line = "2026-07-11T12:30:45 ERROR: Test error"
-        ts = idea_miner._extract_timestamp(line)
-        assert ts is not None
-        assert ts.year == 2026
-        assert ts.month == 7
-        assert ts.day == 11
-
-    def test_extract_timestamp_missing(self):
-        """Test that missing timestamp returns None."""
-        line = "ERROR: Test error without timestamp"
-        ts = idea_miner._extract_timestamp(line)
-        assert ts is None
-
-    def test_extract_error_message_error_prefix(self):
-        """Test error message extraction with ERROR: prefix."""
-        line = "2026-07-11T12:00:00 ERROR: Connection timeout occurred"
-        msg = idea_miner._extract_error_message(line)
-        assert msg is not None
-        assert "timeout" in msg.lower()
-
-    def test_extract_error_message_exception_prefix(self):
-        """Test error message extraction with Exception prefix."""
-        line = "Exception: Database connection failed"
-        msg = idea_miner._extract_error_message(line)
-        assert msg is not None
-        assert "database" in msg.lower()
-
-    def test_extract_error_message_missing(self):
-        """Test that non-error line returns None."""
-        line = "INFO: Task completed successfully"
-        msg = idea_miner._extract_error_message(line)
-        assert msg is None
+#: Config globals idea_miner reads at call time from module scope. Every test that points
+#: the miner at a tmp_path mutates one of these, so they are snapshotted and restored.
+_CONFIG_NAMES = (
+    "IDEA_MINER_MODE",
+    "IDEA_MINER_LOG_PATH",
+    "IDEA_MINER_DEDUP_DAYS",
+    "IDEA_MINER_MIN_CONFIDENCE",
+    "IDEA_MINER_SUPPORT_QUEUE",
+    "GENERATED_TASKS_PATH",
+    "GENERATED_TASKS_CSV_PATH",
+)
 
 
-class TestAnalyticsMining:
-    """Test analytics funnel degradation detection."""
+@pytest.fixture(autouse=True)
+def _isolate_idea_miner():
+    """Restore every process-global the module owns: config, singleton, and its logger.
 
-    def test_mine_analytics_below_threshold(self):
-        """Test analytics mining detects task types below 90% success."""
-        miner = idea_miner.IdeaMiner()
-
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = [
-            ("task_type_a", 100, 85),  # 85% success
-            ("task_type_b", 50, 50),  # 100% success
-        ]
-
-        with patch("idea_miner.sqlite3.connect") as mock_connect:
-            mock_conn = MagicMock()
-            mock_connect.return_value = mock_conn
-            mock_conn.cursor.return_value = mock_cursor
-
-            with patch.object(Path, "exists", return_value=True):
-                suggestions = miner.mine_analytics()
-
-        # Should suggest task_type_a (85% < 90%)
-        assert any(s["signal_type"] == "analytics" for s in suggestions)
-        assert any("task_type_a" in s["evidence"] for s in suggestions)
-
-    def test_mine_analytics_no_db(self):
-        """Test graceful handling when DB is missing."""
-        miner = idea_miner.IdeaMiner()
-
-        with patch.object(Path, "exists", return_value=False):
-            suggestions = miner.mine_analytics()
-            assert suggestions == []
-
-    def test_mine_analytics_db_error(self):
-        """Test graceful handling of DB errors."""
-        miner = idea_miner.IdeaMiner()
-
-        with patch("idea_miner.sqlite3.connect", side_effect=sqlite3.OperationalError("DB locked")):
-            with patch.object(Path, "exists", return_value=True):
-                suggestions = miner.mine_analytics()
-                assert suggestions == []
-
-    def test_mine_analytics_all_healthy(self):
-        """Test no suggestions when all task types are healthy (>90%)."""
-        miner = idea_miner.IdeaMiner()
-
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = [
-            ("task_type_a", 100, 95),  # 95% success
-            ("task_type_b", 50, 50),  # 100% success
-        ]
-
-        with patch("idea_miner.sqlite3.connect") as mock_connect:
-            mock_conn = MagicMock()
-            mock_connect.return_value = mock_conn
-            mock_conn.cursor.return_value = mock_cursor
-
-            with patch.object(Path, "exists", return_value=True):
-                suggestions = miner.mine_analytics()
-
-        assert len(suggestions) == 0
-
-    def test_mine_analytics_empty_result(self):
-        """Test handling of empty query result."""
-        miner = idea_miner.IdeaMiner()
-
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = []
-
-        with patch("idea_miner.sqlite3.connect") as mock_connect:
-            mock_conn = MagicMock()
-            mock_connect.return_value = mock_conn
-            mock_conn.cursor.return_value = mock_cursor
-
-            with patch.object(Path, "exists", return_value=True):
-                suggestions = miner.mine_analytics()
-
-        assert len(suggestions) == 0
+    idea_miner.acquire() memoises an IdeaMinerState forever, and its counters (
+    duplicates_skipped, errors_encountered) accumulate across generate() calls — so a
+    leaked singleton makes a later test's stats() assertion depend on which tests ran
+    before it. _get_logger() likewise attaches a StreamHandler to the process-wide
+    logging registry, which would stack one handler per test.
+    """
+    saved = {name: getattr(idea_miner, name) for name in _CONFIG_NAMES}
+    idea_miner._state = None
+    idea_miner._logger = None
+    log = logging.getLogger("idea_miner")
+    handlers_before = list(log.handlers)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(idea_miner, name, value)
+        idea_miner._state = None
+        idea_miner._logger = None
+        log.handlers[:] = handlers_before
 
 
-class TestBacklogMining:
-    """Test high-priority task detection."""
+@pytest.fixture
+def miner_paths(tmp_path):
+    """Point every file the miner reads or writes at tmp_path. Returns the paths."""
+    paths = {
+        "log": tmp_path / "runner.log",
+        "queue": tmp_path / "support_queue.jsonl",
+        "tasks": tmp_path / "generated_tasks.jsonl",
+        "csv": tmp_path / "generated_tasks.csv",
+    }
+    idea_miner.IDEA_MINER_LOG_PATH = str(paths["log"])
+    idea_miner.IDEA_MINER_SUPPORT_QUEUE = str(paths["queue"])
+    idea_miner.GENERATED_TASKS_PATH = str(paths["tasks"])
+    idea_miner.GENERATED_TASKS_CSV_PATH = str(paths["csv"])
+    return paths
 
-    def test_mine_backlog_high_priority_unattempted(self):
-        """Test detection of high-priority, unattempted tasks."""
-        miner = idea_miner.IdeaMiner()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            intake_path = Path(tmpdir) / "intake" / "processed"
-            intake_path.mkdir(parents=True)
+def _error_lines(message, count, level="ERROR", timestamp="2026-08-24T10:00:00Z"):
+    return "".join(
+        json.dumps({"level": level, "message": message, "timestamp": timestamp}) + "\n"
+        for _ in range(count)
+    )
 
-            task_file = intake_path / "task1.md"
-            task_file.write_text(
-                """---
-title: Fix database connection
-priority: high
-status: unattempted
----
-# Task content
-"""
-            )
 
-            with patch("builtins.open", mock_open(read_data=task_file.read_text())):
-                with patch.object(Path, "glob", return_value=[task_file]):
-                    with patch.object(Path, "exists", return_value=True):
-                        suggestions = miner.mine_backlog()
+#: An ERROR-level signal needs six occurrences to clear IDEA_MINER_MIN_CONFIDENCE (0.5):
+#: _compute_confidence is (frequency - 1) * 0.15 * severity, and ERROR severity is 0.7,
+#: so five occurrences score 0.42 and six score 0.525. Derived from the product, not chosen.
+_ABOVE_THRESHOLD = 6
+_BELOW_THRESHOLD = 5
 
-            assert any(s["signal_type"] == "backlog" for s in suggestions)
 
-    def test_mine_backlog_no_directory(self):
-        """Test graceful handling when intake/processed is missing."""
-        miner = idea_miner.IdeaMiner()
+class TestErrorLogParsing:
+    """_read_logs: JSON-lines runner logs in, error entries out."""
 
-        with patch.object(Path, "exists", return_value=False):
-            suggestions = miner.mine_backlog()
-            assert suggestions == []
+    def test_json_error_lines_are_extracted_with_line_numbers(self, miner_paths):
+        miner_paths["log"].write_text(_error_lines("Connection timeout", 3), encoding="utf-8")
 
-    def test_mine_backlog_ignores_attempted(self):
-        """Test that attempted tasks are not suggested."""
-        miner = idea_miner.IdeaMiner()
+        entries = idea_miner._read_logs()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            intake_path = Path(tmpdir) / "intake" / "processed"
-            intake_path.mkdir(parents=True)
+        assert [e["line_number"] for e in entries] == [1, 2, 3]
+        assert {e["error_msg"] for e in entries} == {"Connection timeout"}
+        assert all(e["timestamp"] == "2026-08-24T10:00:00Z" for e in entries)
 
-            task_file = intake_path / "task1.md"
-            task_file.write_text(
-                """---
-title: Fix database connection
-priority: high
-status: attempted
----
-"""
-            )
+    def test_info_and_debug_levels_are_not_signals(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("noise", 5, level="INFO") + _error_lines("real", 2, level="ERROR"),
+            encoding="utf-8",
+        )
 
-            with patch("builtins.open", mock_open(read_data=task_file.read_text())):
-                with patch.object(Path, "glob", return_value=[task_file]):
-                    with patch.object(Path, "exists", return_value=True):
-                        suggestions = miner.mine_backlog()
+        entries = idea_miner._read_logs()
 
-            assert len(suggestions) == 0
+        assert [e["error_msg"] for e in entries] == ["real", "real"]
 
-    def test_mine_backlog_ignores_low_priority(self):
-        """Test that low-priority tasks are not suggested."""
-        miner = idea_miner.IdeaMiner()
+    @pytest.mark.parametrize("level,severity", [("CRITICAL", 1.0), ("ERROR", 0.7), ("WARNING", 0.5)])
+    def test_severity_is_graded_by_level(self, miner_paths, level, severity):
+        miner_paths["log"].write_text(_error_lines("x", 1, level=level), encoding="utf-8")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            intake_path = Path(tmpdir) / "intake" / "processed"
-            intake_path.mkdir(parents=True)
+        assert idea_miner._read_logs()[0]["severity"] == severity
 
-            task_file = intake_path / "task1.md"
-            task_file.write_text(
-                """---
-title: Nice-to-have improvement
-priority: low
-status: unattempted
----
-"""
-            )
+    def test_a_missing_log_file_degrades_to_no_signals(self, miner_paths):
+        assert not miner_paths["log"].exists()
+        assert idea_miner._read_logs() == []
 
-            with patch("builtins.open", mock_open(read_data=task_file.read_text())):
-                with patch.object(Path, "glob", return_value=[task_file]):
-                    with patch.object(Path, "exists", return_value=True):
-                        suggestions = miner.mine_backlog()
+    def test_non_json_lines_fall_back_to_keyword_matching(self, miner_paths):
+        miner_paths["log"].write_text(
+            "a perfectly ordinary line\n"
+            "Traceback (most recent call last)\n"
+            "ERROR could not connect\n",
+            encoding="utf-8",
+        )
 
-            assert len(suggestions) == 0
+        entries = idea_miner._read_logs()
+
+        # Line 1 carries no error keyword and is dropped; lines 2 and 3 are kept at the
+        # plain-text severity of 0.7.
+        assert [e["line_number"] for e in entries] == [2, 3]
+        assert all(e["severity"] == 0.7 for e in entries)
+
+    def test_blank_lines_do_not_consume_line_numbers_incorrectly(self, miner_paths):
+        miner_paths["log"].write_text(
+            "\n\n" + json.dumps({"level": "ERROR", "message": "boom"}) + "\n", encoding="utf-8"
+        )
+
+        entries = idea_miner._read_logs()
+
+        assert [e["line_number"] for e in entries] == [3]
+        assert entries[0]["error_msg"] == "boom"
+
+    def test_an_oversized_message_is_capped_at_500_characters(self, miner_paths):
+        miner_paths["log"].write_text(
+            json.dumps({"level": "ERROR", "message": "x" * 5000}) + "\n", encoding="utf-8"
+        )
+
+        assert len(idea_miner._read_logs()[0]["error_msg"]) == 500
+
+
+class TestErrorSignature:
+    """_extract_error_signature: collapse per-occurrence noise so recurrences group."""
+
+    def test_variable_parts_are_canonicalised(self):
+        sig = idea_miner._extract_error_signature(
+            '2026-08-24T10:00:00Z failed at line 42 pid=991 addr 0x7ffab12 opening "/var/log/x"'
+        )
+        assert sig == "TIMESTAMP failed at line N pid=PID addr 0xADDR opening PATH"
+
+    def test_two_occurrences_differing_only_in_noise_share_a_signature(self):
+        a = idea_miner._extract_error_signature("boom at line 7 pid=1 (0xdeadbeef)")
+        b = idea_miner._extract_error_signature("boom at line 999 pid=4242 (0xcafe)")
+        assert a == b
+
+    def test_genuinely_different_errors_do_not_collide(self):
+        assert idea_miner._extract_error_signature("disk full") != \
+            idea_miner._extract_error_signature("connection refused")
+
+    def test_the_signature_is_capped_at_200_characters(self):
+        assert len(idea_miner._extract_error_signature("y" * 4000)) == 200
+
+
+class TestConfidenceAndPriority:
+    """_compute_confidence / _compute_priority: the scoring the threshold filter uses."""
+
+    def test_a_single_occurrence_scores_zero_confidence(self):
+        assert idea_miner._compute_confidence(1, 1.0) == 0.0
+
+    def test_confidence_rises_with_frequency_and_is_bounded_at_one(self):
+        scores = [idea_miner._compute_confidence(f, 1.0) for f in (1, 2, 5, 10, 100)]
+        assert scores == sorted(scores)
+        assert all(0.0 <= s <= 1.0 for s in scores)
+        assert scores[-1] == 1.0
+
+    def test_severity_scales_confidence_down(self):
+        assert idea_miner._compute_confidence(6, 0.5) < idea_miner._compute_confidence(6, 1.0)
+
+    def test_priority_stays_inside_one_to_five(self):
+        for confidence in (0.0, 0.25, 0.5, 0.75, 1.0):
+            for frequency in (1, 4, 20, 5000):
+                assert 1 <= idea_miner._compute_priority(confidence, frequency) <= 5
+
+    def test_priority_rises_with_confidence(self):
+        assert idea_miner._compute_priority(0.0, 1) < idea_miner._compute_priority(1.0, 1)
+
+
+class TestTimestampNormalisation:
+    """_parse_iso_timestamp — regression cover for the offset bug fixed 2026-08-24."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("2026-08-24T10:00:00Z", "2026-08-24T10:00:00Z"),
+        ("2026-08-24T10:00:00+00:00", "2026-08-24T10:00:00Z"),
+        ("2026-08-24T03:00:00-07:00", "2026-08-24T10:00:00Z"),
+        ("2026-08-24 10:00:00", "2026-08-24T10:00:00Z"),
+        ("2026-08-24T10:00:00.500000Z", "2026-08-24T10:00:00.500000Z"),
+    ])
+    def test_supported_shapes_normalise_to_utc_with_a_z_suffix(self, raw, expected):
+        assert idea_miner._parse_iso_timestamp(raw) == expected
+
+    def test_the_module_can_reparse_the_timestamps_it_generates(self):
+        """The bug: _read_logs defaults a missing timestamp to datetime.now().isoformat(),
+        which renders '+00:00' — and the parser had no offset format, so it returned None."""
+        now = datetime.now(timezone.utc)
+        produced = now.isoformat()
+        assert produced.endswith("+00:00"), "the module emits offsets, not 'Z'"
+
+        # Exact round trip, not merely "not None": the same instant, in the 'Z' form the
+        # rest of the module reads back.
+        assert idea_miner._parse_iso_timestamp(produced) == produced.replace("+00:00", "Z")
+
+    @pytest.mark.parametrize("raw", [None, "", "not a timestamp", "24/08/2026", 5])
+    def test_unparseable_input_is_none_rather_than_an_exception(self, raw):
+        assert idea_miner._parse_iso_timestamp(raw) is None
+
+
+class TestTaskGenerationFromErrors:
+    """_generate_tasks_from_errors: grouped signals become evidence-anchored tasks."""
+
+    def test_a_recurring_error_above_threshold_becomes_one_task(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+
+        tasks = idea_miner._generate_tasks_from_errors(idea_miner._read_logs())
+
+        assert len(tasks) == 1
+        task = tasks[0]
+        assert task["signal_type"] == "error"
+        assert task["frequency"] == _ABOVE_THRESHOLD
+        assert task["error_signature"] == "Connection timeout"
+        assert task["source_id"] == 1  # the first line the signature was seen on
+        assert task["source_timestamp"] == "2026-08-24T10:00:00Z"
+        assert task["confidence"] >= idea_miner.IDEA_MINER_MIN_CONFIDENCE
+        assert 1 <= task["priority"] <= 5
+        assert "Connection timeout" in task["title"]
+
+    def test_an_error_below_threshold_is_not_worth_a_task(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Rare hiccup", _BELOW_THRESHOLD), encoding="utf-8"
+        )
+
+        assert idea_miner._generate_tasks_from_errors(idea_miner._read_logs()) == []
+
+    def test_distinct_errors_produce_distinct_tasks(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD)
+            + _error_lines("Database is locked", _ABOVE_THRESHOLD),
+            encoding="utf-8",
+        )
+
+        tasks = idea_miner._generate_tasks_from_errors(idea_miner._read_logs())
+
+        assert {t["error_signature"] for t in tasks} == {"Connection timeout", "Database is locked"}
+
+    def test_the_title_is_capped_for_a_very_long_signature(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("z" * 300, _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+
+        title = idea_miner._generate_tasks_from_errors(idea_miner._read_logs())[0]["title"]
+
+        assert len(title) <= 100
+        assert title.endswith("...")
+
+
+class TestSupportQueueSignal:
+    """SUBSTITUTION for the old TestAnalyticsMining / TestBacklogMining.
+
+    idea_miner has no sqlite analytics funnel and no intake/backlog scanner; its second and
+    only other signal source is the JSON-lines support queue. The four intents of the
+    removed classes — a signal above threshold is surfaced, a missing source degrades to [],
+    a broken source does not raise, a healthy/low signal is not surfaced — are kept here
+    against that real source.
+    """
+
+    def test_a_frequent_ticket_becomes_a_task(self, miner_paths):
+        miner_paths["queue"].write_text(
+            json.dumps({"id": "T-1", "title": "Export keeps timing out",
+                        "created_at": "2026-08-24T09:00:00+00:00", "frequency": 9}) + "\n",
+            encoding="utf-8",
+        )
+
+        tasks = idea_miner._generate_tasks_from_tickets(idea_miner._read_support_queue())
+
+        assert len(tasks) == 1
+        assert tasks[0]["signal_type"] == "ticket_pattern"
+        assert tasks[0]["source_id"] == "T-1"
+        assert tasks[0]["source_timestamp"] == "2026-08-24T09:00:00Z"
+        assert "Export keeps timing out" in tasks[0]["title"]
+
+    def test_a_missing_queue_degrades_to_no_signals(self, miner_paths):
+        assert not miner_paths["queue"].exists()
+        assert idea_miner._read_support_queue() == []
+
+    def test_a_malformed_line_is_skipped_without_losing_the_rest(self, miner_paths):
+        miner_paths["queue"].write_text(
+            "{ this is not json\n"
+            + json.dumps({"ticket_id": "T-2", "summary": "Slow search", "count": 9}) + "\n",
+            encoding="utf-8",
+        )
+
+        tickets = idea_miner._read_support_queue()
+
+        assert [t["ticket_id"] for t in tickets] == ["T-2"]
+        assert tickets[0]["title"] == "Slow search"
+        assert tickets[0]["frequency"] == 9
+
+    def test_a_one_off_ticket_is_below_threshold(self, miner_paths):
+        miner_paths["queue"].write_text(
+            json.dumps({"id": "T-3", "title": "Typo on settings page", "count": 1}) + "\n",
+            encoding="utf-8",
+        )
+
+        assert idea_miner._generate_tasks_from_tickets(idea_miner._read_support_queue()) == []
 
 
 class TestDeduplication:
-    """Test deduplication logic."""
+    """_compute_task_hash / _load_existing_tasks and the generate-mode dedup pass."""
 
-    def test_deduplicate_recent_signal(self):
-        """Test deduplication of recently suggested tasks."""
-        miner = idea_miner.IdeaMiner()
+    def test_the_hash_keys_on_signature_and_source_hour(self):
+        base = {"error_signature": "boom", "source_timestamp": "2026-08-24T10:00:00Z"}
+        same_hour = {"error_signature": "boom", "source_timestamp": "2026-08-24T10:59:59Z"}
+        next_hour = {"error_signature": "boom", "source_timestamp": "2026-08-24T11:00:00Z"}
+        other_sig = {"error_signature": "crunch", "source_timestamp": "2026-08-24T10:00:00Z"}
 
-        suggestions = [
-            {
-                "signal_type": "error",
-                "signal_id": "log:123",
-                "evidence": "Test error",
-                "confidence": 0.75,
-                "suggested_title": "Test",
-                "suggested_description": "Test",
-                "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            }
-        ]
+        assert idea_miner._compute_task_hash(base) == idea_miner._compute_task_hash(same_hour)
+        assert idea_miner._compute_task_hash(base) != idea_miner._compute_task_hash(next_hour)
+        assert idea_miner._compute_task_hash(base) != idea_miner._compute_task_hash(other_sig)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            processed_dir = Path(tmpdir) / "intake" / "processed"
-            processed_dir.mkdir(parents=True)
+    def test_existing_tasks_load_keyed_by_that_same_hash(self, miner_paths):
+        task = {"error_signature": "boom", "source_timestamp": "2026-08-24T10:00:00Z",
+                "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        miner_paths["tasks"].write_text(json.dumps(task) + "\n", encoding="utf-8")
 
-            recent_file = processed_dir / "recent-ideaminer-error.md"
-            recent_file.write_text("signal_id: log:123\n")
+        existing = idea_miner._load_existing_tasks()
 
-            with patch("builtins.open", mock_open(read_data="signal_id: log:123\n")):
-                with patch.object(Path, "glob", return_value=[recent_file]):
-                    with patch.object(Path, "exists", return_value=True):
-                        deduped = miner.deduplicate(suggestions)
+        assert idea_miner._compute_task_hash(task) in existing
 
-            assert len(deduped) == 0
+    def test_tasks_older_than_the_dedup_window_stop_blocking(self, miner_paths):
+        stale = datetime.now(timezone.utc) - timedelta(days=idea_miner.IDEA_MINER_DEDUP_DAYS + 1)
+        task = {"error_signature": "boom", "source_timestamp": "2026-08-24T10:00:00Z",
+                "generated_at": stale.isoformat().replace("+00:00", "Z")}
+        miner_paths["tasks"].write_text(json.dumps(task) + "\n", encoding="utf-8")
 
-    def test_deduplicate_old_signal_not_filtered(self):
-        """Test that old suggestions (>12h) are not deduped."""
-        miner = idea_miner.IdeaMiner()
+        assert idea_miner._load_existing_tasks() == {}
 
-        suggestions = [
-            {
-                "signal_type": "error",
-                "signal_id": "log:123",
-                "evidence": "Test error",
-                "confidence": 0.75,
-                "suggested_title": "Test",
-                "suggested_description": "Test",
-                "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            }
-        ]
+    def test_a_missing_task_file_is_an_empty_dedup_set(self, miner_paths):
+        assert idea_miner._load_existing_tasks() == {}
 
-        with patch.object(Path, "exists", return_value=False):
-            deduped = miner.deduplicate(suggestions)
+    def test_a_second_generate_run_appends_nothing_new(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
 
-        assert len(deduped) == 1
+        first = idea_miner.acquire().generate(mode="generate")
+        idea_miner._state = None
+        state = idea_miner.acquire()
+        second = state.generate(mode="generate")
 
-    def test_deduplicate_below_confidence_threshold(self):
-        """Test filtering of suggestions below MIN_CONFIDENCE."""
-        miner = idea_miner.IdeaMiner()
+        assert len(first) == 1
+        assert second == []
+        assert state.duplicates_skipped == 1
+        assert miner_paths["tasks"].read_text().strip().count("\n") == 0  # still one line
 
-        suggestions = [
-            {
-                "signal_type": "error",
-                "signal_id": "log:123",
-                "evidence": "Test",
-                "confidence": 0.65,  # Below default 0.70
-                "suggested_title": "Test",
-                "suggested_description": "Test",
-                "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            }
-        ]
+    def test_the_same_error_does_not_re_emit_an_hour_later(self, miner_paths):
+        """Regression for the _parse_iso_timestamp offset bug.
 
-        with patch.object(Path, "exists", return_value=False):
-            deduped = miner.deduplicate(suggestions)
+        The dedup hash keys on the SOURCE hour. While offset timestamps parsed as None the
+        source timestamp fell back to *generation* time, so the hash moved with the clock and
+        an unchanged, still-recurring error produced a brand-new task on every hourly run.
+        """
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD,
+                         timestamp="2026-08-24T10:00:00+00:00"),
+            encoding="utf-8",
+        )
+        idea_miner.acquire().generate(mode="generate")
 
-        assert len(deduped) == 0
+        later = datetime.now(timezone.utc) + timedelta(hours=3)
 
-    def test_deduplicate_at_confidence_threshold(self):
-        """Test that suggestions at MIN_CONFIDENCE are included."""
-        miner = idea_miner.IdeaMiner()
+        class _LaterClock(idea_miner.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return later if tz else later.replace(tzinfo=None)
 
-        suggestions = [
-            {
-                "signal_type": "error",
-                "signal_id": "log:123",
-                "evidence": "Test",
-                "confidence": 0.70,  # At default 0.70
-                "suggested_title": "Test",
-                "suggested_description": "Test",
-                "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            }
-        ]
+        idea_miner._state = None
+        with patch.object(idea_miner, "datetime", _LaterClock):
+            state = idea_miner.acquire()
+            emitted = state.generate(mode="generate")
 
-        with patch.object(Path, "exists", return_value=False):
-            deduped = miner.deduplicate(suggestions)
-
-        assert len(deduped) == 1
+        assert emitted == []
+        assert state.duplicates_skipped == 1
+        assert len(miner_paths["tasks"].read_text().strip().splitlines()) == 1
 
 
 class TestDryRun:
-    """Test dry-run JSON output."""
+    """dry-run must produce the tasks without touching the task file."""
 
-    def test_dry_run_outputs_valid_json(self):
-        """Test that dry-run mode outputs valid JSON to stdout."""
-        miner = idea_miner.IdeaMiner()
+    def test_dry_run_returns_tasks_and_writes_nothing(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
 
-        suggestions = [
-            {
-                "signal_type": "error",
-                "signal_id": "log:123",
-                "evidence": "Test error",
-                "confidence": 0.75,
-                "suggested_title": "Fix error",
-                "suggested_description": "Description",
-                "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            }
-        ]
+        tasks = idea_miner.generate(mode="dry-run")
 
-        with patch.object(
-            miner, "mine_errors_from_logs", return_value=suggestions
-        ):
-            with patch.object(miner, "mine_analytics", return_value=[]):
-                with patch.object(miner, "mine_backlog", return_value=[]):
-                    with patch.object(miner, "mine_support_issues", return_value=[]):
-                        with patch("builtins.print") as mock_print:
-                            miner.run(dry_run=True)
+        assert len(tasks) == 1
+        assert not miner_paths["tasks"].exists()
+        assert not miner_paths["csv"].exists()
 
-                        mock_print.assert_called()
-                        output = mock_print.call_args[0][0]
-                        parsed = json.loads(output)
-                        assert len(parsed) > 0
-                        assert parsed[0]["signal_type"] == "error"
+    def test_the_cli_prints_one_valid_json_object_per_task(self, miner_paths, capsys):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD)
+            + _error_lines("Database is locked", _ABOVE_THRESHOLD),
+            encoding="utf-8",
+        )
 
-    def test_dry_run_includes_all_required_fields(self):
-        """Test that JSON output includes all required fields."""
-        miner = idea_miner.IdeaMiner()
+        with patch.object(sys, "argv", ["idea_miner.py", "--mode", "dry-run"]):
+            idea_miner.main()
 
-        suggestion = {
-            "signal_type": "error",
-            "signal_id": "log:123",
-            "evidence": "Test error",
-            "confidence": 0.75,
-            "suggested_title": "Fix error",
-            "suggested_description": "Description",
-            "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+        lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+        assert len(lines) == 2
+        emitted = [json.loads(l) for l in lines]
+        assert {e["error_signature"] for e in emitted} == {"Connection timeout", "Database is locked"}
+        assert not miner_paths["tasks"].exists()
+
+    def test_every_emitted_task_carries_the_documented_fields(self, miner_paths):
+        """Asserted against generate()'s OUTPUT, not against a literal defined in the test."""
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+
+        task = idea_miner.generate(mode="dry-run")[0]
+
+        for field in ("title", "signal_type", "source_id", "source_timestamp",
+                      "confidence", "priority", "frequency", "generated_at"):
+            assert field in task, field
+            assert task[field] not in (None, "")
+
+
+class TestGenerateModeOutputs:
+    """generate mode appends JSONL, and --csv exports the flat columns."""
+
+    def test_tasks_are_appended_as_json_lines(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+        miner_paths["tasks"].write_text(json.dumps({"pre": "existing"}) + "\n", encoding="utf-8")
+
+        idea_miner.generate(mode="generate")
+
+        lines = miner_paths["tasks"].read_text().strip().splitlines()
+        assert len(lines) == 2, "the pre-existing line must be kept: this is an append"
+        assert json.loads(lines[0]) == {"pre": "existing"}
+        assert json.loads(lines[1])["error_signature"] == "Connection timeout"
+
+    def test_csv_export_writes_a_header_and_a_row_per_task(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+
+        idea_miner.acquire().generate(mode="generate", csv_export=True)
+
+        with open(miner_paths["csv"], newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        assert len(rows) == 1
+        assert rows[0]["signal_type"] == "error"
+        assert rows[0]["frequency"] == str(_ABOVE_THRESHOLD)
+
+    def test_an_unwritable_task_path_is_recorded_not_raised(self, miner_paths, tmp_path):
+        """Fail-soft is the module's stated contract; the error must still be counted."""
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+        blocked = tmp_path / "not_a_dir"
+        blocked.write_text("i am a file", encoding="utf-8")
+        idea_miner.GENERATED_TASKS_PATH = str(blocked / "sub" / "tasks.jsonl")
+
+        state = idea_miner.acquire()
+        tasks = state.generate(mode="generate")
+
+        assert len(tasks) == 1
+        assert state.errors_encountered == 1
+
+    def test_both_signal_sources_reach_the_same_output(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+        miner_paths["queue"].write_text(
+            json.dumps({"id": "T-1", "title": "Export keeps timing out", "frequency": 9}) + "\n",
+            encoding="utf-8",
+        )
+
+        tasks = idea_miner.generate(mode="dry-run")
+
+        assert {t["signal_type"] for t in tasks} == {"error", "ticket_pattern"}
+
+
+class TestSingletonAndStats:
+    """acquire()/stats(): the module-level singleton and its counters."""
+
+    def test_acquire_returns_the_same_state_object(self):
+        assert idea_miner.acquire() is idea_miner.acquire()
+
+    def test_stats_reports_the_last_run(self, miner_paths):
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD)
+            + _error_lines("noise", 2, level="INFO"),
+            encoding="utf-8",
+        )
+
+        idea_miner.generate(mode="dry-run")
+        stats = idea_miner.stats()
+
+        assert stats["tasks_generated"] == 1
+        assert stats["signals_read"] == _ABOVE_THRESHOLD  # INFO lines are not signals
+        assert stats["duplicates_skipped"] == 0
+        assert stats["errors_encountered"] == 0
+
+    def test_stats_on_a_fresh_singleton_is_all_zero(self):
+        assert idea_miner.stats() == {
+            "tasks_generated": 0,
+            "signals_read": 0,
+            "duplicates_skipped": 0,
+            "errors_encountered": 0,
         }
-
-        required_fields = [
-            "signal_type",
-            "signal_id",
-            "evidence",
-            "confidence",
-            "suggested_title",
-            "suggested_description",
-            "timestamp_utc",
-        ]
-
-        for field in required_fields:
-            assert field in suggestion
-            assert suggestion[field] is not None
-
-
-class TestWriteTask:
-    """Test writing tasks to intake/processed/."""
-
-    def test_write_task_creates_valid_markdown(self):
-        """Test that write_task creates properly formatted markdown."""
-        miner = idea_miner.IdeaMiner()
-
-        suggestion = {
-            "signal_type": "error",
-            "signal_id": "log:123",
-            "evidence": "Test error",
-            "confidence": 0.75,
-            "suggested_title": "Fix test error",
-            "suggested_description": "Test description",
-            "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("builtins.open", mock_open()) as mock_file:
-                with patch.object(Path, "mkdir"):
-                    miner.write_task(suggestion)
-
-                # Verify write was called
-                mock_file.assert_called()
-
-    def test_write_task_handles_errors(self):
-        """Test graceful error handling during task write."""
-        miner = idea_miner.IdeaMiner()
-
-        suggestion = {
-            "signal_type": "error",
-            "signal_id": "log:123",
-            "evidence": "Test error",
-            "confidence": 0.75,
-            "suggested_title": "Fix error",
-            "suggested_description": "Description",
-            "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-        }
-
-        with patch("builtins.open", side_effect=OSError("Permission denied")):
-            # Should not raise; graceful degradation
-            miner.write_task(suggestion)
 
 
 class TestEnvironmentConfiguration:
-    """Test environment variable configuration."""
+    """The IDEA_MINER_* env vars are read at import, so this loads a fresh module object.
 
-    def test_env_var_lookback_hours(self):
-        """Test ORCH_IDEA_MINER_LOOKBACK_HOURS env var."""
-        with patch.dict(os.environ, {"ORCH_IDEA_MINER_LOOKBACK_HOURS": "12"}):
-            lookback = int(os.getenv("ORCH_IDEA_MINER_LOOKBACK_HOURS", "24"))
-            assert lookback == 12
+    The previous version of this class set an env var and then asserted on its own
+    os.getenv() call — it never referenced idea_miner and would have passed against an
+    empty file. This reads the module's actual constants instead.
+    """
 
-    def test_env_var_min_confidence(self):
-        """Test ORCH_IDEA_MINER_MIN_CONFIDENCE env var."""
-        with patch.dict(os.environ, {"ORCH_IDEA_MINER_MIN_CONFIDENCE": "0.80"}):
-            confidence = float(os.getenv("ORCH_IDEA_MINER_MIN_CONFIDENCE", "0.70"))
-            assert confidence == 0.80
+    _SETTINGS = ("IDEA_MINER_MODE", "IDEA_MINER_LOG_PATH", "IDEA_MINER_DEDUP_DAYS",
+                 "IDEA_MINER_MIN_CONFIDENCE", "IDEA_MINER_SUPPORT_QUEUE")
 
-    def test_env_var_error_threshold(self):
-        """Test ORCH_IDEA_MINER_ERROR_THRESHOLD env var."""
-        with patch.dict(os.environ, {"ORCH_IDEA_MINER_ERROR_THRESHOLD": "5"}):
-            threshold = int(os.getenv("ORCH_IDEA_MINER_ERROR_THRESHOLD", "3"))
-            assert threshold == 5
+    @classmethod
+    def _load_with_env(cls, env):
+        path = os.path.join(_RUNNER_DIR, "idea_miner.py")
+        spec = importlib.util.spec_from_file_location("_idea_miner_env_probe", path)
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, env, clear=False):
+            # Start from a known-empty slate so an ambient IDEA_MINER_* in the developer's
+            # shell cannot decide the outcome of the defaults test.
+            for name in cls._SETTINGS:
+                if name not in env:
+                    os.environ.pop(name, None)
+            spec.loader.exec_module(module)  # deliberately not registered in sys.modules
+        return module
 
+    def test_defaults_when_nothing_is_set(self):
+        fresh = self._load_with_env({})
+        assert fresh.IDEA_MINER_MODE == "dry-run"
+        assert fresh.IDEA_MINER_DEDUP_DAYS == 7
+        assert fresh.IDEA_MINER_MIN_CONFIDENCE == 0.5
+        assert fresh.IDEA_MINER_LOG_PATH == "runner/logs/runner.log"
+        assert fresh.IDEA_MINER_SUPPORT_QUEUE == "runner/support_queue.jsonl"
 
-class TestIntegration:
-    """Integration tests for full mining pipeline."""
+    def test_every_setting_is_overridable(self, tmp_path):
+        fresh = self._load_with_env({
+            "IDEA_MINER_MODE": "generate",
+            "IDEA_MINER_DEDUP_DAYS": "3",
+            "IDEA_MINER_MIN_CONFIDENCE": "0.8",
+            "IDEA_MINER_LOG_PATH": str(tmp_path / "custom.log"),
+            "IDEA_MINER_SUPPORT_QUEUE": str(tmp_path / "custom.jsonl"),
+        })
+        assert fresh.IDEA_MINER_MODE == "generate"
+        assert fresh.IDEA_MINER_DEDUP_DAYS == 3
+        assert fresh.IDEA_MINER_MIN_CONFIDENCE == 0.8
+        assert fresh.IDEA_MINER_LOG_PATH == str(tmp_path / "custom.log")
+        assert fresh.IDEA_MINER_SUPPORT_QUEUE == str(tmp_path / "custom.jsonl")
 
-    def test_run_collects_from_all_sources(self):
-        """Test that run() collects suggestions from all sources."""
-        miner = idea_miner.IdeaMiner()
+    def test_raising_min_confidence_actually_suppresses_a_borderline_signal(self, miner_paths):
+        """The setting is only worth having if it changes what comes out."""
+        miner_paths["log"].write_text(
+            _error_lines("Connection timeout", _ABOVE_THRESHOLD), encoding="utf-8"
+        )
+        assert len(idea_miner.generate(mode="dry-run")) == 1
 
-        error_sugg = [
-            {
-                "signal_type": "error",
-                "signal_id": "log:1",
-                "evidence": "Error",
-                "confidence": 0.75,
-                "suggested_title": "Fix",
-                "suggested_description": "Desc",
-                "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            }
-        ]
-
-        with patch.object(miner, "mine_errors_from_logs", return_value=error_sugg):
-            with patch.object(miner, "mine_analytics", return_value=[]):
-                with patch.object(miner, "mine_backlog", return_value=[]):
-                    with patch.object(miner, "mine_support_issues", return_value=[]):
-                        with patch.object(miner, "deduplicate", return_value=error_sugg):
-                            with patch("builtins.print"):
-                                miner.run(dry_run=True)
-
-        assert len(miner.suggestions) > 0
-
-    def test_run_normal_mode_writes_tasks(self):
-        """Test that normal mode writes tasks to disk."""
-        miner = idea_miner.IdeaMiner()
-
-        suggestions = [
-            {
-                "signal_type": "error",
-                "signal_id": "log:1",
-                "evidence": "Error",
-                "confidence": 0.75,
-                "suggested_title": "Fix",
-                "suggested_description": "Desc",
-                "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            }
-        ]
-
-        with patch.object(miner, "mine_errors_from_logs", return_value=suggestions):
-            with patch.object(miner, "mine_analytics", return_value=[]):
-                with patch.object(miner, "mine_backlog", return_value=[]):
-                    with patch.object(miner, "mine_support_issues", return_value=[]):
-                        with patch.object(miner, "deduplicate", return_value=suggestions):
-                            with patch.object(miner, "write_task") as mock_write:
-                                miner.run(dry_run=False)
-
-                                mock_write.assert_called()
+        idea_miner._state = None
+        idea_miner.IDEA_MINER_MIN_CONFIDENCE = 0.95
+        assert idea_miner.generate(mode="dry-run") == []
 
 
-class TestSupportIssues:
-    """Test Linear support issue mining (placeholder)."""
+class TestProductionReachability:
+    """idea_miner is not wired into anything. Pin that, so the next reader is not misled.
 
-    def test_mine_support_issues_returns_empty(self):
-        """Test that support issues mining returns empty list (not yet implemented)."""
-        miner = idea_miner.IdeaMiner()
-        suggestions = miner.mine_support_issues()
-        assert suggestions == []
+    `grep -rn idea_miner` over the repo finds this file, the module itself, and recovery
+    ledgers. It is in no PERIODIC entry in runner/runner.py and no dispatch entry in
+    runner/periodic.py (the scheduler's "improve" job runs improvement_miner, a different
+    module). Nothing imports it. It runs only when someone types `python3 idea_miner.py`.
+    """
+
+    def test_the_module_is_importable_and_exposes_its_cli_surface(self):
+        for name in ("main", "generate", "stats", "acquire", "IdeaMinerState"):
+            assert hasattr(idea_miner, name), name
+
+    def test_no_runner_module_imports_idea_miner(self):
+        importers = []
+        for path in Path(_RUNNER_DIR).glob("*.py"):
+            if path.name in ("idea_miner.py", "test_idea_miner.py"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "import idea_miner" in text:
+                importers.append(path.name)
+        assert importers == [], (
+            "idea_miner just gained an importer; it is no longer dead code and its "
+            "scheduling/config assumptions need a second look"
+        )
+
+    def test_the_scheduler_has_no_idea_miner_job(self):
+        periodic = Path(_RUNNER_DIR, "periodic.py").read_text(encoding="utf-8", errors="replace")
+        assert "idea_miner" not in periodic
 
 
 if __name__ == "__main__":

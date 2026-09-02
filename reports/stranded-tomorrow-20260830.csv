@@ -1,0 +1,404 @@
+branch,commits_ahead,files,superseded_files,superseded_pct,age_days,last_subject
+origin/agent/focused-conflicted-tomorrow-rescue-refs-106-slice-4,4,4,0,0.0,6,agent: focused-conflicted-tomorrow-rescue-refs-106-slice-4
+origin/agent/focused-conflicted-tomorrow-rescue-refs-106-slice-3,3,4,0,0.0,6,agent: focused-conflicted-tomorrow-rescue-refs-106-slice-3
+origin/agent/chatgpt-local-reconcile-tomorrow-41fc0d56c6e3-slice-3,2,4,0,0.0,4,agent: chatgpt-local-reconcile-tomorrow-41fc0d56c6e3-slice-3
+origin/agent/chatgpt-local-reconcile-tomorrow-5f04d8a2e8f4,2,2,0,0.0,6,agent: chatgpt-local-reconcile-tomorrow-5f04d8a2e8f4
+origin/agent/chatgpt-local-reconcile-tomorrow-91b800dc37ed-slice-3,2,4,0,0.0,4,agent: chatgpt-local-reconcile-tomorrow-91b800dc37ed-slice-3
+origin/agent/chatgpt-local-reconcile-tomorrow-f488256b7d2c-slice-3,2,4,0,0.0,4,agent: chatgpt-local-reconcile-tomorrow-f488256b7d2c-slice-3
+origin/agent/factory-unblock-chatgpt-local-reconcile-tomorrow-6f451eba9449,2,5,0,0.0,4,agent: factory-unblock-chatgpt-local-reconcile-tomorrow-6f451eba9449
+origin/agent/fix-reconciler-dropped-symbols-stale-merge-base,2,2,0,0.0,6,agent: fix-reconciler-dropped-symbols-stale-merge-base
+origin/agent/focused-conflicted-tomorrow-rescue-refs-106-slice-2,2,4,0,0.0,6,agent: focused-conflicted-tomorrow-rescue-refs-106-slice-2
+origin/agent/merge-legacy-agent-qafix-tomorrow-07062319-slice-4-slice-2-transplant-core-patch-logic,2,0,0,0.0,47,agent: merge-legacy-agent-qafix-tomorrow-07062319-slice-4-slice-2-transplant-core-patch-lo
+origin/agent/p1-foulkon-hedge-endpoint-and-unblock-20260811,2,5,0,0.0,19,agent: p1-foulkon-hedge-endpoint-and-unblock-20260811 (rebase repair + dead-branch fix)
+origin/agent/recon-followup-tomorrow-7b74d4dd8e74-recoverable,2,8,0,0.0,17,recover: keep attorneyCockpit.test.ts that the self-heal snapshot dropped
+origin/agent/adopt-shared-development-terminal-in-tomorrow,1,2,0,0.0,5,agent: adopt-shared-development-terminal-in-tomorrow
+origin/agent/backlog-batch-tomorrow-2250a1e-adapt-prior-diffs-generate-diff-patch,1,1,0,0.0,24,agent: backlog-batch-tomorrow-2250a1e-adapt-prior-diffs-generate-diff-patch
+origin/agent/backlog-batch-tomorrow-5aaa5de,1,1,0,0.0,45,agent: backlog-batch-tomorrow-5aaa5de
+origin/agent/backlog-batch-tomorrow-99ed0d0,1,1,0,0.0,45,agent: backlog-batch-tomorrow-99ed0d0
+origin/agent/cade-mirror-negotiation-pure-gate,1,1,0,0.0,7,test(cade): run the war-room mirror endpoint under the pure config
+origin/agent/cade-restore-warroom-position-engine,1,1,0,0.0,47,cade-restore-warroom-position-engine: add .protected marker for war-room modules
+origin/agent/canary-tomorrow-20260716-fix-agent-integration,1,1,0,0.0,45,agent: canary-tomorrow-20260716-fix-agent-integration
+origin/agent/canary-tomorrow-20260716-fix-integration-configuration,1,1,0,0.0,45,agent: canary-tomorrow-20260716-fix-integration-configuration
+origin/agent/canary-tomorrow-20260716-fix-orchestrator-configuration,1,1,0,0.0,45,agent: canary-tomorrow-20260716-fix-orchestrator-configuration
+origin/agent/canary-tomorrow-20260716-isolate-integration,1,1,0,0.0,45,agent: canary-tomorrow-20260716-isolate-integration
+origin/agent/canary-tomorrow-20260716-split-acceptance-test,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-acceptance-test
+origin/agent/canary-tomorrow-20260716-split-config-editing,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-config-editing
+origin/agent/canary-tomorrow-20260716-split-config-install,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-config-install
+origin/agent/canary-tomorrow-20260716-split-config-setup,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-config-setup
+origin/agent/canary-tomorrow-20260716-split-dependency-installation,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-dependency-installation
+origin/agent/canary-tomorrow-20260716-split-log-review,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-log-review
+origin/agent/canary-tomorrow-20260716-split-task,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-task
+origin/agent/canary-tomorrow-20260716-split-verification,1,1,0,0.0,45,agent: canary-tomorrow-20260716-split-verification
+origin/agent/chatgpt-local-reconcile-tomorrow-039ba4df2b6a,1,1,0,0.0,6,agent: chatgpt-local-reconcile-tomorrow-039ba4df2b6a
+origin/agent/chatgpt-local-reconcile-tomorrow-0550a16be153,1,2,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-0550a16be153
+origin/agent/chatgpt-local-reconcile-tomorrow-0a6edc2d89ad,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-0a6edc2d89ad
+origin/agent/chatgpt-local-reconcile-tomorrow-0af9a860ed5a,1,2,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-0af9a860ed5a
+origin/agent/chatgpt-local-reconcile-tomorrow-0fa615bd5955,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-0fa615bd5955
+origin/agent/chatgpt-local-reconcile-tomorrow-183ac76ba085,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-183ac76ba085
+origin/agent/chatgpt-local-reconcile-tomorrow-1f47cd19090f,1,3,0,0.0,14,agent: chatgpt-local-reconcile-tomorrow-1f47cd19090f
+origin/agent/chatgpt-local-reconcile-tomorrow-34cc3002de9f,1,2,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-34cc3002de9f
+origin/agent/chatgpt-local-reconcile-tomorrow-41fc0d56c6e3,1,2,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-41fc0d56c6e3
+origin/agent/chatgpt-local-reconcile-tomorrow-57c8ef767e69,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-57c8ef767e69
+origin/agent/chatgpt-local-reconcile-tomorrow-64645d5f6d5b,1,2,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-64645d5f6d5b
+origin/agent/chatgpt-local-reconcile-tomorrow-64ac8a9f51b3,1,2,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-64ac8a9f51b3
+origin/agent/chatgpt-local-reconcile-tomorrow-684d703f2848,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-684d703f2848
+origin/agent/chatgpt-local-reconcile-tomorrow-6c2623872edc,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-6c2623872edc
+origin/agent/chatgpt-local-reconcile-tomorrow-6f451eba9449,1,2,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-6f451eba9449
+origin/agent/chatgpt-local-reconcile-tomorrow-72655b710a02,1,3,0,0.0,14,agent: chatgpt-local-reconcile-tomorrow-72655b710a02
+origin/agent/chatgpt-local-reconcile-tomorrow-8cd2a693cdde,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-8cd2a693cdde
+origin/agent/chatgpt-local-reconcile-tomorrow-8cf1ea6b4928,1,3,0,0.0,14,agent: chatgpt-local-reconcile-tomorrow-8cf1ea6b4928
+origin/agent/chatgpt-local-reconcile-tomorrow-8d4351b7a0be,1,1,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-8d4351b7a0be
+origin/agent/chatgpt-local-reconcile-tomorrow-8dc004d4fd76,1,3,0,0.0,14,agent: chatgpt-local-reconcile-tomorrow-8dc004d4fd76
+origin/agent/chatgpt-local-reconcile-tomorrow-90137b26aa03,1,2,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-90137b26aa03
+origin/agent/chatgpt-local-reconcile-tomorrow-909331db1fdb,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-909331db1fdb
+origin/agent/chatgpt-local-reconcile-tomorrow-90af01a4d857,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-90af01a4d857
+origin/agent/chatgpt-local-reconcile-tomorrow-91b800dc37ed-slice-4,1,3,0,0.0,4,agent: chatgpt-local-reconcile-tomorrow-91b800dc37ed-slice-4
+origin/agent/chatgpt-local-reconcile-tomorrow-93cf4fc1fe7c,1,2,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-93cf4fc1fe7c
+origin/agent/chatgpt-local-reconcile-tomorrow-948f5bd098b7,1,2,0,0.0,13,agent: chatgpt-local-reconcile-tomorrow-948f5bd098b7
+origin/agent/chatgpt-local-reconcile-tomorrow-98a482b85987,1,1,0,0.0,6,agent: chatgpt-local-reconcile-tomorrow-98a482b85987
+origin/agent/chatgpt-local-reconcile-tomorrow-9b08692d5c5b,1,2,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-9b08692d5c5b
+origin/agent/chatgpt-local-reconcile-tomorrow-a3a2b3bb1b79,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-a3a2b3bb1b79
+origin/agent/chatgpt-local-reconcile-tomorrow-a6ca9992f5f0,1,1,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-a6ca9992f5f0
+origin/agent/chatgpt-local-reconcile-tomorrow-a764d54a8e55,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-a764d54a8e55
+origin/agent/chatgpt-local-reconcile-tomorrow-a829b5f1435b,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-a829b5f1435b
+origin/agent/chatgpt-local-reconcile-tomorrow-adb65fbcd541,1,2,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-adb65fbcd541
+origin/agent/chatgpt-local-reconcile-tomorrow-ae6a204c88e5,1,1,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-ae6a204c88e5
+origin/agent/chatgpt-local-reconcile-tomorrow-bfbf074f3e99,1,3,0,0.0,14,agent: chatgpt-local-reconcile-tomorrow-bfbf074f3e99
+origin/agent/chatgpt-local-reconcile-tomorrow-c304920dd4d8,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-c304920dd4d8
+origin/agent/chatgpt-local-reconcile-tomorrow-c875b5d08a36,1,2,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-c875b5d08a36
+origin/agent/chatgpt-local-reconcile-tomorrow-c875b5d08a36-slice-3,1,3,0,0.0,4,agent: chatgpt-local-reconcile-tomorrow-c875b5d08a36-slice-3
+origin/agent/chatgpt-local-reconcile-tomorrow-c875b5d08a36-slice-4,1,4,0,0.0,4,agent: chatgpt-local-reconcile-tomorrow-c875b5d08a36-slice-4
+origin/agent/chatgpt-local-reconcile-tomorrow-d8c0ad6a4e1e,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-d8c0ad6a4e1e
+origin/agent/chatgpt-local-reconcile-tomorrow-dd975faf3c58,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-dd975faf3c58
+origin/agent/chatgpt-local-reconcile-tomorrow-dec30689081a,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-dec30689081a
+origin/agent/chatgpt-local-reconcile-tomorrow-e4954a039aaf,1,3,0,0.0,14,agent: chatgpt-local-reconcile-tomorrow-e4954a039aaf
+origin/agent/chatgpt-local-reconcile-tomorrow-e4df125e5dfe-slice-2,1,2,0,0.0,6,agent: chatgpt-local-reconcile-tomorrow-e4df125e5dfe-slice-2
+origin/agent/chatgpt-local-reconcile-tomorrow-e4df125e5dfe-slice-3,1,2,0,0.0,6,agent: chatgpt-local-reconcile-tomorrow-e4df125e5dfe-slice-3
+origin/agent/chatgpt-local-reconcile-tomorrow-e4df125e5dfe-slice-4,1,2,0,0.0,6,agent: chatgpt-local-reconcile-tomorrow-e4df125e5dfe-slice-4
+origin/agent/chatgpt-local-reconcile-tomorrow-ec74ff90da75,1,1,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-ec74ff90da75
+origin/agent/chatgpt-local-reconcile-tomorrow-f488256b7d2c,1,2,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-f488256b7d2c
+origin/agent/chatgpt-local-reconcile-tomorrow-f488256b7d2c-slice-4,1,5,0,0.0,4,agent: chatgpt-local-reconcile-tomorrow-f488256b7d2c-slice-4
+origin/agent/chatgpt-local-reconcile-tomorrow-f777a7817c34,1,10,0,0.0,7,agent: chatgpt-local-reconcile-tomorrow-f777a7817c34
+origin/agent/chatgpt-local-reconcile-tomorrow-fa8bcddc46ec,1,2,0,0.0,17,agent: chatgpt-local-reconcile-tomorrow-fa8bcddc46ec
+origin/agent/cont-54a3dc,1,1,0,0.0,30,recovery-intent-stub: cont-54a3dc
+origin/agent/contracts-tomorrow-development-session-embed,1,2,0,0.0,5,agent: contracts-tomorrow-development-session-embed
+origin/agent/copyfix-tomorrow-07161915,1,1,0,0.0,45,agent: copyfix-tomorrow-07161915
+origin/agent/copyfix-tomorrow-07190008-slice-5,1,3,0,0.0,6,agent: copyfix-tomorrow-07190008-slice-5
+origin/agent/dropbox-economic-scheduler-revenue-revenue-focused-slice-2-patch-attorneycockpit,1,1,0,0.0,22,regen-from-cache(template): dropbox-economic-scheduler-revenue-revenue-focused-slice-2-pat
+origin/agent/dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-apparently-govern-bots,1,1,0,0.0,45,docs: backlog stub apparently-govern-bots
+origin/agent/dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-apparently-ts-nocheck,1,1,0,0.0,45,docs: backlog stub apparently-ts-nocheck
+origin/agent/dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-hisanta-guardian-edges,1,1,0,0.0,45,docs: backlog stub hisanta-guardian-edges
+origin/agent/dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-hisanta-parent-gate-constitution,1,1,0,0.0,45,docs: backlog stub hisanta-parent-gate-constitution
+origin/agent/dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-tomorrow-capabilities,1,1,0,0.0,45,agent: dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-tomorrow-capab
+origin/agent/dropbox-tomorrow-apparently-pareto-bridges-perpetu-slice-5-split-the-task-into-s,1,1,0,0.0,4,agent: dropbox-tomorrow-apparently-pareto-bridges-perpetu-slice-5-split-the-task-into-s
+origin/agent/dropbox-tomorrow-credit-rails-v2-dcc-dsa-forgivable-credit-rail-ioi--group-2,1,3,0,0.0,7,agent: dropbox-tomorrow-credit-rails-v2-dcc-dsa-forgivable-credit-rail-ioi--group-2
+origin/agent/dropbox-tomorrow-credit-rails-v2-dcc-dsa-forgivable-credit-rail-ioi--group-3,1,2,0,0.0,7,agent: dropbox-tomorrow-credit-rails-v2-dcc-dsa-forgivable-credit-rail-ioi--group-3
+origin/agent/dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-2,1,3,0,0.0,5,agent: dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-2
+origin/agent/dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-3,1,2,0,0.0,5,agent: dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-3
+origin/agent/dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-4,1,2,0,0.0,5,agent: dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-4
+origin/agent/dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-5,1,3,0,0.0,5,agent: dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-5
+origin/agent/dropbox-tomorrow-publish-to-mesh-self-service-ecp-individual-path-pe-5-orphan-risk-index-the-copy-proof-moat-made-exp,1,4,0,0.0,6,agent: dropbox-tomorrow-publish-to-mesh-self-service-ecp-individual-path-pe-5-orphan-risk-
+origin/agent/dropbox-tomorrow-subscription-simplification-war-room-autonomy-insur-counterparty-gravity-rebates,1,2,0,0.0,6,agent: dropbox-tomorrow-subscription-simplification-war-room-autonomy-insur-counterparty-g
+origin/agent/dropbox-v5-reconciliation-enhance-extend-existing-code-do-not-rebuil-cg3-adversarial-selfplay,1,2,0,0.0,6,agent: dropbox-v5-reconciliation-enhance-extend-existing-code-do-not-rebuil-cg3-adversaria
+origin/agent/ecp-recert-batch-cron,1,1,0,0.0,46,agent: ecp-recert-batch-cron — already on main (ecpRecertSentinel + tests)
+origin/agent/ecp-shared-verify-package,1,2,0,0.0,46,agent: ecp-shared-verify-package
+origin/agent/ext-streaming-terms-v2,1,1,0,0.0,47,feat: streaming terms endpoint — server/api/terms/stream.get.ts
+origin/agent/focused-adjudicate-local-branch-tips-cda468882594,1,7,0,0.0,6,agent: focused-adjudicate-local-branch-tips-cda468882594
+origin/agent/focused-adjudicate-package-lock-cade-mirror-d1fe07-slice-3,1,2,0,0.0,6,agent: focused-adjudicate-package-lock-cade-mirror-d1fe07-slice-3
+origin/agent/focused-conflicted-tomorrow-rescue-refs-106-slice-1,1,3,0,0.0,6,agent: focused-conflicted-tomorrow-rescue-refs-106-slice-1
+origin/agent/focused-tomorrow-warroom-clause-materiality-keep-attorneycockpit-tests,1,8,0,0.0,6,agent: focused-tomorrow-warroom-clause-materiality-keep-attorneycockpit-tests
+origin/agent/ms-contracts-v2,1,5,0,0.0,47,feat: mutual/synthetic contract types and API stubs
+origin/agent/ms-verification,1,1,0,0.0,47,docs: synthetic mutual/co-op verification report
+origin/agent/orch-e2e-proof-20260703-125428-configure-pipeline,1,1,0,0.0,47,"feat: orchestrator pipeline config — intake, draft, build-gate stages"
+origin/agent/orch-e2e-proof-20260703-125428-integrate-vercel-deploy,1,1,0,0.0,47,feat: orchestrator Vercel deploy stage config
+origin/agent/orch-e2e-proof-20260703-125428-set-up-merge-and-release,1,1,0,0.0,47,feat: orchestrator merge + release stage configs
+origin/agent/orch-e2e-proof-20260703-125428-split-the-build-task,1,1,0,0.0,47,feat: orch e2e proof sub-task decomposition
+origin/agent/qafix-tomorrow-07062319-slice-2-slice-3-integrate-and-refine-adapted-logic,1,1,0,0.0,45,agent: qafix-tomorrow-07062319-slice-2-slice-3-integrate-and-refine-adapted-logic
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-3-refine-test-and-verify-beethoven-patch,1,1,0,0.0,45,agent: qafix-tomorrow-07062319-slice-4-slice-3-refine-test-and-verify-beethoven-patch
+origin/agent/qafix-tomorrow-0714-perp-round-harness,1,23635,0,0.0,45,agent: qafix-tomorrow-0714-perp-round-harness
+origin/agent/reconcile-98a482-collapse-duplicate-agent-branches,1,3,0,0.0,6,agent: reconcile-98a482-collapse-duplicate-agent-branches
+origin/agent/reconcile-98a482-wire-dedupe-into-merge-train,1,5,0,0.0,6,agent: reconcile-98a482-wire-dedupe-into-merge-train
+origin/agent/recover-missing-branch-canary-smarter-20260709-slice-4,1,1,0,0.0,42,agent: canary-smarter-20260709-slice-4 — canary health check
+origin/agent/recover-missing-branch-product-gates-and-secret-separation-slice-1,1,1,0,0.0,42,agent: recover-missing-branch-product-gates-and-secret-separation-slice-1
+origin/agent/recover-missing-branch-qafix-tomorrow-07062319-slice-4-slice-3-run-build-tests,1,1,0,0.0,45,agent: recover-missing-branch-qafix-tomorrow-07062319-slice-4-slice-3-run-build-tests
+origin/agent/recover-missing-branch-rework-secret-qafix-tomorrow-07062319-slice-1-964d0bc,1,1,0,0.0,42,agent: recover-missing-branch-rework-secret-qafix-tomorrow-07062319-slice-1-964d0bc
+origin/agent/recovered/agent-dropbox-economic-scheduler-revenue-revenue-focused-slice-2-clean-108578,1,9,0,0.0,23,self-heal: clean files from agent/dropbox-economic-scheduler-revenue-revenue-focused-slice
+origin/agent/remediate-cade-roster-seed-fin-create-adversary-roster-fa47d9,1,2,0,0.0,4,agent: remediate-cade-roster-seed-fin-create-adversary-roster-fa47d9
+origin/agent/remediate-cade-roster-seed-fin-seed-cade-roster-finance-81bd37,1,2,0,0.0,4,agent: remediate-cade-roster-seed-fin-seed-cade-roster-finance-81bd37
+origin/agent/remediate-cade-tribunal-counterparty-call-external-data-processing-7d893b,1,2,0,0.0,4,agent: remediate-cade-tribunal-counterparty-call-external-data-processing-7d893b
+origin/agent/remediate-cade-tribunal-counterparty-generate-reviewer-persona,1,2,0,0.0,4,agent: remediate-cade-tribunal-counterparty-generate-reviewer-persona
+origin/agent/remediate-cade-tribunal-counterparty-identify-ci-pipeline-and-publish-step,1,2,0,0.0,4,agent: remediate-cade-tribunal-counterparty-identify-ci-pipeline-and-publish-step
+origin/agent/remediate-cade-tribunal-counterparty-identify-login-command,1,1,0,0.0,4,agent: remediate-cade-tribunal-counterparty-identify-login-command
+origin/agent/remediate-cade-tribunal-counterparty-integrate-core-utilities-define-personas,1,2,0,0.0,3,fix(cade/tribunal): close the persona provenance gate's default
+origin/agent/remediate-cade-tribunal-counterparty-setup-tribunal-structure-and-imports,1,2,0,0.0,4,agent: remediate-cade-tribunal-counterparty-setup-tribunal-structure-and-imports
+origin/agent/remediate-cadefr2-capital-optimization-implement-haircut-factor,1,2,0,0.0,4,agent: remediate-cadefr2-capital-optimization-implement-haircut-factor
+origin/agent/remediate-cc-acceptance-policy-and-matching-write-integration-test-matching-b197,1,2,0,0.0,4,agent: remediate-cc-acceptance-policy-and-matching-write-integration-test-matching-b197
+origin/agent/remediate-ms-ecp-qualification-wizard,1,2,0,0.0,4,agent: remediate-ms-ecp-qualification-wizard
+origin/agent/remediate-oracle-ingest-pareto-indices-oracle-ingest-pareto-indices-commit,1,2,0,0.0,4,agent: remediate-oracle-ingest-pareto-indices-oracle-ingest-pareto-indices-commit
+origin/agent/remediate-translation-memory-ingest-non-english-docs,1,3,0,0.0,4,agent: remediate-translation-memory-ingest-non-english-docs
+origin/agent/reverify-tomorrow-89010146b5c0-ledger-with-fixed-conflict-detection,1,2,0,0.0,6,agent: reverify-tomorrow-89010146b5c0-ledger-with-fixed-conflict-detection
+origin/agent/rework-secret-dropbox-tomorrow-publish-to-mesh-self-service-ecp-individu-0f39cff,1,2,0,0.0,6,agent: rework-secret-dropbox-tomorrow-publish-to-mesh-self-service-ecp-individu-0f39cff
+origin/agent/rework-security-qafix-tomorrow-07062319-s4,1,1,0,0.0,44,docs: scan result for patch template 1f5488facad5 (not found)
+origin/agent/shadow-b74e6ace-orchestrator_native,1,1,0,0.0,44,agent: shadow-b74e6ace-orchestrator_native
+origin/agent/toolchain-repair-0f6214c3-fix-build-toolchain-issues,1,1,0,0.0,45,agent: toolchain-repair-0f6214c3-fix-build-toolchain-issues
+origin/agent/toolchain-repair-0f6214c3-fix-encoding,1,1,0,0.0,45,agent: toolchain-repair-0f6214c3-fix-encoding
+origin/agent/toolchain-repair-0f6214c3-fix-utf-8-encoding-issue,1,1,0,0.0,45,agent: toolchain-repair-0f6214c3-fix-utf-8-encoding-issue
+origin/agent/toolchain-repair-0f6214c3-patch-transplant,1,1,0,0.0,45,agent: toolchain-repair-0f6214c3-patch-transplant
+origin/agent/warroom-attorney-cockpit,1,1,0,0.0,45,agent: warroom-attorney-cockpit
+origin/agent/tomorrow-reconcile-followup-scheduler-crons-plugins-to-cron-migration,1,17,2,11.8,6,agent: tomorrow-reconcile-followup-scheduler-crons-plugins-to-cron-migration
+origin/agent/curation-institutiontype-persist,1,6,1,16.7,4,agent: curation-institutiontype-persist
+origin/agent/focused-adjudicate-bfbf074f3e99-holdbacks,1,6,1,16.7,6,agent: focused-adjudicate-bfbf074f3e99-holdbacks
+origin/agent/fleet-blocker-main-test-suite-is-red-72-failures,1,5,1,20.0,6,"fix(hive): a zero-failure test run was exiting 1, so the merge train read main as red"
+origin/agent/tomorrow-main-pre-existing-test-failures-20260815,1,4,1,25.0,6,agent: tomorrow-main-pre-existing-test-failures-20260815
+origin/agent/noncustodial-bilateral,7,15,4,26.7,55,agent: noncustodial-bilateral
+origin/agent/bx3-tomorrow-tasks,1,60,17,28.3,47,recover: stashed executor work for agent/bx3-tomorrow-tasks
+origin/agent/chatgpt-local-reconcile-tomorrow-ed794a00dfc8,1,7,2,28.6,7,agent: chatgpt-local-reconcile-tomorrow-ed794a00dfc8
+origin/agent/triage-b8f5cf32cb21-continuation-large-clusters,2,3,1,33.3,6,"triage b8f5cf32cb21: the 17 open clusters resolve — none of the ""missing"" work is missing"
+origin/agent/bugfix-curation-institution-taxonomy-conflict,1,3,1,33.3,17,agent: bugfix-curation-institution-taxonomy-conflict
+origin/agent/chatgpt-local-reconcile-tomorrow-c2e478ffd10d,1,3,1,33.3,7,agent: chatgpt-local-reconcile-tomorrow-c2e478ffd10d
+origin/agent/network-marginal-simm,1,3,1,33.3,59,agent: network-marginal-simm
+origin/agent/tomorrow-reconcile-followup-125-conflicted-rescue-refs,1,3,1,33.3,6,agent: tomorrow-reconcile-followup-125-conflicted-rescue-refs
+origin/agent/cade-mirror-negotiation-integrate-mirror-into-move-handling-update-integration-t,1,8,3,37.5,24,agent: cade-mirror-negotiation-integrate-mirror-into-move-handling-update-integration-t
+origin/agent/cepl-basket-execution-rebalance,2,5,2,40.0,57,agent: cepl-basket-execution-rebalance
+origin/agent/merge-legacy-fix-bot-safety,2,74,32,43.2,47,agent: merge-legacy-fix-bot-safety
+origin/agent/cc-score-visibility-ui,4,9,4,44.4,57,agent: cc-score-visibility-ui
+origin/agent/chatgpt-local-reconcile-tomorrow-d1fe07cc7ffa,3,4,2,50.0,15,agent: chatgpt-local-reconcile-tomorrow-d1fe07cc7ffa
+origin/agent/complete-stash-durability-tomorrow-dev,2,2,1,50.0,16,"recovery: stash@{8} is undeliverable to GitHub, not pending"
+origin/agent/ext-completion-router,2,4,2,50.0,47,feat: cross-offset detection and completion routing
+origin/agent/backlog-batch-tomorrow-4210042-build-backlog-chunk-c-build-test-part-1-run-unit-,1,2,1,50.0,24,agent: backlog-batch-tomorrow-4210042-build-backlog-chunk-c-build-test-part-1-run-unit-
+origin/agent/backlog-batch-tomorrow-b6798b3-validate-and-test-mutual-default-fund,1,2,1,50.0,24,agent: backlog-batch-tomorrow-b6798b3-validate-and-test-mutual-default-fund
+origin/agent/cade-proof-store-tom,1,2,1,50.0,45,agent: cade-proof-store-tom
+origin/agent/cepl-tradeable-indices,1,4,2,50.0,57,agent: cepl-tradeable-indices
+origin/agent/chatgpt-local-reconcile-tomorrow-1d281ec0a062,1,4,2,50.0,13,agent: chatgpt-local-reconcile-tomorrow-1d281ec0a062
+origin/agent/chatgpt-local-reconcile-tomorrow-65f9a227f947,1,2,1,50.0,6,agent: chatgpt-local-reconcile-tomorrow-65f9a227f947
+origin/agent/chatgpt-local-reconcile-tomorrow-68f44003a6bf,1,4,2,50.0,13,agent: chatgpt-local-reconcile-tomorrow-68f44003a6bf
+origin/agent/chatgpt-local-reconcile-tomorrow-7730657797b1,1,2,1,50.0,17,agent: chatgpt-local-reconcile-tomorrow-7730657797b1
+origin/agent/chatgpt-local-reconcile-tomorrow-89010146b5c0,1,4,2,50.0,14,agent: chatgpt-local-reconcile-tomorrow-89010146b5c0
+origin/agent/chatgpt-local-reconcile-tomorrow-91b800dc37ed,1,2,1,50.0,17,agent: chatgpt-local-reconcile-tomorrow-91b800dc37ed
+origin/agent/chatgpt-local-reconcile-tomorrow-9ed7a602485c,1,4,2,50.0,13,agent: chatgpt-local-reconcile-tomorrow-9ed7a602485c
+origin/agent/chatgpt-local-reconcile-tomorrow-a26fb819f228,1,4,2,50.0,14,agent: chatgpt-local-reconcile-tomorrow-a26fb819f228
+origin/agent/chatgpt-local-reconcile-tomorrow-a4eb59d0796b,1,2,1,50.0,15,agent: chatgpt-local-reconcile-tomorrow-a4eb59d0796b
+origin/agent/chatgpt-local-reconcile-tomorrow-bc9a9be99bad,1,4,2,50.0,13,agent: chatgpt-local-reconcile-tomorrow-bc9a9be99bad
+origin/agent/chatgpt-local-reconcile-tomorrow-d87bf9269779,1,4,2,50.0,14,agent: chatgpt-local-reconcile-tomorrow-d87bf9269779
+origin/agent/chatgpt-local-reconcile-tomorrow-e290739086a5,1,4,2,50.0,13,agent: chatgpt-local-reconcile-tomorrow-e290739086a5
+origin/agent/chatgpt-local-reconcile-tomorrow-e7ff42ca7c61,1,4,2,50.0,14,agent: chatgpt-local-reconcile-tomorrow-e7ff42ca7c61
+origin/agent/chatgpt-local-reconcile-tomorrow-f4bcd1e350ab,1,4,2,50.0,13,agent: chatgpt-local-reconcile-tomorrow-f4bcd1e350ab
+origin/agent/ext-basis-empirical-modify-acceptance-test,1,2,1,50.0,43,feat: replace stylised basis constants with per-index empirical calibration
+origin/agent/ext-basis-empirical-replace-stylized-constants-with-per-inde,1,2,1,50.0,43,feat: replace stylised basis constants with per-index empirical calibration
+origin/agent/reconcile-65f9a2-prune-cache-only-rescue-refs,1,4,2,50.0,5,fix(git): untrack the vitest cache that was minting empty rescue refs
+origin/agent/recover-tomorrow-rescue-refs-recoverable-38,1,9,5,55.6,15,agent: recover-tomorrow-rescue-refs-recoverable-38
+origin/agent/recon-followup-tomorrow-7b74d4dd8e74-conflicted,1,7,4,57.1,17,fix(cron): drive the AI-feedback and swap-bot schedulers from cron
+origin/agent/verify-tomorrow-prod-deploy,9,11,7,63.6,55,agent: verify-tomorrow-prod-deploy
+origin/agent/cade-mirror-negotiation-mirror-negotiation-core-write-test-with-mocks,4,14,9,64.3,24,agent: cade-mirror-negotiation-mirror-negotiation-core-write-test-with-mocks — mirror-nego
+origin/agent/complete-stash-durability-tomorrow,2,3,2,66.7,16,agent: complete-stash-durability-tomorrow
+origin/agent/dropbox-p0-t7-migrate-dev-only-nitro-plugins-to-crons,2,15,10,66.7,24,agent: dropbox-p0-t7-migrate-dev-only-nitro-plugins-to-crons — cover the remaining schedul
+origin/agent/chatgpt-local-reconcile-tomorrow-b8f5cf32cb21,1,3,2,66.7,15,agent: chatgpt-local-reconcile-tomorrow-b8f5cf32cb21
+origin/agent/outbound-onboarding-create-test-suite,1,3,2,66.7,43,"feat: outbound onboarding — flag material comms, URL generator, tests"
+origin/agent/outbound-onboarding-flag-material-comms,1,3,2,66.7,43,"feat: outbound onboarding — flag material comms, URL generator, tests"
+origin/agent/outbound-onboarding-generate-personalized-urls,1,3,2,66.7,43,"feat: outbound onboarding — flag material comms, URL generator, tests"
+origin/agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-run-tests-fix-,1,3,2,66.7,24,agent: perpetual-compliance-hedge-instrument-audit-perpetual-compliance-ts-files-compil
+origin/agent/recruiter-capacity-sourcing,1,6,4,66.7,59,agent: recruiter-capacity-sourcing
+origin/agent/shapley-settlement-transfers,1,6,4,66.7,59,agent: shapley-settlement-transfers
+origin/agent/active-active-runner-sharding,150,246,165,67.1,25,Merge branch 'agent/breach-remediation' (auto-resolved)
+origin/agent/approval-digest-batching,150,246,165,67.1,25,Merge branch 'agent/breach-remediation' (auto-resolved)
+origin/agent/fix-prompt-delivery-bug,150,246,165,67.1,25,Merge branch 'agent/breach-remediation' (auto-resolved)
+origin/agent/cont-fd404a,4,16,11,68.8,55,agent: cont-fd404a
+origin/agent/reconcile-039ba4-land-landing-brand-revamp,1,29,20,69.0,6,agent: reconcile-039ba4-land-landing-brand-revamp
+origin/agent/reconcile-039ba4-land-runtime-guards-and-auth,1,13,9,69.2,6,agent: reconcile-039ba4-land-runtime-guards-and-auth
+origin/agent/cade-mirror-negotiation-integrate-mirror-into-move-handling-update-game-move-han,3,11,8,72.7,24,agent: cade-mirror-negotiation-integrate-mirror-into-move-handling-update-game-move-han — 
+origin/agent/perpetual-compliance-hedge-instrument-audit-perpetual-compliance-ts-files-find-t,2,4,3,75.0,24,agent: perpetual-compliance-hedge-instrument-audit-perpetual-compliance-ts-files-find-t — 
+origin/agent/qafix-tomorrow-07062319-slice-2-slice-5,2,9,7,77.8,52,agent: qafix-tomorrow-07062319-slice-2-slice-5
+origin/agent/cc-legacy-margin-removal,10,45,36,80.0,55,agent: cc-legacy-margin-removal
+origin/agent/cc-calibration-and-verification,2,5,4,80.0,55,agent: cc-calibration-and-verification
+origin/agent/copyfix-tomorrow-07162245,1,11,9,81.8,44,agent: copyfix-tomorrow-07162245
+origin/agent/shadow-b74e6ace-cowork,1,6,5,83.3,44,agent: shadow-b74e6ace-cowork
+origin/agent/chatgpt-local-reconcile-tomorrow-711405e88745,2,7,6,85.7,17,agent: chatgpt-local-reconcile-tomorrow-711405e88745 — implement federatedCalibration stub
+origin/agent/chatgpt-local-reconcile-tomorrow-7b74d4dd8e74,2,7,6,85.7,17,agent: chatgpt-local-reconcile-tomorrow-7b74d4dd8e74 — implement federatedCalibration stub
+origin/agent/chatgpt-local-reconcile-tomorrow-80bc0760d410,2,7,6,85.7,17,agent: chatgpt-local-reconcile-tomorrow-80bc0760d410 — implement federatedCalibration stub
+origin/agent/chatgpt-local-reconcile-tomorrow-3ac28eed0035,2,128,115,89.8,13,"agent: chatgpt-local-reconcile-tomorrow-3ac28eed0035 — 377/377 classified, 0 unknown; noth"
+origin/agent/merge-legacy-build-perpetual-options-everlasting-recovered,2,32,29,90.6,47,agent: merge-legacy-build-perpetual-options-everlasting-recovered
+origin/agent/chatgpt-local-reconcile-tomorrow-d9a6877ba577,1,126,115,91.3,13,"agent: chatgpt-local-reconcile-tomorrow-d9a6877ba577 — 376/376 rescue refs classified, 0 u"
+origin/agent/chatgpt-local-reconcile-tomorrow-cadcf5dad7e9,3,12,11,91.7,17,agent: chatgpt-local-reconcile-tomorrow-cadcf5dad7e9 — implement federatedCalibration stub
+origin/agent/reconcile-039ba4-land-press-feature,1,63,59,93.7,6,agent: reconcile-039ba4-land-press-feature
+origin/agent/recovered/codex-release-dashboard-auth-20260723,3,21,20,95.2,37,fix(compliance): unblock access acknowledgment
+origin/agent/cade-mirror-negotiation-war-room-intelligence-panel-intelligence-panel-static-di,23,100,98,98.0,24,agent: cade-mirror-negotiation-war-room-intelligence-panel-intelligence-panel-static-di — 
+origin/agent/deployfix-vercel-ignore-agent-branches-locateexistingownermodule-wire-vercel-ign,23,101,100,99.0,24,agent: deployfix-vercel-ignore-agent-branches-locateexistingownermodule-wire-vercel-ign
+origin/agent/backlog-batch-tomorrow-4210042-backlog-split-preparation-integrate-utility-into-,22,106,105,99.1,24,agent: backlog-batch-tomorrow-4210042-backlog-split-preparation-integrate-utility-into-
+origin/agent/recovered/audit-recover-stranded-20260723,29,107,107,100.0,38,fix(compliance): unblock access acknowledgment
+origin/agent/cc-mutual-default-fund,23,100,100,100.0,24,docs+rebase: cc-mutual-default-fund status report; branch refreshed onto current main (44/
+origin/agent/deployfix-vercel-ignore-agent-branches-locateexistingownermodule-repair-build-co,23,99,99,100.0,24,agent: deployfix-vercel-ignore-agent-branches-locateexistingownermodule-repair-build-co
+origin/agent/warranty-pricer,6,7,7,100.0,55,agent: warranty-pricer
+origin/agent/drift-guard-lint,5,6,6,100.0,57,agent: drift-guard-lint
+origin/agent/cc-legacy-margin-removal-strip-margin-from-services-and-verify-ac,4,6,6,100.0,29,agent: cc-legacy-margin-removal-strip-margin-from-services-and-verify-ac
+origin/agent/dropbox-cross-app-hivemind-federation-one-market-s-slice-4,4,6,6,100.0,20,salvage: interrupted work for dropbox-cross-app-hivemind-federation-one-market-s-slice-4
+origin/agent/recover-missing-branch-copyfix-tomorrow-07190008-slice-4,4,6,6,100.0,24,agent: recover-missing-branch-copyfix-tomorrow-07190008-slice-4
+origin/agent/recover-missing-branch-remediate-buildfail-qafix-tomorrow-07062319-slice-2-slice-1-24ef910-27ce55,4,6,6,100.0,24,agent: recover-missing-branch-remediate-buildfail-qafix-tomorrow-07062319-slice-2-slice-1-
+origin/agent/relfix-racefeed-07060650-fix-typescript-and-build--slice-2-fix-typescript-build,4,10,10,100.0,38,fix(theme): normalize public segment and pricing pages
+origin/agent/toolchain-repair-0f6214c3-slice-2-repair-integration-identity-file,4,2,2,100.0,27,agent: toolchain-repair-0f6214c3-slice-2-repair-integration-identity-file
+origin/agent/backlog-batch-tomorrow-7a8d3b5-implement-cade-ed25519-verifier,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/backlog-batch-tomorrow-7a8d3b5-implement-cade-proof-store,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/backlog-batch-tomorrow-c3c3169,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/canary-tomorrow-20260728,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/canary-tomorrow-20260729,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/canary-tomorrow-20260730,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/canary-tomorrow-20260731,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/cc-legacy-margin-removal-strip-margin-from-server-utils,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/cc-legacy-margin-removal-strip-margin-from-server-utils-remove-margin-from-mixed,3,8,8,100.0,24,agent: cc-legacy-margin-removal-strip-margin-from-server-utils-remove-margin-from-mixed — 
+origin/agent/chatgpt-local-reconcile-tomorrow-62e3b89e03af,3,6,6,100.0,16,agent: chatgpt-local-reconcile-tomorrow-62e3b89e03af (executable completion criteria + bas
+origin/agent/cont-batch-tomorrow-6574335,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/curation-coherence-bot-authenticate-system-verify-post-login-authentication,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/deployfix-vercel-ignore-agent-branches-reusematchingprojecthelpers-commit-comple,3,6,6,100.0,24,agent: deployfix-vercel-ignore-agent-branches-reusematchingprojecthelpers-commit-comple — 
+origin/agent/dropbox-cross-app-hivemind-federation-one-market-s-slice-1,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/dropbox-cross-app-hivemind-federation-one-market-s-slice-2,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/dropbox-cross-app-hivemind-federation-one-market-s-slice-3,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/dropbox-pareto-2080-luxury-consigliere-repositioni-slice-1,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/dropbox-tomorrow-foulkon-hedge-bridge-transferspec-slice-1,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/factory-unblock-dropbox-orchestrator-intake-backlog-darwin-kernel-ro,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/recover-missing-branch-backlog-batch-tomorrow-d842c0a,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/recover-missing-branch-cc-rebate-multiplier-configure-database-verify-database-configuration,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/recover-missing-branch-dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-tomorrow-passport-flywheel,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/recover-missing-branch-remediate-cade-tribunal-counterparty-identify-ci-pipeline-and-publish-step,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/recover-missing-branch-remediate-cade-tribunal-counterparty-implement-persona-provenance-gate-683706,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/recover-missing-branch-remediate-cont-batch-tomorrow-45859a8-3b0df8,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/recover-missing-branch-remediate-perpetual-compliance-hedge-instrument-add-proper-dependency-management,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-cade-tribunal-counterparty-derive-appeal-robust-and-return-final-pe,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-cade-tribunal-counterparty-implement-ev-minimax-postures,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-cade-tribunal-counterparty-implement-persona-function-and-provenanc,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-cadefr2-capital-optimization-test-computefreedinitialmargin,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-cont-batch-tomorrow-6574335-37475c,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-qafix-tomorrow-07062319-slice-1-slice-5-locateexistingownermodulefunct,3,17,17,100.0,24,agent: give branch recovery a real owner module + enforce the .aider policy — intentional 
+origin/agent/remediate-spec-reconcile-3fb58a-81cb45,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-tomorrow-smarter-integration-design-define-information-wall-boundary,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/remediate-underwriting-score-885dd1,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/toolchain-repair-0f6214c3-slice-2-fix-tsc-compilation,3,1,1,100.0,39,train: agent/ecp-prodbuild-green
+origin/agent/adversarial-second-opinion-split-the-build-task-in-slice-1,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/adversarial-second-opinion-split-the-build-task-in-slice-2,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/adversarial-second-opinion-split-the-build-task-in-slice-3,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/adversarial-second-opinion-split-the-build-task-in-slice-4,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/adversarial-second-opinion-split-the-build-task-in-slice-5,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/cade-mirror-negotiation-mirror-negotiation-core-implement-computeopponentmove,2,2,2,100.0,24,agent: qafix-tomorrow-test-suite-systemic — converge mirrorNegotiation.ts (and pure-config
+origin/agent/cade-mirror-negotiation-surface-opponent-intelligence-in-war-roo,2,5,5,100.0,24,agent: route component tests to the Vue-aware config
+origin/agent/cc-legacy-margin-removal-strip-margin-from-server-utils-remove-swap-margin-symbo,2,8,8,100.0,24,agent: cc-legacy-margin-removal-strip-margin-from-server-utils-remove-swap-margin-symbo
+origin/agent/chatgpt-local-reconcile-tomorrow-0a5088dd1715,2,6,6,100.0,18,agent: chatgpt-local-reconcile-tomorrow-0a5088dd1715
+origin/agent/chatgpt-local-reconcile-tomorrow-39a7703a9f9c,2,10,10,100.0,18,agent: chatgpt-local-reconcile-tomorrow-8ce35eb9ae43
+origin/agent/chatgpt-local-reconcile-tomorrow-428d9cdff1e1,2,10,10,100.0,18,agent: chatgpt-local-reconcile-tomorrow-8ce35eb9ae43
+origin/agent/chatgpt-local-reconcile-tomorrow-4d4dec67d81f,2,3,3,100.0,17,agent: chatgpt-local-reconcile-tomorrow-4d4dec67d81f — exclude deletion-only sweep artifac
+origin/agent/chatgpt-local-reconcile-tomorrow-4dfa0e31aee5,2,10,10,100.0,18,agent: chatgpt-local-reconcile-tomorrow-8ce35eb9ae43
+origin/agent/deployfix-vercel-ignore-agent-branches-implement-recover-missing-branch-patch-im,2,3,3,100.0,24,recovery(deployfix-vercel-ignore-agent-branches): RECOVERY.md + recovery-failure.log — pri
+origin/agent/deployfix-vercel-ignore-agent-branches-implement-recover-missing-branch-patch-in,2,3,3,100.0,24,recovery(deployfix-vercel-ignore-agent-branches): RECOVERY.md + recovery-failure.log — pri
+origin/agent/dropbox-economic-scheduler-revenue-revenue-focused-slice-1,2,3,3,100.0,24,agent: dropbox-economic-scheduler-revenue-revenue-focused-slice-1 — dedupe replayed job id
+origin/agent/dropbox-economic-scheduler-revenue-revenue-focused-slice-3,2,3,3,100.0,24,agent: dropbox-economic-scheduler-revenue-revenue-focused-slice-3 — within-lane dispatch o
+origin/agent/dropbox-portfolio-doctrine-shared-services-x-items-slice-5,2,3,3,100.0,23,agent: dropbox-portfolio-doctrine-shared-services-x-items-slice-5
+origin/agent/lending-assessment-dimension,2,3,3,100.0,59,agent: lending-assessment-dimension
+origin/agent/merge-legacy-agent-funding-equilibrium,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/qafix-darwn-07251340,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/qafix-tomorrow-test-suite-systemic,2,2,2,100.0,24,agent: qafix-tomorrow-test-suite-systemic — converge mirrorNegotiation.ts (and pure-config
+origin/agent/recover-missing-branch-perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-fix-typescript,2,7,7,100.0,18,agent: recover-missing-branch-perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-
+origin/agent/recovered/fix-conviction-core-golden-syntax,2,2,2,100.0,34,ci: seed .tsc-error-baseline to the true error count
+origin/agent/relfix-sustainable-barks-07251332,2,19,19,100.0,36,fix: remove NPM_TOKEN env expansion from .npmrc for Vercel compatibility
+origin/agent/reliability-weighted-routing,2,5,5,100.0,45,feat(lending): add reliability-weighted counterparty routing
+origin/agent/trust-ratchet,2,4,4,100.0,47,feat: trust ratchet — graduation-after-N with per-user frontier recompute
+origin/agent/backlog-batch-tomorrow-7423eb0,1,3,3,100.0,45,feat(hive): command router — classifyIntent + routeCommand with 18 tests
+origin/agent/backlog-batch-tomorrow-9b80f08,1,3,3,100.0,37,agent: backlog-batch-tomorrow-9b80f08
+origin/agent/backlog-batch-tomorrow-d8f0b3a,1,4,4,100.0,24,agent: backlog-batch-tomorrow-d8f0b3a
+origin/agent/batch-mech-merge-legacy-fix-vue-css-3,1,62,62,100.0,45,agent: batch-mech-merge-legacy-fix-vue-css-3
+origin/agent/cade-finance-determine,1,2,2,100.0,43,agent: cade-finance-determine
+origin/agent/cade-mirror-negotiation,1,2,2,100.0,45,agent: cade-mirror-negotiation
+origin/agent/cade-model-diversity-finance,1,5,5,100.0,55,agent: cade-model-diversity-finance
+origin/agent/cade-tribunal-counterparty-validate-batch-release--slice-4,1,1,1,100.0,43,agent: cade-tribunal-counterparty-validate-batch-release--slice-4
+origin/agent/cadefr2-capital-optimization,1,4,4,100.0,43,agent: cadefr2-capital-optimization
+origin/agent/canary-tomorrow-20260716-review-logs-and-adjust-configurations,1,1,1,100.0,44,docs: add module-level JSDoc to adminAudit.ts
+origin/agent/canary-tomorrow-20260716-run-acceptance-test,1,1,1,100.0,44,docs: add module-level JSDoc to adminAuth.ts
+origin/agent/cc-solvency-passport,1,2,2,100.0,24,agent: cc-solvency-passport
+origin/agent/cepl-deep-netting-pricing,1,1,1,100.0,43,agent: cepl-deep-netting-pricing
+origin/agent/chatgpt-local-reconcile-tomorrow-1959809d4e74-slice-1,1,2,2,100.0,17,agent: chatgpt-local-reconcile-tomorrow-1959809d4e74-slice-1
+origin/agent/chatgpt-local-reconcile-tomorrow-1d6cb3ae8666,1,5,5,100.0,15,agent: chatgpt-local-reconcile-tomorrow-1d6cb3ae8666
+origin/agent/chatgpt-local-reconcile-tomorrow-1fd5c3ff0bf2,1,4,4,100.0,17,agent: chatgpt-local-reconcile-tomorrow-1fd5c3ff0bf2
+origin/agent/chatgpt-local-reconcile-tomorrow-2a509a6cf06c,1,3,3,100.0,15,agent: chatgpt-local-reconcile-tomorrow-2a509a6cf06c
+origin/agent/chatgpt-local-reconcile-tomorrow-75872331e5cf,1,2,2,100.0,13,agent: chatgpt-local-reconcile-tomorrow-75872331e5cf
+origin/agent/chatgpt-local-reconcile-tomorrow-cda468882594,1,5,5,100.0,15,agent: chatgpt-local-reconcile-tomorrow-cda468882594
+origin/agent/chatgpt-local-reconcile-tomorrow-ff4ad2a6347b,1,5,5,100.0,15,agent: chatgpt-local-reconcile-tomorrow-ff4ad2a6347b
+origin/agent/clause-pricing-heatmap-design,1,1,1,100.0,46,agent: clause-pricing-heatmap-design
+origin/agent/command-bar-ui,1,2,2,100.0,47,feat: conviction command bar UI + /api/command endpoint
+origin/agent/cont-cde3bc,1,1,1,100.0,36,agent: cont-cde3bc
+origin/agent/copyfix-tomorrow-07170541,1,7,7,100.0,44,agent: copyfix-tomorrow-07170541
+origin/agent/curation-layer-land,1,1,1,100.0,55,agent: curation-layer-land
+origin/agent/deployfix-vercel-ignore-agent-branches-implement-recover-missing-branch-patch-ve,1,2,2,100.0,24,fix(deploy): ignore agent branches in Vercel builds
+origin/agent/deployfix-vercel-ignore-agent-branches-reusematchingprojecthelpers-fix-build-con,1,2,2,100.0,24,agent: deployfix-vercel-ignore-agent-branches-reusematchingprojecthelpers-fix-build-con
+origin/agent/dropbox-economic-scheduler-revenue-revenue-focused-slice-4,1,2,2,100.0,24,agent: dropbox-economic-scheduler-revenue-revenue-focused-slice-4
+origin/agent/dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-tomorrow-publish-capabilities,1,1,1,100.0,44,agent: dropbox-orchestrator-intake-backlog-darwin-kernel-rollout-cross-prod-tomorrow-publi
+origin/agent/dropbox-p0-first-real-user-blockers-audit-confirme-slice-1,1,11,11,100.0,24,agent: dropbox-p0-first-real-user-blockers-audit-confirme-slice-1
+origin/agent/dropbox-p0-first-real-user-blockers-audit-confirme-slice-2,1,4,4,100.0,24,agent: dropbox-p0-first-real-user-blockers-audit-confirme-slice-2
+origin/agent/dropbox-p0-first-real-user-blockers-audit-confirmed-2026-07-31-file--tomorrow-project-tomorrow,1,2,2,100.0,25,agent: dropbox-p0-first-real-user-blockers T1 — provision SwapOrganization at application 
+origin/agent/dropbox-p0-t10-foulkon-hedge-bridge,1,3,3,100.0,24,agent: dropbox-p0-t10-foulkon-hedge-bridge
+origin/agent/dropbox-p0-t3-persist-document-uploads,1,3,3,100.0,24,agent: dropbox-p0-t3-persist-document-uploads
+origin/agent/dropbox-p0-t6-unify-ioi-stores,1,3,3,100.0,24,agent: dropbox-p0-t6-unify-ioi-stores
+origin/agent/dropbox-p0-t8-wire-orphaned-notifiers,1,6,6,100.0,24,agent: dropbox-p0-t8-wire-orphaned-notifiers
+origin/agent/dropbox-portfolio-doctrine-shared-services-x-items-slice-1,1,1,1,100.0,23,recovery-intent-stub: dropbox-portfolio-doctrine-shared-services-x-items-slice-1
+origin/agent/ext-anti-gaming-v2,1,1,1,100.0,47,"feat: anti-gaming detection — window-dressing, randomized measurement, completeness adjust"
+origin/agent/ext-federated-calibration,1,2,2,100.0,46,agent: ext-federated-calibration
+origin/agent/ext-streaming-terms,1,3,3,100.0,24,agent: ext-streaming-terms
+origin/agent/focused-conflicted-tomorrow-rescue-refs-106,1,3,3,100.0,15,agent: focused-conflicted-tomorrow-rescue-refs-106
+origin/agent/hive-ops-dashboards-diffusion-forecasts-and-coverage-radar-p,1,1,1,100.0,45,"feat: ops-hive-dashboard — all 6 panels (candidates, autonomy, exposures, diffusion, cover"
+origin/agent/legal-identity-docs,1,5,5,100.0,45,agent: legal-identity-docs — add 4 identity docs + contingentIdentity.ts cross-ref
+origin/agent/merge-legacy-agent-mesh-of-rings,1,2,2,100.0,47,Merge remote-tracking branch 'origin/agent/mesh-of-rings' into agent/merge-legacy-agent-me
+origin/agent/merge-legacy-agent-qafix-tomorrow-07062319-slice-2-slice-3-implement-core-branch-recovery-log,1,12,12,100.0,47,agent: merge-legacy-agent-qafix-tomorrow-07062319-slice-2-slice-3-implement-core-branch-re
+origin/agent/merge-legacy-agent-qafix-tomorrow-07062319-slice-2-slice-4-implement-merged-diff-library-core,1,13,13,100.0,47,agent: merge-legacy-agent-qafix-tomorrow-07062319-slice-2-slice-4-implement-merged-diff-li
+origin/agent/merge-legacy-agent-qafix-tomorrow-07062319-slice-2-slice-4-setup-development-and-test-environ,1,1,1,100.0,45,Merge remote-tracking branch 'origin/agent/qafix-tomorrow-07062319-slice-2-slice-4-setup-d
+origin/agent/merge-legacy-agent-warranty-constitution-gate,1,6,6,100.0,45,agent: warranty-constitution-gate
+origin/agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests,1,2,2,100.0,23,agent: perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests
+origin/agent/perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-inspect-and-re,1,4,4,100.0,17,agent: perpetual-compliance-hedge-instrument-fix-ts-errors-and-run-tests-inspect-and-re
+origin/agent/perpetual-contracts-spec,1,1,1,100.0,46,agent: perpetual-contracts-spec
+origin/agent/persist-target-exposure,1,1,1,100.0,24,fix(target-exposure): make the suite collect and align factor assertions — import vitest g
+origin/agent/position-outcome-endpoint-split-the-build-task-int-slice-1,1,2,2,100.0,46,feat: position outcome computation (sub-task 1/5)
+origin/agent/proof-backed-captive-structuring-v2,1,1,1,100.0,47,feat: proof-backed captive structuring — sizeCaptive() with tests
+origin/agent/qafix-patch-analysis-v3,1,1,1,100.0,47,docs: patch_analysis.md documenting beethoven patch intent and target files (attempt 3)
+origin/agent/qafix-tomorrow-07062319-slice-1-slice-4,1,1,1,100.0,53,agent: qafix-tomorrow-07062319-slice-1-slice-4
+origin/agent/qafix-tomorrow-07062319-slice-2-slice-1-split-the-patch-transplant-task-into-2-3,1,4,4,100.0,51,agent: qafix-tomorrow-07062319-slice-2-slice-1-split-the-patch-transplant-task-into-2-3
+origin/agent/qafix-tomorrow-07062319-slice-2-slice-3-scaffold-branch-recovery-components-reus,1,3,3,100.0,46,agent: qafix-tomorrow-07062319-slice-2-slice-3-scaffold-branch-recovery-components-reus
+origin/agent/qafix-tomorrow-07062319-slice-2-slice-3-split-large-patch-transplant-task-into-s,1,4,4,100.0,51,agent: qafix-tomorrow-07062319-slice-2-slice-3-split-large-patch-transplant-task-into-s
+origin/agent/qafix-tomorrow-07062319-slice-2-slice-4,1,2,2,100.0,52,fix(tests): mock networkOptimizers.detectRegime to prevent DB timeout in regime tests
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-1,1,1,1,100.0,54,agent: qafix-tomorrow-07062319-slice-4-slice-1
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-2,1,7,7,100.0,53,agent: qafix-tomorrow-07062319-slice-4-slice-2
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-2-split-the-patch-transplant-task-into-sma,1,1,1,100.0,37,agent: qafix-tomorrow-07062319-slice-4-slice-2-split-the-patch-transplant-task-into-sma
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-2-transplant-core-patch-logic,1,2,2,100.0,51,feat(coordination): add decideCoordinationTaskStall pure helper with tests
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-3,1,1,1,100.0,54,agent: qafix-tomorrow-07062319-slice-4-slice-3
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-adapt-core-branch-recovery-logic,1,4,4,100.0,51,agent: qafix-tomorrow-07062319-slice-4-slice-4-adapt-core-branch-recovery-logic
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-analyze-source-patch-and-map-target,1,4,4,100.0,51,agent: qafix-tomorrow-07062319-slice-4-slice-4-analyze-source-patch-and-map-target
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-analyze-source-patch-locateexistingowner,1,1,1,100.0,45,docs: task stub qafix-tomorrow-07062319-slice-4-slice-4-
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-finalize-and-verify-adaptation,1,3,3,100.0,51,refactor(coordination): extract pure claim-decision logic to taskClaimDecision module
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-identify-target-context-reuse-helpers,1,1,1,100.0,45,docs: task stub qafix-tomorrow-07062319-slice-4-slice-4-
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-recovered,1,1,1,100.0,47,recover: stashed executor work for agent/qafix-tomorrow-07062319-slice-4-slice-4
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-verify-and-test-patch,1,4,4,100.0,51,agent: qafix-tomorrow-07062319-slice-4-slice-4-verify-and-test-patch
+origin/agent/qafix-tomorrow-07062319-slice-4-slice-4-verify-branch-recovery-new-test-analyze-,1,1,1,100.0,26,recovery-intent-stub: qafix-tomorrow-07062319-slice-4-slice-4-verify-branch-recovery-new-t
+origin/agent/qafix-tomorrow-07062319-slice-5,1,1,1,100.0,54,agent: qafix-tomorrow-07062319-slice-5
+origin/agent/qafix-tomorrow-07251452,1,1,1,100.0,36,agent: qafix-tomorrow-07251452
+origin/agent/reconcile-039ba4-focused-merge-nuxt-config,1,1,1,100.0,6,agent: reconcile-039ba4-focused-merge-nuxt-config
+origin/agent/reconcile-039ba4-land-pwa-and-margin-surface,1,4,4,100.0,6,agent: reconcile-039ba4-land-pwa-and-margin-surface
+origin/agent/recover-b8f5cf32cb21-2f823c135f00,1,1,1,100.0,15,agent: recover-b8f5cf32cb21-2f823c135f00
+origin/agent/recover-missing-branch-canary-tomorrow-20260713-slice-5,1,1,1,100.0,44,add .deploy-canary: pipeline heartbeat canary file
+origin/agent/recover-missing-branch-dropbox-operator-gate-amendment-auto-ship-authoriz-slice-1,1,2,2,100.0,23,agent: recover-missing-branch-dropbox-operator-gate-amendment-auto-ship-authoriz-slice-1
+origin/agent/recover-missing-branch-dropbox-portfolio-doctrine-shared-services-x-items-slice-1,1,2,2,100.0,23,agent: recover-missing-branch-dropbox-portfolio-doctrine-shared-services-x-items-slice-1
+origin/agent/recover-missing-branch-perpetual-compliance-hedge-instrument-dev,1,1,1,100.0,16,agent: recover-missing-branch-perpetual-compliance-hedge-instrument-fix-ts-errors (rebuilt
+origin/agent/recover-missing-branch-qafix-tomorrow-07062319-slice-2-slice-4-adapt-patch-template,1,3,3,100.0,18,agent: recover-missing-branch-qafix-tomorrow-07062319-slice-2-slice-4-adapt-patch-template
+origin/agent/recover-missing-branch-rework-legal-oracle-sr117-governance-82cc472,1,1,1,100.0,44,add rate oracle SR 11-7 governance module
+origin/agent/recovered/fix-syntax-lint-scope,1,1,1,100.0,34,"fix(lint): scan every source root, not just server/ and scripts/"
+origin/agent/relfix-v15-tomorrow-43b1039e,1,1,1,100.0,18,agent: relfix-v15-tomorrow-43b1039e
+origin/agent/remediate-cont-batch-tomorrow-45859a8-3b0df8-3b0df8,1,1,1,100.0,4,agent: remediate-cont-batch-tomorrow-45859a8-3b0df8-3b0df8
+origin/agent/residual-ils-bridge,1,2,2,100.0,46,agent: residual-ils-bridge
+origin/agent/rework-buildfail-qafix-tomorrow-07062319-slice-1-slice-4-3e3d999,1,1,1,100.0,37,agent: rework-buildfail-qafix-tomorrow-07062319-slice-1-slice-4-3e3d999
+origin/agent/risk-line-ui,1,1,1,100.0,47,feat: risk-line-ui — RiskLine component for CFO dashboard (severity dot + action button + 
+origin/agent/shadow-1e2ec336-cowork,1,2,2,100.0,45,feat: oracle ingest for Pareto frontier indices (PEI/PSI/PDR)
+origin/agent/shadow-3ffc95ed-orchestrator_native,1,2,2,100.0,44,feat: darwin passport bridge — Wire 3+4 ECP claims + flywheel prefill for instant underwri
+origin/agent/shadow-47ba35f0-cowork,1,2,2,100.0,43,feat: wire positionEngine + recipientAlignment into clauseDrafter
+origin/agent/shadow-47ba35f0-orchestrator_native,1,2,2,100.0,43,feat: wire positionEngine + recipientAlignment into clauseDrafter
+origin/agent/sik-verification-v2,1,3,3,100.0,47,feat: posture invariant verifier + REPLICATION_VERIFICATION.md
+origin/agent/sw-number-lineage-v2,1,2,2,100.0,47,feat: number lineage records for verifiable proofs
+origin/agent/sw-verification-v2,1,2,2,100.0,47,feat: smart wrapper verification utility
+origin/agent/target-exposure-history,1,1,1,100.0,46,agent: target-exposure-history
+origin/agent/toolchain-repair-0f6214c3-slice-2,1,1,1,100.0,44,docs: add module-level JSDoc to contractSyncer.ts
+origin/agent/triage-b8f5cf32cb21-9f16c2367b17,1,2,2,100.0,15,agent: triage-b8f5cf32cb21-9f16c2367b17
+origin/agent/trust-ratchet-frontier-percentile-algorithm,1,2,2,100.0,23,agent: trust-ratchet-frontier-percentile-algorithm
+origin/agent/trust-ratchet-per-user-state-tracking,1,2,2,100.0,23,agent: trust-ratchet-per-user-state-tracking
+origin/agent/v15-21-rollout-tomorrow,1,2,2,100.0,16,agent: v15-21-rollout-tomorrow
+origin/agent/warranty-trigger-spec,1,4,4,100.0,57,agent: warranty-trigger-spec

@@ -176,3 +176,75 @@ def clean_stray_js_duplicates(repo):
         except OSError:
             continue
     return removed
+
+
+# ── Vue single-file components that do not compile ───────────────────────────
+#
+# WHY (2026-08-29): a fleet agent converted 421 hardcoded hex values to design
+# tokens across 59 .vue files in one pass. Bulk mechanical edits at that scale
+# occasionally append an attribute to an element that already has one --
+# `:style="{...}" :style="{...}"`, two `class=`, or static classes trailing a
+# `:class` array. Each is a hard compile error.
+#
+# Nothing caught them. `lint:syntax`-style gates parse TypeScript, not
+# templates, so a broken component passed every check and surfaced only inside
+# `nuxt build` -- after install, after seven other linters, minutes into a
+# deploy. Worse, it took the local dev server down for whoever worked next,
+# which is how six of them were found: one at a time, by hand.
+#
+# There is no regex to fix here. The edits are written by a model, not a
+# script, so the durable answer is to compile the components and refuse to
+# proceed while one is broken. This runs the REPO'S OWN checker when it has
+# one, so each project decides how its components are compiled and the fleet
+# stays project-agnostic. A repo without one is a silent no-op, exactly like
+# the wiring gate.
+_VUE_CHECK_SCRIPT = "lint:vue-templates"
+
+
+def _has_package_script(repo, script):
+    try:
+        with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
+            return script in (json.load(f).get("scripts") or {})
+    except Exception:
+        return False
+
+
+def check_vue_templates(repo, timeout=180):
+    """Compile the repo's .vue components using its own checker.
+
+    Returns (ok, detail). ok is True when the repo has no checker (nothing to
+    say), or when every component compiles. detail carries the checker's output
+    when it fails, so the caller can print the exact file and line.
+
+    Fail-soft on infrastructure problems -- a missing node, a timeout, a repo
+    that isn't there -- because this must never be the reason the fleet stops.
+    It only reports False for a real compile failure the checker itself found.
+
+    NEVER RAISES. Every path returns a tuple, so callers do not need a guard
+    around it (and should not add one -- a redundant `except` here is a
+    fail-soft violation the convention lint counts).
+    """
+    if not _has_package_script(repo, _VUE_CHECK_SCRIPT):
+        return True, ""
+    try:
+        out = subprocess.run(
+            ["npm", "run", "--silent", _VUE_CHECK_SCRIPT],
+            cwd=repo, capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception as exc:
+        # Could not run the check. Do not block on our own inability to look.
+        return True, f"(vue template check skipped: {exc})"
+    if out.returncode == 0:
+        return True, ""
+    detail = ((out.stdout or "") + (out.stderr or "")).strip()
+    # "I could not load the compiler" is not "a component is broken". A fresh
+    # worktree whose node_modules symlink is not in place yet, or a repo whose
+    # deps were never installed, exits non-zero for a reason that says nothing
+    # about the edit in front of us. Blocking on it would fail every task in
+    # that tree -- the exact false positive that makes a gate get switched off.
+    if any(s in detail for s in (
+        "ERR_MODULE_NOT_FOUND", "Cannot find package", "Cannot find module",
+        "command not found", "ENOENT",
+    )):
+        return True, f"(vue template check skipped: toolchain unavailable)\n{detail[:400]}"
+    return False, detail

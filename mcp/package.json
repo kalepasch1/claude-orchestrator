@@ -9,12 +9,15 @@
     "start": "node dist/server.js",
     "dev": "tsx server.ts",
     "generate": "tsx generator/auto-mcp.ts",
-    "sync": "tsx sync/scan-and-update.ts"
+    "sync": "tsx sync/scan-and-update.ts",
+    "http": "tsx http.ts",
+    "start:http": "node dist/http.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.1",
     "tsx": "^4.7.0",
     "typescript": "^5.8.0"
   }

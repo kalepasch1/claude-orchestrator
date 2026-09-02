@@ -45,7 +45,7 @@ _DIFF_MODEL = {"easy": "fast", "hard": "mid", "critical": "heavy"}
 _API_PROVIDERS = [
     {"provider": "groq",     "model": "llama-3.1-8b-instant",  "coder": "swarm", "cost_rank": 0},
     {"provider": "deepseek", "model": "deepseek-v4-flash",     "coder": "aider", "cost_rank": 1},
-    {"provider": "gemini",   "model": "gemini-3-flash",        "coder": "aider", "cost_rank": 2},
+    {"provider": "gemini",   "model": "gemini-3.5-flash",        "coder": "aider", "cost_rank": 2},
     {"provider": "xai",      "model": "grok-build-0.1",        "coder": "swarm", "cost_rank": 3},
     {"provider": "openai",   "model": "gpt-5.4-nano",          "coder": "aider", "cost_rank": 4},
     {"provider": "anthropic","model": "claude-sonnet-5",      "coder": "aider", "cost_rank": 5},
@@ -91,7 +91,7 @@ _SUB_PROVIDERS = [
     {"provider": "groq",    "model": "llama-3.3-70b-versatile", "coder": "swarm",
      "tiers": {"fast", "mid"}},
     # -- Google AI Studio free tier (1500 RPD, $0) --
-    {"provider": "gemini",  "model": "gemini-3-flash",    "coder": "aider",
+    {"provider": "gemini",  "model": "gemini-3.5-flash",    "coder": "aider",
      "tiers": {"fast"}},
     {"provider": "chatgpt", "model": "gpt-5.4-mini",      "coder": "aider",
      "tiers": {"fast", "mid"}},

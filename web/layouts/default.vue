@@ -23,7 +23,7 @@
           <span v-else-if="item.to === '/connectors' && readyConnectorCount > 0" class="connection-dot" />
         </NuxtLink>
         <div class="nav-divider" />
-        <NuxtLink to="/admin/capability-passport" class="nav-item" :class="$route.path.startsWith('/admin') ? 'active' : ''"><span class="nav-icon">⚙</span><span>Settings & capabilities</span></NuxtLink>
+        <NuxtLink to="/admin" class="nav-item" :class="$route.path.startsWith('/admin') ? 'active' : ''"><span class="nav-icon">⚙</span><span>Admin & capabilities</span></NuxtLink>
       </nav>
       <div class="sidebar-footer">
         <div><span class="user-avatar">{{ String($route.meta?.userInitial || 'K').slice(0, 1) }}</span><span><b>Operator workspace</b><small>Control OS v2.2</small></span></div>

@@ -388,9 +388,22 @@ class RetryTest(DeliveryLeaseTestBase):
 class CompatibilityWindowTest(DeliveryLeaseTestBase):
     def test_unfenced_write_allowed_while_rpcs_are_undeployed(self):
         """Un-migrated hosts fall back to the legacy election rather than stalling."""
-        delivery_lease._available = False
+        # WAS: poked delivery_lease._available = False and called require(None, ...).
+        # That memo is only honoured for PROBE_RETRY_S after the last probe, and
+        # _probed_at was left at 0.0 — so available() re-probed immediately, the probe
+        # hit FakeLeaseStore (which *does* implement verify_delivery_fence), concluded
+        # the fencing plane was deployed, and require() raised LeaseLost. Drive the real
+        # path: the probe has to see "no such function", which is what an un-migrated
+        # host actually gets.
         os.environ.pop("ORCH_DELIVERY_LEASE_REQUIRED", None)
-        delivery_lease.require(None, "push")                   # must not raise
+        delivery_lease._available = None
+        delivery_lease._probed_at = 0.0
+        undeployed = RuntimeError(
+            "PGRST202 Could not find the function public.verify_delivery_fence")
+        with mock.patch.object(delivery_lease.db, "rpc", side_effect=undeployed):
+            self.assertFalse(delivery_lease.available())
+            self.assertTrue(delivery_lease._missing_schema(undeployed))
+            delivery_lease.require(None, "push")               # must not raise
 
     def test_unfenced_write_refused_once_rpcs_are_deployed(self):
         delivery_lease._available = True

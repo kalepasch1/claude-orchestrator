@@ -23,7 +23,7 @@ class MockDB:
     def update(table, data, where=None):
         return data
 
-sys.modules["db"] = MockDB()
+_mock_db = MockDB()
 
 # Mock log
 class MockLog:
@@ -33,9 +33,19 @@ class MockLog:
     def info(self, *a, **kw): pass
     def warning(self, *a, **kw): pass
     def error(self, *a, **kw): pass
-sys.modules["log"] = MockLog()
 
-import twin_qa
+
+_mock_log = MockLog()
+
+# WAS bare `sys.modules[...] = ...` assignments at module scope. pytest imports
+# every test module during COLLECTION, so they were not scoped to this file: the
+# real database client and logger were replaced for every test that ran
+# afterwards in the same process, with no way to put them back. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
+
+with modules_during_import(db=_mock_db, log=_mock_log):
+    import twin_qa
 
 
 def test_disabled():

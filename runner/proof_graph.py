@@ -21,12 +21,65 @@ def _home():
 
 def _path(): return os.path.join(_home(), "patch-proof-graph.jsonl")
 
+# Directories excluded from the dependency fingerprint.
+#
+# The fingerprint is meant to describe THIS PROJECT'S declared dependencies, so
+# that a proof earned against one set of lockfiles is not reused against
+# another. It was walking the whole repo, and .runtime/ is the orchestrator's
+# own scratch: deps/snapshots/ alone held 309 staged installs, each with its own
+# package-lock.json. 249 of the 256 lockfiles being hashed lived there.
+#
+# The effect was that any prewarm — creating a snapshot, publishing one, cleaning
+# one up — changed the fingerprint of every repo, and every outstanding build
+# proof stopped matching. prove_build would record a proof, read it back to
+# confirm it was durable, report GREEN, and then the pre-push guard moments later
+# would find nothing, because a snapshot had been written in between. "Earn a
+# proof, then push" could not work, and the only way past it was the break-glass
+# override the guard exists to make unnecessary.
+#
+# A cache belonging to the build tool is not an input to what is being built.
+_FINGERPRINT_PRUNE = {
+    ".git", "node_modules", ".nuxt", ".next", "dist", "build",
+    # orchestrator scratch and build output
+    ".runtime", ".output", ".vercel", ".orch", ".orch-tmp",
+    # python and test caches
+    ".venv", "venv", "__pycache__", ".pytest_cache", "coverage",
+    # archives kept on disk but not part of the project
+    "_to_delete", "_dormant", ".spine-wt",
+    # Nested applications that merely live inside a host repo's tree. smarter
+    # declares exactly this set as NESTED_APP_DIRS in its nuxt.config.ts, for
+    # the same reason: they are separate apps, and their dependencies are not
+    # the host's. Most are caught by the .git check below; these are the ones
+    # that are plain copies rather than checkouts.
+    "pasch", "pmi", "prediction-markets-institute", "1000", "ap6", "marketing",
+}
+
+# Agent worktrees follow one convention fleet-wide: <repo>-wt/<branch-slug>.
+# Each carries a full lockfile, and they are created and destroyed constantly —
+# precisely the churn a build proof must not be sensitive to.
+_WORKTREE_PARENT_SUFFIX = "-wt"
+
+
 def dependency_fingerprint(repo: str) -> str:
     repo = _canonical_repo(repo)
     h = hashlib.sha256()
     found = False
     for root, dirs, files in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in {".git", "node_modules", ".nuxt", ".next", "dist", "build"}]
+        # Prune by name, and also prune any directory that is its own git
+        # checkout. A submodule or a nested worktree is a SEPARATE project: its
+        # lockfile is not this project's dependency set, and it moves on its own
+        # schedule. smarter carries pasch and prediction-markets-institute/pmi as
+        # submodules plus fourteen pasch-wt/* agent worktrees — 33 of the 40
+        # lockfiles being hashed for smarter came from them. Reinstalling pasch
+        # once was enough to invalidate smarter's build proof.
+        #
+        # Detecting .git rather than listing names means this holds for repos
+        # that do not exist yet, and cannot drift from whatever the host repo
+        # calls its nested apps.
+        dirs[:] = [d for d in dirs
+                   if d not in _FINGERPRINT_PRUNE
+                   and not d.endswith(_WORKTREE_PARENT_SUFFIX)
+                   and not os.path.exists(os.path.join(root, d, ".git"))]
         for name in sorted(files):
             if name not in LOCKFILES: continue
             path = os.path.join(root, name); found = True

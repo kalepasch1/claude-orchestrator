@@ -7,13 +7,21 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Provide a stub db module before importing
-if "db" not in sys.modules:
-    _db = types.ModuleType("db")
-    _db.client = None
-    sys.modules["db"] = _db
+# Provide a stub db module for the import below.
+#
+# WAS `if "db" not in sys.modules: sys.modules["db"] = _db`, which was wrong
+# whichever branch it took. Under pytest, conftest has already imported db, so
+# the guard skipped and test_automation bound the REAL client -- the isolation
+# this block advertises never happened in a suite run. Standalone the guard
+# fired and the stub was never removed, replacing db for every test collected
+# afterwards. See runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
 
-import test_automation as ta
+_db = types.ModuleType("db")
+_db.client = None
+
+with modules_during_import(db=_db):
+    import test_automation as ta
 
 
 # ---------------------------------------------------------------------------

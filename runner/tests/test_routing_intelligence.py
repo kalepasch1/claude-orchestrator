@@ -142,6 +142,19 @@ class RoutingIntelligenceTest(unittest.TestCase):
 
         self.assertEqual([r["coder"] for r in table["build"]], ["claude"])
 
+    def test_coder_canary_is_suppressed_when_its_generator_flag_is_unset(self):
+        # coder_canary.run() is gated by self_work_gate on ORCH_CODER_CANARIES, which
+        # defaults off — synthetic routing samples are self-directed work no user asked
+        # for. The four tests below enable the flag to exercise the queuing logic under
+        # it; this one keeps the suppression path covered at the same call site.
+        db = MagicMock()
+        with patch.dict(os.environ, {"ORCH_CODER_CANARIES": ""}, clear=False), \
+             patch.object(coder_canary, "db", db):
+            res = coder_canary.run(limit_per_coder=1)
+        self.assertEqual(res["queued"], 0)
+        self.assertEqual(res["reason"], "disabled")
+        db.insert.assert_not_called()
+
     def test_coder_canary_queues_one_per_allowed_coder(self):
         inserted = []
         db = MagicMock()
@@ -151,7 +164,8 @@ class RoutingIntelligenceTest(unittest.TestCase):
             [],
         ]
         db.insert.side_effect = lambda table, row: inserted.append((table, row))
-        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false",
+                                     "ORCH_CODER_CANARIES": "1"}, clear=False), \
              patch.object(coder_canary, "db", db), \
              patch.object(coder_canary.agentic_coders, "available", return_value=["ollama", "gpt"]):
             res = coder_canary.run(limit_per_coder=1)
@@ -169,7 +183,8 @@ class RoutingIntelligenceTest(unittest.TestCase):
             [],
         ]
         db.insert.side_effect = lambda table, row: inserted.append((table, row))
-        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false",
+                                     "ORCH_CODER_CANARIES": "1"}, clear=False), \
              patch.object(coder_canary, "db", db), \
              patch.object(coder_canary.agentic_coders, "available", return_value=["gpt"]):
             res = coder_canary.run(limit_per_coder=1)
@@ -213,7 +228,8 @@ class RoutingIntelligenceTest(unittest.TestCase):
             [{"slug": "merged-x", "kind": "build", "prompt": "Implement webhook validation with tests " * 8}],
         ]
         db.insert.side_effect = lambda table, row: inserted.append((table, row))
-        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false",
+                                     "ORCH_CODER_CANARIES": "1"}, clear=False), \
              patch.object(coder_canary, "db", db), \
              patch.object(coder_canary.agentic_coders, "available", return_value=["ollama"]):
             res = coder_canary.run(limit_per_coder=1)
@@ -231,7 +247,8 @@ class RoutingIntelligenceTest(unittest.TestCase):
               "prompt": recovery_prompt}],
         ]
         db.insert.side_effect = lambda table, row: inserted.append((table, row))
-        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false",
+                                     "ORCH_CODER_CANARIES": "1"}, clear=False), \
              patch.object(coder_canary, "db", db), \
              patch.object(coder_canary.agentic_coders, "available", return_value=["ollama"]):
             res = coder_canary.run(limit_per_coder=1)

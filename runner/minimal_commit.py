@@ -61,6 +61,25 @@ def extract(repo, branch, base, task, *, max_files=40):
         _git(repo, "worktree", "remove", "--force", tmp)
     if not sha:
         return {"ok": False, "reason": "missing extracted commit", "files": files}
-    if _git(repo, "branch", "-f", branch, sha).returncode != 0:
+    if not _point_branch_at(repo, branch, sha):
         return {"ok": False, "reason": "could not update branch", "files": files}
     return {"ok": True, "commit": sha, "files": files, "source": source}
+
+
+def _point_branch_at(repo, branch, sha):
+    """Move `branch` to `sha`, whether or not it is the branch currently checked out.
+
+    `git branch -f` refuses to move the checked-out branch, and the caller that needs
+    this most reaches it in exactly that state: merge_train rebases with
+    `git rebase <base> <branch>`, which checks <branch> out first, and `git rebase
+    --abort` leaves it checked out. A plain `git branch -f` there fails with "cannot
+    force update the branch checked out at ...", so the extraction succeeded and then
+    threw its result away. `git reset --hard` moves the ref AND the working tree
+    together; update-ref would move the ref and leave the tree describing the old
+    commit.
+    """
+    head = _git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+    on_branch = head.returncode == 0 and head.stdout.strip() == str(branch)
+    if on_branch:
+        return _git(repo, "reset", "--hard", sha).returncode == 0
+    return _git(repo, "branch", "-f", branch, sha).returncode == 0

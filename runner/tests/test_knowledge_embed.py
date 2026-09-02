@@ -271,7 +271,14 @@ class ExtractStillWorksWithFallbackChainTest(unittest.TestCase):
             inserted["table"] = table
             inserted["row"] = row
 
-        with patch.object(ke, "PROVIDER", ""), patch.object(ke.db, "insert", fake_insert):
+        # "all paths fail" has to include the LOCAL one. embed() tries the cloud
+        # provider, then falls through to _ollama_embed() before giving up — and
+        # this fleet runs Ollama, so clearing PROVIDER alone left a working
+        # embedder and the row came back WITH an embedding. The test then read as
+        # "the no-embedding path is broken" when what was broken was the fixture.
+        with patch.object(ke, "PROVIDER", ""), \
+                patch.object(ke, "_ollama_embed", return_value=None), \
+                patch.object(ke.db, "insert", fake_insert):
             ke.extract("proj", "Title", "tag1,tag2", "body text")
         self.assertEqual(inserted["table"], "knowledge")
         self.assertNotIn("embedding", inserted["row"])

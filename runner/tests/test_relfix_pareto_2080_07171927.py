@@ -192,7 +192,39 @@ class TestPatchTransplantFromDeployfix(unittest.TestCase):
         assert source["source"] == "native-claim"
 
     def test_adapt_patch_fleet_config_changes(self):
-        """Adapt deployfix patch: replicate fleet_config model selection logic."""
+        """Adapt deployfix patch: replicate fleet_config model selection logic.
+
+        The fixture used to add ORCH_PIPELINE_SECURITY_GATE and assert the
+        adapted patch came back containing it. patch_transplant now refuses any
+        diff whose added lines match SECURITY_SENSITIVE — and that regex names
+        ORCH_[A-Z0-9_]*SECURITY_GATE as "the gate this check was stubbed for".
+        The refusal is the module's one deliberately FAIL-CLOSED path, because
+        adaptation rewrites hunk headers and "a silently-relocated security change
+        is worse than no transplant at all".
+
+        So the old assertion required the module to do the exact thing it was
+        later built to refuse. What this test is named for — adapting an ordinary
+        fleet_config change — is still worth pinning, with a key that is
+        configuration rather than a gate. The refusal gets its own test below.
+        """
+        prior_diff = """--- a/fleet_config.py
++++ b/fleet_config.py
+@@ -20,3 +20,4 @@
+ ORCH_PIPELINE_MODEL_SELECT = 'gemini'
++ORCH_PIPELINE_MODEL_FALLBACK = 'ollama'
+"""
+        adapted = patch_transplant.adapt_patch(
+            prior_diff=prior_diff,
+            target_task="relfix-pareto-2080-07171927",
+            target_files=["fleet_config.py", "release_train.py"]
+        )
+
+        assert adapted is not None
+        assert "fleet_config.py" in adapted
+        assert "ORCH_PIPELINE_MODEL_FALLBACK" in adapted
+
+    def test_adapt_patch_refuses_a_security_sensitive_change(self):
+        """The fail-closed half, asserted directly rather than by accident."""
         prior_diff = """--- a/fleet_config.py
 +++ b/fleet_config.py
 @@ -20,3 +20,4 @@
@@ -204,10 +236,9 @@ class TestPatchTransplantFromDeployfix(unittest.TestCase):
             target_task="relfix-pareto-2080-07171927",
             target_files=["fleet_config.py", "release_train.py"]
         )
-
-        assert adapted is not None
-        assert "fleet_config.py" in adapted
-        assert "ORCH_PIPELINE_SECURITY_GATE" in adapted
+        assert adapted is None, (
+            "a diff that adds a security gate must not be transplanted — "
+            "adaptation moves the change to a file it was never reviewed against")
 
     def test_adapt_patch_maintains_semantic_intent(self):
         """Adapted patch preserves security-gate configuration intent."""

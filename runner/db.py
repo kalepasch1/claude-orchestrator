@@ -6,7 +6,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 The .env file in runner/ is auto-loaded at import time by the _load_env() helper below.
 """
-import os, re, sys, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
+import contextlib, os, re, sys, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
 
 # ── DB failover detection ────────────────────────────────────────────────────
@@ -344,6 +344,29 @@ def breaker_state():
     return dict(_BREAKER)
 
 
+def reset_breaker():
+    """Close the breaker and forget the failure streak. For tests and operators.
+
+    The breaker is process-global by design — that is what lets one thread's
+    discovery that the control plane is down spare every other thread the full
+    timeout. In a test session that same reach turns any test which touches the
+    real origin into a trap for every test that runs after it: ten consecutive
+    unreachable calls open the breaker for DB_BREAKER_COOLDOWN_S, and from then on
+    _req fails fast with ControlPlaneDown before it reaches the code under test.
+    Both halves of that are silent — the tripping test usually passes, and the
+    victim reports something unrelated.
+
+    Exposed rather than left to `db._BREAKER.clear()` at each call site so the
+    reset stays correct if the dict grows a field, and so conftest can hold it
+    open with one named call.
+    """
+    with _BREAKER_LOCK:
+        _BREAKER["consecutive"] = 0
+        _BREAKER["open_until"] = 0.0
+        _BREAKER["probing"] = False
+    return dict(_BREAKER)
+
+
 def _breaker_blocks():
     """True while the breaker is open AND this caller is not the elected half-open prober.
 
@@ -396,6 +419,51 @@ CORE_RETRY_RPCS = {
     "execute_task", "complete_task", "claim_task", "mark_done",
     "record_attempt", "update_task_state", "insert_outcome",
 }
+#: Thread-safe per-slug dedup lock pool: serializes same-machine inserts of the
+#: same (project_id, slug) so two threads cannot both pass the existence check
+#: and both INSERT.
+#:
+#: RESTORED 2026-08-25. This was added in 387c6c6b and disappeared in 4acfd817,
+#: "fix: restore db.py truncated by bad merge bb641954" — collateral damage from
+#: a truncation rather than a decision. What was left behind was the shape of a
+#: guard with nothing inside it: insert()'s comment still described three steps
+#: ("check, lock, re-check under the lock"), only the first was implemented, and
+#: the `_dedup_key` the lock used to take was computed and then never read.
+#: runner/tests/test_task_lifecycle.py has been red on `module 'db' has no
+#: attribute '_dedup_lock'` since.
+#:
+#: One correction on the way back in. The original released the lock BEFORE the
+#: POST — the `with` block covered only the re-check — so two threads could both
+#: re-check empty, both exit, and both insert, which is the race it existed to
+#: close. The lock is now held across the insert itself. Contention is only
+#: between threads inserting the SAME slug, which is precisely the case that must
+#: be serialized, so the cost is a lock nobody else is waiting on.
+_DEDUP_LOCKS = {}
+_DEDUP_LOCKS_LOCK = threading.Lock()
+
+
+class _dedup_lock:
+    """Per-key lock for serializing task inserts with the same slug."""
+
+    def __init__(self, key):
+        self.key = key
+
+    def __enter__(self):
+        with _DEDUP_LOCKS_LOCK:
+            if self.key not in _DEDUP_LOCKS:
+                _DEDUP_LOCKS[self.key] = threading.Lock()
+            self._lock = _DEDUP_LOCKS[self.key]
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self._lock.release()
+        # Clean up to prevent memory leak (only if no one else is waiting).
+        with _DEDUP_LOCKS_LOCK:
+            if self.key in _DEDUP_LOCKS and not _DEDUP_LOCKS[self.key].locked():
+                _DEDUP_LOCKS.pop(self.key, None)
+
+
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
@@ -874,11 +942,31 @@ _scan_warned = set()
 _scan_warn_lock = threading.Lock()
 
 
+#: Non-zero while select_all() is paging on this thread. A full page inside a
+#: pager is the pager working, not a truncated scan.
+_paging_depth = threading.local()
+
+
 def _warn_if_truncated(table, params, rows):
     try:
         if os.environ.get("ORCH_SCAN_TRUNCATION_WARN", "true").lower() not in ("1", "true", "yes", "on"):
             return
         if not isinstance(rows, list) or not params:
+            return
+        # THE PAGER IS NOT A TRUNCATION.
+        #
+        # select_all() goes through select() by design ("one HTTP path, and any
+        # test double or instrumentation installed on select() automatically
+        # covers paging too"), and it asks for exactly PAGE_SIZE rows per page —
+        # so every full page tripped this warning. The one function written to
+        # make truncation impossible was the loudest reporter of it:
+        # queue_deadlock_report.py reads all 24,750 tasks correctly and opened
+        # with a TRUNCATED SCAN banner.
+        #
+        # A warning about silent data loss that fires when there is none is
+        # worse than no warning, because the next person learns to scroll past
+        # it — and the real ones look identical.
+        if getattr(_paging_depth, "n", 0) > 0:
             return
         order, limit = params.get("order"), params.get("limit")
         if not order or limit is None:
@@ -971,23 +1059,34 @@ def select_all(table, params=None, page_size=PAGE_SIZE, max_rows=None, order=Non
     except (TypeError, ValueError):
         page_size = PAGE_SIZE
     rows, offset = [], 0
-    while True:
-        # Never ask for rows we are contractually going to throw away. The page size used
-        # to be fixed, so a select_all(max_rows=10) against a large table still pulled a
-        # full 1000-row page over the wire and then sliced 990 of them off in the return.
-        # Clamping to the remaining budget makes the last request exact.
-        want = min(page_size, cap - len(rows))
-        # Goes through select() rather than _req() on purpose: one HTTP path, and any test
-        # double or instrumentation installed on select() automatically covers paging too.
-        page = select(table, dict(q, limit=str(want), offset=str(offset))) or []
-        rows.extend(page)
-        if len(page) < want:
-            break
-        offset += want
-        if len(rows) >= cap:
-            print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
-                  f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
-            break
+    # Mark the thread as paging so select()'s truncation guard stays quiet for
+    # the pages below. A full page here is this loop doing its job; the guard
+    # exists for callers who asked for N and silently got N. Restored in a
+    # finally, and counted rather than set, so a nested select_all cannot clear
+    # the flag out from under its caller.
+    _paging_depth.n = getattr(_paging_depth, "n", 0) + 1
+    try:
+        while True:
+            # Never ask for rows we are contractually going to throw away. The page size used
+            # to be fixed, so a select_all(max_rows=10) against a large table still pulled a
+            # full 1000-row page over the wire and then sliced 990 of them off in the return.
+            # Clamping to the remaining budget makes the last request exact.
+            want = min(page_size, cap - len(rows))
+            # Goes through select() rather than _req() on purpose: one HTTP path, and any test
+            # double or instrumentation installed on select() automatically covers paging too.
+            page = select(table, dict(q, limit=str(want), offset=str(offset))) or []
+            rows.extend(page)
+            if len(page) < want:
+                break
+            offset += want
+            if len(rows) >= cap:
+                # THIS one is a real truncation and must stay loud: the caller
+                # asked to see everything and is not going to.
+                print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
+                      f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
+                break
+    finally:
+        _paging_depth.n = getattr(_paging_depth, "n", 1) - 1
     return rows[:cap]
 
 
@@ -1135,7 +1234,21 @@ def _queue_depth_estimate(ceiling):
         depth = len(rows)
         return depth > ceiling, depth if depth <= ceiling else ceiling + 1
     except Exception:
-        return False, ceiling  # fail-soft: assume queue is OK on error
+        # FAIL-SOFT MEANS ADMIT, AND THE DEPTH IS THE HALF THAT DECIDES (fixed 2026-08-24).
+        #
+        # This used to return `False, ceiling`. The `False` says "not over the ceiling", but
+        # _queue_depth_block DISCARDS it: it caches only the depth and then re-derives the
+        # verdict with `if _QUEUE_DEPTH_CACHE["depth"] < ceiling: return False`. `ceiling` is
+        # not less than `ceiling`, so every unreachable-database moment refused every
+        # non-exempt insert for the next cache TTL — and printed "[queue-cap] QUEUED depth
+        # 800 >= ceiling 800" while the true depth was unknown and possibly zero.
+        #
+        # That is the exact failure this gate is documented to never commit: the except arm
+        # in _queue_depth_block says "never let admission control fail an insert on its own
+        # error", and the operator-origin block above records what silently dropping
+        # admissible work already cost once. A transient db blip must not become a fleet-wide
+        # write freeze, so the no-measurement depth is 0 — the only value that cannot block.
+        return False, 0  # fail-soft: no measurement, assume queue is OK on error
 
 
 def _queue_depth_block(row):
@@ -1433,6 +1546,7 @@ def insert(table, row, upsert=False):
             _record_refusal(row, "prompt_gate", _reject_reason)
             return None  # rejected — now RECORDED (see _record_refusal), not vanished
 
+    _dedup_stack = contextlib.ExitStack()
     if (table == "tasks" and isinstance(row, dict) and not upsert
             and row.get("slug") and row.get("project_id") and not row.pop("_allow_dup", False)):
         # ATOMIC DEDUP (2026-07-14): the old SELECT-then-INSERT raced across two Macs,
@@ -1440,25 +1554,50 @@ def insert(table, row, upsert=False):
         # 1. Check for existing (fast path, catches most dupes)
         # 2. Use a process-level lock to serialize concurrent inserts on the same machine
         # 3. Re-check after acquiring the lock (double-checked locking)
+        #
+        # Steps 2 and 3 were lost in the truncation described on _dedup_lock above
+        # and are back. The lock is entered on a stack so it stays held through the
+        # POST below rather than being released before it, which is what made the
+        # original re-check ineffective.
         _dedup_key = f"{row['project_id']}:{row['slug']}"
-        try:
-            existing = select("tasks", {
-                "select": "id,slug,state",
-                "project_id": f"eq.{row['project_id']}",
-                "slug": f"eq.{row['slug']}",
-                "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
-                "limit": "1"}) or []
-            if existing:
-                return existing
-        except Exception:
-            pass  # fail-soft: never let the guard block a legitimate insert
-    # SECRET HYGIENE: redact secrets from sensitive fields on task insert.
-    if table == "tasks" and isinstance(row, dict):
-        for field in _TASK_SENSITIVE_FIELDS:
-            if field in row and isinstance(row[field], str):
-                row[field] = redact_secrets(row[field])
-    h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
+
+        def _existing_row():
+            """Rows already holding this (project_id, slug), or [] if the read failed.
+
+            Fail-soft on purpose: the dedup guard exists to stop duplicates, and a
+            database hiccup here must never block a legitimate insert.
+            """
+            try:
+                return select("tasks", {
+                    "select": "id,slug,state",
+                    "project_id": f"eq.{row['project_id']}",
+                    "slug": f"eq.{row['slug']}",
+                    "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
+                    "limit": "1"}) or []
+            except Exception:
+                return []
+
+        existing = _existing_row()
+        if existing:
+            return existing
+
+        _dedup_stack.enter_context(_dedup_lock(_dedup_key))
+        # Re-check under the lock: another thread on this machine may have
+        # inserted while we waited for it.
+        existing = _existing_row()
+        if existing:
+            _dedup_stack.close()
+            return existing
     try:
+        # Inside the try so that the `finally` below releases the dedup lock on
+        # every path. A per-slug lock leaked here would deadlock every future
+        # insert of that slug for the life of the process.
+        # SECRET HYGIENE: redact secrets from sensitive fields on task insert.
+        if table == "tasks" and isinstance(row, dict):
+            for field in _TASK_SENSITIVE_FIELDS:
+                if field in row and isinstance(row[field], str):
+                    row[field] = redact_secrets(row[field])
+        h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
         result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
     except ControlPlaneDown:
         # NOT a 409. The breaker refused before touching the network, so nothing satisfied
@@ -1477,6 +1616,12 @@ def insert(table, row, upsert=False):
                         body=row, headers={"Prefer": "return=representation,resolution=merge-duplicates"})
         except Exception:
             return None
+    finally:
+        # Released here rather than around the re-check alone: the whole point is
+        # that no other thread on this machine inserts the same slug between our
+        # re-check and our POST. ExitStack.close() is idempotent and a `finally`
+        # runs through the `return`s above, so every path releases exactly once.
+        _dedup_stack.close()
 
     # POST-INSERT DEDUP RECONCILIATION (2026-07-15): the SELECT-then-INSERT guard above
     # prevents same-machine duplicates via _dedup_lock, but two Macs can still race past
@@ -1542,6 +1687,12 @@ def _record_stage_transition(table, match, patch):
         pass
 
 
+#: PostgREST filter operators.  A match value that already starts with one of
+#: these plus a dot is passed through; anything else is an equality test.
+_PGRST_OPS = ('eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'like', 'ilike', 'is', 'in', 'cs', 'cd', 'sl', 'sr', 'nxl', 'nxr', 'adj', 'not', 'or', 'and', 'fts', 'plfts', 'phfts', 'wfts', 'match', 'imatch')
+_HAS_OP_RX = re.compile(r"^(?:%s)\." % "|".join(_PGRST_OPS))
+
+
 def update(table, match, patch):
     """PATCH rows in *table* matching *match* dict with *patch* fields.  Tolerates 409 (concurrent write)."""
     # A PATCH can plant a secret just as easily as an INSERT; the key may live in
@@ -1588,6 +1739,36 @@ def update(table, match, patch):
         # satisfied by the other writer, so treat it as a no-op instead of letting it bubble up as a
         # "runner exception: HTTP 409 conflict" that terminally BLOCKS the task (this froze 200+ tasks).
         return None
+
+
+def delete(table, match):
+    """DELETE rows in *table* matching *match*.  Returns the deleted rows.
+
+    *match* is a dict of PostgREST filters.  A bare value is turned into `eq.`,
+    so both {"signature": sig} and {"signature": f"eq.{sig}"} mean the same
+    thing; an explicit operator ("lt.2026-01-01", "in.(QUEUED,RUNNING)") is
+    passed through untouched.
+
+    AN EMPTY MATCH IS REFUSED.  PostgREST executes an unfiltered DELETE as a
+    table truncation without complaint, so `delete(t, {})` — the shape a caller
+    reaches by building filters in a loop that turns out to be empty — would
+    silently empty the table.  It raises instead.
+
+    This function did not exist until 2026-08-25, while two modules had been
+    calling it for months: result_cache.invalidate() and file_reservation, both
+    inside `except Exception: pass`, so cache invalidation and lock release were
+    permanent no-ops that reported success.  See the surface guard in
+    runner/tests/test_db_api_surface.py.
+    """
+    if not match:
+        raise ValueError(
+            "db.delete(%r, {}) refused: an unfiltered DELETE truncates the table. "
+            "Pass an explicit filter, or call _req('DELETE', ...) if a truncation "
+            "is genuinely what you mean." % (table,))
+    params = {k: (v if isinstance(v, str) and _HAS_OP_RX.match(v) else "eq.%s" % (v,))
+              for k, v in match.items()}
+    return _req("DELETE", f"/rest/v1/{table}", params=params,
+                headers={"Prefer": "return=representation"})
 
 
 def rpc(fn, args):
@@ -1691,6 +1872,26 @@ _done_cache_lock = threading.Lock()
 _done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
 
 
+#: The states that satisfy a dependency directly. One definition, so the claim
+#: path, the decomposition closure and the stall diagnostic cannot drift apart.
+_DEP_SATISFYING_STATES = frozenset({"DONE", "MERGED", "DEPLOYED_AND_VERIFIED"})
+
+#: Terminal states a task can sit in forever without ever reaching a satisfying
+#: one. A dependency on one of these is not "not yet" — it is "never", and the
+#: difference is the whole of the diagnosis. Measured on the live queue
+#: 2026-08-25: 91 of 325 edges pointed at SUPERSEDED or CLOSED.
+_DEP_DEAD_END_STATES = frozenset({"SUPERSEDED", "CLOSED", "QUARANTINED",
+                                  "PHANTOM_UNVERIFIED"})
+
+
+def _dep_log(fmt, *args):
+    """Warn about dependency-resolution trouble without importing a logger here."""
+    try:
+        print("db: " + (fmt % args), flush=True)
+    except Exception:
+        return None
+
+
 def _done_slugs():
     """Return cached set of DONE/MERGED slugs, refreshing every 60s.
 
@@ -1717,9 +1918,18 @@ def _done_slugs():
         # all completions were invisible to dependency resolution. Tasks queued 2026-08-02
         # sat untouched for four days. Paging to exhaustion is the fix; raising the limit
         # would not have moved the ceiling at all.
+        # DEPLOYED_AND_VERIFIED counts as satisfied. It is strictly STRONGER than
+        # DONE — shipped and verified in production, the state the whole delivery
+        # ladder aims at — and leaving it out meant a dependent of fully delivered
+        # work was held as blocked by its own success. Measured against the live
+        # queue on 2026-08-25 this releases nothing today (0 of the 322 dependency
+        # edges point at a DEPLOYED_AND_VERIFIED task), so it is a correctness fix
+        # and NOT a remedy for the current deadlock — worth stating plainly,
+        # because "add a state to the allowlist" is the shape of change most
+        # likely to be mistaken for one.
         rows = select_all("tasks", {
             "select": "slug,project_id",
-            "state": "in.(DONE,MERGED)",
+            "state": "in.(DONE,MERGED,DEPLOYED_AND_VERIFIED)",
         }, order="id.asc") or []
         slugs = set()
         # Build project_id -> name map for cross-project qualified entries
@@ -1739,9 +1949,187 @@ def _done_slugs():
             pname = _proj_names.get(pid)
             if pname:
                 slugs.add(f"{pname}:{s}")  # qualified cross-project entry
+
+        for parent_slug, parent_pid in _closed_decompositions(slugs):
+            slugs.add(parent_slug)
+            pname = _proj_names.get(parent_pid)
+            if pname:
+                slugs.add(f"{pname}:{parent_slug}")
+
         _done_cache["slugs"] = slugs
         _done_cache["ts"] = time.time()
         return _done_cache["slugs"]
+
+
+def _closed_decompositions(done_slugs):
+    """(slug, project_id) of DECOMPOSED tasks whose every child is finished.
+
+    A DECOMPOSED parent NEVER reaches DONE — that is what decomposing it means:
+    the work moved to its children and the parent is retired. But dependency
+    resolution only counted DONE/MERGED/DEPLOYED_AND_VERIFIED, so a task waiting
+    on a decomposed parent waited for a state that could not arrive. Measured on
+    the live queue 2026-08-25: of 325 dependency edges behind 321 QUEUED tasks,
+    105 pointed at a DECOMPOSED task. Not one of them could ever be satisfied.
+
+    "Its work is done" is exactly "all of its children are done", which is what
+    this computes. It is deliberately NOT "DECOMPOSED counts as done": a parent
+    whose children are still running has not delivered anything, and releasing
+    its dependents early would let them build on work that does not exist yet.
+
+    Children are found by parent_task_id. runner/task_slicer.py did not set it
+    until today (the link lived only in the note as "parent=<slug>"), so slices
+    created before the backfill are reachable only if that backfill ran — the
+    fallback is that the parent simply is not reported as closed, which is the
+    safe direction.
+
+    Returns nothing rather than raising on any failure: dependency resolution
+    running with a slightly smaller done-set delays work, while resolution
+    raising stops the fleet.
+    """
+    try:
+        parents = select_all("tasks", {
+            "select": "id,slug,project_id",
+            "state": "eq.DECOMPOSED",
+        }, order="id.asc") or []
+        if not parents:
+            return []
+        by_id = {p["id"]: p for p in parents if p.get("id") and p.get("slug")}
+        if not by_id:
+            return []
+
+        children = select_all("tasks", {
+            "select": "parent_task_id,slug,state",
+            "parent_task_id": "not.is.null",
+        }, order="id.asc") or []
+
+        seen_children = {}
+        for child in children:
+            parent_id = child.get("parent_task_id")
+            if parent_id not in by_id:
+                continue
+            bucket = seen_children.setdefault(parent_id, [0, 0])
+            bucket[0] += 1
+            if str(child.get("state") or "") in _DEP_SATISFYING_STATES:
+                bucket[1] += 1
+
+        closed = []
+        for parent_id, (total, finished) in seen_children.items():
+            # A childless parent is NOT closed. It is a decomposition that lost
+            # its children, which is a different defect and must not be papered
+            # over by treating "no children" as "all children done".
+            if total and total == finished:
+                parent = by_id[parent_id]
+                closed.append((parent["slug"], parent.get("project_id")))
+        return closed
+    except Exception as exc:
+        _dep_log("could not close decompositions: %s", exc)
+        return []
+
+
+_dead_end_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
+_dead_end_cache_lock = threading.Lock()
+
+
+def dead_end_slugs():
+    """Slugs a dependency can name and never be satisfied by. Cached 60s.
+
+    Three ways a dependency becomes permanently unsatisfiable, all of which look
+    identical to "not finished yet" from the claim loop:
+
+      * the target is in a terminal state that is not a satisfying one --
+        SUPERSEDED, CLOSED, QUARANTINED, PHANTOM_UNVERIFIED;
+      * the target was DECOMPOSED but has no children, so the work it was split
+        into does not exist and nothing will ever finish on its behalf;
+      * (handled by the caller, which cannot look it up here) the target names a
+        slug no task has.
+
+    A DECOMPOSED parent WITH children is deliberately absent: those resolve
+    through _closed_decompositions() as their children finish, and calling them
+    dead ends would be wrong the moment the last child lands.
+
+    Empty on any failure. This feeds a diagnostic, and a diagnostic that can
+    raise is worse than one that occasionally under-reports.
+    """
+    now = time.time()
+    if now - _dead_end_cache["ts"] < _dead_end_cache["ttl"]:
+        return _dead_end_cache["slugs"]
+    with _dead_end_cache_lock:
+        if now - _dead_end_cache["ts"] < _dead_end_cache["ttl"]:
+            return _dead_end_cache["slugs"]
+        slugs = set()
+        try:
+            terminal = select_all("tasks", {
+                "select": "slug",
+                "state": "in.(%s)" % ",".join(sorted(_DEP_DEAD_END_STATES)),
+            }, order="id.asc") or []
+            slugs.update(r["slug"] for r in terminal if r.get("slug"))
+
+            parents = select_all("tasks", {
+                "select": "id,slug",
+                "state": "eq.DECOMPOSED",
+            }, order="id.asc") or []
+            if parents:
+                with_children = set()
+                kids = select_all("tasks", {
+                    "select": "parent_task_id",
+                    "parent_task_id": "not.is.null",
+                }, order="id.asc") or []
+                for kid in kids:
+                    with_children.add(kid.get("parent_task_id"))
+                for parent in parents:
+                    if parent.get("slug") and parent.get("id") not in with_children:
+                        slugs.add(parent["slug"])
+        except Exception as exc:
+            _dep_log("could not compute dead-end slugs: %s", exc)
+            return _dead_end_cache["slugs"]
+        _dead_end_cache["slugs"] = slugs
+        _dead_end_cache["ts"] = time.time()
+        return slugs
+
+
+def _has_dead_end_dep(task, done):
+    """True when any UNMET dep of *task* can never be satisfied.
+
+    Deliberately checks only unmet deps: a task whose remaining blocker is real
+    pending work is waiting, not stuck, even if one of its finished deps happens
+    to name a superseded task.
+    """
+    try:
+        deps = task.get("deps") or []
+        unmet = [d for d in deps if d not in done]
+        if not unmet:
+            return False
+        dead = dead_end_slugs()
+        known = _all_task_slugs()
+        for dep in unmet:
+            bare = str(dep).split(":")[-1]
+            if bare in dead:
+                return True
+            # A dep naming a slug that has never existed is the third kind, and
+            # the only one visible without a state to look at.
+            if known and bare not in known:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+_all_slugs_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
+
+
+def _all_task_slugs():
+    """Every slug in `tasks`, cached 60s. Empty set means "could not tell"."""
+    now = time.time()
+    if now - _all_slugs_cache["ts"] < _all_slugs_cache["ttl"]:
+        return _all_slugs_cache["slugs"]
+    try:
+        rows = select_all("tasks", {"select": "slug"}, order="id.asc") or []
+    except Exception as exc:
+        _dep_log("could not list task slugs: %s", exc)
+        return _all_slugs_cache["slugs"]
+    _all_slugs_cache["slugs"] = {r["slug"] for r in rows if r.get("slug")}
+    _all_slugs_cache["ts"] = time.time()
+    return _all_slugs_cache["slugs"]
 
 
 def invalidate_done_cache():
@@ -1749,6 +2137,11 @@ def invalidate_done_cache():
     with _done_cache_lock:
         _done_cache["slugs"] = set()
         _done_cache["ts"] = 0.0
+    with _dead_end_cache_lock:
+        _dead_end_cache["slugs"] = set()
+        _dead_end_cache["ts"] = 0.0
+    _all_slugs_cache["slugs"] = set()
+    _all_slugs_cache["ts"] = 0.0
 
 
 def set_pin(slug, rank=1):
@@ -1858,6 +2251,124 @@ def test_trigger(task_id):
 test_trigger.last_error = ""
 
 
+# Slug prefixes that mark a row as a QUESTION FOR A PERSON rather than work.
+#
+# Kept here, at the claim chokepoint, as well as in agentic_repair. The repair
+# guard was added first and only covers repair — but an escalation sitting in
+# QUEUED looks exactly like ordinary work to this function, so an agent could
+# still CLAIM one, hand it to a coder and burn attempts on a row no coder can
+# resolve. Measured: the standing Guardrail-8 escalation reached attempt=4 that
+# way, and its note was rewritten to "Continue the same implementation to
+# completion" — over the text a human was supposed to read.
+#
+# These rows must be visible to a person and invisible to the dispatcher. The
+# whole point of an escalation is that the machine has stopped; letting the
+# machine pick it up puts the alarm inside the fire.
+OPERATOR_DECISION_SLUG_PREFIXES = ("escalate-", "human-decision-")
+
+
+def is_operator_decision_slug(slug) -> bool:
+    """True when *slug* names an escalation / human-decision record, not work."""
+    return str(slug or "").startswith(OPERATOR_DECISION_SLUG_PREFIXES)
+
+
+#: Feature flag for the server-side claim. Default OFF: the scan path below is
+#: what has been running, and runner/migrations/001_claim_next_rpc.sql says
+#: "Enable via fleet_config after one observed clean day."
+def _claim_rpc_enabled():
+    return os.environ.get("ORCH_CLAIM_RPC", "false").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _claim_via_rpc(runner_id):
+    """Claim one task through the `claim_next` Postgres function, or None.
+
+    runner/migrations/001_claim_next_rpc.sql has been in the repository with the
+    whole ordering ladder encoded in SQL — release-fix, recovery, rework,
+    improvement, kind weight, confidence, portfolio rank, ROI, FIFO — selecting
+    FOR UPDATE SKIP LOCKED so two runners cannot double-claim. The client half
+    was never written. runner/tests/test_claim_next_rpc.py has been red on
+    `module 'db' has no attribute '_claim_via_rpc'` ever since.
+
+    Returns None for every reason a caller should fall back on rather than fail:
+    the flag is off, the function is not deployed, the RPC errored, or the queue
+    had nothing. Returning None is not "no work" — it is "the scan path decides",
+    and claim_task treats it that way.
+
+    Host affinity is computed here rather than in SQL because whether a repo is
+    checked out is a property of THIS machine, which the database cannot see.
+    """
+    if not _claim_rpc_enabled():
+        return None
+
+    def _runnable_project_ids():
+        """Projects whose repo is checked out here, or None if that is unknowable.
+
+        None means "no host restriction" to the SQL, the same fail-open the scan
+        path takes when local_repo_pids cannot be computed.
+
+        Deliberately the live read rather than _cached_projects_list: this runs at
+        most once per claim on an opt-in path, and a stale cache here would hand
+        the RPC a project set that disagrees with the one the scan path uses — two
+        different answers to "can this host run it" is worse than one extra query.
+        """
+        try:
+            projs = select("projects", {"select": "id,repo_path"}) or []
+            return [p["id"] for p in projs if repo_runnable_here(p.get("repo_path"))]
+        except Exception:
+            return None
+
+    runnable = _runnable_project_ids()
+
+    try:
+        rows = rpc("claim_next", {"p_runner_id": runner_id,
+                                  "p_runnable_projects": runnable})
+    except Exception:
+        return None
+    if not rows:
+        return None
+    if isinstance(rows, dict):
+        return rows
+    return rows[0] or None
+
+
+#: Why the last claim_task() call came back empty. Read it with why_no_claim().
+_LAST_CLAIM_DIAGNOSTIC = {"considered": 0, "claimed": None, "reasons": {}}
+
+
+def why_no_claim():
+    """Why the most recent claim_task() returned None. Never raises.
+
+    THE FALSE-SUCCESS SIGNAL. claim_task() returns None both when the queue is
+    empty and when it is full of work that nothing can claim, and every caller
+    reads None as "no work, we are done". On 2026-08-25 a scheduled executor run
+    found 317 QUEUED tasks of which ZERO were claimable — every one of them
+    blocked by a dependency on a task in a terminal state that can never become
+    DONE or MERGED — and reported a clean run, as sixteen executors had been
+    doing since 2026-07-15. Verified independently against the live database:
+    317 queued, 0 with an empty deps array, 322 dependency edges, 3 satisfied.
+
+    A dependency-starved queue and a finished queue must not produce the same
+    signal. This records the difference:
+
+        {"considered": <rows the claim scan looked at>,
+         "claimed": <task id or None>,
+         "reasons": {"deps_unmet": n, "lane_limit": n, "cooling": n,
+                     "skip_note": n, "claim_lost": n}}
+
+    `considered > 0` with `claimed is None` is a STALL, not an empty queue, and a
+    caller that treats it as "work complete" is reporting success for a fleet
+    that has not moved. claim_task() also prints it, once per empty scan, so it
+    reaches a log even where nobody calls this.
+    """
+    # dict() alone is a SHALLOW copy: the nested "reasons" dict would still be
+    # the module's own, so a caller that adjusted a count while acting on it
+    # would rewrite the record of the scan it was reading.
+    out = dict(_LAST_CLAIM_DIAGNOSTIC)
+    out["reasons"] = dict(out.get("reasons") or {})
+    return out
+
+
 def claim_task(runner_id):
     """Atomically claim one QUEUED task whose dependencies are satisfied.
 
@@ -1882,6 +2393,12 @@ def claim_task(runner_id):
                 return task
         except Exception:
             pass
+    # Server-side claim first when ORCH_CLAIM_RPC is on. None means "not taken",
+    # for any reason — flag off, function absent, RPC error, empty queue — and
+    # the scan path below then runs exactly as it always has.
+    _rpc_task = _claim_via_rpc(runner_id)
+    if _rpc_task:
+        return _rpc_task
     prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
         # OPTIMIZATION: use cached projects (refreshed once per 300s) instead of querying per claim
@@ -1919,6 +2436,16 @@ def claim_task(runner_id):
                                       "state": "eq.QUEUED",
                                       "order": "created_at.asc",
                                       "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        # An escalation is not claimable work. Filtered here rather than in the
+        # PostgREST query because "not like any of N prefixes" is awkward to
+        # express server-side and this scan is already in memory; the cost is a
+        # startswith over at most CLAIM_SCAN_LIMIT rows.
+        _escalations = [t for t in queued if is_operator_decision_slug(t.get("slug"))]
+        if _escalations:
+            queued = [t for t in queued if not is_operator_decision_slug(t.get("slug"))]
+            print(f"[claim] skipped {len(_escalations)} operator-decision row(s) awaiting a person: "
+                  + ", ".join(str(t.get('slug'))[:60] for t in _escalations[:3]), flush=True)
+
         # Sync to local mirror on successful fetch
         try:
             # FULL SCAN class — and YES, truncation here can corrupt claims. The audit
@@ -2262,8 +2789,14 @@ def claim_task(runner_id):
         return 0 if (rework_backlog and _is_quarantine_rework_task(t)) else (1 if rework_backlog else 0)
 
     def _release_fix_rank(t):
-        # Red release gates are the only thing between completed work and Vercel review. Drain those
-        # before recovery so green staged batches can ship overnight.
+        # Red release gates are the only thing between completed work and Vercel review, so these
+        # drain ahead of everything below this line — recovery's _recovery_rank included.
+        #
+        # NOT ahead of _recovery_reserve_rank, which sits one line above this in the sort tuple.
+        # The comment here used to say "drain those before recovery" flatly, which stopped being
+        # true on 2026-07-15 when the recovery reserve was added above it, and the two lines have
+        # contradicted each other since. One reserved lane goes to recovery first; every other
+        # lane goes to release fixes first. See _recovery_reserve_rank.
         return 0 if (release_fix_backlog and _is_release_fix_task(t)) else (1 if release_fix_backlog else 0)
 
     def _evidence_reserve_rank(t):
@@ -2272,6 +2805,22 @@ def claim_task(runner_id):
         return 0 if (evidence_reserve_open and _is_evidence_task(t)) else (1 if evidence_reserve_open else 0)
 
     def _recovery_reserve_rank(t):
+        """Reserve ORCH_RECOVERY_RESERVED_LANES (default 1) lanes for missing-branch recovery.
+
+        The only entry in this sort tuple that carried no explanation, and the one that most
+        needs it, because it deliberately outranks _release_fix_rank on the line below.
+
+        Recovery turns already-completed work into a mergeable branch. The release-fix backlog
+        is effectively never empty at fleet volume, so without a reserved lane recovery loses
+        every claim to it indefinitely and the completed work is never harvested — the same
+        starvation _rework_rank was given its own tier to escape.
+
+        A reserve is not a priority: it applies only while FEWER than the reserved number of
+        recovery tasks are actually RUNNING. Once the lane is occupied, recovery_reserve_open
+        is False, this returns 0 for everything, and release fixes win on the next line as
+        their own comment describes. With the default of one lane that means exactly one
+        recovery task runs ahead of the release-fix backlog at a time.
+        """
         return 0 if (recovery_reserve_open and _is_recovery_task(t)) else (1 if recovery_reserve_open else 0)
 
     def _release_fix_urgency(t):
@@ -2479,11 +3028,18 @@ def claim_task(runner_id):
         _skip_note = lambda n: any(pat in n for pat in _SKIP_NOTE_PATTERNS)
 
     done = _done_slugs()
+    # Why each row was passed over. A queue that is full but unclaimable has to
+    # be distinguishable from an empty one — see why_no_claim().
+    _reasons = {"cooling": 0, "skip_note": 0, "lane_limit": 0, "deps_dead_end": 0,
+                "deps_unmet": 0, "claim_lost": 0}
+    _considered = len(queued or [])
     for t in queued or []:
         if _cooling_down(t):
+            _reasons["cooling"] += 1
             continue
         # Skip recycled/garbage tasks before claiming
         if _skip_note(str(t.get("note") or "")):
+            _reasons["skip_note"] += 1
             continue
         pid = t.get("project_id")
         if pid:
@@ -2494,6 +3050,7 @@ def claim_task(runner_id):
             else:
                 occupied = active_by_project.get(pid, 0)
             if occupied >= _project_lane_limit(t):
+                _reasons["lane_limit"] += 1
                 continue
         # SOFT-DEP SPECULATION: if deps aren't all done, check if file scopes
         # are disjoint — if so, start the task speculatively instead of waiting.
@@ -2507,6 +3064,19 @@ def claim_task(runner_id):
                     soft_dep_spec.register(t, _pending)
             except Exception:
                 pass
+        if not _deps_all_done:
+            _reasons["deps_unmet"] += 1
+            # "NOT YET" AND "NEVER" ARE DIFFERENT ANSWERS.
+            #
+            # deps_unmet alone counted a task waiting on work that is running
+            # exactly the same as one waiting on a task that was CLOSED weeks
+            # ago, and only the second is a defect anyone can act on. Measured
+            # on the live queue 2026-08-25: of 325 edges behind 321 QUEUED
+            # tasks, 204 pointed at something structurally unsatisfiable --
+            # terminal states, childless decompositions, and 8 deps naming a
+            # slug no task has ever had.
+            if _has_dead_end_dep(t, done):
+                _reasons["deps_dead_end"] += 1
         if _deps_all_done:
             # Optimistic claim from the exact observed state preserves the
             # cross-runner single-claim guarantee for QUEUED and TESTING alike.
@@ -2533,7 +3103,28 @@ def claim_task(runner_id):
                 except Exception:
                     pass
                 invalidate_done_cache()
+                _LAST_CLAIM_DIAGNOSTIC.update(
+                    {"considered": _considered, "claimed": t.get("id"),
+                     "reasons": dict(_reasons)})
                 return res[0]
+            _reasons["claim_lost"] += 1
+    _LAST_CLAIM_DIAGNOSTIC.update(
+        {"considered": _considered, "claimed": None, "reasons": dict(_reasons)})
+    if _considered:
+        # NOT the same event as an empty queue, and it must not print like one.
+        _dead = _reasons.get("deps_dead_end") or 0
+        print("[claim] STALLED: %d queued task(s) scanned, 0 claimable (%s). "
+              "This is a blocked queue, not an empty one — a caller that exits "
+              "here reports success for a fleet that has not moved.%s"
+              % (_considered,
+                 ", ".join("%s=%d" % (k, v) for k, v in sorted(_reasons.items()) if v)
+                 or "no reason recorded",
+                 ("  %d of them depend on work that can NEVER complete "
+                  "(terminal state, childless decomposition, or a dep naming a "
+                  "slug no task has). Those will not clear on their own: run "
+                  "`python3 runner/queue_deadlock_report.py` for the list."
+                  % _dead) if _dead else ""),
+              flush=True)
     return None
 
 

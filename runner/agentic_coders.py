@@ -12,7 +12,7 @@ Configure the pool with ONE env var (JSON list), plus the legacy single-second/t
     ORCH_EXTRA_CODERS='[
       {"name":"ollama-qwen","cmd":"aider --model ollama/qwen2.5-coder --yes --no-auto-commit --message {prompt}","cost":0,"cap":5},
       {"name":"deepseek","cmd":"aider --model deepseek/deepseek-chat --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02},
-      {"name":"gemini","cmd":"aider --model gemini/gemini-4.0-flash --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02},
+      {"name":"gemini","cmd":"aider --model gemini/gemini-3.5-flash --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02},
       {"name":"gpt","cmd":"aider --model openai/gpt-4o-mini --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02}
     ]'
 
@@ -23,6 +23,13 @@ Backward compatible: with no extra coders, behavior is the prior claude -> codex
 """
 import os, sys, json, re, shlex, subprocess, time, hashlib
 import contextlib
+# `logging` was never imported here, yet three call sites already used
+# `logging.getLogger(__name__)` — all of them inside `except` blocks, so the
+# NameError was swallowed and the message never printed. One of those is
+# "cowork-skill failed (%s), falling back to claude", which is precisely the
+# line that would have explained the 2026-08-24 routing fallback. Silent
+# diagnostics are worse than none: they read like evidence of absence.
+import logging
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lane_guard
@@ -217,7 +224,7 @@ def _auto_coders():
         coders.append({"name": "deepseek", "cmd": _aider_cmd("deepseek/" + os.environ.get("DEEPSEEK_AGENTIC_MODEL", "deepseek-v4-flash")), "auto": True,
                        "cost": 2, "cap": int(os.environ.get("DEEPSEEK_AGENTIC_CAP", "7")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "google" in available:
-        coders.append({"name": "gemini", "cmd": _aider_cmd("gemini/" + (os.environ.get("GEMINI_AGENTIC_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-4.0-flash")),
+        coders.append({"name": "gemini", "cmd": _aider_cmd("gemini/" + (os.environ.get("GEMINI_AGENTIC_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash")),
                        "cost": 2, "cap": int(os.environ.get("GEMINI_AGENTIC_CAP", "8")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "openai" in available:
         coders.append({"name": "gpt-mini", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_CHEAP_AGENTIC_MODEL", "gpt-5.4-mini")), "auto": True,
@@ -394,15 +401,25 @@ def coder_provider(coder):
     unhealthy, because guessing wrong removes a working coder from the pool.
     """
     try:
-        if str(coder.get("name") or "") == "claude":
+        name = str(coder.get("name") or "").strip().lower()
+        if name == "claude":
             return "claude"
         cmd = str(coder.get("cmd") or "")
         marker = "--model "
         idx = cmd.find(marker)
-        if idx < 0:
-            return ""
-        spec = cmd[idx + len(marker):].split()[0]
-        return spec.split("/", 1)[0].strip().lower() if "/" in spec else ""
+        if idx >= 0:
+            spec = cmd[idx + len(marker):].split()[0]
+            if "/" in spec:
+                return spec.split("/", 1)[0].strip().lower()
+        # A vendor CLI carries no `--model provider/…`, so the parse above
+        # returned "" and the health gate failed open — `codex` stayed
+        # selectable through an OpenAI outage that had already emptied the
+        # account. The binary's own name is the provider, and it is not a
+        # guess: `codex` IS OpenAI's CLI. Only names whose vendor is certain
+        # belong here; anything else keeps returning "" and failing open.
+        binary = cmd.split()[0].rsplit("/", 1)[-1].lower() if cmd.split() else ""
+        return {"codex": "openai", "gemini": "google",
+                "claude": "claude"}.get(binary, "")
     except Exception:
         return ""
 
@@ -432,8 +449,19 @@ def _provider_healthy(coder):
     if not _truthy("ORCH_CODER_PROVIDER_HEALTH_GATE", True):
         return True
     provider = coder_provider(coder)
-    if not provider or provider == "claude":
-        return True
+    if not provider:
+        return True                       # undeterminable -> never over-prune
+    # `provider == "claude"` used to short-circuit to True here, so the one
+    # provider the fleet leans on hardest was the one the gate could not stop.
+    # On 2026-08-24 claude was demoted (exhaustion-account_quota, weekly limit
+    # reset ~36h out) and STILL selectable: every task routed to it, hit the
+    # limit banner, produced no edits, and came back as an unexplained empty
+    # run. A subscription that is out of quota is exactly as unusable as an API
+    # key that is out of credit; the exemption made that invisible.
+    #
+    # The demote registry already clears itself when the reason is auth-* and
+    # the credential changes, and check_and_enforce() re-promotes after the
+    # cooldown, so this does not strand claude once the window resets.
     try:
         import provider_failover_sla
         return not provider_failover_sla.is_demoted(provider)
@@ -802,6 +830,77 @@ def _pick_raw(task, slot_index=0):
     return "claude"
 
 
+def _substitute_if_dead(name, task):
+    """Last line of defence: never hand back a coder whose provider is demoted.
+
+    WHY THIS IS HERE AND NOT IN _pick_raw. `_pick_raw` filters on
+    `_provider_healthy` when it builds `usable`, but it ends roughly eight
+    different branches with `return ranked[0]["name"] if ranked else "claude"`.
+    Every one of those is a hardcoded escape hatch that fires precisely when the
+    filtered list came back empty — that is, when nothing is healthy. So the
+    sicker the fleet got, the more reliably routing fell through to Claude.
+
+    On 2026-08-24 that produced six of seven canary tasks stamped
+    "agentic coder: claude" while Claude was demoted for hitting its weekly
+    subscription limit, and one on ollama. The gate was working; the fallbacks
+    went around it.
+
+    Patching eight branches would mean eight chances to miss one, and this
+    wrapper is already the documented seam for adjusting selection without
+    touching routing logic. So the substitution happens once, here.
+
+    Fail-OPEN in the way that matters: if there is no healthy alternative, the
+    original choice is returned unchanged. Returning a dead coder is bad;
+    returning nothing at all is worse, and the caller has no None branch.
+    """
+    try:
+        if not name or not _truthy("ORCH_CODER_PROVIDER_HEALTH_GATE", True):
+            return name
+        spec = _spec(name)
+        if spec is None or _provider_healthy(spec):
+            return name                      # unknown or healthy -> leave alone
+        avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
+        sensitivity = _task_sensitivity(task)
+        diff = _task_difficulty(task)
+        need = int(task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
+        # Filter order matches every other eligibility filter in this module:
+        # `_within_cap(c) and _provider_healthy(c)`. tests/test_coder_provider_health.py
+        # asserts that pairing textually, so that a new filter site cannot
+        # silently omit the health check.
+        alive = [c for c in _pool()
+                 if c["name"] != name and c["name"] not in avoid
+                 and _within_cap(c) and _provider_healthy(c)
+                 and _allowed_by_terms(c, sensitivity)
+                 and not _heavy_ollama_saturated(c)]
+        if not alive:
+            return name
+        # A substitute must CLEAR the task's capability need. This first read
+        # "…or alive", falling back to the most capable survivor so as not to
+        # stall on a dead provider — which quietly downgraded critical work to
+        # whatever was left. tests/test_coder_routing_selection.py caught it:
+        # a critical task landed on a cap-8 local coder.
+        #
+        # That trade is wrong, and this incident is the argument. Under-capable
+        # output is not a smaller version of the work; it is
+        # plausible-but-wrong output that then needs review capacity which, in
+        # exactly the situation that triggers this path, does not exist either.
+        # The canary that prompted all of this produced a syntactically perfect
+        # commit whose content was the prompt pasted into a README.
+        #
+        # So when nothing alive is good enough, hand back the original. It is
+        # demoted, the task will not run, and that is the honest outcome —
+        # visible as a stalled queue rather than invisible as bad merges.
+        qualified = [c for c in alive if c["cap"] >= need]
+        if not qualified:
+            return name
+        best = sorted(qualified, key=lambda c: (float(c["cost"]), -c["cap"]))[0]
+        logging.getLogger(__name__).info(
+            "coder substitution: %s is demoted -> %s", name, best["name"])
+        return best["name"]
+    except Exception:
+        return name
+
+
 def pick(task, slot_index=0):
     """Public entry point. Wraps _pick_raw() to honor task["_avoid_coders"] (a list of
     coder names that must not be reselected) without touching the routing logic itself.
@@ -815,7 +914,7 @@ def pick(task, slot_index=0):
     """
     avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
     if not avoid:
-        return _pick_raw(task, slot_index)
+        return _substitute_if_dead(_pick_raw(task, slot_index), task)
 
     clean_task = dict(task)
     if str(clean_task.get("force_coder") or "") in avoid:
@@ -825,7 +924,7 @@ def pick(task, slot_index=0):
 
     result = _pick_raw(clean_task, slot_index)
     if result not in avoid:
-        return result
+        return _substitute_if_dead(result, task)
 
     # _pick_raw still landed on an avoided name -- one of its several hardcoded
     # "claude" fallback branches, since those don't consult _avoid. Fall back to the

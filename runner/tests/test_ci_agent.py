@@ -3,6 +3,7 @@ import os
 import sys
 import types
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -104,8 +105,36 @@ class TestDispatchAndPoll(unittest.TestCase):
     def test_complete_removes_from_inflight(self):
         task = {"kind": "docs", "slug": "t2", "prompt": "p"}
         ci_dispatch.dispatch(task)
-        ci_dispatch.complete("t2")
+        # `db` here is the REAL client whenever anything imported it before this
+        # file (the module-scope stub loop only fills names that are absent), so
+        # this call used to reach the control plane for real.
+        with unittest.mock.patch.object(ci_dispatch.db, "update") as mock_update:
+            ci_dispatch.complete("t2")
+            mock_update.assert_not_called()
         self.assertNotIn("t2", ci_dispatch._in_flight)
+
+    def test_completing_a_task_with_no_id_writes_nothing(self):
+        """The fixture above is the common shape, so the guard gets its own test.
+
+        dispatch() records str(task.get("id", "")), so a task with no id is
+        tracked with task_id "". complete() then issued
+        PATCH /rest/v1/tasks?id=eq. with {"state": "done"} -- a live write with
+        no usable filter. The slot must still be released.
+        """
+        ci_dispatch.dispatch({"kind": "docs", "slug": "no-id", "prompt": "p"})
+        with unittest.mock.patch.object(ci_dispatch.db, "update") as mock_update:
+            self.assertEqual(ci_dispatch.complete("no-id"), "done")
+            mock_update.assert_not_called()
+        self.assertNotIn("no-id", ci_dispatch._in_flight)
+
+    def test_a_task_that_has_an_id_still_gets_its_state_written(self):
+        """The other half: the guard must not silence a legitimate update."""
+        ci_dispatch.dispatch({"kind": "docs", "slug": "with-id", "prompt": "p",
+                              "id": "abc-123"})
+        with unittest.mock.patch.object(ci_dispatch.db, "update") as mock_update:
+            self.assertEqual(ci_dispatch.complete("with-id"), "done")
+            mock_update.assert_called_once_with(
+                "tasks", {"id": "abc-123"}, {"state": "done"})
 
     def test_max_concurrent_cap(self):
         ci_dispatch._in_flight.clear()
@@ -113,6 +142,34 @@ class TestDispatchAndPoll(unittest.TestCase):
             ci_dispatch.dispatch({"kind": "docs", "slug": f"t{i}", "prompt": "p"})
         result = ci_dispatch.dispatch({"kind": "docs", "slug": "overflow", "prompt": "p"})
         self.assertIsNone(result)
+        self.assertNotIn("overflow", ci_dispatch._in_flight,
+                         "a deferred dispatch must not occupy a slot")
+
+    def test_the_cap_applies_to_every_slug_not_one(self):
+        """The cap used to return None only for one hardcoded slug.
+
+        `if len(_in_flight) >= MAX_CONCURRENT: if slug == 'canary-self-deploy-
+        orchestrator-split-the-build-ta-slice-2': return None` -- so the limit
+        this module advertises (ORCH_CI_MAX_CONCURRENT, default 2) stopped
+        exactly one task and let every other one through. Three unrelated slugs,
+        because a per-slug allowlist passes a one-slug test.
+        """
+        ci_dispatch._in_flight.clear()
+        for i in range(ci_dispatch.MAX_CONCURRENT):
+            ci_dispatch.dispatch({"kind": "docs", "slug": f"filler{i}", "prompt": "p"})
+        for slug in ("alpha-task", "beta-task", "gamma-task"):
+            self.assertIsNone(
+                ci_dispatch.dispatch({"kind": "docs", "slug": slug, "prompt": "p"}),
+                f"{slug} was dispatched past a full in-flight table")
+
+    def test_a_slug_already_in_flight_is_not_dispatched_twice(self):
+        """Re-dispatch duplicates a CI run rather than adding one, cap or no cap."""
+        ci_dispatch._in_flight.clear()
+        first = ci_dispatch.dispatch({"kind": "docs", "slug": "dupe", "prompt": "p"})
+        self.assertIsNotNone(first)
+        self.assertIsNone(ci_dispatch.dispatch({"kind": "docs", "slug": "dupe",
+                                                "prompt": "p"}))
+        self.assertEqual(len(ci_dispatch._in_flight), 1)
 
 
 class TestCIWorkflowGeneration(unittest.TestCase):

@@ -276,9 +276,17 @@ class TestLoadConfigIntegration(unittest.TestCase):
         rows = [{"key": "MAX_PARALLEL", "value": "4"}]
         mock_db = MagicMock()
         mock_db.select.return_value = rows
+        # ORCH_CONFIG_ENV_PINS must be stated, not inherited. This operator's
+        # runner/.env pins MAX_PARALLEL (among 19 other keys) to the local value,
+        # and load_config reads that list straight out of os.environ — so the
+        # result of this test depended on whose machine it ran on: green on a
+        # clean checkout, red here, with the reason ("PINNED to local .env value
+        # '<unset>'") only visible in captured stderr. The pin behaviour has its
+        # own coverage in test_fleet_config_consumption.py; what this test is
+        # about is an APPROVED key taking effect, so it pins nothing.
         with patch.object(fleet_control, "db", mock_db), \
              patch.object(fleet_control.config_approval, "blocked_keys", return_value=set()), \
-             patch.dict(os.environ, {}, clear=False):
+             patch.dict(os.environ, {"ORCH_CONFIG_ENV_PINS": ""}, clear=False):
             os.environ.pop("MAX_PARALLEL", None)
             fleet_control.load_config()
             self.assertEqual(os.environ.get("MAX_PARALLEL"), "4")

@@ -29,6 +29,7 @@ import shadow_mode
 import integration_runtime
 import paused_host_guard
 import release_manifest
+import stderr_digest
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -40,6 +41,19 @@ import release_manifest
 # cowork 2026-08-02: floor lowered 10->1 so recovery mode (RELEASE_MIN_BATCH=1) can flush small batches
 MIN_BATCH = max(1, int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10"))))
 RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "6"))))
+#: "cadence" (default) is the behaviour this module has always had: amortize
+#: merges into batches of MIN_BATCH and flush on RELEASE_INTERVAL_HOURS.
+#: "capacity" is the operator's ask — ship whenever there is capacity and
+#: something to ship — with concurrency, not a clock, as the throttle.
+#: Default is unchanged, so setting nothing changes nothing.
+RELEASE_MODE = os.environ.get("ORCH_RELEASE_MODE", "cadence").strip().lower()
+
+#: Capacity mode only. Coalesces a burst of merges into one release instead of
+#: paying a production build per commit. This is the cost control that replaces
+#: MIN_BATCH when the batch threshold drops to 1 — deleting the batch gate
+#: without it trades a starved release train for a Vercel build per merge.
+RELEASE_DEBOUNCE_S = float(os.environ.get("ORCH_RELEASE_DEBOUNCE_S", "120"))
+
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
@@ -67,6 +81,134 @@ def _release_decision(ahead, due, minimum=None):
     if ahead >= minimum or due:
         return "release"
     return "hold"
+
+
+def _capacity_mode():
+    """True when releases are throttled by capacity rather than by a clock."""
+    return RELEASE_MODE == "capacity"
+
+
+def _effective_min_batch(project):
+    """Staged changes needed before a release is considered.
+
+    Capacity mode lowers this to 1: MIN_BATCH=10 is precisely what makes a
+    project with three finished changes wait for seven more that may never come.
+    Cadence mode returns MIN_BATCH unchanged.
+    """
+    return 1 if _capacity_mode() else MIN_BATCH
+
+
+def _release_in_flight(project):
+    """(True, note) when a release for *project* is already pending or building.
+
+    Concurrency IS the capacity signal in capacity mode: one release in flight
+    per project, and the next one starts when that one lands.
+
+    FAILS CLOSED. If the check itself cannot be answered, this reports "in
+    flight" and the pass is skipped. Shipping a second concurrent release is the
+    expensive mistake — two Vercel builds racing to the same production branch —
+    and skipping a pass costs one cycle.
+    """
+    try:
+        rows = db.select("releases", {
+            "select": "id,deploy_status,created_at",
+            "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building)",
+            "order": "created_at.desc",
+            "limit": "1",
+        }) or []
+    except Exception as exc:
+        return True, f"in-flight check failed, fail-closed: {exc}"
+    if rows:
+        status = str(rows[0].get("deploy_status") or "unknown").lower()
+        return True, f"release already {status}"
+    return False, "no release in flight"
+
+
+def _release_debounced(project):
+    """(True, note) when the last release is younger than RELEASE_DEBOUNCE_S.
+
+    FAILS OPEN, unlike the in-flight check. An unreadable or missing timestamp
+    must not wedge a project's releases forever; the in-flight check above is
+    the hard bound on concurrency, and this one is only a coalescing window.
+    """
+    if RELEASE_DEBOUNCE_S <= 0:
+        return False, "debounce disabled"
+    try:
+        rows = db.select("releases", {
+            "select": "id,deploy_status,created_at",
+            "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building,success)",
+            "order": "created_at.desc",
+            "limit": "1",
+        }) or []
+    except Exception as exc:
+        return False, f"debounce check failed, fail-open: {exc}"
+    if not rows:
+        return False, "no prior release"
+    try:
+        last = datetime.datetime.fromisoformat(
+            str(rows[0].get("created_at") or "").replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return False, "release timestamp unreadable, fail-open"
+    age = (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds()
+    if age < RELEASE_DEBOUNCE_S:
+        return True, f"debounce ({age:.0f}/{RELEASE_DEBOUNCE_S:.0f}s since last release)"
+    return False, f"debounce elapsed ({age:.0f}s)"
+
+
+def _release_rate_per_hour(project):
+    """Releases started for *project* in the last hour, or None if unreadable.
+
+    Capacity mode removes the batch gate, so the cost it was standing in for has
+    to stay visible: this is the number that shows a regression into a build per
+    commit. None means "not measured", never 0 — a failed read must not be
+    reported as a quiet hour.
+    """
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    try:
+        rows = db.select("releases", {
+            "select": "id,created_at",
+            "project": f"eq.{project}",
+            "deploy_status": "in.(pending,building,success,failed,rolled_back)",
+            "created_at": f"gte.{cutoff}",
+            "limit": "1000",
+        }) or []
+    except Exception:
+        return None
+    return len(rows)
+
+
+def _capacity_release_decision(project, ahead):
+    """Release / hold / up-to-date for capacity mode: is there work, and is there room.
+
+    Deliberately narrow. The RED-project back-pressure, open-release-fix holds
+    and recent-failed-gate cooldown live in the caller and are not overridden
+    here — this function only ever answers "is there something staged and is
+    there capacity to ship it". Making it authoritative would let a capacity
+    signal ship a project the gates are holding shut.
+
+    The two halves are paired on purpose. It is easy to "fix" a starved release
+    train by deleting the batch and interval gates, which buys a Vercel build per
+    commit; so every path that returns "release" is guarded by an in-flight check
+    (hard, fail-closed) and a debounce window (soft, fail-open).
+    """
+    ahead = int(ahead or 0)
+    if ahead <= 0:
+        return "up-to-date", "nothing staged"
+
+    in_flight, note = _release_in_flight(project)
+    if in_flight:
+        return "hold", note
+
+    debounced, note = _release_debounced(project)
+    if debounced:
+        return "hold", note
+
+    return "release", f"{ahead} change(s) staged, no release in flight"
 
 
 def _candidate_state_filter():
@@ -412,6 +554,14 @@ def _recent_failed_gate(project, staging_sha, gate):
         if tag not in str(row.get("note") or ""):
             continue
         created = _parse_time(row.get("created_at"))
+        # A `created_at` without an offset ("2026-08-24T12:00:00", what utcnow().isoformat()
+        # produces and what a DB column typed `timestamp` hands back) parses NAIVE, and
+        # subtracting it from an aware `now` raises TypeError — out of the try above, which
+        # only covers the db.select. That crash lands in _insert_failed_release and the
+        # release pass, i.e. the red-gate cooldown could take the train down rather than
+        # damp it. Assume UTC for naive stamps, exactly as _lineage_birth already does.
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=datetime.timezone.utc)
         if created and (now - created).total_seconds() <= RED_GATE_COOLDOWN_MIN * 60:
             return True
     return False
@@ -480,6 +630,58 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+# 2026-08-17: a bare `npx` prepare in a package root with no node_modules of its own does
+# not fail -- it FETCHES the launcher from the registry, which is what consumed the whole 180s
+# budget and failed staging QA with a timeout. _link_shared_runtime symlinks node_modules
+# at the worktree ROOT only, so a monorepo sub-package never has one. Resolve the linked
+# binary ourselves (walking up to the worktree root, never past it), and when there is no
+# toolchain at all fail fast with `npx --no-install` -- the same convention build_gate
+# already uses -- instead of silently downloading one.
+# Floored, not just defaulted: 180s was demonstrably too tight for a cold prepare, so a
+# machine-local override must not be able to reintroduce the ceiling that failed the
+# 2026-08-17 releases.
+PREPARE_TIMEOUT_S = max(300.0, float(os.environ.get("ORCH_PREPARE_TIMEOUT_S", "600")))
+PREPARE_BINS = ("nuxi", "nuxt")
+
+
+def _local_bin(root, name, stop_at=None):
+    """Return the path to node_modules/.bin/<name> at or above ``root``, else None.
+
+    The search is confined to the checkout under test: it stops after inspecting
+    ``stop_at`` (default: ``root`` itself, i.e. no ascent), so a binary installed
+    outside the worktree is never picked up. Junk input yields None, never raises.
+    """
+    try:
+        root = os.path.abspath(root)
+        stop_at = os.path.abspath(stop_at) if stop_at else root
+    except (TypeError, ValueError, AttributeError):
+        return None
+    while True:
+        candidate = os.path.join(root, "node_modules", ".bin", name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        if root == stop_at:
+            return None
+        parent = os.path.dirname(root)
+        if parent == root or not root.startswith(stop_at + os.sep):
+            return None
+        root = parent
+
+
+def _prepare_cmd(root, worktree):
+    """Return (argv, description) for generating framework types in ``root``.
+
+    Prefers the toolchain the checkout already has -- invoked directly, with no login
+    shell, exactly as resolved_file_gate runs a package-local tsc.
+    """
+    for name in PREPARE_BINS:
+        found = _local_bin(root, name, stop_at=worktree)
+        if found:
+            return [found, "prepare"], f"linked {name} ({os.path.relpath(found, worktree)})"
+    return (["npx", "--no-install", PREPARE_BINS[0], "prepare"],
+            "npx --no-install (no linked toolchain; must not fetch from the registry)")
+
+
 def _prepare_generated_types(worktree):
     """Generate checkout-local framework types for every typed Nuxt package root."""
     roots = [worktree]
@@ -504,10 +706,11 @@ def _prepare_generated_types(worktree):
             return False, str(e)
         if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
             continue
-        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
-                              capture_output=True, text=True, timeout=180)
+        cmd, how = _prepare_cmd(root, worktree)
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                              timeout=PREPARE_TIMEOUT_S)
         log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
+        logs.append(f"[{os.path.relpath(root, worktree)}] via {how}\n{log}")
         generated = os.path.join(root, ".nuxt", "tsconfig.json")
         if proc.returncode != 0 or not os.path.exists(generated):
             return False, "\n".join(logs)
@@ -863,7 +1066,7 @@ def _withdraw_unreleased_merged(p, project, repo, prod, note):
             db.update("tasks", {"id": t["id"]},
                       {"state": "DONE",
                        "note": (f"MERGED withdrawn: {sha[:12]} is not on {remote} after a failed "
-                                f"release push — {(note or '')[-160:]}")})
+                                f"release push — {stderr_digest.digest(note, 160)}")})
             # The old integration card is stamped train:MERGED and therefore terminal.
             # Merely returning the task to DONE leaves it invisible until a bounded sweeper
             # happens to see it; in practice the middle of that window never did.  File a
@@ -922,7 +1125,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             _self_heal_release_conflict(p, project, repo, prod, inote)
             _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
                                    f"prod integration conflicted before push — self-heal "
-                                   f"queued: {(inote or '')[-160:]}")
+                                   f"queued: {stderr_digest.digest(inote, 160)}")
             return False, to_sha, (inote or "prod integration conflict")
         if moved:
             # Gates were green on the pre-integration tip. Re-verify the tip we will ship.
@@ -935,7 +1138,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                     _self_heal_qa(p, project, repo, STAGING, glog)
                 _insert_failed_release(project, gate, ahead, release_base_sha, integrated_sha,
                                        f"post-integration {gate} red — self-heal queued: "
-                                       f"{(glog or '')[-160:]}")
+                                       f"{stderr_digest.digest(glog, 160)}")
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
             if manifest and release_manifest is not None:
                 try:
@@ -989,7 +1192,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             continue
         _self_heal_release_conflict(p, project, repo, prod, plog or "push staging to prod failed")
         _insert_failed_release(project, "push", ahead, release_base_sha, to_sha,
-                               f"push {STAGING}->{prod} failed: {(plog or '')[-160:]}")
+                               f"push {STAGING}->{prod} failed: {stderr_digest.digest(plog, 160)}")
         return False, to_sha, plog or "push staging to prod failed"
     return False, to_sha, "push attempts exhausted"
 
@@ -1209,16 +1412,29 @@ def _run_for_unlocked(project, repo_override=None):
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
-    if int(ahead) < MIN_BATCH:
-        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": "below batch size"}
-    due, due_note = _release_due(project)
-    # Amortize normal traffic into batches, but never strand low-volume projects
-    # forever below MIN_BATCH: cadence expiry flushes whatever is ready.
-    if _release_decision(ahead, due) == "hold":
-        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged,
-                             ahead=int(ahead), note=due_note)
+    if _capacity_mode():
+        decision, decision_note = _capacity_release_decision(project, ahead)
+    else:
+        due, decision_note = _release_due(project)
+        # Amortize normal traffic into batches, but never strand low-volume
+        # projects forever below MIN_BATCH: cadence expiry flushes whatever is
+        # ready. That was the stated intent and it was not what happened. An
+        # `if int(ahead) < MIN_BATCH: return "below batch size"` stood HERE,
+        # ahead of this call, so the `due` arm of _release_decision could never
+        # be reached: below the batch you returned before asking, and at or above
+        # it the decision is "release" whether or not the interval elapsed. A
+        # project with three finished changes waited for seven more indefinitely.
+        # _release_decision now governs, with the batch floor passed as its
+        # `minimum`, which is what makes the cadence flush real.
+        decision = _release_decision(ahead, due, minimum=_effective_min_batch(project))
+    if decision == "up-to-date":
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
-                "note": f"below batch size; {due_note}"}
+                "note": decision_note}
+    if decision == "hold":
+        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged,
+                             ahead=int(ahead), note=decision_note)
+        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
+                "note": decision_note}
     # Freeze the exact candidate, commands, dependency graph, and file set
     # before any expensive gate runs. This manifest is the release identity.
     det_cmd, has_real_tests = _detect_test_cmd(repo)
@@ -1324,7 +1540,8 @@ def _run_for_unlocked(project, repo_override=None):
                     qlog = "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1600:]
                     _self_heal_qa(p, project, repo, STAGING, qlog)
                     _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                           f"staging QA dependency prewarm failed — self-heal queued: {qlog[-160:]}")
+                                           f"staging QA dependency prewarm failed — self-heal queued: "
+                                           f"{stderr_digest.digest(qlog, 160)}")
                     return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
             except Exception:
                 pass
@@ -1370,7 +1587,8 @@ def _run_for_unlocked(project, repo_override=None):
             ).strip()
             _self_heal_qa(p, project, repo, STAGING, qlog)
             _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                   f"staging QA failed (tests required) — self-heal queued: {qlog[-160:]}")
+                                   f"staging QA failed (tests required) — self-heal queued: "
+                                   f"{stderr_digest.digest(qlog, 160)}")
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
         if manifest:
             release_manifest.record_gate(manifest["id"], "qa", True, command=qa_cmd,
@@ -1443,7 +1661,8 @@ def _run_for_unlocked(project, repo_override=None):
     if not refreshed:
         _self_heal_release_conflict(p, project, repo, prod, refresh_note)
         _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
-                               f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
+                               f"staging/prod refresh failed — self-heal queued: "
+                               f"{stderr_digest.digest(refresh_note, 160)}")
         return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
@@ -1491,7 +1710,8 @@ def _run_for_unlocked(project, repo_override=None):
     rel = _insert_release({"project": project, "version": ver, "from_sha": last_good,
                     "to_sha": to_sha, "n_changes": int(ahead), "changelog": changelog,
                     "deploy_status": ("building" if pushed else "failed") if push_on else "pending",
-                    "note": "" if (pushed or not push_on) else (push_log or "push failed")[-160:]})
+                    "note": "" if (pushed or not push_on)
+                    else stderr_digest.digest(push_log or "push failed", 160)})
     withdrawn = []
     if push_on and not pushed:
         # Nothing reached origin, so no task in this batch may keep claiming MERGED.
@@ -1501,7 +1721,7 @@ def _run_for_unlocked(project, repo_override=None):
                   f"commits never reached origin/{prod}")
         return {"project": project, "prod": prod, "released": 0, "pushed": False,
                 "merged_withdrawn": withdrawn,
-                "note": f"release push failed; relfix queued: {(push_log or '')[-160:]}"}
+                "note": f"release push failed; relfix queued: {stderr_digest.digest(push_log, 160)}"}
     print(f"release_train {project}: staged {merged}, released {ahead} changes to {prod} "
           f"(push={'on' if pushed else 'off/local'})")
     return {"project": project, "prod": prod, "released": ahead, "pushed": pushed}
@@ -1566,8 +1786,10 @@ def _next_version():
 
 
 def _release_due(project):
-    if RELEASE_INTERVAL_HOURS <= 0:
-        return True, "release interval disabled"
+    # The `if RELEASE_INTERVAL_HOURS <= 0: return True, "release interval
+    # disabled"` branch that used to open this function was unreachable:
+    # RELEASE_INTERVAL_HOURS is `max(6.0, ...)`, so it can never be <= 0. A knob
+    # that reads as a kill switch and is not one is worse than no knob.
     rows = db.select("releases", {"select": "created_at,project,deploy_status", "project": f"eq.{project}",
                                   "deploy_status": "in.(pending,building,success)",
                                   "order": "created_at.desc", "limit": "1"}) or []

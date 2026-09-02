@@ -9,6 +9,18 @@ import json
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import meta_loop
 
+import datetime
+
+
+def _ago(hours=0):
+    """A UTC datetime `hours` in the past."""
+    return datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
+
+
+def _iso(when):
+    """The Z-suffixed ISO-8601 form the control plane stores."""
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 class TestAutoTuneGuardrails(unittest.TestCase):
     """Test guardrail enforcement."""
@@ -90,8 +102,6 @@ class TestCycleTimeRegression(unittest.TestCase):
 
     def test_detects_cycle_time_increase_above_threshold(self):
         """Detects when 5-day cycle_time is >15% higher than 30-day baseline."""
-        # This test would need metric_5d data to be returned separately
-        # For now, test that the logic tries to fetch it
         metrics = {
             ("proj1", "build"): {
                 "cycle_time": 100.0,  # 30-day baseline
@@ -99,16 +109,18 @@ class TestCycleTimeRegression(unittest.TestCase):
                 "sample_count": 100,
             }
         }
-        # Mock db.select to return 5-day metrics on second call
-        call_count = [0]
-        def select_side_effect(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # First call: 30-day metrics
-                return []  # This is mocked via _stage_metrics_summary
-            else:
-                # Second call: 5-day metrics
-                return [{"avg_cycle_time_seconds": 118.0}]  # 18% increase
+        # THE FIRST db.select CALL *IS* THE 5-DAY ONE.
+        #
+        # This used to burn call 1 on "30-day metrics", with the comment "This
+        # is mocked via _stage_metrics_summary" -- which is exactly why that
+        # call never happens: _stage_metrics_summary is patched two lines below
+        # and issues no query. So the only db.select the code makes, the 5-day
+        # window read, received the [] meant for a call that does not exist,
+        # `if metrics_5d:` was False, and no regression decision could ever be
+        # produced. Answer the query that is actually asked.
+        def select_side_effect(table, params=None, *args, **kwargs):
+            assert (params or {}).get("window_days") == "eq.5", params
+            return [{"avg_cycle_time_seconds": 118.0}]      # 18% over baseline
 
         with patch.object(meta_loop, "AUTO_TUNE_ENABLE", True), \
              patch.object(meta_loop, "_stage_metrics_summary", return_value=metrics), \
@@ -153,14 +165,19 @@ class TestMetricsIntegration(unittest.TestCase):
         """improvement_measure.stage_metrics() collects cycle times."""
         import improvement_measure as im
 
-        now = "2026-07-05T12:00:00Z"
+        # RELATIVE, NOT ABSOLUTE. These fixtures were pinned to 2026-07-05 and
+        # stage_metrics() windows on wall-clock (5 and 30 days), so the data
+        # aged out of every window and no row was ever grouped. A test whose
+        # fixtures expire is a test with a shelf life; anchor it to now.
+        finished_at = _iso(_ago(hours=1))
+        started_at = _iso(_ago(hours=2))
         tasks = [
             {
                 "id": "t1",
                 "slug": "feature-1",
                 "project_id": "p1",
                 "kind": "build",
-                "created_at": "2026-07-05T11:00:00Z",  # 1 hour before
+                "created_at": started_at,          # one hour before the outcome
                 "remediation_count": 0,
                 "state": "MERGED",
             }
@@ -168,20 +185,30 @@ class TestMetricsIntegration(unittest.TestCase):
         outcomes = [
             {
                 "task_id": "t1",
-                "created_at": "2026-07-05T12:00:00Z",
+                "created_at": finished_at,
                 "wall_ms": 3600000,  # 1 hour
             }
         ]
 
         db_mock = MagicMock()
-        def select_side_effect(table, params=None):
+
+        # select_all, not select. stage_metrics() reads both tables through
+        # db.select_all with a server-side created_at window, because
+        # db.select() returns ONE PostgREST page (1,000 rows, unordered) and
+        # against 4,534 MERGED tasks it returned a page containing nothing
+        # inside the cutoff -- a run that reported "0 written, no errors" while
+        # measuring nothing at all.
+        def select_all_side_effect(table, params=None, **kw):
+            assert (params or {}).get("created_at", "").startswith("gte."), (
+                "%s must be windowed server-side, not scanned client-side: %s"
+                % (table, params))
             if table == "tasks":
                 return tasks
             if table == "outcomes":
                 return outcomes
             return []
 
-        db_mock.select.side_effect = select_side_effect
+        db_mock.select_all.side_effect = select_all_side_effect
         db_mock.insert.return_value = None
 
         with patch.object(im, "db", db_mock):
@@ -200,26 +227,40 @@ class TestMetricsIntegration(unittest.TestCase):
         """improvement_measure correctly calculates first_try_yield."""
         import improvement_measure as im
 
+        # Relative for the same reason as the test above.
         tasks = [
-            {"id": "t1", "project_id": "p1", "kind": "build", "created_at": "2026-07-01T00:00:00Z", "remediation_count": 0, "state": "MERGED"},
-            {"id": "t2", "project_id": "p1", "kind": "build", "created_at": "2026-07-02T00:00:00Z", "remediation_count": 0, "state": "MERGED"},
-            {"id": "t3", "project_id": "p1", "kind": "build", "created_at": "2026-07-03T00:00:00Z", "remediation_count": 2, "state": "MERGED"},
+            {"id": "t1", "project_id": "p1", "kind": "build",
+             "created_at": _iso(_ago(hours=6)), "remediation_count": 0, "state": "MERGED"},
+            {"id": "t2", "project_id": "p1", "kind": "build",
+             "created_at": _iso(_ago(hours=5)), "remediation_count": 0, "state": "MERGED"},
+            {"id": "t3", "project_id": "p1", "kind": "build",
+             "created_at": _iso(_ago(hours=4)), "remediation_count": 2, "state": "MERGED"},
         ]
         outcomes = [
-            {"task_id": "t1", "created_at": "2026-07-01T01:00:00Z"},
-            {"task_id": "t2", "created_at": "2026-07-02T01:00:00Z"},
-            {"task_id": "t3", "created_at": "2026-07-03T02:00:00Z"},
+            {"task_id": "t1", "created_at": _iso(_ago(hours=5))},
+            {"task_id": "t2", "created_at": _iso(_ago(hours=4))},
+            {"task_id": "t3", "created_at": _iso(_ago(hours=2))},
         ]
 
         db_mock = MagicMock()
-        def select_side_effect(table, params=None):
+
+        # select_all, not select. stage_metrics() reads both tables through
+        # db.select_all with a server-side created_at window, because
+        # db.select() returns ONE PostgREST page (1,000 rows, unordered) and
+        # against 4,534 MERGED tasks it returned a page containing nothing
+        # inside the cutoff -- a run that reported "0 written, no errors" while
+        # measuring nothing at all.
+        def select_all_side_effect(table, params=None, **kw):
+            assert (params or {}).get("created_at", "").startswith("gte."), (
+                "%s must be windowed server-side, not scanned client-side: %s"
+                % (table, params))
             if table == "tasks":
                 return tasks
             if table == "outcomes":
                 return outcomes
             return []
 
-        db_mock.select.side_effect = select_side_effect
+        db_mock.select_all.side_effect = select_all_side_effect
         db_mock.insert.return_value = None
 
         with patch.object(im, "db", db_mock):

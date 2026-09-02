@@ -1,4 +1,7 @@
 {
+  "engines": {
+    "node": "20.x"
+  },
   "devDependencies": {
     "typescript": "^7.0.2"
   }

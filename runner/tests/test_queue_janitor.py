@@ -94,6 +94,27 @@ class ReleaseOrphanedRunningTest(unittest.TestCase):
         _, _, patch_row = updates[0]
         # Patch is applied; prompt still has the repair marker.
         self.assertIn(agentic_repair.MARKER, patch_row["prompt"])
+        # And the counter HOLDS, which is what this test's name has always
+        # claimed. The at-cap branch is the final same-task repair, not another
+        # retry, so letting it climb would make "how many times did the janitor
+        # retry this" unreadable after the fact.
+        self.assertEqual(patch_row["transient_retries"], queue_janitor.REQUEUE_CAP)
+
+    def test_each_sweep_advances_the_counter_by_exactly_one(self):
+        """One janitor pass is one retry.
+
+        _repair_task grew a `+ 1` to stop the counter being written back
+        unchanged, but the below-cap call sites were already handing it
+        `{**t, "transient_retries": attempts + 1}`. Both fired, so a row at 1
+        landed on 3 and REQUEUE_CAP was reached in two sweeps instead of three.
+        The increment now lives in _repair_task alone.
+        """
+        for before in range(queue_janitor.REQUEUE_CAP):
+            with self.subTest(transient_retries=before):
+                task = _running_task(seconds_ago=25 * 60, retries=before)
+                _, updates = self._run([task])
+                _, _, patch_row = updates[0]
+                self.assertEqual(patch_row["transient_retries"], before + 1)
 
     def test_multiple_orphans_are_all_released(self):
         tasks = [

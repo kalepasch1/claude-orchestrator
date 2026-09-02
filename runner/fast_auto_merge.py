@@ -22,7 +22,7 @@ which is precisely the dead air this module exists to remove.
   ORCH_FAST_MERGE_EVENT_DISPATCH  default ON  — the live trigger
   ORCH_FAST_MERGE_BATCH_SWEEP     default OFF — retired batch path, manual fallback only
 """
-import os, sys, datetime
+import os, sys, datetime, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -70,13 +70,38 @@ def _has_approval_card(task):
     return False
 
 
+def _project_name_or_none(project_id):
+    """Project NAME for an id. None if unresolvable — the card is still filed."""
+    if not project_id:
+        return None
+    try:
+        return db._project_name_cached(project_id)
+    except Exception:
+        return None
+
+
 def _create_fast_approval(task):
+    """Write the auto-approval card.
+
+    `approvals` has no `project_id` and no `note` column: it keys on the project
+    NAME and carries free-form payload in `detail`. Writing the old names returned
+    HTTP 400, and because line ~200 calls this unguarded, EVERY green test run
+    raised out of on_test_completion() instead of returning a verdict — so the
+    fast-merge gate approved nothing at all. Resolve the name, fold the note into
+    `detail`, and keep the id there too so the card is still traceable to the task.
+    """
     slug = task.get("slug", "")
+    project_id = task.get("project_id")
+    project = _project_name_or_none(project_id)
     return db.insert("approvals", {
-        "slug": slug, "project_id": task.get("project_id"), "kind": "integrate",
+        "slug": slug, "project": project, "kind": "integrate",
         "status": "approved", "title": f"Fast auto-merge of {slug}",
         "decided_by": "fast-auto-merge:auto-approved",
-        "note": f"Auto-approved within {FAST_MERGE_WINDOW_MIN}min window (low-risk, tests passed)",
+        "detail": json.dumps({
+            "project_id": project_id,
+            "note": (f"Auto-approved within {FAST_MERGE_WINDOW_MIN}min window "
+                     "(low-risk, tests passed)"),
+        }),
     })
 
 
@@ -197,7 +222,16 @@ def on_test_completion(event):
             return verdict(False, "kill switch engaged", slug)
     except Exception:
         pass
-    _create_fast_approval(task)
+    # Unguarded until 2026-08-30, which is how a wrong column name took the whole
+    # gate down: the insert raised, this function raised with it, and a method
+    # documented never to raise took its dispatcher with it on every green test.
+    # The payload bug is fixed, but the contract is what matters — a DB blip must
+    # come back as a declined verdict, not an exception.
+    try:
+        _create_fast_approval(task)
+    except Exception as exc:
+        print(f"[fast_auto_merge] approval write failed for {slug}: {exc}")
+        return verdict(False, f"approval card could not be written: {exc}", slug)
     print(f"[fast_auto_merge] event: auto-approved {slug} on test pass")
     return verdict(True, "low-risk task passed tests; fast approval created", slug)
 

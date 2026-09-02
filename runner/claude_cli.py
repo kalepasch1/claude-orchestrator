@@ -17,6 +17,10 @@ Usage (replace every `subprocess.run([CLAUDE_BIN,'-p',...,'--output-format','tex
     from claude_cli import run
     r = run(prompt, model, cwd=..., env=..., project="tomorrow")
     text = r["text"]; cost = r["cost_usd"]; rc = r["returncode"]
+
+`cost_usd` is REAL billable spend and is 0 for a subscription call. The
+API-equivalent figure the CLI reports lives in `notional_usd`; use that when
+comparing models to each other, never when adding up money actually spent.
 """
 import os, sys, json, time, subprocess, threading, logging, asyncio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -227,10 +231,16 @@ def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
 
 def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         permission="acceptEdits", timeout=None, output_only=True):
-    """Metered Claude call. Returns {text, cost_usd, input_tokens, output_tokens, returncode, raw}."""
+    """Metered Claude call.
+
+    Returns {text, cost_usd, notional_usd, input_tokens, output_tokens, returncode, raw}.
+    cost_usd is billable spend (0 on a subscription); notional_usd is what the
+    same tokens would have cost on the API.
+    """
     if _paused(project):
-        return {"text": "", "cost_usd": 0, "input_tokens": 0, "output_tokens": 0,
-                "returncode": 75, "raw": None, "skipped": "kill_switch"}
+        return {"text": "", "cost_usd": 0, "notional_usd": 0, "input_tokens": 0,
+                "output_tokens": 0, "returncode": 75, "raw": None,
+                "skipped": "kill_switch"}
     with _lock:
         _check_budget()          # raises CircuitOpen if over cap
 
@@ -262,6 +272,12 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
             cost = result["cost_usd"]
             # SDK uses subscription — real billable cost is 0 unless on API account
             real_usd = cost if using_api else 0.0
+            # Same distinction as the CLI path below: callers sum cost_usd into
+            # budgets and outcome rows, so it must be the billable number, with
+            # the API-equivalent kept alongside under its own name. _run_agent_sdk
+            # reports the notional figure because that is what the SDK gives it.
+            result["notional_usd"] = cost
+            result["cost_usd"] = real_usd
             _record(real_usd, sub_usd=cost)
             try:
                 import usage_meter
@@ -307,7 +323,9 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
                 log.info("Subscription exhausted — routing to API-direct via swarm_executor")
                 result = swarm_executor.run_swarm(prompt, model, provider="claude",
                                                   cwd=cwd, timeout=timeout or 900, mode="agentic")
+                # API-direct: the spend is real, so billable and notional agree.
                 real_usd = result.get("cost_usd", 0)
+                result.setdefault("notional_usd", real_usd)
                 _record(real_usd)
                 try:
                     import usage_meter
@@ -359,6 +377,21 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
             usage_meter.record("anthropic-notional", project, units=itok + otok, unit="tokens", usd=cost)
     except Exception:
         pass
+    # THE RETURN DICT NOW MAKES THE SAME DISTINCTION THE LEDGER ALREADY MADE.
+    #
+    # _record() and usage_meter above have always separated real_usd (billable)
+    # from the CLI's total_cost_usd (what the same tokens would have cost on the
+    # API), because a fixed-price subscription call costs nothing per call. The
+    # returned dict did not: it handed back the notional figure under the name
+    # `cost_usd`, and roughly thirty callers sum that into budgets, outcome rows
+    # and routing decisions. runner.record() writes it to outcomes.usd, which
+    # ev_scheduler then divides its score by — so subscription usage was
+    # generating phantom dollars that changed which tasks got picked.
+    #
+    # cost_usd is real billable spend (0 under a subscription). notional_usd is
+    # the API-equivalent, kept for relative comparisons between models where
+    # every real cost is 0. `raw.total_cost_usd` is untouched: it is the CLI's
+    # own field and must keep reporting what the CLI said.
     # Track CLI subscription usage for tier routing
     try:
         import subscription_tracker
@@ -369,7 +402,8 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         subscription_tracker.record_call("claude-max", _cli_outcome, model)
     except Exception:
         pass
-    return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
+    return {"text": text, "cost_usd": real_usd, "notional_usd": cost,
+            "input_tokens": itok, "output_tokens": otok,
             "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or ""}
 
 

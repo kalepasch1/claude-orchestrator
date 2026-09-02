@@ -51,6 +51,33 @@ EXHAUST_SIGNALS = (
     "limit reached ∙ resets", "spend limit", "monthly spend", "monthly limit",
     "hit your monthly", "limit · raise it", "raise it at claude.ai",
     "credit balance is too low",
+    # 2026-08-24: the fleet produced empty commits for weeks because none of
+    # these matched. Google, OpenAI and DeepSeek each say "you are out of
+    # money" in their own words, and each ships it as a 429/402 — so without
+    # this vocabulary the banner read as a TRANSIENT rate limit, the provider
+    # was never demoted, and every routed task burned aider's 60s retry loop
+    # against a wall that only a payment can move.
+    "credits are depleted", "credits depleted", "prepayment credits",
+    "no credits remaining", "credits remaining", "credit_balance_exhausted",
+    "used all available credits", "insufficient balance", "add credits",
+    "payment required", "purchase more credits",
+    # Deliberately NOT here: the bare word "billing". These patterns are also
+    # used as a content-quality gate (learn_from_merges rejects any
+    # distillation that matches one), so a signal must be specific enough that
+    # ordinary product work cannot trip it. A merged task summarised as "add
+    # billing page" is real work, not a provider banner.
+)
+
+# Terminal, and fixable by NEITHER waiting nor paying: the model id itself is
+# gone. Providers retire ids on their own schedule, and a config that still
+# names one fails 404 forever. That is a config bug, not a capacity problem —
+# it must never be retried, and it must not be reported as exhaustion, because
+# "top up your account" sends the operator to fix the wrong thing.
+MODEL_GONE_SIGNALS = (
+    "is no longer available", "no longer available to new users",
+    "is not found for api version", "model_not_found",
+    "does not exist or you do not have access",
+    "has been deprecated", "model has been retired",
 )
 
 def _rx(extra_shapes, signals):
@@ -75,8 +102,27 @@ EXHAUSTED_RX = _rx((
     r"\bhit your (?:weekly|monthly|daily)\b",
     r"\b\d+[\s-]hour limit\b",                   # "5-hour limit reached"
     r"\blimit\s*[·∙-]\s*(?:resets|raise it)\b",
-    r"\bresets?\s+\S+",                          # "resets Jul 8 at 6am", "resets 3pm"
+    # "resets Jul 8 at 6am", "resets 3pm", "resets tomorrow".
+    #
+    # This was `\bresets?\s+\S+`, which matched the word followed by ANYTHING —
+    # including "ConnectionResetError: [Errno 54] reset by peer" and "password
+    # reset link". A dropped socket is the most ordinary failure there is, and
+    # classifying it as exhaustion evicts a HEALTHY provider from the rotation.
+    # That stayed invisible while only this module read the pattern; wiring
+    # error_taxonomy through it on 2026-08-24 turned a latent over-match into a
+    # demotion, and two existing tests caught it immediately.
+    #
+    # A reset that means "your quota returns then" always names a TIME. Requiring
+    # one costs nothing: both real banners this shape was written for
+    # ("hit your weekly limit · resets Aug 25 at 11pm", "limit reached ∙ resets
+    # 3pm") already match on their limit vocabulary as well.
+    r"\bresets?\s+(?:at\s+|on\s+|in\s+)?"
+    r"(?:\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    r"|mon|tue|wed|thu|fri|sat|sun|today|tomorrow|midnight|noon)",
 ), EXHAUST_SIGNALS)
+
+MODEL_GONE_RX = _rx((r"\bmodels?/[\w.\-]+ is (?:no longer available|not found)\b",),
+                    MODEL_GONE_SIGNALS)
 
 # A transport/server error that also arrives as prose rather than an exception.
 PROVIDER_ERROR_RX = re.compile(
@@ -86,18 +132,21 @@ PROVIDER_ERROR_RX = re.compile(
 
 # Ordered most-specific first: an exhaustion banner usually also contains
 # rate-limit vocabulary, and "out of budget" is the more actionable answer.
+# A retired model id sits ahead of both — it also 404s and often mentions
+# quota-adjacent words, but no amount of waiting or paying brings the id back.
 _ORDERED = (
+    ("model_gone", MODEL_GONE_RX, MODEL_GONE_SIGNALS),
     ("exhausted", EXHAUSTED_RX, EXHAUST_SIGNALS),
     ("rate_limited", RATE_LIMIT_RX, RATE_SIGNALS),
     ("provider_error", PROVIDER_ERROR_RX, ()),
 )
 
 # For callers that want to iterate the regexes (e.g. a content quality gate).
-PATTERNS = (EXHAUSTED_RX, RATE_LIMIT_RX, PROVIDER_ERROR_RX)
+PATTERNS = (MODEL_GONE_RX, EXHAUSTED_RX, RATE_LIMIT_RX, PROVIDER_ERROR_RX)
 
 
 def classify(text):
-    """Return 'exhausted', 'rate_limited', 'provider_error', or None.
+    """Return 'model_gone', 'exhausted', 'rate_limited', 'provider_error', or None.
 
     None means "this does not look like a provider banner" — it is not a claim
     that the text is good, only that this module has no opinion about it.
@@ -136,11 +185,29 @@ def reason(text):
     return None
 
 
+# litellm names its exception classes after the HTTP status it wrapped, so a
+# 429 that actually means "your balance is zero" arrives as the string
+# "litellm.RateLimitError: ... prepayment credits are depleted ...". Scanning
+# that raw let the WRAPPER decide the verdict: "ratelimiterror" contains
+# "ratelimit", so the banner classified as transient before anything read the
+# message. The message is the provider's evidence; the wrapper is litellm's
+# label for the status code. Strip the label, keep the code.
+_WRAPPER_RX = re.compile(
+    r"\b\w*(?:rate ?limit|notfound|not ?found|apiconnection|api|auth"
+    r"|permissiondenied|badrequest|internalserver|serviceunavailable"
+    r"|contextwindowexceeded|timeout|unprocessableentity)error\b", re.I)
+
+
 def _low(text):
-    """Lowercased text, or '' for anything unusable. Never raises."""
+    """Lowercased text with exception-class wrappers removed, or '' if unusable.
+
+    Never raises. The status code itself survives — "Error code: 429" is the
+    provider speaking and is real evidence; "RateLimitError" is only litellm's
+    name for that status and must not outvote the message body.
+    """
     try:
         if not text or not isinstance(text, str):
             return ""
-        return text[:20000].lower()
+        return _WRAPPER_RX.sub(" ", text[:20000]).lower()
     except Exception:
         return ""

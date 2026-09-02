@@ -91,10 +91,38 @@ def _compute_priority(confidence: float, frequency: int) -> int:
 
 
 def _parse_iso_timestamp(ts_str: Optional[str]) -> Optional[str]:
-    """Parse and normalize timestamp to ISO 8601 UTC."""
+    """Parse and normalize timestamp to ISO 8601 UTC (trailing 'Z' form).
+
+    FIXED 2026-08-24: the strptime list below has no format with a UTC OFFSET, so every
+    offset-bearing ISO 8601 timestamp ("...+00:00", "...-07:00") parsed as None — including
+    the strings this module produces itself. `_read_logs` and `_read_support_queue` default a
+    missing timestamp to `datetime.now(timezone.utc).isoformat()`, which renders as
+    '+00:00', feed it straight back into this function, and get None: the module could not
+    read its own output format.
+
+    That is not cosmetic. When the timestamp is lost, _generate_tasks_from_errors falls back
+    to `datetime.now()` for `source_timestamp`, and _compute_task_hash keys dedup on
+    (signature, source hour). So the same recurring error hashed differently on every hourly
+    run, _load_existing_tasks never matched it, and generated_tasks.jsonl accumulated a fresh
+    duplicate task per run per error — the exact failure the dedup window exists to prevent.
+
+    datetime.fromisoformat is tried first: on 3.11+ it accepts offsets, a trailing 'Z' and
+    the space separator, so it is a strict superset of the table for well-formed input. The
+    explicit formats stay as the fallback for inputs it still rejects.
+    """
     if not ts_str:
         return None
+
+    def _normalize(dt):
+        if dt.tzinfo is None:  # naive input is documented to mean UTC
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
     try:
+        try:
+            return _normalize(datetime.fromisoformat(ts_str))
+        except (ValueError, TypeError):
+            pass
         # Try parsing common formats
         for fmt in [
             "%Y-%m-%dT%H:%M:%S.%fZ",
@@ -103,11 +131,7 @@ def _parse_iso_timestamp(ts_str: Optional[str]) -> Optional[str]:
             "%Y-%m-%d %H:%M:%S",
         ]:
             try:
-                dt = datetime.strptime(ts_str, fmt)
-                # Assume UTC if no tzinfo
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt.isoformat().replace('+00:00', 'Z')
+                return _normalize(datetime.strptime(ts_str, fmt))
             except ValueError:
                 continue
         return None

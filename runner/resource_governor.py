@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 resource_governor.py - keeps the Mac alive. Monitors disk (and RAM if psutil present),
-prunes the real space hogs (merged git worktrees, stale logs, build caches, dangling
-twins), and THROTTLES concurrency down as pressure rises / up as it eases. Writes an
-effective MAX_PARALLEL to a control file the runner reads each loop, so throttling is live.
+prunes the real space hogs (merged git worktrees, stale logs, build caches), and THROTTLES
+concurrency down as pressure rises / up as it eases. Writes an effective MAX_PARALLEL to
+a control file the runner reads each loop, so throttling is live.
 
 Predictive: fits a line to recent resource_events disk values; if the trend will breach
 DISK_HARD within ~2h, prune and throttle BEFORE it happens. Also prunes node_modules,

@@ -73,8 +73,8 @@ COMPETITOR_PRICING = {
     "google": {
         "api": {
             "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
-            "gemini-3.1-pro": {"input": 2.00, "output": 12.00},
-            "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
+            "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00},
+            "gemini-3.1-flash-lite": {"input": 0.10, "output": 0.40},
         },
         "subscription": 20.00,
         "limitations": [

@@ -76,8 +76,8 @@ PROVIDERS: Dict[str, dict] = {
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "key_env": "GEMINI_API_KEY",
-        "models": {"fast": "gemini-3-flash", "mid": "gemini-3.5-flash",
-                   "heavy": "gemini-3.1-pro"},
+        "models": {"fast": "gemini-3.5-flash", "mid": "gemini-3.5-flash",
+                   "heavy": "gemini-3.1-pro-preview"},
         "max_concurrent": 50,
     },
     "groq": {
@@ -113,9 +113,9 @@ _PRICES: Dict[str, tuple] = {
     "deepseek-chat": (0.14, 0.28),
     "deepseek-reasoner": (0.55, 2.19),
     "gemini-3.5-flash": (1.50, 9.0),
-    "gemini-3.1-pro": (2.0, 12.0),
-    "gemini-3-flash": (0.50, 3.0),
-    "gemini-2.5-pro": (1.25, 10.0),
+    "gemini-3.1-pro-preview": (2.0, 12.0),
+    "gemini-3.5-flash": (0.50, 3.0),
+    "gemini-3.1-pro-preview": (1.25, 10.0),
     "gemini-2.5-flash": (0.30, 2.50),
     "llama-3.1-8b-instant": (0.05, 0.08),
     "llama-3.3-70b-versatile": (0.59, 0.79),

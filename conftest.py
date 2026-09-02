@@ -27,6 +27,7 @@ an already-imported module, so both conventions now work side by side.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -101,3 +102,119 @@ def _rebind_runner_package() -> None:
 
 def pytest_collectstart(collector) -> None:
     _rebind_runner_package()
+    # Module boundary: put back BOTH kinds of stand-in, so a fake installed at import time
+    # by one file is not still standing when the next file is imported.
+    _evict_leaked_doubles(include_module_stubs=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Leaked test doubles in sys.modules
+#
+# runner/tests/conftest.py restores real control-plane modules at module boundaries, but
+# it only governs runner/tests/. The 152 test files at runner/*.py are collected by this
+# repo-root conftest and by nothing else, and one of them leaks:
+# test_canary_ollama_22.py runs `patch.dict(sys.modules, {"db": MagicMock()})` inside five
+# concurrent threads, and patch.dict restores by clearing and re-filling the dict — so
+# interleaved restores park the mock in sys.modules["db"] for the rest of the session.
+#
+# From then on every `@patch("db.select")` patches the leftover mock while the real db
+# module runs unpatched and reaches for a live database. The symptom lands on unrelated
+# files much later (17 tests in test_canary_ollama_23, 5 in test_done_to_merged_conversion,
+# and others), each of which passes perfectly in isolation.
+#
+# Only MOCK-shaped stand-ins are evicted. A `types.ModuleType` fake installed at import
+# time is the deliberate convention in this suite and is left alone.
+# ─────────────────────────────────────────────────────────────────────────────
+import types as _types
+
+
+def _is_mock_double(module) -> bool:
+    """True for a sys.modules entry that is not a module at all.
+
+    A MagicMock answers getattr(m, "__file__") with another Mock, so a __file__ check reads
+    it as a real module and leaves it in place. Type is the only reliable signal.
+    """
+    return not isinstance(module, _types.ModuleType)
+
+
+#: The real module object for every runner/ module we have seen imported. Restoring THIS
+#: object matters: popping the name instead would make the next `import db` build a fresh
+#: module, and a test that patched attributes on the object it imported at module scope
+#: would be patching a different db than the code under test now sees.
+_REAL_BY_NAME: dict = {}
+
+
+def _remember_real_modules() -> None:
+    for name, module in list(sys.modules.items()):
+        if "." in name or module is None or _is_mock_double(module):
+            continue
+        if not getattr(module, "__file__", None):
+            continue
+        try:
+            if Path(module.__file__).resolve().parent != _RUNNER_DIR:
+                continue
+        except Exception:
+            continue
+        _REAL_BY_NAME.setdefault(name, module)
+
+
+def _is_module_stub(module) -> bool:
+    """A `types.ModuleType` with no source file: the deliberate fake-module convention here.
+
+    Distinguished from a Mock because the two need different timing. A Mock leaked out of a
+    test is always a bug and is repaired immediately. A ModuleType fake installed at import
+    time is a file's intended test double for its OWN tests, so it is only put back at the
+    next module boundary — which is exactly what runner/tests/conftest.py does one directory
+    down, and what the 152 files collected by this conftest never had.
+    """
+    return isinstance(module, _types.ModuleType) and not getattr(module, "__file__", None)
+
+
+def _evict_leaked_doubles(include_module_stubs: bool = False) -> None:
+    _remember_real_modules()
+    for name, module in list(sys.modules.items()):
+        if "." in name or module is None:
+            continue
+        stand_in = _is_mock_double(module) or (include_module_stubs and _is_module_stub(module))
+        if not stand_in:
+            continue
+        if not (_RUNNER_DIR / f"{name}.py").is_file():
+            continue
+        real = _REAL_BY_NAME.get(name)
+        if real is not None:
+            sys.modules[name] = real
+        else:
+            sys.modules.pop(name, None)
+
+
+try:  # pytest is present whenever this file is loaded; guard only for direct import
+    import pytest as _pytest
+
+    @_pytest.fixture(autouse=True)
+    def _restore_environment_after_every_test():
+        """A test's env overrides must not reach the next test.
+
+        runner/tests/conftest.py has had this for a while, but it governs runner/tests/
+        only — and the 152 test files at runner/*.py, collected by this conftest and
+        nothing else, had no environment isolation at all. One file setting a routing kill
+        switch or a threshold and not putting it back silently changed the answer for
+        every file collected afterwards, which is why so many of them pass alone and fail
+        in a full run.
+        """
+        before = dict(os.environ)
+        yield
+        os.environ.clear()
+        os.environ.update(before)
+
+    @_pytest.fixture(autouse=True)
+    def _evict_leaked_module_doubles():
+        """Put back any real module a test swapped for a Mock and did not restore.
+
+        A module-boundary restore is too coarse for a double leaked INSIDE a test — a
+        threaded patch.dict whose restores interleave, or a test that raises before its
+        context manager unwinds. Those leak for the rest of the session.
+        """
+        yield
+        _evict_leaked_doubles()
+except ImportError:  # pragma: no cover
+    pass

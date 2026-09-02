@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -32,8 +33,44 @@ def _write(root, rel, text):
         fh.write(text)
 
 
-def _commit(repo, msg):
+#: A fixed instant for tests that care about commit ORDER. Any epoch works; what
+#: matters is that the test states the order instead of racing the clock for it.
+_BASE_EPOCH = 1700000000
+
+
+def _stamp(epoch):
+    """Git date string for EPOCH, with an explicit UTC offset.
+
+    The offset is not optional. Git reads an unzoned timestamp as LOCAL time, so a
+    bare string silently shifts every commit by the machine's offset -- the same trap
+    that put runner/test_branch_lifecycle.py's fixture four hours off.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%S+0000", time.gmtime(epoch))
+
+
+def _commit(repo, msg, when=None):
+    """Commit everything. WHEN pins the author/committer date to an epoch.
+
+    Pass WHEN whenever the test depends on whether one commit is newer than
+    another. local_evidence_reconciler._superseded compares `%ct` values, which are
+    whole SECONDS, and asks for STRICTLY newer -- so two commits made in the same
+    second are not ordered, and whether a test lands inside one second or across two
+    is decided by how fast the machine is. See
+    test_conflicted_when_the_same_lines_diverged for what that cost.
+    """
     _git(repo, "add", "-A")
+    env_args = []
+    if when is not None:
+        stamp = _stamp(when)
+        env_args = ["-c", "user.name=t", "-c", "user.email=t@t"]
+        os.environ["GIT_AUTHOR_DATE"] = stamp
+        os.environ["GIT_COMMITTER_DATE"] = stamp
+        try:
+            _git(repo, *env_args, "commit", "-q", "-m", msg)
+        finally:
+            os.environ.pop("GIT_AUTHOR_DATE", None)
+            os.environ.pop("GIT_COMMITTER_DATE", None)
+        return
     _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", msg)
 
 
@@ -74,10 +111,10 @@ def repo(tmp_path):
     return local
 
 
-def _branch_with(repo, name, rel, text, msg="work"):
+def _branch_with(repo, name, rel, text, msg="work", when=None):
     _git(repo, "checkout", "-q", "-b", name)
     _write(repo, rel, text)
-    _commit(repo, msg)
+    _commit(repo, msg, when=when)
     _git(repo, "checkout", "-q", "master")
     return _git(repo, "rev-parse", name).stdout.strip()
 
@@ -169,15 +206,56 @@ def test_recoverable_value_for_unique_clean_work(repo):
 
 
 def test_conflicted_when_the_same_lines_diverged(repo):
-    _branch_with(repo, "codex/conflicting", "runner/mod.py", "VALUE = 'codex'\n")
+    """Both commits are pinned to the SAME second, so CONFLICTED is unambiguous.
+
+    This test raced the clock and lost under load. The scenario satisfies TWO buckets
+    at once: master edits the same path the branch touched, which is `superseded` if
+    master's commit is newer, and the same lines diverge, which is `conflicted`.
+    SUPERSEDED_BY_NEWER is checked first, so which one you get depends on whether the
+    two commits landed in the same whole second -- `_superseded` compares `%ct` and
+    demands STRICTLY newer.
+
+    On an idle machine both commits fall inside one second, superseded cannot fire,
+    and the test passes. Under load they straddle a second boundary, master becomes
+    strictly newer, and the classification comes back SUPERSEDED_BY_NEWER. The push
+    gate caught it doing exactly that on 2026-08-26 at load 19.9, having passed on
+    the same commit minutes earlier.
+
+    Pinning both to one timestamp removes the race rather than hiding it: superseded
+    is then impossible by construction and the test measures the conflict logic it is
+    named for. test_superseded_is_chosen_when_base_moved_strictly_later covers the
+    other side with the order stated explicitly.
+    """
+    _branch_with(repo, "codex/conflicting", "runner/mod.py", "VALUE = 'codex'\n",
+                 when=_BASE_EPOCH)
     _write(repo, "runner/mod.py", "VALUE = 'master moved on'\n")
-    _commit(repo, "master edit")
+    _commit(repo, "master edit", when=_BASE_EPOCH)
     _git(repo, "push", "-q", "origin", "master")
     ctx = ler.build_context(repo)
     record = ler.classify(repo, {"kind": "branch", "name": "codex/conflicting",
                                  "ref": "refs/heads/codex/conflicting"}, ctx)
     assert record["classification"] == "CONFLICTED_NEEDS_FOCUSED_TASK"
     assert "focused follow-up" in record["disposition"]
+
+
+def test_superseded_is_chosen_when_base_moved_strictly_later(repo):
+    """The positive superseded case, with the ordering STATED rather than raced.
+
+    Nothing asserted this classification before -- the only other mention is a `!=`,
+    which passes whichever way the timestamps fall. So the branch that outranks
+    CONFLICTED had no test that could fail if it stopped working, while the test
+    below it was failing intermittently because of it.
+    """
+    _branch_with(repo, "codex/older", "runner/mod.py", "VALUE = 'codex'\n",
+                 when=_BASE_EPOCH)
+    _write(repo, "runner/mod.py", "VALUE = 'master moved on'\n")
+    _commit(repo, "master edit", when=_BASE_EPOCH + 60)
+    _git(repo, "push", "-q", "origin", "master")
+
+    ctx = ler.build_context(repo)
+    record = ler.classify(repo, {"kind": "branch", "name": "codex/older",
+                                 "ref": "refs/heads/codex/older"}, ctx)
+    assert record["classification"] == "SUPERSEDED_BY_NEWER", record
 
 
 def test_superseded_requires_every_path_to_have_moved(repo):

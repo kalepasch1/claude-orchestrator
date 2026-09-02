@@ -16,6 +16,20 @@ import model_slashing
 
 
 class MeshCompoundingTest(unittest.TestCase):
+
+    def setUp(self):
+        # `model_catalog.ranked()` skips any provider the demote registry marks
+        # unusable, reading .runtime/provider_sla_state.json from disk. When
+        # every hosted vendor was demoted for running out of credit on
+        # 2026-08-24, ranked() returned [] and choose() returned None — so a
+        # test about SLASHING scores failed on billing state it never mentions.
+        # Pinned empty; a test that wants demotion should patch it and say so.
+        import provider_failover_sla
+        patcher = patch.object(provider_failover_sla, "is_demoted",
+                               lambda provider: False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_brain_compiler_generates_repo_specific_plan(self):
         with tempfile.TemporaryDirectory() as repo:
             with open(os.path.join(repo, "package.json"), "w") as f:

@@ -14,7 +14,7 @@ import os as _os
 
 __path__ = list(globals().get("__path__", []))
 
-_nested = _os.path.join(_os.path.dirname(__file__), "hisanta")
+_nested = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "hisanta")
 if _os.path.isdir(_nested) and _nested not in __path__:
     # Appended, never prepended: hisanta/contracts stays the canonical
     # hisanta.contracts, so the nested copy can never shadow it.

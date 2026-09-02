@@ -36,6 +36,7 @@ ENV FLAGS
   ORCH_JOURNEY_BUDGET_S       default 120 (seconds, whole journey)
   ORCH_JOURNEY_RETRIES        default 2   (extra attempts per step)
   ORCH_JOURNEY_BACKOFF_S      default 1.0 (base of exponential backoff)
+  ORCH_JOURNEY_MAX_BODY       default 2000000 (bytes of response body read per step)
 """
 import hashlib
 import json
@@ -53,6 +54,22 @@ PASS = "pass"
 FAIL = "fail"
 FLAKY = "flaky"
 SKIPPED = "skipped"
+
+# The probe never got an answer. Distinct from FAIL, and the distinction is the
+# difference between "production is wrong" and "we could not see production".
+#
+# Measured on the fleet host 2026-08-23: apparently.cc could not be reached at
+# all -- `tlsv1 alert protocol version`, on both TLS 1.2 and 1.3, from system
+# LibreSSL AND from OpenSSL 3.6, while www.madeus.cc on the SAME Vercel edge IP
+# answered 200 from the same shell. SNI-specific, and nothing to do with the site,
+# which the cloud probe reached perfectly at that exact moment.
+#
+# Every assertion then read `actual=None`, every step failed, the verdict was
+# FAIL -- and should_roll_back() returns True for a required journey that FAILED.
+# The fleet would have rolled back a healthy release because its own host could
+# not resolve a handshake. An instrument that cannot see must not be able to
+# order a retreat.
+UNREACHABLE = "unreachable"
 
 # A journey that was never declared or never ran. Distinct from FAIL: nothing proved it
 # broken, but nothing proved it worked either, and that must not promote.
@@ -104,6 +121,19 @@ def retries():
 
 def backoff_seconds():
     return max(0.0, _float_env("ORCH_JOURNEY_BACKOFF_S", 1.0))
+
+
+def max_body_bytes():
+    """How much of a response body an assertion may be evaluated against.
+
+    This is a bound, not a preference: an unbounded read turns a probe into a
+    memory hazard against a hostile or broken origin. But the bound has to be
+    larger than the pages being asserted on. It was 200_000 and apparently.cc's
+    /pricing is 667_737 bytes of server-rendered HTML with the Nuxt payload
+    inlined, so every assertion about the second half of that page was evaluated
+    against bytes that were never read.
+    """
+    return max(1024, _int_env("ORCH_JOURNEY_MAX_BODY", 2_000_000))
 
 
 # -------------------------------------------------------------------- redaction
@@ -250,6 +280,32 @@ def spec_for_task(task, *, environment="production"):
 # --------------------------------------------------------------------- probing
 
 
+class _Headers(dict):
+    """Response headers with case-insensitive lookup, plus a truncation flag.
+
+    urllib returns an email.message.Message whose keys are canonical-cased
+    ("Content-Type"). dict(...) of it keeps that casing and loses the
+    case-insensitive lookup HTTP requires, so `headers.get("content-type")`
+    returned None for every response ever probed and EVERY expect_header
+    assertion failed with actual=None. Nothing caught it because no journey had
+    ever run against a real origin.
+
+    Test doubles inject plain dicts; those keep plain-dict behaviour and report
+    .truncated as False via getattr's default.
+    """
+
+    truncated = False
+
+    def get(self, key, default=None):
+        if dict.__contains__(self, key):
+            return dict.get(self, key)
+        want = str(key).lower()
+        for k, v in self.items():
+            if str(k).lower() == want:
+                return v
+        return default
+
+
 def _default_http(url, timeout=20, headers=None):
     """Plain GET returning (status, body, headers). Injectable for tests."""
     import urllib.error
@@ -258,14 +314,21 @@ def _default_http(url, timeout=20, headers=None):
         {"User-Agent": "beethoven-production-journey/1.0"}, **(headers or {})))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read(200000).decode("utf-8", "replace")
-            return r.status, body, dict(r.headers)
+            cap = max_body_bytes()
+            # One byte past the cap, so truncation is detected rather than assumed.
+            raw = r.read(cap + 1)
+            h = _Headers(r.headers)
+            h.truncated = len(raw) > cap
+            return r.status, raw[:cap].decode("utf-8", "replace"), h
     except urllib.error.HTTPError as e:
+        cap = max_body_bytes()
         try:
-            body = e.read(20000).decode("utf-8", "replace")
+            raw = e.read(cap + 1)
         except Exception:
-            body = ""
-        return e.code, body, dict(getattr(e, "headers", {}) or {})
+            raw = b""
+        h = _Headers(getattr(e, "headers", {}) or {})
+        h.truncated = len(raw) > cap
+        return e.code, raw[:cap].decode("utf-8", "replace"), h
     except Exception as e:
         return None, f"transport error: {e}", {}
 
@@ -291,15 +354,33 @@ def _run_http_step(step, base_url, http):
     url = _join(base_url or "", step.get("path") or "/")
     status, body, headers = http(url, timeout=step["timeout_s"])
     body = body or ""
+    if status is None:
+        # No response at all: DNS, TLS, connect or read failed. There is nothing
+        # here to assert against, and asserting anyway would manufacture a verdict
+        # about production out of a fact about the network.
+        return ([{"name": "transport", "expected": "a response",
+                  "actual": body or "no response", "ok": False,
+                  "transport_error": True}], url, f"transport failure: {body[:200]}")
+
     assertions = [{"name": "status", "expected": step.get("expect_status", 200),
                    "actual": status, "ok": status == step.get("expect_status", 200)}]
+    # A body we only partly read cannot answer "is this string absent?". Reporting
+    # unproven as absent is how a truncated error page promotes as a clean one — the
+    # exact substitution this module exists to refuse.
+    cut = bool(getattr(headers, "truncated", False))
+    inconclusive = f"inconclusive: response body truncated at {len(body)} bytes"
     for name, expected in _assertions_of(step):
         if name == "body_contains":
             ok = all(str(x) in body for x in _listify(expected))
-            actual = "present" if ok else "absent"
+            actual = "present" if ok else (inconclusive if cut else "absent")
         elif name == "body_absent":
             ok = all(str(x) not in body for x in _listify(expected))
-            actual = "absent" if ok else "present"
+            if not ok:
+                actual = "present"
+            elif cut:
+                ok, actual = False, inconclusive
+            else:
+                actual = "absent"
         else:  # header
             hdr, want = (list(expected.items())[0] if isinstance(expected, dict)
                          else (str(expected), None))
@@ -398,13 +479,22 @@ def run_journey(spec, *, base_url="", sha="", environment=None, http=None, comma
                 detail = (detail + " | budget exhausted mid-retry").strip(" |")
                 break
 
+        if step_verdict == FAIL and assertions and all(
+                a.get("transport_error") for a in assertions if not a["ok"]):
+            step_verdict = UNREACHABLE
+
         steps_out.append({
             "name": step["name"], "probe": step["probe"], "verdict": step_verdict,
             "attempts": attempts, "duration_ms": int(max(0.0, clock() - step_started) * 1000),
             "target": target, "assertions": assertions, "detail": detail,
         })
         if step_verdict == FAIL:
+            # A real failed assertion outranks unreachability: one step that
+            # genuinely disproved something is a FAIL for the whole journey even
+            # if another step could not be reached.
             verdict = FAIL
+        elif step_verdict == UNREACHABLE and verdict != FAIL:
+            verdict = UNREACHABLE
         elif step_verdict == FLAKY and verdict == PASS:
             verdict = FLAKY
 
@@ -469,6 +559,9 @@ def gate(receipt, *, required=True):
             return True, "journey flaky (allowed by ORCH_JOURNEY_ALLOW_FLAKY)"
         return False, ("journey flaky: production was observed in two states within one "
                        "run; a retry-only pass is not delivery")
+    if verdict == UNREACHABLE:
+        return False, ("production could not be reached from this host, so nothing "
+                       "was proved either way; this is not evidence the release is bad")
     if verdict == MISSING:
         return (False, HTTP_200_ONLY_REASON) if (required or receipt.get("required")) \
             else (True, "no journey required")
@@ -482,9 +575,12 @@ def gate(receipt, *, required=True):
 def should_roll_back(receipt):
     """A required journey that FAILED after deployment is a bad release, not a bad task.
 
-    Flaky and missing do not trigger rollback: neither is evidence that production is
-    broken, only that it is unproven. Rolling back on unproven would make the fleet
-    thrash on its own instrumentation gaps.
+    Flaky, missing and UNREACHABLE do not trigger rollback: none is evidence that
+    production is broken, only that it is unproven. Rolling back on unproven would
+    make the fleet thrash on its own instrumentation gaps -- and unreachable is the
+    sharpest case of that, because a host that cannot complete a TLS handshake with
+    the production domain would otherwise order a rollback of a release that is
+    serving traffic correctly to everyone else.
     """
     if not receipt or not _on("ORCH_JOURNEY_ENABLED"):
         return False
@@ -502,6 +598,68 @@ def _dir():
     return path
 
 
+def _publish(receipt):
+    """Mirror a receipt into public.shipped_metrics, where readers look for it.
+
+    WHY THIS EXISTS.
+
+    store() wrote receipts to .runtime/journey-receipts/ and nowhere else. Those
+    files are host-local: invisible to every other runner, to the web UI, and —
+    critically — to canonical_proof_ledger, which reads its journey evidence from
+    the `shipped_metrics` TABLE.
+
+    So the producer wrote files and the only consumer read a table, and the two
+    never met. DEPLOYED_AND_VERIFIED requires an exact live release SHA AND a
+    passing journey receipt; releases were healthy the whole time, and the second
+    half could never be satisfied. Nothing was marked verified for sixteen days.
+
+    Fail-soft on purpose. The file on disk is the durable record; this is the
+    copy the fleet can see. If the control plane is unreachable, the receipt is
+    still written locally and can be backfilled — losing the mirror must never
+    lose the evidence.
+    """
+    try:
+        import db
+    except Exception:
+        return False
+    try:
+        verdict = str(receipt.get("verdict") or "").lower()
+        recorded = receipt.get("recorded_at")
+        try:
+            from datetime import datetime, timezone
+            recorded_iso = datetime.fromtimestamp(float(recorded), timezone.utc).isoformat()
+        except Exception:
+            recorded_iso = None
+        row = {
+            "id": receipt.get("id"),
+            "slug": receipt.get("slug"),
+            "release_sha": receipt.get("sha"),
+            # The ledger matches a task's required journey by name. Fall back to
+            # the probe kind so a receipt is never keyed on an empty string.
+            "journey": receipt.get("journey") or receipt.get("probe") or "default",
+            "ok": verdict == PASS,
+            "verdict": verdict or None,
+            "url": receipt.get("url"),
+            "environment": receipt.get("environment"),
+            "required": bool(receipt.get("required")),
+            "detail": {
+                "assertion_count": receipt.get("assertion_count"),
+                "duration_ms": receipt.get("duration_ms"),
+                "failed_assertions": receipt.get("failed_assertions") or [],
+                "note": receipt.get("note"),
+            },
+        }
+        if recorded_iso:
+            row["recorded_at"] = recorded_iso
+        if not row["id"] or not row["release_sha"]:
+            return False
+        db.upsert("shipped_metrics", row)
+        return True
+    except Exception as exc:
+        print(f"[production_journey] receipt mirror failed (kept on disk): {exc}", flush=True)
+        return False
+
+
 def store(receipt):
     """Persist a receipt atomically. Returns its path. Already redacted by _finalise."""
     path = os.path.join(_dir(), f"{receipt['id']}.json")
@@ -509,6 +667,10 @@ def store(receipt):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(receipt, f, indent=2, sort_keys=True, default=str)
     os.replace(tmp, path)
+    # Disk first, then publish. A receipt that exists only in the database is one
+    # an unreachable control plane can lose; a receipt that exists only on disk is
+    # one no consumer can read. It needs to be in both.
+    _publish(receipt)
     return path
 
 

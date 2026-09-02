@@ -18,6 +18,7 @@ Deliberately not a golden-file snapshot: adding a rule should be a one-line edit
 a reason, not a blind `--update-snapshot`.
 """
 import ast
+import importlib.util
 import os
 import re
 import sys
@@ -25,9 +26,33 @@ import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(REPO, "tools"))
 
-import lint_conventions  # noqa: E402
+
+def _load_linter(module_path, module_name):
+    """Load the hook's linter from its path, WITHOUT touching sys.path/sys.modules.
+
+    This file used to do `sys.path.insert(REPO/tools)` + `import lint_conventions`,
+    and the repo has a SECOND module of that name at runner/tools/. sys.path is
+    process-global under pytest, and -- the part that is easy to miss -- a
+    `from lint_conventions import <name that does not exist>` still leaves the
+    module it loaded in sys.modules even though the import statement raised.
+    test_convention_conformance_comprehensive.py does exactly that with
+    runner/tools' copy, so by the time this file ran, `import lint_conventions`
+    was a cache hit on the OTHER linter and the rule fixtures below were being
+    checked against rules this file does not own. Alone it passed; after that
+    file, test_magic_numbers_fires failed.
+
+    Same loader, same reasoning, as test_convention_lint_ratchet.py and
+    test_annotated_secret_detection.py.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+lint_conventions = _load_linter(os.path.join(REPO, "tools", "lint_conventions.py"),
+                                "tools_lint_conventions_rule_registry")
 
 #: Every rule the canonical linter is expected to emit. Adding one here without adding the
 #: check (or vice versa) fails, so the registry and the implementation cannot drift apart.

@@ -61,11 +61,24 @@ def _repair_task(task, category, detail, prefer_non_claude=False):
         task, detail, category=category, directive=directive, prefer_non_claude=prefer_non_claude
     )
     if "transient_retries" in task and not agentic_repair.is_terminal(patch):
+        # THE INCREMENT LIVES HERE, AND ONLY HERE.
+        #
         # Was `= int(...or 0)` — it PRESERVED the counter instead of advancing it, so every
         # transient_retries-based cap elsewhere in the fleet stayed frozen at the same value no
         # matter how many times the janitor re-queued the row. Advancing it is the whole point of
         # writing the field back.
-        patch["transient_retries"] = int(task.get("transient_retries") or 0) + 1
+        #
+        # But the three below-cap call sites were ALREADY passing
+        # `{**t, "transient_retries": attempts + 1}`, so adding the increment
+        # here made every janitor pass count as two: a row at 1 went to 3, and
+        # REQUEUE_CAP (3) was reached in two sweeps instead of three. Those
+        # pre-increments are gone; the callers hand over the row as they read it.
+        #
+        # At or above the cap the counter HOLDS. The at-cap branch is the final
+        # same-task repair, not another retry, and letting it climb would make
+        # "how many times did the janitor retry this" unreadable after the fact.
+        attempts = int(task.get("transient_retries") or 0)
+        patch["transient_retries"] = attempts + 1 if attempts < REQUEUE_CAP else attempts
     db.update("tasks", {"id": task["id"]}, patch)
 
 
@@ -103,7 +116,7 @@ def requeue_stuck_running():
             )
         else:
             _repair_task(
-                {**t, "transient_retries": attempts + 1},
+                t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was stuck RUNNING >{STUCK_RUNNING_H}h; resume and complete, do not restart blindly.",
                 prefer_non_claude=True,
@@ -151,7 +164,7 @@ def release_orphaned_running():
             )
         else:
             _repair_task(
-                {**t, "transient_retries": attempts + 1},
+                t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m; resume existing work and finish.",
                 prefer_non_claude=True,
@@ -195,8 +208,7 @@ def requeue_empty_runs():
         if "[janitor-requeued]" in (t.get("note") or "") and int(t.get("transient_retries") or 0) >= REQUEUE_CAP:
             continue
         _repair_task(
-            {**t, "attempt": int(t.get("attempt") or 0) + 1,
-             "transient_retries": int(t.get("transient_retries") or 0) + 1},
+            {**t, "attempt": int(t.get("attempt") or 0) + 1},
             "noop",
             (t.get("note") or "") + "\nPrevious run produced no committable changes; make the smallest concrete implementation and commit.",
         )
@@ -368,6 +380,37 @@ def clean_stray_js_across_projects():
     return cleaned
 
 
+def check_vue_templates_across_projects():
+    """Periodic sweep (all registered repos on this machine) for .vue components that do
+    not compile -- see repo_hygiene.check_vue_templates.
+
+    2026-08-29: an agent converted 421 hardcoded hex values to design tokens across 59
+    .vue files in one pass, and several of the edits appended an attribute to an element
+    that already had one. Every one is a hard compile error, and nothing noticed: the
+    TypeScript lints do not read templates. They were found one at a time, by hand, when
+    the local dev server refused to serve a page -- six over one afternoon.
+
+    Reported rather than repaired. A duplicated attribute has two plausible fixes (merge
+    the values, or drop one) and picking wrong silently changes what renders, so this
+    surfaces the file and line and leaves the decision to whoever is working. Returns a
+    list of (repo, detail)."""
+    try:
+        projects = db.select("projects", {"select": "repo_path"}) or []
+    except Exception:
+        return []
+    broken = []
+    for p in projects:
+        repo = p.get("repo_path") or ""
+        if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+            continue
+        # check_vue_templates never raises — it returns (True, reason) when it
+        # cannot look. So there is nothing to guard here.
+        ok, detail = repo_hygiene.check_vue_templates(repo)
+        if not ok:
+            broken.append((repo, detail))
+    return broken
+
+
 def run():
     hb = scheduler_heartbeat()
     orphans = release_orphaned_running()
@@ -378,14 +421,21 @@ def run():
     locks = clear_stale_git_locks()
     recovery_refs, archived_objects = archive_stale_git_objects_across_projects()
     stray_js = clean_stray_js_across_projects()
+    broken_vue = check_vue_templates_across_projects()   # fail-soft; returns [] on error
     try:
         hosts_resumed, hosts_checked = host_resume_watch.check_and_resume()
     except Exception as e:
         print(f"queue_janitor: host_resume_watch failed: {e}")
         hosts_resumed, hosts_checked = 0, 0
+    # Printed in full, not counted. A component that will not compile breaks the
+    # build and the local dev server, and the message already names the file and
+    # line -- burying that in a tally would waste the only useful part.
+    for repo, detail in broken_vue:
+        print(f"queue_janitor: ✗ {repo} has a component that will not compile:\n{detail}")
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
           f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks} "
           f"recovery-refs={recovery_refs} stale-git-objects-archived={archived_objects} stray-js-cleaned={stray_js} "
+          f"broken-vue-repos={len(broken_vue)} "
           f"hosts-checked={hosts_checked} hosts-resumed={hosts_resumed}")
     return orphans + stuck + merging + empty + refiled + locks + recovery_refs + archived_objects + stray_js + hosts_resumed
 

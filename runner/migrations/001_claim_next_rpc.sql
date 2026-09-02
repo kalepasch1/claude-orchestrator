@@ -36,14 +36,44 @@ BEGIN
     AND t.kind NOT IN ('speculative')
     -- Host affinity: only claim tasks whose project is runnable here
     AND (p_runnable_projects IS NULL OR t.project_id = ANY(p_runnable_projects))
-    -- Dependency gate: all deps must be DONE or MERGED
+    -- Dependency gate: every dep must name a finished task.
+    --
+    -- TWO CORRECTIONS, 2026-08-25, so that enabling ORCH_CLAIM_RPC does not
+    -- reintroduce behaviour the Python claim path already gets right. This
+    -- predicate used to read `WHERE t2.project_id = t.project_id AND t2.state IN
+    -- ('DONE','MERGED')`:
+    --
+    --  * CROSS-PROJECT DEPS. A dep may be written `project_name:slug` — e.g.
+    --    pareto-2080 tasks depending on `beethoven:shared-development-terminal-
+    --    sdk-and-madeus-client`. Matched only within t.project_id, a qualified
+    --    dep can never resolve, so those tasks are unclaimable by construction.
+    --    db._done_slugs() has resolved both the bare and the qualified spelling
+    --    since it was written; this did not.
+    --
+    --  * DEPLOYED_AND_VERIFIED is strictly stronger than DONE — shipped and
+    --    verified in production — and was treated as a blocker, so a dependent
+    --    of fully delivered work was held back by its own success.
+    --
+    -- Neither correction unblocks the 2026-08-25 deadlock on its own: of 322
+    -- dependency edges, 3 are cross-project (both blockers are themselves stuck
+    -- QUEUED) and 0 point at a DEPLOYED_AND_VERIFIED task. They are correctness,
+    -- not the remedy.
     AND (t.deps IS NULL OR array_length(t.deps, 1) IS NULL
          OR NOT EXISTS (
            SELECT 1 FROM unnest(t.deps) AS dep
-           WHERE dep NOT IN (
-             SELECT t2.slug FROM tasks t2
-             WHERE t2.project_id = t.project_id
-               AND t2.state IN ('DONE', 'MERGED')
+           WHERE NOT EXISTS (
+             SELECT 1 FROM tasks t2
+             LEFT JOIN projects p2 ON p2.id = t2.project_id
+             WHERE t2.state IN ('DONE', 'MERGED', 'DEPLOYED_AND_VERIFIED')
+               AND (
+                 -- bare slug: project-local, as before
+                 (position(':' in dep) = 0
+                  AND t2.project_id = t.project_id AND t2.slug = dep)
+                 -- qualified `project_name:slug`: resolve in the named project
+                 OR (position(':' in dep) > 0
+                     AND p2.name = split_part(dep, ':', 1)
+                     AND t2.slug = split_part(dep, ':', 2))
+               )
            )
          ))
   ORDER BY

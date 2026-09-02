@@ -1,6 +1,6 @@
 <template>
   <div class="p-6">
-    <div class="mb-6 flex items-center justify-between gap-3"><h2 class="text-xl font-semibold">Portfolio Overview</h2><NuxtLink to="/admin/capability-passport" class="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs text-indigo-300 hover:bg-indigo-500/10">Capability passport & routing →</NuxtLink></div>
+    <div class="mb-6 flex items-center justify-between gap-3"><h2 class="text-xl font-semibold">Portfolio Overview</h2><NuxtLink to="/admin/capability-passport" class="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs text-indigo-300 hover:bg-indigo-500/10">Capability passport &amp; routing →</NuxtLink></div>
 
     <!-- App cards grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-8">
@@ -50,9 +50,41 @@
       </div>
     </div>
   </div>
-</template>
+
+    <!-- Admin tools index.
+         23 screens live under pages/admin/. Until this existed, 22 of them had
+         no inbound link anywhere in the app — including both development
+         terminals — so they were reachable only by typing the URL. -->
+    <section class="mt-10">
+      <h3 class="mb-1 text-lg font-semibold">Admin tools</h3>
+      <p class="mb-5 text-xs text-gray-500">Every operator surface in this section. {{ ADMIN_TOOLS.length }} tools.</p>
+
+      <div v-for="group in ADMIN_GROUPS" :key="group" class="mb-7">
+        <h4 class="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500">{{ group }}</h4>
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <NuxtLink
+            v-for="tool in toolsIn(group)"
+            :key="tool.to"
+            :to="tool.to"
+            class="group rounded-lg border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-indigo-500/50"
+          >
+            <div class="mb-1 flex items-center gap-2">
+              <span class="text-gray-500 group-hover:text-indigo-300">{{ tool.icon }}</span>
+              <span class="font-medium">{{ tool.label }}</span>
+            </div>
+            <p class="text-xs leading-relaxed text-gray-500">{{ tool.blurb }}</p>
+          </NuxtLink>
+        </div>
+      </div>
+    </section>
+  </template>
 
 <script setup lang="ts">
+import { ADMIN_TOOLS, ADMIN_GROUPS, type AdminTool } from '~/config/adminTools'
+
+function toolsIn(group: AdminTool['group']) {
+  return ADMIN_TOOLS.filter(t => t.group === group)
+}
 definePageMeta({ layout: 'admin' })
 
 const apps = ref<any[]>([])

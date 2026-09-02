@@ -8,9 +8,17 @@ db_stub = types.ModuleType("db")
 db_stub.select = lambda *a, **kw: list(_select_returns)
 db_stub.update = lambda *a, **kw: None
 db_stub.insert = lambda *a, **kw: None
-sys.modules["db"] = db_stub
+# WAS a bare `sys.modules["db"] = ...` at module scope. pytest imports every
+# test module during COLLECTION, so it was not scoped to this file -- the real
+# database client was replaced for every test that ran afterwards in the same
+# process, with no way to put it back. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import import_with_stubs
 
-import config_event_publisher as cep
+# A private copy, for the same reason as test_agent_coordination_behavior:
+# a plain import is a no-op once anything else has imported this module, and
+# the stub would never reach it.
+cep = import_with_stubs("config_event_publisher", db=db_stub)
 
 
 class TestSafeKey(unittest.TestCase):
