@@ -736,6 +736,33 @@ def _endpoints():
     return out
 
 
+def _install_resolver_cache():
+    """One DNS lookup per host per TTL, instead of one per HTTP request.
+
+    urlopen() opens a new connection every call, so every control-plane request also
+    performs a fresh name resolution. Dozens of orchestrator processes doing that
+    several times a second is enough to exhaust the macOS resolver. Measured across the
+    fleet's .err logs on 2026-09-02: 5,706 `[Errno 8] nodename nor servname provided`
+    and 99 circuit-breaker trips -- while the same name resolved in 3-4ms, five times
+    running, when asked directly. See resolver_cache.
+    """
+    try:
+        import resolver_cache
+        import urllib.parse as _p
+        hosts = []
+        for base in _endpoints():
+            host = _p.urlsplit(base).hostname
+            if host:
+                hosts.append(host)
+        if hosts:
+            resolver_cache.install(hosts)
+    except Exception:
+        pass      # a cache that cannot install is exactly today's behaviour
+
+
+_install_resolver_cache()
+
+
 def _base_urls():
     """Endpoints to try, last known-good first."""
     eps = _endpoints()
