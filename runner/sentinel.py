@@ -566,6 +566,81 @@ def silent_failure_guard(st=None):
         f"Check .runtime/logs/<job>.err")
 
 
+# ── 7b. queue stall alarm ─────────────────────────────────────────────────────
+#: Consecutive sentinel passes with queued work and nothing running before we alarm.
+#: Sentinel runs on a short interval, so three passes is minutes, not hours -- long
+#: enough that a normal gap between claims is not an alarm.
+QUEUE_STALL_PASSES = int(os.environ.get("SENTINEL_QUEUE_STALL_PASSES", "3"))
+#: Queued tasks below which an idle fleet is just an empty fleet.
+QUEUE_STALL_MIN_QUEUED = int(os.environ.get("SENTINEL_QUEUE_STALL_MIN_QUEUED", "5"))
+QUEUE_STALL_COOLDOWN_S = int(os.environ.get("SENTINEL_QUEUE_STALL_COOLDOWN_S", "1800"))
+
+
+def queue_stall_guard(st=None):
+    """Alert when work is queued and NOTHING is claiming it.
+
+    WHY THIS EXISTS (2026-09-02). The runner requested a self-deploy restart, began
+    draining lanes, and never converged: MAX_PARALLEL was 3 so the drain threshold
+    clamped to 3 // 4 = 0, three agent threads were stuck alive, and the drain freezes
+    new claims while it waits. The fleet claimed nothing for 39 minutes:
+
+        beethoven 112 QUEUED / 0 RUNNING     tomorrow 110 QUEUED / 0 RUNNING
+        smarter    21 QUEUED / 0 RUNNING     apparently-law 18 QUEUED / 0 RUNNING
+        ... 334 QUEUED across eleven projects, 0 RUNNING anywhere
+
+    Every existing signal looked healthy. The runner PROCESS was alive, its scheduler
+    ticked through every periodic job, the logs filled with ordinary lines, and
+    runner_guard saw a live pid. Nothing anywhere compared "work waiting" against "work
+    being done", which is the one comparison that would have caught it in a minute.
+
+    The runner-side deadline in runner.py stops that particular deadlock. This guard is
+    the general case: whatever the cause -- a stuck drain, an exhausted account pool, a
+    kill switch left on, a claim path that throws -- a fleet with a full queue and no
+    running work is broken, and it should say so rather than look busy.
+
+    Alert-only, like silent_failure_guard: the causes are too varied for a safe auto-
+    action, and restarting a runner that is legitimately paused would be worse than the
+    silence. A deliberate pause is not a stall, so the global kill switch suppresses it.
+    """
+    st = st if st is not None else {}
+    try:
+        import db
+        queued = db.select("tasks", {"select": "id", "state": "eq.QUEUED", "limit": "500"}) or []
+        running = db.select("tasks", {"select": "id", "state": "eq.RUNNING", "limit": "50"}) or []
+    except Exception as exc:
+        log("queue-stall-guard-error", f"could not read the queue: {exc}")
+        return
+    n_queued, n_running = len(queued), len(running)
+
+    if n_running > 0 or n_queued < QUEUE_STALL_MIN_QUEUED:
+        st["queue_stall_passes"] = 0
+        return
+
+    # A fleet the operator paused is idle on purpose, not stalled.
+    try:
+        import kill_switch
+        if kill_switch.is_paused(None):
+            st["queue_stall_passes"] = 0
+            return
+    except Exception:
+        pass    # a kill switch we cannot read is not a reason to stay quiet
+
+    passes = int(st.get("queue_stall_passes", 0)) + 1
+    st["queue_stall_passes"] = passes
+    if passes < QUEUE_STALL_PASSES:
+        return
+    last = float(st.get("queue_stall_alert_last", 0))
+    if (time.time() - last) < QUEUE_STALL_COOLDOWN_S:
+        return
+    st["queue_stall_alert_last"] = time.time()
+    emit("queue-stall", queued=n_queued, running=n_running, passes=passes)
+    log("queue-stall",
+        f"{n_queued} task(s) QUEUED and 0 RUNNING for {passes} consecutive sentinel passes. "
+        f"Nothing is claiming work. Check for a self-deploy drain that never converged "
+        f"(grep 'draining lanes' in the newest .runtime/logs/runner-start.*), a paused "
+        f"project, or an exhausted account pool.")
+
+
 def nested_worktree_guard():
     """Quarantine agent worktrees nested inside the primary checkout.
 
@@ -1041,6 +1116,7 @@ def main():
         log("wip-stash-rescue-error", e)
     try:
         silent_failure_guard(st)   # catches the "runs but fails quietly" class (see docstring)
+        queue_stall_guard(st)      # catches the "looks alive but claims nothing" class
     except Exception as e:
         log("stash-drift-guard-error", e)
     try:
