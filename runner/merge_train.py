@@ -1058,6 +1058,22 @@ def _load_per_core():
         return None
 
 
+#: The load the CURRENT thread measured when it last started a suite. Thread-local
+#: because merge_train runs up to MERGE_TRAIN_PROJECT_WORKERS projects at once and a
+#: module global would hand one project's load to another project's note.
+_GATE_LOAD = threading.local()
+
+
+def _record_gate_load():
+    _GATE_LOAD.per_core = _load_per_core()
+    return _GATE_LOAD.per_core
+
+
+def _gate_load_note():
+    """The load note for the suite this thread last ran, or "" if it never ran one."""
+    return _load_note(getattr(_GATE_LOAD, "per_core", None))
+
+
 def _load_note(per_core):
     """A sentence to append to a failing gate result when the box was saturated.
 
@@ -1072,6 +1088,14 @@ def _load_note(per_core):
     next step and it is NOT taken here, because on a fleet whose load is routinely above
     the threshold that would mean nothing is ever quarantined — a change that needs the
     numbers this line is about to start collecting.
+
+    WHERE THIS GOES MATTERS AS MUCH AS WHAT IT SAYS. The first version of this appended
+    the note to the gate's returned detail. That detail is the tail of the test output,
+    up to 12,000 characters, and the caller stores `tail[:200]` in the task note and
+    logs `tail[:120]`. So the annotation was cut off every single time: nine hours and
+    135 touched tasks later, `select count(*) from tasks where note like '%load/core%'`
+    was 0. It is now written at the FRONT of the note, where the truncation cannot
+    reach it.
     """
     if per_core is None:
         return ""
@@ -1210,7 +1234,7 @@ def _run_tests(repo, test_cmd, ref=None):
             return False, ("a Vue component does not compile — the tests were not run, "
                            "because this breaks the build and the dev server too:\n"
                            f"{vue_detail[:4000]}")
-    _load_at_start = _load_per_core()
+    _record_gate_load()
     try:
         with _Phase(f"suite `{test_cmd[:40]}`", repo):
             r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
@@ -1219,7 +1243,7 @@ def _run_tests(repo, test_cmd, ref=None):
         return False, (f"tests did not finish within {timeout}s — NO verdict on this "
                        "candidate, which is not the same as a red suite. Raise "
                        "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
-                       f"what is hanging.{_load_note(_load_at_start)}")
+                       "what is hanging.")
     if r.returncode != 0:
         tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
@@ -1244,8 +1268,8 @@ def _run_tests(repo, test_cmd, ref=None):
                 return False, (f"tests did not finish within {timeout}s — NO verdict on this "
                        "candidate, which is not the same as a red suite. Raise "
                        "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
-                       f"what is hanging.{_load_note(_load_at_start)}")
-        return False, tail + _load_note(_load_at_start)
+                       "what is hanging.")
+        return False, tail
     return True, "green"
 
 
@@ -2648,10 +2672,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             except Exception:
                 pass
         # NEVER force-merge red work.
-        _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
+        _gl = _gate_load_note()
+        _task_patch(task, {"state": "TESTFAIL",
+                           "note": f"train:{_gl} tests failed on rebased {branch}: {tail[:200]}"})
         _retire_card(card.get("id"), "TESTFAIL")
         _attribute_train_outcome(slug, task, "testfail", integrated=False)
-        _log(pname, slug, "TESTFAIL", tail[:120])
+        _log(pname, slug, "TESTFAIL", (_gl + " " + tail).strip()[:160])
         return "testfail"
 
     # (3b) PRODUCTION BUILD GATE — fail-closed, runs AFTER the (2c) regression guard and

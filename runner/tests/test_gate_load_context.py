@@ -75,36 +75,93 @@ def test_load_per_core_survives_an_unknown_cpu_count(monkeypatch):
     assert v is None or isinstance(v, float)   # falls back to 1 core, never divides by 0
 
 
-def test_every_failing_gate_path_records_the_load():
-    """Structural. Three exits report a failure, and a note on two of three is worse
-    than none -- it would look like the third was measured on an idle box.
+def _src():
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "merge_train.py")
+    with open(p, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_the_load_is_sampled_when_the_suite_starts():
+    """Not when it finishes. A suite that ran for 13 minutes says nothing useful about
+    the load at the moment it ended."""
+    body = _src()
+    fn = body[body.index("def _run_tests(repo, test_cmd, ref=None):"):
+              body.index("def _test_cmd_for(")]
+    assert "_record_gate_load()" in fn
+    assert fn.index("_record_gate_load()") < fn.index("subprocess.run"), (
+        "the load is sampled after the suite has already run"
+    )
+
+
+def test_the_note_is_written_in_front_of_the_truncated_tail():
+    """THE BUG THIS PINS. The first version appended the note to the gate's returned
+    detail -- up to 12,000 characters of test output -- and the caller stores
+    `tail[:200]`. The annotation was cut off every time: after nine hours and 135
+    touched tasks, `select count(*) from tasks where note like '%load/core%'` was 0.
     """
-    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "merge_train.py")
-    with open(src, encoding="utf-8") as fh:
-        body = fh.read()
-    start = body.index("def _run_tests(repo, test_cmd, ref=None):")
-    end = body.index("def _test_cmd_for(", start)
-    fn = body[start:end]
-    assert fn.count("_load_note(_load_at_start)") == 3, (
-        "a failing gate exit no longer records the load — expected the two timeout "
-        "paths and the plain red-suite path, got "
-        f"{fn.count('_load_note(_load_at_start)')}"
+    body = _src()
+    i = body.index('"state": "TESTFAIL"')
+    note = body[body.index("_gl = _gate_load_note()", i - 400):body.index("_retire_card", i)]
+    assert "{_gl}" in note, "the TESTFAIL note no longer carries the load"
+    assert note.index("{_gl}") < note.index("tail[:200]"), (
+        "the load note is written AFTER the truncated tail — it will be cut off, "
+        "exactly as it was before"
     )
-    assert fn.index("_load_at_start = _load_per_core()") < fn.index("_load_note("), (
-        "the load is sampled after it is used"
+
+
+def test_the_note_survives_the_200_character_truncation():
+    """Behavioural version of the above: build the note the way the caller does and
+    check the load is still in it after truncation."""
+    mt._record_gate_load()
+    gl = mt._gate_load_note()
+    tail = "x" * 12000
+    note = f"train:{gl} tests failed on rebased agent/whatever: {tail[:200]}"
+    assert "load/core" in note[:200], (
+        f"the load did not survive truncation; first 200 chars: {note[:200]!r}"
     )
+
+
+def test_each_thread_measures_its_own_load():
+    """merge_train runs several projects concurrently. A module global would hand one
+    project's load to another project's note."""
+    import threading
+    mt._GATE_LOAD.per_core = 0.11
+    seen = {}
+
+    def _worker():
+        seen["before"] = getattr(mt._GATE_LOAD, "per_core", None)
+        mt._GATE_LOAD.per_core = 9.99
+        seen["after"] = mt._GATE_LOAD.per_core
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    assert seen["before"] is None, "a thread inherited another thread's gate load"
+    assert seen["after"] == 9.99
+    assert mt._GATE_LOAD.per_core == 0.11, "a worker thread's load leaked into its parent"
+
+
+def test_a_thread_that_never_ran_a_suite_has_no_opinion():
+    import threading
+    out = {}
+
+    def _worker():
+        out["note"] = mt._gate_load_note()
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    assert out["note"] == ""
 
 
 def test_a_green_result_is_not_annotated():
     """The note exists to qualify a FAILURE. Green needs no excuse."""
-    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "merge_train.py")
-    with open(src, encoding="utf-8") as fh:
-        body = fh.read()
-    start = body.index("def _run_tests(repo, test_cmd, ref=None):")
-    end = body.index("def _test_cmd_for(", start)
-    fn = body[start:end]
+    body = _src()
+    fn = body[body.index("def _run_tests(repo, test_cmd, ref=None):"):
+              body.index("def _test_cmd_for(")]
     for line in fn.splitlines():
         if "return True," in line:
-            assert "_load_note" not in line, f"green result carries a load note: {line}"
+            assert "_load_note" not in line and "_gate_load_note" not in line, (
+                f"green result carries a load note: {line}"
+            )
