@@ -1994,7 +1994,17 @@ def _run_for_unlocked(project, repo_override=None):
                     qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
                     ok = False
         except Exception as exc:
-            qa = subprocess.CompletedProcess(qa_cmd, 1, "", f"QA overlay failed: {exc}")
+            # `f"QA overlay failed: {exc}"` produced rows reading only
+            # "QA overlay failed: [Errno 32] Broken pipe" — no exception type, no
+            # frame, and stderr_digest keeps 160 characters of it. That is the
+            # third time this session a truncated note has sent a reader (human
+            # or agent) after the wrong cause. Name the type and keep the frames.
+            import traceback as _traceback
+            _frames = "".join(_traceback.format_exception(type(exc), exc,
+                                                          exc.__traceback__))[-2000:]
+            qa = subprocess.CompletedProcess(
+                qa_cmd, 1, "",
+                f"QA overlay failed: {type(exc).__name__}: {exc}\n{_frames}")
             ok = False
         if not ok:
             qlog = (
