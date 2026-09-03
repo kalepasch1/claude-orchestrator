@@ -52,6 +52,25 @@ def gate_env(base=None):
     NODE_ENV, a test's isolated env) instead of replacing it. Only the default,
     base-is-None case is cached, because that is the one every gate shares.
     """
+    # The diagnostic below is the line the fleet's own traceback named on
+    # 2026-09-03 16:40:02Z, after release_train started recording frames:
+    #
+    #   gate_env.py, line 63, in gate_env
+    #       print(f"[gate-env] node not on PATH; prepending {nb}", flush=True)
+    #   BrokenPipeError: [Errno 32] Broken pipe
+    #
+    # ...caught by release_train's `except Exception` around the QA block and
+    # written down as a red suite. Every gate that shells out calls gate_env(),
+    # which makes this the one place that covers the standalone gates too
+    # (build_gate, clean_clone_gate) and not only the two trains that install the
+    # guard themselves. Idempotent, so the trains installing it first costs
+    # nothing. Never let this fail the caller: a guard that cannot be imported
+    # must not take the gate down with it.
+    try:
+        import stdio_guard
+        stdio_guard.install()
+    except Exception:
+        pass
     global _CACHE
     if base is None and _CACHE is not None:
         return _CACHE
