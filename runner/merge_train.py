@@ -1236,6 +1236,29 @@ def _should_defer_for_load(slug, per_core=None):
         return False, ""
 
 
+def last_gate_was_load_suspect(slug):
+    """Was this card's most recent gate verdict taken on a saturated box?
+
+    Read by auto_remediate to decide whether a TESTFAIL deserves an AGENT. The strike
+    is unaffected -- the card is still retired and remediation_count still increments;
+    what this suppresses is spending a rework agent on a suite the train itself
+    labelled "may be about the machine, not the code".
+
+    Measured 2026-09-03: 168 gate results, all TESTFAIL, 144 (85%) over the threshold.
+    Each dispatched agent adds load, and the load is why the next suite failed. Cutting
+    that loop is the point; keeping the strike is why quarantine still works.
+    """
+    if not slug:
+        return False
+    try:
+        for row in reversed(_gate_load_ledger_load()):
+            if isinstance(row, dict) and row.get("slug") == slug:
+                return bool(row.get("suspect"))
+    except Exception:
+        pass
+    return False
+
+
 def gate_load_stats():
     """What share of gate verdicts were taken on a saturated box, and how saturated.
 

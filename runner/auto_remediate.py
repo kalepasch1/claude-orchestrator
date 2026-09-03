@@ -127,6 +127,29 @@ def run(limit=120):
 
         upd = {"state": "QUEUED", "remediation_count": rc + 1, "account": None, "updated_at": "now()"}
 
+        # A RED SUITE FROM A SATURATED BOX DOES NOT EARN AN AGENT.
+        #
+        # The strike stands -- remediation_count still increments above, the card was
+        # already retired, quarantine still counts this. What is skipped is dispatching
+        # an agent to REWRITE CODE because of a verdict the merge train itself labelled
+        # "may be about the machine, not the code".
+        #
+        # Measured 2026-09-03 from the train's own log: 168 gate results, every one a
+        # TESTFAIL, 144 of them (85%) taken over the 1.5 load/core threshold, median
+        # 2.13, max 10.96. Three tasks failed at load/core 8-11 inside one forty-minute
+        # window and each dispatched an agent to fix a suite that had not really failed.
+        # Those agents then add load, and the next suite fails the same way. That loop
+        # is why the fleet merged nothing for ninety minutes.
+        #
+        # Requeued plainly instead, so the train re-gates it when the box is calm --
+        # NOT left in TESTFAIL, which would strand the work rather than retry it.
+        if _load_suspect_testfail(t):
+            upd["note"] = (f"auto-remediate: requeued without a repair agent — the gate "
+                           f"verdict was taken on a saturated box ({rc + 1}/{CAP})")
+            db.update("tasks", {"id": t["id"]}, upd)
+            requeued += 1
+            continue
+
         if _MAX_TURNS.search(signal):
             if rc < CAP:
                 upd["note"] = f"auto-remediate: retry after max_turns limit ({rc + 1}/{CAP})"
@@ -445,6 +468,31 @@ def _close_review_card(card, reason):
               {"status": "approved", "decided_by": RECOVERY_MARK,
                "decision_type": "approve",
                "decision_text": f"Auto-reclaimed: {reason}. Work is back in the task queue."})
+
+
+#: Off switch, because a guard that cannot be switched off is a new outage.
+LOAD_SUSPECT_SKIP = os.environ.get(
+    "ORCH_SKIP_REPAIR_ON_LOAD_SUSPECT", "true").lower() in ("1", "true", "yes", "on")
+
+
+def _load_suspect_testfail(task):
+    """True when this task's last merge-gate verdict was taken on a saturated box.
+
+    Only TESTFAIL. A BLOCKED or CONFLICT task did not fail a suite, so machine load
+    says nothing about it and it still gets the agent it would have got.
+
+    Never raises: an unreadable ledger means we cannot tell, and the safe direction
+    when we cannot tell is to behave exactly as before -- dispatch the repair.
+    """
+    if not LOAD_SUSPECT_SKIP:
+        return False
+    if (task.get("state") or "") != "TESTFAIL":
+        return False
+    try:
+        import merge_train
+        return merge_train.last_gate_was_load_suspect(task.get("slug"))
+    except Exception:
+        return False
 
 
 def _requires_human_hold(task, note):
