@@ -1074,8 +1074,15 @@ def _repair_regenerable_only_merge(worktree):
         removed = subprocess.run(["git", "rm", "-q", "--ignore-unmatch", "--", name],
                                  cwd=worktree, capture_output=True, text=True, timeout=30)
         if removed.returncode != 0:
+            # stderr_digest, not a bare tail slice. git puts the cause on the FIRST
+            # line ("fatal: pathspec ... did not match any files") and the last 160
+            # characters are usually the hint that follows it -- which is precisely
+            # how "failed to push some refs" and "not a git repository" each sent a
+            # reader after the wrong cause earlier today. Pinned by
+            # test_no_tail_truncation_left_in_the_repaired_modules, which caught this
+            # line: I reintroduced the exact pattern that test exists to forbid.
             return False, ("could not resolve modify/delete on %s: %s"
-                           % (name, (removed.stderr or "")[-160:]))
+                           % (name, stderr_digest.digest(removed.stderr, 160)))
     # NO BLANKET `git add -A -- <every file>` HERE. Each path above is staged by the
     # step that resolved it -- _union_merge_file() adds, `git rm` stages its own
     # deletion -- and a pathspec that no longer exists makes `git add` fail outright:
