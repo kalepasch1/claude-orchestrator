@@ -3634,7 +3634,25 @@ def _train_run_unleased(report=None):
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
         # FIX 2026-07-28: repo_lock.hold() takes (repo, timeout) only — the stray priority=True
         # kwarg was a second latent crash behind the missing import.
-        lock_timeout = float(os.environ.get("ORCH_MERGE_REPO_LOCK_TIMEOUT_S", "5"))
+        # FIVE SECONDS LOST TO A FORTY-THREE MINUTE HOLD, 607 TIMES.
+        #
+        # Measured 2026-09-03: pid 48872 (`periodic.py releasetrain`) held the
+        # orchestrator's AND smarter's repo locks for 43 minutes while running
+        # `npm run test`, because the release train takes the lock for its whole
+        # pass. The merge train waited 5s, lost, and skipped the entire project
+        # group -- 607 times, across beethoven, smarter, kalepasch-com and
+        # prediction-markets-institute, with zero merges fleet-wide for three hours.
+        #
+        # 60s does not beat a 43-minute hold and is not meant to: that is fixed at
+        # the other end, by not holding the lock across work that runs in an
+        # overlay. What it does is absorb the ORDINARY holds -- a rebase, a ref
+        # update, a push -- which are seconds, not minutes, and which a 5s timeout
+        # was already losing often enough to matter.
+        #
+        # Bounded deliberately: with four project workers under a 900s watchdog,
+        # a minute per contended project is affordable; blocking indefinitely is
+        # what the original 5s was rightly avoiding.
+        lock_timeout = float(os.environ.get("ORCH_MERGE_REPO_LOCK_TIMEOUT_S", "60"))
         with repo_lock.hold(repo_path, timeout=lock_timeout) as got_lock:
             if not got_lock:
                 result["skipped"] += len(group)
