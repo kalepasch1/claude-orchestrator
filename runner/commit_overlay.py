@@ -63,6 +63,72 @@ def _omittable_runtime_link(member):
             or normalized.endswith("/node_modules"))
 
 
+def _attach_gitdir(repo, destination, commit):
+    """Give the overlay a real `.git`, so a suite that asks git about itself works.
+
+    `git archive` gives files and nothing else. A project whose tests shell out
+    to git -- and this fleet's projects do, that is the whole
+    enumerate-live-evidence / reconcile-local-evidence family -- then fails in
+    the overlay and only in the overlay:
+
+        [gate:qa] staging QA failed -- fatal: not a git repository
+        Error: Command failed: git ls-files -z
+
+    The suite is green in a clean checkout. The gate reports it red. That is the
+    gate being wrong about the project, which is the expensive direction to be
+    wrong in.
+
+    This does NOT register a worktree, which is what the module docstring is
+    about: no entry under the source repo's .git/worktrees, so no index locks,
+    no registry contention, no cleanup hang, and rmtree is still the whole
+    teardown. It is an independent gitdir that borrows the source repo's object
+    database through `objects/info/alternates` and points a detached HEAD at the
+    same commit the files came from. No objects are copied; the index is built
+    with read-tree.
+
+    Fail-open on purpose: any step that does not work leaves the overlay exactly
+    as it is today, plain files. A repo-aware suite is no worse off than before
+    the fix, and a suite that never touches git is unaffected either way.
+    """
+    dot_git = os.path.join(destination, ".git")
+    try:
+        ok = _build_gitdir(repo, destination, commit, dot_git)
+    except Exception:
+        ok = False
+    if not ok:
+        # A half-built gitdir is worse than none: `git ls-files` in it answers
+        # "no files" instead of failing, and a suite would read that as an empty
+        # repository rather than as a broken overlay.
+        shutil.rmtree(dot_git, ignore_errors=True)
+    return ok
+
+
+def _build_gitdir(repo, destination, commit, dot_git):
+    objects = _git(repo, "rev-parse", "--path-format=absolute",
+                   "--git-path", "objects")
+    objects_dir = objects.stdout.strip() if not objects.returncode else ""
+    if not objects_dir or not os.path.isdir(objects_dir):
+        return False
+    if _git(destination, "init", "--quiet").returncode:
+        return False
+    info = os.path.join(dot_git, "objects", "info")
+    os.makedirs(info, exist_ok=True)
+    with open(os.path.join(info, "alternates"), "w") as handle:
+        handle.write(objects_dir + "\n")
+    # Detached HEAD written directly: `git init` leaves HEAD pointing at a
+    # branch that does not exist, and the overlay should report the same commit
+    # the archive came from rather than invent a branch name.
+    with open(os.path.join(dot_git, "HEAD"), "w") as handle:
+        handle.write(commit + "\n")
+    if _git(destination, "read-tree", commit).returncode:
+        return False
+    seen = _git(destination, "rev-parse", "HEAD")
+    if seen.returncode or seen.stdout.strip() != commit:
+        return False
+    listed = _git(destination, "ls-files")
+    return not listed.returncode and bool(listed.stdout.strip())
+
+
 def materialize(repo, ref, destination=None):
     started = time.monotonic()
     resolved = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
@@ -93,10 +159,11 @@ def materialize(repo, ref, destination=None):
         archive.kill()
         shutil.rmtree(destination, ignore_errors=True)
         raise
+    git_attached = _attach_gitdir(repo, destination, commit)
     return {"path": destination, "commit": commit, "files": sorted(files),
             "omitted_runtime_links": sorted(omitted_runtime_links),
             "duration_ms": int((time.monotonic() - started) * 1000),
-            "registered_worktree": False}
+            "registered_worktree": False, "git_attached": git_attached}
 
 
 @contextlib.contextmanager
