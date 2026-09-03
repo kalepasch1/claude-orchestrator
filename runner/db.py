@@ -3296,6 +3296,16 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
             row.update(host_update_visibility.heartbeat_fields())
         except Exception:
             pass
+        # Remember the name this machine is heartbeating under, so that after macOS
+        # renames it (this Mac has answered to six names in 30 hours) a pause or an
+        # election keyed on the OLD name is still recognised as this machine's own.
+        # Best-effort: the alias store is a cache, and losing it degrades to exactly
+        # the behaviour that existed before it.
+        try:
+            import host_identity
+            host_identity.remember(row.get("hostname"))
+        except Exception:
+            pass
         try:
             db.insert("runner_heartbeats", row, upsert=True)
             _heartbeat_fail["n"] = 0

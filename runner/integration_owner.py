@@ -98,8 +98,61 @@ def _live_hosts():
         elif ts:
             print(f"[integration-owner] unparseable last_seen for {h!r}: {ts!r} "
                   f"— counting it live (fail-open)", flush=True)
-        out[h] = (r.get("code_sha") or "").strip()
-    return out
+        # ONE MACHINE IS ONE HOST, WHATEVER THE NETWORK RENAMED IT TO. macOS
+        # reassigns the mDNS name; this Mac appears in the fleet's own rows as
+        # Kales-MacBook-Pro.local, Mac-215.lan, Mac-4.lan, Mac-39.lan, Mac-172.lan
+        # and Mac-213.lan. After a rename the same machine is TWO live hosts for
+        # HEARTBEAT_STALE_S, so it can elect its own former name and then refuse to
+        # integrate as "not the integration owner", or fail the stale-code guard
+        # against a heartbeat it wrote itself. Fold this machine's own aliases onto
+        # the name it answers to now; other hosts are untouched, so this can only
+        # ever remove a duplicate of ourselves from the election.
+        key = HOST if _is_this_machine(h) else h
+        if key in out:
+            continue
+        out[key] = (r.get("code_sha") or "").strip()
+    return _newest_code_per_host(rows, out)
+
+
+def _is_this_machine(name):
+    try:
+        import host_identity
+        return host_identity.same_machine(name)
+    except Exception:
+        return name == HOST
+
+
+def _newest_code_per_host(rows, live):
+    """Represent a host by its NEWEST code, not by whichever runner heartbeated last.
+
+    One machine runs several runners at once, and they are not all on the same commit:
+    observed 2026-09-03 at 16:58Z, one hostname, three live runners, three different
+    shas (2569261a, 9261eded, ef238b32). Keeping the newest ROW meant the host's code
+    was reported by whichever process happened to beat last -- so a machine could
+    advertise code older than it actually had, and then refuse to integrate under its
+    own stale-code guard while holding the newest commit in the fleet.
+    """
+    if not live:
+        return live
+    by_host = {}
+    for r in rows:
+        raw = (r.get("hostname") or "").strip()
+        if not raw:
+            continue
+        key = HOST if _is_this_machine(raw) else raw
+        if key not in live:
+            continue
+        sha = (r.get("code_sha") or "").strip()
+        if sha:
+            by_host.setdefault(key, []).append(sha)
+    for key, shas in by_host.items():
+        best = ""
+        for sha in shas:
+            if not best or _is_behind(best, sha):
+                best = sha
+        if best:
+            live[key] = best
+    return live
 
 
 CAPACITY_KIND = "host_capacity"
