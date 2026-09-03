@@ -543,13 +543,28 @@ def _recent_failed_gate(project, staging_sha, gate):
     """True when this exact staging SHA already failed this gate recently."""
     if not staging_sha or RED_GATE_COOLDOWN_MIN <= 0:
         return False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # BOUND BY TIME, NOT BY ROW COUNT. This asked for the newest 50 failed rows and
+    # then discarded every one outside the cooldown window -- so the window was
+    # enforced client-side over a server-side cap that knows nothing about it. The
+    # fleet's own truncation detector had been saying so, from this exact line:
+    #
+    #   [db] TRUNCATED SCAN release_train.py:546 -> releases returned exactly its
+    #   limit (50) ordered by created_at.desc. Anything past the cap is invisible.
+    #
+    # A project that fails more than 50 times inside the cooldown then stops seeing
+    # its own earlier failure and re-runs the gate it is meant to be damping --
+    # which is the failure this cooldown exists to prevent. sustainable-barks alone
+    # carries 45 rows on one cause. Ask the server for the window the code actually
+    # means; the limit stays only as a ceiling on a pathological reply.
+    cutoff = now - datetime.timedelta(minutes=RED_GATE_COOLDOWN_MIN)
     try:
         rows = db.select("releases", {"select": "project,deploy_status,note,created_at,to_sha",
                                       "project": f"eq.{project}", "deploy_status": "eq.failed",
-                                      "order": "created_at.desc", "limit": "50"}) or []
+                                      "created_at": f"gte.{cutoff.isoformat()}",
+                                      "order": "created_at.desc", "limit": "500"}) or []
     except Exception:
         return False
-    now = datetime.datetime.now(datetime.timezone.utc)
     tag = f"[gate:{gate}]"
     for row in rows:
         if str(row.get("to_sha") or "") != str(staging_sha):
