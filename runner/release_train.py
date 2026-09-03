@@ -1556,6 +1556,16 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                     # origin/<staging> moved while we were integrating. Re-integrate on
                     # top of it and try the whole sequence again.
                     continue
+                # QUEUE THE FIX, don't just record the failure. 89906b82 put this
+                # publish AHEAD of the production push, which means an unreachable or
+                # rejecting origin now stops the release HERE and never reaches the
+                # push gate below -- and the push gate is where the self-heal was.
+                # So the step that replaced it inherited the recording and dropped the
+                # fixing: a failed publish left a red release and nothing working on it.
+                # Caught by test_non_conflict_push_failure_records_real_stderr, which
+                # asserts `self.healed` and had been failing since that commit.
+                _self_heal_release_conflict(p, project, repo, prod,
+                                            slog or "push staging to origin failed")
                 _insert_failed_release(
                     project, "staging-publish", ahead, release_base_sha, to_sha,
                     f"push {STAGING}->origin/{STAGING} failed: "

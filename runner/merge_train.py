@@ -1128,6 +1128,103 @@ def _load_note(per_core):
             "threshold — this result may be about the machine, not the code]")
 
 
+#: Durable home for the load-at-gate evidence, because `note` is not one.
+#:
+#: _load_note above says, in as many words, that suppressing the strike "is NOT taken
+#: here ... a change that needs the numbers this line is about to start collecting".
+#: Those numbers were never collected. Measured 2026-09-03:
+#:
+#:     select count(*) from tasks where note like '%load/core%'   ->  0
+#:
+#: The note IS written, at the front, exactly as _load_note's docstring describes. It
+#: is then OVERWRITTEN. Three tasks the train marked TESTFAIL with a load annotation
+#: within the previous forty minutes all read `note = 'agentic-repair:rework'` seconds
+#: later, back in QUEUED. That is the same lesson _CONFLICT_SIG_TAG learned two days
+#: earlier -- `note` is a shared free-text field that downstream stages rewrite -- and
+#: the same answer applies: a small ledger the train owns outright.
+#:
+#: This records evidence and changes no verdict. Whether a load-suspect TESTFAIL should
+#: still count as a strike is a real decision with a real cost either way, and it is not
+#: one to make as a side effect of adding a ledger.
+_GATE_LOAD_LEDGER_CAP = int(os.environ.get("ORCH_GATE_LOAD_LEDGER_CAP", "2000"))
+
+
+def _gate_load_ledger_path():
+    """Honours CLAUDE_ORCH_HOME, for the reason _conflict_ledger_path spells out:
+    a test that drives the real gate path must not write into the running fleet."""
+    home = os.environ.get("CLAUDE_ORCH_HOME") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")
+    return os.path.join(home, "merge_train_gate_load.json")
+
+
+def _gate_load_ledger_load():
+    try:
+        with open(_gate_load_ledger_path()) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def record_gate_load(slug, project, verdict, per_core=None):
+    """Append one gate result with the load it was taken under. Never raises.
+
+    Best-effort: a ledger that cannot be written must not fail a merge pass. The
+    train's job is merging, not bookkeeping.
+    """
+    if per_core is None:
+        per_core = getattr(_GATE_LOAD, "per_core", None)
+    if per_core is None:
+        return False
+    try:
+        rows = _gate_load_ledger_load()
+        rows.append({
+            "slug": slug, "project": project, "verdict": verdict,
+            "per_core": round(float(per_core), 2),
+            "suspect": float(per_core) >= GATE_LOAD_SUSPECT,
+            "threshold": GATE_LOAD_SUSPECT,
+            "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        rows = rows[-_GATE_LOAD_LEDGER_CAP:]
+        path = _gate_load_ledger_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(rows, fh)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def gate_load_stats():
+    """What share of gate verdicts were taken on a saturated box, and how saturated.
+
+    This is the question _load_note was written to make answerable. From the merge
+    train's own log on 2026-09-03, before this ledger existed: 168 annotated results,
+    all TESTFAIL, 144 of them (85%) over the threshold, median load/core 2.13, p90
+    4.36, max 10.96. The author's stated worry -- that suppressing the strike on a
+    fleet routinely over the threshold would mean nothing is ever quarantined -- is
+    borne out by those numbers, which is exactly why this reports rather than acts.
+    """
+    rows = [r for r in _gate_load_ledger_load() if isinstance(r, dict)]
+    values = sorted(float(r.get("per_core") or 0) for r in rows)
+    total = len(values)
+    suspect = sum(1 for r in rows if r.get("suspect"))
+    by_verdict = {}
+    for r in rows:
+        key = str(r.get("verdict") or "unknown")
+        by_verdict[key] = by_verdict.get(key, 0) + 1
+    return {
+        "total": total,
+        "suspect": suspect,
+        "suspect_pct": round(suspect * 100.0 / total, 1) if total else 0.0,
+        "median_per_core": values[total // 2] if total else None,
+        "max_per_core": values[-1] if total else None,
+        "by_verdict": by_verdict,
+    }
+
+
 #: Marker written into a task's note carrying the previous rebase attempt's conflicting
 #: file set, so the next attempt can tell "the same collision again" from "progress".
 #: Kept for humans reading the note, and read as a fallback -- but NOT the store of
@@ -3102,6 +3199,11 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                 pass
         # NEVER force-merge red work.
         _gl = _gate_load_note()
+        # Into the ledger as well as the note. The note carries this correctly and is
+        # then overwritten downstream ("agentic-repair:rework") within seconds, which
+        # is why `tasks.note like '%load/core%'` has always been 0. See
+        # _gate_load_ledger_path.
+        record_gate_load(slug, pname, "TESTFAIL")
         _task_patch(task, {"state": "TESTFAIL",
                            "note": f"train:{_gl} tests failed on rebased {branch}: {_why}"})
         _retire_card(card.get("id"), "TESTFAIL")
