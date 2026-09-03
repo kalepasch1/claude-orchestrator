@@ -2102,7 +2102,8 @@ def _run_for_unlocked(project, repo_override=None):
                 pass
         _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
         _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
-                               f"staging BUILD red — self-heal queued: {(blog or '')[-120:]}")
+                               f"staging BUILD red — self-heal queued: "
+                               f"{stderr_digest.digest(blog, 160)}")
         return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
     proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
     if not proof_ok:

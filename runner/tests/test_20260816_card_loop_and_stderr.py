@@ -247,13 +247,46 @@ def test_digest_never_raises():
     assert isinstance(sd.digest(Nasty()), str)
 
 
+#: A tail slice this short, applied to diagnostic text, cuts the cause off the front.
+#: Long tails (1000+) are whole-log captures and are not what this guards against.
+SHORT_TAIL_LIMIT = 200
+
+#: Only text that a person or an agent reads as an explanation. `slugs[-50:]` is a
+#: list slice and none of this applies to it.
+DIAGNOSTIC_NAMES = ("stderr", "stdout", "log", "note", "detail", "error", "message")
+
+
 def test_no_tail_truncation_left_in_the_repaired_modules():
-    """The 17 sites replaced this session must not come back."""
+    """The 17 sites replaced on 2026-08-16 must not come back, in any width.
+
+    The original check named two widths, `[-160:]` and `[-150:]`. On 2026-09-03 a
+    `[-120:]` walked straight past it and produced this row, which is what a human
+    and an automated repair task both had to work from:
+
+        [gate:build] staging BUILD red — self-heal queued: nthropic-ai/sdk'
+        imported from /Users/kpasch/.orch-scratch/build-overlay-_a6mb2u2/...
+
+    The cause -- which package, and that it was a missing import -- is off the
+    front of the string, along with the first letter of the package name. Three
+    separate wrong diagnoses this session traced to exactly this shape, so the
+    guard now looks for the SHAPE rather than for two literals.
+    """
+    import re
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pattern = re.compile(r"\[-(\d+):\]")
     bad = []
     for name in ("runner.py", "release_train.py", "merge_truth.py",
                  "branch_durability.py", "merge_train.py"):
         for i, ln in enumerate(open(os.path.join(root, name)), 1):
-            if "[-160:]" in ln or "[-150:]" in ln:
-                bad.append(f"{name}:{i}")
-    assert bad == [], f"stderr tail-truncation reintroduced at {bad}"
+            stripped = ln.strip()
+            if stripped.startswith("#"):
+                continue                      # a comment quoting the old shape is fine
+            for width in pattern.findall(ln):
+                if int(width) > SHORT_TAIL_LIMIT:
+                    continue
+                if not any(n in ln.lower() for n in DIAGNOSTIC_NAMES):
+                    continue                  # e.g. slugs[-50:], a list of ids
+                bad.append(f"{name}:{i}: [-{width}:]")
+    assert bad == [], (
+        "diagnostic text tail-truncated instead of digested at "
+        f"{bad} — use stderr_digest.digest(), which keeps the first line")
