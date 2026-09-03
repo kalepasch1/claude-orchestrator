@@ -17,6 +17,7 @@ Flow per project:
      deploy_verify then confirms Vercel success or rolls back to last_good.
 """
 import concurrent.futures, os, sys, subprocess, datetime, json, tempfile, threading
+import contextlib
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(RUNNER_DIR)
 RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runtime"))
@@ -1842,7 +1843,7 @@ def _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha
             "note": f"release approval card created for {ahead} changes; awaiting operator"}
 
 
-def _run_for_unlocked(project, repo_override=None):
+def _run_for_unlocked(project, repo_override=None, lock_lease=None):
     p = (db.select("projects", {"select": "*", "name": f"eq.{project}"}) or [{}])[0]
     repo = repo_override or p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
@@ -1875,6 +1876,22 @@ def _run_for_unlocked(project, repo_override=None):
     release_base = _release_base_ref(repo, prod)
     release_base_sha = _git(repo, "rev-parse", release_base).stdout.strip()
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+
+    def _lock_paused():
+        """Put the repo lock down for a long gate, and refuse to go on if staging moved.
+
+        The suite and the production build run in commit_overlay scratch dirs; they
+        read the canonical repo and never write it. Holding the lock across them is
+        what starved the merge train (43 minutes on one pass, 607 repo-lock skips,
+        zero merges fleet-wide). What the lock WAS still buying is the invariant that
+        STAGING does not move between gating a SHA and pushing it -- so the pause
+        re-acquires and re-checks exactly that, and raises StagingMoved if it changed.
+        """
+        if lock_lease is None or not lock_lease:
+            return contextlib.nullcontext(False)
+        return lock_lease.paused(
+            verify=lambda: _git(repo, "rev-parse", STAGING).stdout.strip() == staging_sha)
+
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
     if _capacity_mode():
@@ -1998,47 +2015,48 @@ def _run_for_unlocked(project, repo_override=None):
             return {"project": project, "qa": "HELD", "note": "unchanged staging SHA already failed QA recently"}
         import tempfile, shutil
         tmp = tempfile.mkdtemp(prefix="qa-")
-        try:
+        with _lock_paused():
             try:
-                import dependency_prewarm
-                warmed = dependency_prewarm.ensure_all(repo, reason="release_train_qa")
-                if not warmed.get("ok"):
-                    qlog = "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1600:]
-                    _self_heal_qa(p, project, repo, STAGING, qlog)
-                    _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                           f"staging QA dependency prewarm failed — self-heal queued: "
-                                           f"{stderr_digest.digest(qlog, 160)}")
-                    return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
-            except Exception:
-                pass
-            with commit_overlay.checkout(repo, staging_sha, prefix="release-qa-overlay-") as overlay:
-                tmp = overlay["path"]
-                _link_shared_runtime(repo, tmp)
-                prepared, prepare_log = _prepare_generated_types(tmp)
-                if prepared:
-                    # A QA command that IS a production build takes a build slot; every
-                    # ordinary suite is untouched. kalepasch-com's test_cmd is
-                    # `npm run build`, so its release QA compiled the app in this overlay
-                    # with nothing bounding it. See build_slots.command_builds.
-                    with build_slots.hold_if_build(qa_cmd, "release-qa %s" % project):
-                        qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800, env=gate_env.gate_env())
-                    ok = qa.returncode == 0
-                else:
-                    qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
-                    ok = False
-        except Exception as exc:
-            # `f"QA overlay failed: {exc}"` produced rows reading only
-            # "QA overlay failed: [Errno 32] Broken pipe" — no exception type, no
-            # frame, and stderr_digest keeps 160 characters of it. That is the
-            # third time this session a truncated note has sent a reader (human
-            # or agent) after the wrong cause. Name the type and keep the frames.
-            import traceback as _traceback
-            _frames = "".join(_traceback.format_exception(type(exc), exc,
-                                                          exc.__traceback__))[-2000:]
-            qa = subprocess.CompletedProcess(
-                qa_cmd, 1, "",
-                f"QA overlay failed: {type(exc).__name__}: {exc}\n{_frames}")
-            ok = False
+                try:
+                    import dependency_prewarm
+                    warmed = dependency_prewarm.ensure_all(repo, reason="release_train_qa")
+                    if not warmed.get("ok"):
+                        qlog = "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1600:]
+                        _self_heal_qa(p, project, repo, STAGING, qlog)
+                        _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
+                                               f"staging QA dependency prewarm failed — self-heal queued: "
+                                               f"{stderr_digest.digest(qlog, 160)}")
+                        return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
+                except Exception:
+                    pass
+                with commit_overlay.checkout(repo, staging_sha, prefix="release-qa-overlay-") as overlay:
+                    tmp = overlay["path"]
+                    _link_shared_runtime(repo, tmp)
+                    prepared, prepare_log = _prepare_generated_types(tmp)
+                    if prepared:
+                        # A QA command that IS a production build takes a build slot; every
+                        # ordinary suite is untouched. kalepasch-com's test_cmd is
+                        # `npm run build`, so its release QA compiled the app in this overlay
+                        # with nothing bounding it. See build_slots.command_builds.
+                        with build_slots.hold_if_build(qa_cmd, "release-qa %s" % project):
+                            qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800, env=gate_env.gate_env())
+                        ok = qa.returncode == 0
+                    else:
+                        qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
+                        ok = False
+            except Exception as exc:
+                # `f"QA overlay failed: {exc}"` produced rows reading only
+                # "QA overlay failed: [Errno 32] Broken pipe" — no exception type, no
+                # frame, and stderr_digest keeps 160 characters of it. That is the
+                # third time this session a truncated note has sent a reader (human
+                # or agent) after the wrong cause. Name the type and keep the frames.
+                import traceback as _traceback
+                _frames = "".join(_traceback.format_exception(type(exc), exc,
+                                                              exc.__traceback__))[-2000:]
+                qa = subprocess.CompletedProcess(
+                    qa_cmd, 1, "",
+                    f"QA overlay failed: {type(exc).__name__}: {exc}\n{_frames}")
+                ok = False
         if not ok:
             qlog = (
                 (qa.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
@@ -2091,18 +2109,19 @@ def _run_for_unlocked(project, repo_override=None):
         return held
     if _recent_failed_gate(project, staging_sha, "build"):
         return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
-    try:
-        import build_gate
-        if not bcmd:
-            bcmd = build_gate.build_cmd_for(p, repo) or build_gate.detect_build_cmd(repo) or ""
-        if not bcmd:
-            raise RuntimeError(
-                "no production build command could be determined (set projects.build_cmd, a "
-                "package.json build script, vercel.json buildCommand, or DEFAULT_BUILD_CMD)")
-        bok, blog = build_gate.run_build(repo, STAGING, bcmd)
-    except Exception as exc:
-        bok = False
-        blog = f"release build gate error (fail-closed): {type(exc).__name__}: {exc}"
+    with _lock_paused():
+        try:
+            import build_gate
+            if not bcmd:
+                bcmd = build_gate.build_cmd_for(p, repo) or build_gate.detect_build_cmd(repo) or ""
+            if not bcmd:
+                raise RuntimeError(
+                    "no production build command could be determined (set projects.build_cmd, a "
+                    "package.json build script, vercel.json buildCommand, or DEFAULT_BUILD_CMD)")
+            bok, blog = build_gate.run_build(repo, STAGING, bcmd)
+        except Exception as exc:
+            bok = False
+            blog = f"release build gate error (fail-closed): {type(exc).__name__}: {exc}"
     if not bok:
         if manifest:
             try:
@@ -2115,7 +2134,8 @@ def _run_for_unlocked(project, repo_override=None):
                                f"staging BUILD red — self-heal queued: "
                                f"{stderr_digest.digest(blog, 160)}")
         return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
-    proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
+    with _lock_paused():
+        proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
     if not proof_ok:
         _insert_failed_release(project, "proof", ahead, release_base_sha, staging_sha,
                                proof_note[-500:])
@@ -2261,8 +2281,14 @@ def _run_for_with_repo(project, repo):
     """
     import repo_lock
     timeout = float(os.environ.get("ORCH_RELEASE_LOCK_TIMEOUT_S", "1") or 1)
-    with repo_lock.hold(repo, timeout=timeout) as acquired:
-        if not acquired:
+    # hold_pausable, not hold: the pass puts this lock DOWN around the QA suite and the
+    # production build (both of which run in commit_overlay scratch, never in the
+    # canonical repo) so the merge train is not locked out for the length of a suite.
+    # The lock is taken back and STAGING re-verified before anything is pushed; see
+    # _lock_paused in _run_for_unlocked and repo_lock.Lease.
+    with repo_lock.hold_pausable(repo, timeout=timeout,
+                                 purpose=f"release_train {project}") as lock_lease:
+        if not lock_lease:
             return {"project": project, "note": "release busy; existing train owns repo"}
         lease = delivery_lease.acquire(project, delivery_lease.ROLE_RELEASER)
         if lease is None and delivery_lease.available():
@@ -2270,7 +2296,14 @@ def _run_for_with_repo(project, repo):
                     "note": "another host holds the releaser lease for this repository"}
         try:
             with integration_runtime.isolated_repo(repo, "release_train") as integration_repo:
-                return _run_for_unlocked(project, repo_override=integration_repo)
+                return _run_for_unlocked(project, repo_override=integration_repo,
+                                         lock_lease=lock_lease)
+        except repo_lock.StagingMoved as exc:
+            # Not a failure of this project's code: staging advanced while a long gate
+            # ran, so what was proved green is no longer what would ship. Retry next
+            # pass against the new tip rather than pushing an ungated commit. Kept out
+            # of the failed-release table for the same reason as LeaseLost below.
+            return {"project": project, "note": f"release deferred: {exc}"}
         except delivery_lease.LeaseLost as exc:
             # Not an error to retry here: another host owns this repository now and is
             # entitled to the work. Surfacing it as a note keeps the pass out of the

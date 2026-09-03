@@ -106,6 +106,138 @@ def describe_holder(repo):
         info.get("purpose") or "unspecified", held, alive)
 
 
+class StagingMoved(RuntimeError):
+    """Raised when a paused lease is re-acquired and the ref it was gating has moved."""
+
+
+class Lease:
+    """A held repo lock that can be put down for a while and picked back up.
+
+    WHY THIS EXISTS. The release train held a project's repo lock for its ENTIRE
+    pass -- prewarm, QA suite, production build, pushes -- and for several projects
+    at once. Measured 2026-09-03: one release train held the orchestrator's and
+    smarter's locks for 43 minutes while running `npm run test`. The merge train
+    waited, lost, and skipped the whole project group 607 times; merges were zero
+    fleet-wide for three hours.
+
+    The suite and the build do not need it. They run in `commit_overlay` scratch
+    directories: the canonical repo is READ (git archive, then object reads through
+    alternates) and never written.
+
+    BUT THE LOCK WAS NOT ONLY PROTECTING THE WORKING COPY. It was also protecting
+    the invariant that STAGING does not move between "we gated this SHA" and "we
+    push it". Simply dropping it mid-pass would let another train advance staging
+    while a twenty-minute suite ran, and the push would then promote a tip that was
+    never gated -- a green proof for one commit and a different commit shipped.
+
+    So a pause is not just an unlock. `paused(verify=...)` re-acquires on the way
+    out and re-runs the caller's own check; if what it was gating has moved, it
+    raises StagingMoved rather than letting the pass continue on a stale premise.
+    Failing to re-acquire raises too. Neither is silent, because a lock helper that
+    quietly hands back less protection than the caller asked for is the shape of
+    bug this module keeps finding elsewhere.
+    """
+
+    def __init__(self, handle, repo, purpose=None):
+        self._handle = handle
+        self._repo = repo
+        self._purpose = purpose
+        self.acquired = False
+
+    def __bool__(self):
+        return bool(self.acquired)
+
+    @contextlib.contextmanager
+    def paused(self, verify=None, timeout=600):
+        """Release the lock for the duration of the block, then take it back.
+
+        `verify` is a zero-argument callable returning True when it is still safe to
+        continue. It is called AFTER the lock is re-acquired, so it observes a
+        settled state rather than racing the holder that had it in the meantime.
+        """
+        if not self.acquired:
+            yield False          # never held it; nothing to put down
+            return
+        try:
+            fcntl.flock(self._handle, fcntl.LOCK_UN)
+            self.acquired = False
+        except Exception as exc:
+            log.error("repo_lock: could not release %s for a pause (%s) — keeping it",
+                      self._repo, exc)
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            deadline = time.time() + max(1.0, float(timeout))
+            while time.time() < deadline:
+                try:
+                    fcntl.flock(self._handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.acquired = True
+                    break
+                except (BlockingIOError, OSError):
+                    time.sleep(0.25)
+            if not self.acquired:
+                raise StagingMoved(
+                    f"could not re-acquire the repo lock for {self._repo} within "
+                    f"{timeout:.0f}s after pausing it; refusing to continue the pass "
+                    f"unprotected")
+            _write_holder(self._handle, self._repo, self._purpose)
+            if verify is not None and not verify():
+                raise StagingMoved(
+                    f"{self._repo}: the ref this pass was gating moved while the lock "
+                    f"was paused; the work that was verified is no longer the work that "
+                    f"would ship")
+
+
+@contextlib.contextmanager
+def hold_pausable(repo, timeout=None, purpose=None):
+    """Like hold(), but yields a Lease whose lock can be paused. See Lease.
+
+    Separate from hold() on purpose: six callers use hold()'s yielded value as a
+    plain boolean, and changing what they receive to buy one caller a feature is how
+    a lock helper acquires a second, subtler contract nobody remembers.
+    """
+    lease = None
+    try:
+        os.makedirs(LOCK_DIR, exist_ok=True)
+        handle = open(_lock_path(repo), "a+")
+    except Exception as e:
+        log.error("repo_lock: cannot open lock file under %s (%s: %s) — refusing the "
+                  "lock for %s", LOCK_DIR, type(e).__name__, e, repo)
+        yield Lease(None, repo)          # falsy
+        return
+    lease = Lease(handle, repo, purpose)
+    try:
+        if timeout:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lease.acquired = True
+                    break
+                except (BlockingIOError, OSError):
+                    time.sleep(0.25)
+            if not lease.acquired:
+                yield lease
+                return
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            lease.acquired = True
+        _write_holder(handle, repo, purpose)
+        yield lease
+    finally:
+        if lease is not None and lease.acquired:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            except Exception:
+                pass
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
 @contextlib.contextmanager
 def hold(repo, timeout=None, purpose=None):
     """Exclusive lock scoped to `repo`. Yields True if the lock was acquired, False otherwise

@@ -3247,11 +3247,27 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         return "load-deferred"
 
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
+    _diff_qa_note = ""
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
+        # SAY WHAT THIS DECIDED AND WHY. This whole block used to end in
+        # `except Exception: pass`, and it logged nothing on either outcome -- so the
+        # one mechanism that separates "this card broke something" from "this project
+        # was already red" was invisible in every log the fleet writes.
+        #
+        # It matters right now. Measured 2026-09-03 over one merge-train log window:
+        # 209 TESTFAILs, 114 of them darwn, and darwn's `orchestrator/dev` baseline is
+        # ALREADY red -- reproduced in a clean overlay of the base with no card applied:
+        # lib/remediation/auto-remediator.spec.ts, "expected '# Remediation File...' to
+        # contain 'Test agent task'". Every one of those cards was retired, marked, and
+        # given an agentic repair for a defect it did not introduce. Whether the waiver
+        # was denied because the baseline was missing, because a new signature really
+        # did appear, or because this block threw, nothing on disk could say.
         try:
             import differential_qa
             baseline = differential_qa.cached(repo, base, test_cmd)
+            _src = "cache"
             if baseline is None:
+                _src = "fresh"
                 baseline_ok, baseline_log = _run_tests(repo, test_cmd, base)
                 differential_qa.store(repo, base, test_cmd, baseline_ok, baseline_log)
             else:
@@ -3260,8 +3276,19 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             if not baseline_ok and comparison.get("allowed"):
                 ok = True
                 tail = "green by differential QA: " + comparison.get("reason", "")
-        except Exception:
-            pass
+                _log(pname, slug, "DIFFQA", f"waived ({_src} baseline): {comparison.get('reason', '')}")
+            else:
+                _diff_qa_note = (
+                    "baseline green" if baseline_ok
+                    else f"not waived ({_src} baseline): {comparison.get('reason', '')}")
+                _log(pname, slug, "DIFFQA", _diff_qa_note
+                     + "".join(f" | NEW: {n[:160]}" for n in (comparison.get("new") or [])[:3]))
+        except Exception as exc:
+            # Still non-fatal -- a broken waiver must never merge red work -- but no
+            # longer silent, because a waiver that never runs looks exactly like a
+            # waiver that ran and said no.
+            _diff_qa_note = f"differential QA unavailable: {type(exc).__name__}: {exc}"
+            _log(pname, slug, "DIFFQA", _diff_qa_note)
     if not ok:
         # WHAT WE SAY FAILED IS THE WHOLE VALUE OF SAYING IT FAILED.
         #
@@ -3297,7 +3324,11 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                            "note": f"train:{_gl} tests failed on rebased {branch}: {_why}"})
         _retire_card(card.get("id"), "TESTFAIL")
         _attribute_train_outcome(slug, task, "testfail", integrated=False)
-        _log(pname, slug, "TESTFAIL", (_gl + " " + failure_excerpt.excerpt(tail, 160)).strip()[:200])
+        # The differential verdict belongs ON the TESTFAIL line. Reading it required
+        # correlating two log lines by slug, which nobody does at 200 failures a window.
+        _log(pname, slug, "TESTFAIL",
+             (_gl + " " + failure_excerpt.excerpt(tail, 160)).strip()[:200]
+             + (f" [diffqa: {_diff_qa_note[:120]}]" if _diff_qa_note else ""))
         return "testfail"
 
     # (3b) PRODUCTION BUILD GATE — fail-closed, runs AFTER the (2c) regression guard and
