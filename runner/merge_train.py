@@ -3295,6 +3295,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "SNAPSHOT-CHANGED", f"{candidate_sha[:12]} -> {current_candidate_sha[:12]}; no ref advance")
         return "snapshot-changed"
 
+    # Where `base` stood before this card moved it. Captured HERE, before the
+    # fast-forward, because afterwards it is indistinguishable from the merged tip --
+    # and the beethoven self-check at (7) needs both ends to tell "this merge broke it"
+    # from "it was already broken". Cheap, and unused by every other project.
+    base_sha_before_merge = _commit_identity(repo, base)
+
     if not _ff_base(repo, branch, base):                          # (4)
         # base refused to fast-forward even after a clean rebase (it moved outside the train) —
         # treat like a stale-base conflict and route through the same redo pattern.
@@ -3367,7 +3373,42 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             pass
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
     _log(pname, slug, "MERGED", f"-> {base}")
+
+    # (7) BEETHOVEN SELF-CHECK. This project's repo IS this orchestrator, so a merge
+    # into it changes the code that gates the NEXT merge. Every other project is judged
+    # by the trains; beethoven is the trains, and a change that passes its own suite can
+    # still break the machinery that would have caught the following one.
+    #
+    # Runs AFTER the merge is recorded, deliberately: the merge already passed every
+    # gate, and holding MERGED behind another suite run would make a beethoven merge
+    # cost twice what any other project's does. This asks a different question --
+    # "did that break something that worked before it?" -- and answers it differentially
+    # against the base, so a test that was already red is not blamed on this card.
+    #
+    # Never raises: a self-check that can take a merge pass down with it is a worse
+    # problem than the one it watches for.
+    if _beethoven_selfcheck_enabled(pname):
+        try:
+            import beethoven_selfcheck
+            beethoven_selfcheck.report(repo, base_sha_before_merge, current_candidate_sha)
+        except Exception as _sc_exc:
+            print(f"merge_train [{pname}] self-check did not run ({_sc_exc})", flush=True)
     return "merged"
+
+
+#: Projects whose repo is this orchestrator, by name. A list rather than a constant so a
+#: renamed or duplicated orchestrator project can be added without touching the call site.
+SELFCHECK_PROJECTS = tuple(
+    n.strip() for n in os.environ.get("ORCH_SELFCHECK_PROJECTS", "beethoven").split(",")
+    if n.strip()
+)
+
+
+def _beethoven_selfcheck_enabled(project):
+    if os.environ.get("ORCH_BEETHOVEN_SELFCHECK", "true").lower() not in (
+            "1", "true", "yes", "on"):
+        return False
+    return str(project or "") in SELFCHECK_PROJECTS
 
 
 def _paused():
