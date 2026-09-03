@@ -77,13 +77,17 @@ _SKIP_DIR = re.compile(
     # .runtime holds the orchestrator's own scratch worktrees (integration-worktrees/, agent
     # checkouts). Scanning it re-reports every OTHER project's files through a scratch path,
     # which filed ~400 duplicate remediation tasks on the first live run.
-    # The fleet's worktree convention is `{repo}-wt/{slug}` (see CLAUDE.md), and
-    # projects keep their own scratch checkouts as `.<name>-wt/`. Both are gitignored
-    # working copies of code that is ALREADY scanned at its real path, so visiting them
-    # re-reports the same symbols through a throwaway path — one such directory
-    # (`.spine-wt/`) produced a remediation task pointing at a file that does not exist
-    # on any branch.
-    r"|\.runtime|\.claude/worktrees|[^/]*-wt)(/|$)")
+    r"|\.runtime|\.claude/worktrees"
+    # THE PROJECTS' OWN WORKTREES, by the two conventions this fleet actually uses:
+    # `{repo}-wt/{slug}` (darwn-wt/, smarter-fix-wt/, law-dev-wt/) and a dotted
+    # scratch checkout `.{name}-wt/` (.spine-wt/). Same reason as .runtime directly
+    # above -- they are working copies of code already scanned at its real path, so
+    # visiting them re-reports the same symbols through a path that exists on no
+    # branch. A finding filed against `.spine-wt/packages/x/src/admit.ts` names a
+    # file `git cat-file` cannot resolve, so nobody can act on it and the agent sent
+    # to fix it has nothing to open.
+    r"|\.[A-Za-z0-9_.-]+-wt|[A-Za-z0-9_.-]+-wt"
+    r")(/|$)")
 
 # A commit whose MESSAGE advertises that it papered over a build break with stubs.
 # These are the exact shapes seen in the fleet.
@@ -109,6 +113,25 @@ _STUB_COMMIT_MSG = re.compile(
 # A single-line declaration whose whole body is a constant. This is the stub shape.
 _IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _CONST_RET = r"(?:\{\s*\}|\[\s*\]|null|undefined|0|false|true|''|\"\"|\{\s*\}\s+as\s+any)"
+
+#: A literal VALUE on the right of `export const NAME = ...` — a threshold, a label,
+#: a flag. Used by is_value_constant() to tell a named constant from a stubbed
+#: function, which is a distinction _CONST_RET cannot make: _CONST_RET is the set of
+#: EMPTY returns a stub falls back to (`{}`, `[]`, `0`, `null`), so it matches
+#: `= 0` but not `= 0.01`, and 0.01 is exactly the case the false positive is about.
+#:
+#: Deliberately narrow, and narrow in one specific direction: no `=>` and no `(`, so
+#: a stubbed arrow function (`= () => 0`) or a call (`= compute()`) can never match
+#: and is still reported. That is what the caller's docstring means by "decided on
+#: the DECLARATION, never the name". Numbers, quoted strings and the bare keywords
+#: are the whole vocabulary of a tunable; anything with callable syntax is not one.
+_CONST_VALUE = (
+    r"(?:"
+    r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"          # 0.01, -5, 1_000 is not JS, 1e3
+    r"|'[^'\n]*'|\"[^\"\n]*\"|`[^`\n$]*`"           # 'x', "x", `x` (no ${} interp)
+    r"|true|false|null|undefined"
+    r")"
+)
 _STUB_FN = re.compile(
     r"^\s*export\s+(?:async\s+)?function\s+(%s)\s*\([^)]*\)\s*:[^{]*\{\s*return\s+%s\s*(?:as\s+any\s*)?;?\s*\}\s*$"
     % (_IDENT, _CONST_RET))
@@ -978,3 +1001,32 @@ if __name__ == "__main__":
         print(log)
     else:
         run()
+
+def is_value_constant(txt, symbol):
+    """Is `symbol` a named VALUE constant rather than a stubbed function?
+
+    The fabricated-return detectors ask "does this declaration's body reduce to a
+    literal". That is the right question for a function and the wrong one for a
+    constant: a threshold is SUPPOSED to be a literal. Without the distinction the
+    guard reports things like
+
+        /** The margin a challenger must beat the incumbent by. ... */
+        export const REPLACEMENT_MARGIN = 0.01
+
+    as "a regulatory gate that stopped throwing", and the remediation it files —
+    "if it is genuinely unimplemented it MUST throw" — would replace a documented,
+    actively-used tunable with an exception. That is a worse repository than the
+    one the guard started with, and it costs an agent a full run to find out.
+
+    Decided on the DECLARATION, never the name: a stubbed arrow function
+    (`export const getPrice = () => 0`) contains callable syntax and is still
+    reported, as is `= compute()`.
+    """
+    if not symbol or not txt:
+        return False
+    rx = re.compile(
+        r"^[ \t]*export\s+const\s+" + re.escape(symbol) +
+        r"\s*(?::[^=\n]*)?=\s*" + _CONST_VALUE + r"\s*(?:;|$)",
+        re.MULTILINE)
+    return bool(rx.search(txt))
+
