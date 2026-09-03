@@ -100,7 +100,29 @@ def root() -> str:
         )
     os.makedirs(path, exist_ok=True)
     exclude_from_spotlight(path)
+    _warn_if_indexable(path)
     return path
+
+
+_WARNED_INDEXABLE = set()
+
+
+def _warn_if_indexable(path):
+    """Say so, once, when the configured root is one macOS will still index.
+
+    Moving DEFAULT_ROOT to `.noindex` did nothing on the machine it was written for:
+    runner/.env pinned ORCH_SCRATCH_ROOT to the old path, so the default was never
+    consulted and the fix was inert while looking applied. A configuration that
+    silently disables a fix is worse than not having the fix, because nobody looks
+    again. One line, once per path per process, is the whole remedy.
+    """
+    if path in _WARNED_INDEXABLE or path.endswith(".noindex"):
+        return
+    _WARNED_INDEXABLE.add(path)
+    print(f"[scratch] {path} is not `.noindex`-suffixed, so macOS will index the build "
+          f"overlays and node_modules clones written here — that indexing was measured "
+          f"at over a core of sustained CPU, and load is what clamps merge workers. "
+          f"Set ORCH_SCRATCH_ROOT to a path ending in `.noindex`.", flush=True)
 
 
 #: macOS honours this marker file as "do not index anything under here".

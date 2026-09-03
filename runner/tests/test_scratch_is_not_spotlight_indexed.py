@@ -56,6 +56,54 @@ def test_an_explicitly_configured_root_still_wins(monkeypatch, tmp_path):
     assert scratch.root() == str(chosen)
 
 
+def test_a_non_noindex_root_says_so_out_loud(monkeypatch, tmp_path, capsys):
+    """A config that silently disables a fix is worse than not having the fix.
+
+    Moving DEFAULT_ROOT to `.noindex` did nothing on the machine it was written
+    for: runner/.env pinned ORCH_SCRATCH_ROOT to the old path, so the default was
+    never consulted and the change was inert while looking applied.
+    """
+    monkeypatch.setattr(scratch, "is_purgeable", lambda path: False)
+    monkeypatch.setattr(scratch, "_WARNED_INDEXABLE", set())
+    monkeypatch.setenv("ORCH_SCRATCH_ROOT", str(tmp_path / "plain-root"))
+    scratch.root()
+    assert "not `.noindex`-suffixed" in capsys.readouterr().out
+
+
+def test_a_noindex_root_is_silent(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(scratch, "is_purgeable", lambda path: False)
+    monkeypatch.setattr(scratch, "_WARNED_INDEXABLE", set())
+    monkeypatch.setenv("ORCH_SCRATCH_ROOT", str(tmp_path / "quiet.noindex"))
+    scratch.root()
+    assert "not `.noindex`-suffixed" not in capsys.readouterr().out
+
+
+def test_the_warning_is_not_repeated(monkeypatch, tmp_path, capsys):
+    """Once per path per process. A warning on every mkdtemp is noise, not signal."""
+    monkeypatch.setattr(scratch, "is_purgeable", lambda path: False)
+    monkeypatch.setattr(scratch, "_WARNED_INDEXABLE", set())
+    monkeypatch.setenv("ORCH_SCRATCH_ROOT", str(tmp_path / "plain-root"))
+    scratch.root()
+    capsys.readouterr()
+    scratch.root()
+    assert capsys.readouterr().out == ""
+
+
+def test_the_live_env_points_at_a_noindex_root():
+    """runner/.env is the file that made the change inert; pin it."""
+    import os as _os
+    env = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                        ".env")
+    if not _os.path.isfile(env):
+        pytest.skip("no runner/.env on this machine")
+    for line in open(env):
+        if line.startswith("ORCH_SCRATCH_ROOT="):
+            assert line.strip().endswith(".noindex"), line.strip()
+            break
+    else:
+        pytest.skip("ORCH_SCRATCH_ROOT not pinned in runner/.env")
+
+
 def test_the_scratch_root_is_marked(monkeypatch, tmp_path):
     # pytest's tmp_path lives under /private/tmp, which scratch.root() refuses on
     # purpose -- that refusal is the point of this module and has its own test
