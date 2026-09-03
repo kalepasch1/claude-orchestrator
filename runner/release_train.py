@@ -32,6 +32,7 @@ import integration_runtime
 import paused_host_guard
 import release_manifest
 import stderr_digest
+import stdio_guard      # a lost log pipe must never be recorded as a failed suite
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -2286,6 +2287,27 @@ def run():
     # deploy_status='failed' rows that flipped projects RED and tripped release
     # back-pressure fleet-wide. Refused at the START of a pass only — a pass already in
     # flight is never interrupted.
+    # ORPHAN GUARD (2026-09-03): the cross-host election below is a function of
+    # HEARTBEATS PER HOST, so it cannot separate two release trains on the SAME
+    # machine -- and there were two. db_recovery_sprint launches release_train
+    # (600s) and autopilot (240s) with capture_output=True inside a sprint the
+    # scheduler reaps long before its 2280s of budget is spent; the in-flight
+    # child is reparented to PID 1 and keeps pipes whose readers died with the
+    # parent. Observed live: PID 53526 autopilot.py and PID 5373 merge_train.py,
+    # both PPID 1, both fd 1 -> a pipe with no reader, both still working.
+    # Its DB writes still succeed -- that is a socket -- so it goes on recording
+    # release rows and competing for leases and build slots with the live train.
+    # Stand down instead. stdio_guard.install() below keeps the two halves
+    # independent: a lost log pipe must not fail a gate even when this guard is
+    # switched off.
+    stdio_guard.install()
+    if (stdio_guard.orphaned()
+            and os.environ.get("ORCH_ALLOW_ORPHANED_RELEASE_TRAIN", "false").lower()
+            not in ("1", "true", "yes", "on")):
+        print("release_train: orphaned (parent reaped, log pipe has no reader) — "
+              "standing down rather than running a second train on this machine",
+              flush=True)
+        return {"skipped": "orphaned: parent reaped, not competing with the live train"}
     _ok, _why = paused_host_guard.refuse("release_train")
     if not _ok:
         return {"skipped": _why}

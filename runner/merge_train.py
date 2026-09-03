@@ -3651,6 +3651,19 @@ def train_run():
     # Routed through _end so it is a *reported* non-run rather than a silent one. That is
     # the whole point of FAILURE 2: an operator pause and a wedged train produced the same
     # empty result, and the instrumentation is worthless if the earliest exit skips it.
+    # ORPHAN GUARD (2026-09-03): same reason as release_train.run(), same observed
+    # cause. PID 5373 was a merge_train.py with PPID 1 and fd 1 on a pipe with no
+    # reader -- a leftover of a reaped db_recovery_sprint, 24 minutes into a pass,
+    # competing with the live train for the integration lease and the build slots.
+    # Reported as a non-run, not skipped silently, for the reason above.
+    import stdio_guard
+    stdio_guard.install()
+    if (stdio_guard.orphaned()
+            and os.environ.get("ORCH_ALLOW_ORPHANED_MERGE_TRAIN", "false").lower()
+            not in ("1", "true", "yes", "on")):
+        return _end("orphaned: parent reaped, log pipe has no reader",
+                    {"skipped": "orphaned: not competing with the live train"})
+
     _ok, _why = paused_host_guard.refuse("merge_train")
     if not _ok:
         return _end(f"host-paused: {_why}", {"skipped": _why})
