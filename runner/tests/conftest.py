@@ -81,6 +81,43 @@ def _gates_are_on_unless_a_test_says_otherwise(monkeypatch):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _the_gate_load_deferral_is_off_under_pytest():
+    """Neutralise merge_train's load deferral for the whole suite.
+
+    Same reason as the cool-down fixture below, and the same trap. The deferral skips
+    gating a card when load/core is over the governor's hard threshold — which is a
+    scheduling decision, and a good one on a live fleet, but it makes the card path's
+    behaviour depend on the machine. Under pytest the machine's load is high for
+    exactly one reason: it is running this suite. Seven merge_train tests
+    (test_approved_card_merges, the three TestSerialization cases, and others) went
+    red at load/core 5.01 and green on a calm box, which is a non-deterministic suite
+    — worse than the bug the deferral fixes.
+
+    GATE_LOAD_DEFER is read once at import, so the env var alone is not enough if
+    merge_train was already imported during collection. Set the module attribute too.
+
+    Session-scoped, for the same reason as the fixtures around it: it must land before
+    _restore_environment_after_test takes its per-test snapshot.
+    """
+    before = os.environ.get("ORCH_GATE_LOAD_DEFER")
+    os.environ["ORCH_GATE_LOAD_DEFER"] = "0"
+    module_before = None
+    try:
+        import merge_train
+        module_before = merge_train.GATE_LOAD_DEFER
+        merge_train.GATE_LOAD_DEFER = 0.0
+    except Exception:
+        merge_train = None
+    yield
+    if merge_train is not None and module_before is not None:
+        merge_train.GATE_LOAD_DEFER = module_before
+    if before is None:
+        os.environ.pop("ORCH_GATE_LOAD_DEFER", None)
+    else:
+        os.environ["ORCH_GATE_LOAD_DEFER"] = before
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _the_quiet_cooldown_is_off_under_pytest():
     """Neutralise production_push_guard's load cool-down for the whole suite.
 

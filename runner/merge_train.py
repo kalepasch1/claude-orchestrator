@@ -1197,6 +1197,45 @@ def record_gate_load(slug, project, verdict, per_core=None):
         return False
 
 
+#: Load-per-core at which a gate verdict is not worth taking. The governor's own HARD
+#: clamp, deliberately -- not GATE_LOAD_SUSPECT. See the (2g) block in the card path.
+GATE_LOAD_DEFER = float(os.environ.get("ORCH_GATE_LOAD_DEFER", "3.0") or 3.0)
+
+#: How many passes one card may be deferred before it is gated regardless. "Wait for a
+#: calm machine" must never become "never merge".
+GATE_LOAD_DEFER_MAX = int(os.environ.get("ORCH_GATE_LOAD_DEFER_MAX", "3") or 3)
+
+_DEFER_COUNTS = {}
+_DEFER_LOCK = threading.Lock()
+
+
+def _should_defer_for_load(slug, per_core=None):
+    """(defer?, why). Never raises; a broken load reading gates normally.
+
+    Fail-open on purpose and in the direction that costs least: if load cannot be read,
+    the card is gated exactly as it is today. A deferral that fires by accident stalls
+    work; a gate that runs by accident merely produces the verdict we already produce.
+    """
+    if GATE_LOAD_DEFER <= 0:
+        return False, ""
+    try:
+        if per_core is None:
+            per_core = _load_per_core()
+        if per_core is None or per_core < GATE_LOAD_DEFER:
+            return False, ""
+        with _DEFER_LOCK:
+            seen = _DEFER_COUNTS.get(slug, 0)
+            if seen >= GATE_LOAD_DEFER_MAX:
+                return False, ""
+            _DEFER_COUNTS[slug] = seen + 1
+            count = seen + 1
+        return True, (f"load/core {per_core:.2f} over the {GATE_LOAD_DEFER:.2f} hard "
+                      f"threshold — not gating yet ({count}/{GATE_LOAD_DEFER_MAX}); "
+                      f"card left undecided, nothing recorded against it")
+    except Exception:
+        return False, ""
+
+
 def gate_load_stats():
     """What share of gate verdicts were taken on a saturated box, and how saturated.
 
@@ -3156,6 +3195,33 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     if not oi_ok:
         return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
                                               "DANGLING IMPORT — " + oi_detail, _t0)
+
+    # (2g) LOAD DEFERRAL — do not take a verdict the box cannot give.
+    #
+    # This is NOT the strike suppression _load_note deliberately left undone. Nothing is
+    # forgiven here and no failure is recorded: the card is simply not gated yet, and is
+    # left exactly as _materialize_branch leaves a branch that does not exist yet.
+    #
+    # Measured from this train's own log, 2026-09-03: 168 annotated gate results, EVERY
+    # ONE a TESTFAIL, 144 of them (85%) over the soft threshold, median load/core 2.13,
+    # p90 4.36, max 10.96. And a TESTFAIL is not free -- it retires the card, marks the
+    # task, and queues an agentic-repair rework. Three tasks failed at load/core 8-11 in
+    # one forty-minute window and each dispatched an agent to fix a suite that had not
+    # actually failed. Those agents then add load, and the next suite fails the same way.
+    #
+    # So the threshold here is the HARD one (3.0/core, the governor's own), not the soft
+    # 1.5 the note uses. At the measured distribution that leaves the median pass running
+    # and defers roughly the worst quarter -- the passes whose verdicts the train already
+    # says "may be about the machine, not the code". Deferring below the hard threshold
+    # would be the thing the author warned about: on a fleet routinely over 1.5, nothing
+    # would ever be gated.
+    #
+    # Bounded, because "wait for a calm machine" must not become "never": after
+    # GATE_LOAD_DEFER_MAX deferrals the card is gated regardless, saturated or not.
+    _deferred, _defer_why = _should_defer_for_load(slug)
+    if _deferred:
+        _log(pname, slug, "DEFER", _defer_why)
+        return "load-deferred"
 
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
