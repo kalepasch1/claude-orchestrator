@@ -91,7 +91,20 @@ def canonical_snapshot(repo):
 
 def _worktree_path(repo):
     key = hashlib.sha256(os.path.realpath(repo).encode()).hexdigest()[:20]
-    return os.path.join(_home(), "integration-worktrees", key)
+    parent = os.path.join(_home(), "integration-worktrees")
+    # Spotlight must not index integration worktrees. mds_stores was measured at
+    # 76.6% CPU continuously for over a day on this Mac, indexing checkouts and
+    # node_modules clones that exist for minutes -- and load is what
+    # resource_governor clamps lanes on, so that indexing costs merge throughput.
+    # Best-effort; see scratch.exclude_from_spotlight for what it does and does
+    # not guarantee.
+    try:
+        import scratch
+        os.makedirs(parent, exist_ok=True)
+        scratch.exclude_from_spotlight(parent)
+    except Exception:
+        pass
+    return os.path.join(parent, key)
 
 
 def _temporary_worktree_path(repo):

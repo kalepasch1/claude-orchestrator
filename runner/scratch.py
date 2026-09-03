@@ -72,7 +72,48 @@ def root() -> str:
             f"{DEFAULT_ROOT}."
         )
     os.makedirs(path, exist_ok=True)
+    exclude_from_spotlight(path)
     return path
+
+
+#: macOS honours this marker file as "do not index anything under here".
+NEVER_INDEX_MARKER = ".metadata_never_index"
+
+
+def exclude_from_spotlight(path) -> bool:
+    """Ask Spotlight not to index a directory of pure build churn. Best-effort.
+
+    MEASURED 2026-09-03 on this Mac:
+
+        mds_stores  76.6% CPU, continuously, for 1 day 2 hours
+        mds         33.4% CPU
+        mdfind      a simple query under ~/.orch-scratch did not return in 3 minutes
+
+    That is roughly a permanent core and a bit, and it is spent indexing content
+    that nobody will ever search for: build overlays, staging checkouts, and
+    node_modules clones -- 76,928 files per clone, cloned again per merge
+    candidate, then deleted. Every one of those is an FSEvents storm and an index
+    update for files that exist for minutes.
+
+    It matters beyond the wasted core because LOAD is what resource_governor
+    clamps lanes on. With the box at load/core 2.5 the fleet runs one task lane
+    and one merge worker, so Spotlight indexing throwaway trees directly costs
+    throughput -- the same argument reap_orphaned_builds and the CPU clamp make.
+
+    Best-effort and reversible: deleting the marker file restores indexing. This
+    is NOT a guaranteed exclusion -- the reliable mechanism is adding the path
+    under System Settings -> Spotlight -> Privacy, which needs a person -- so
+    nothing here depends on it having worked.
+    """
+    try:
+        marker = os.path.join(path, NEVER_INDEX_MARKER)
+        if os.path.exists(marker):
+            return True
+        with open(marker, "a"):
+            pass
+        return True
+    except OSError:
+        return False
 
 
 def mkdtemp(prefix="orch-", suffix=None) -> str:
