@@ -449,6 +449,98 @@ def reap_orphaned_builds():
     return killed
 
 
+#: Search tools an agent shell reaches for when it does not know where a repo lives.
+_SCAN_TOOL_MARKERS = ("bfs ", "find ", "fd ", "mdfind ")
+
+#: A scan is only reapable if it is rooted somewhere broad enough that it can run for
+#: minutes. A scan of a project directory is nobody's problem and is left alone.
+_BROAD_SCAN_ROOTS = (os.path.expanduser("~"), "/Users/", "/Volumes/", " / ")
+
+#: Minutes a parentless home-directory scan may burn a core before it is reaped.
+SCAN_ORPHAN_MAX_MIN = float(os.environ.get("ORCH_SCAN_ORPHAN_MAX_MIN", "3"))
+
+
+def _orphaned_scan_procs():
+    """[(secs, pid, cmd)] of parentless filesystem scans rooted at a broad path.
+
+    MEASURED 2026-09-03. Load average 67 on this Mac, and merge_train's own CPU clamp
+    reacting to it exactly as designed:
+
+        merge_train: load/core 7.69 (soft 1.5 hard 3.0) — running 1 project worker(s)
+                     instead of 4
+
+    Two of the top four CPU consumers were these:
+
+        bfs -S dfs ... /Users/kpasch -type d -name sustainable-barks   11m58s, 82.6%
+        bfs -S dfs ... /Users/kpasch -type d -name *pareto*             4m42s, 68.1%
+
+    Both ppid 1, both descendants of `/bin/zsh -c source ~/.claude/shell-snapshots/...`
+    -- agent sessions that had already exited. An agent that does not know where a repo
+    lives searches the whole home directory for it; when the session ends the search is
+    reparented to launchd and NOTHING can ever read its output. Killing the first one
+    took the load average from 67 to 31 within a minute.
+
+    This is not a cosmetic tidy-up. Load is what the governor clamps merge workers on,
+    so a parentless scan nobody will ever read the result of directly throttles the
+    fleet's real throughput -- and it makes every test verdict produced in that state
+    suspect, which is the same argument reap_orphaned_builds already makes.
+
+    Deliberately narrow: ppid 1 AND a scan tool AND a broad root AND older than
+    SCAN_ORPHAN_MAX_MIN. A scan inside a project directory, or one whose parent is
+    still alive and waiting for it, is left entirely alone.
+    """
+    res = []
+    try:
+        out = sh("ps", "-axo", "pid=,ppid=,etime=,command=", timeout=20).stdout
+    except Exception:
+        return res
+    for line in out.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, ppid, et, cmd = parts
+        if ppid != "1":
+            continue
+        secs = _etime_seconds(et)
+        if secs is None:
+            continue
+        low = cmd.lower()
+        if any(m in low for m in _NEVER_REAP_MARKERS):
+            continue
+        if not any(m in low for m in _SCAN_TOOL_MARKERS):
+            continue
+        if not any(root.lower() in low for root in _BROAD_SCAN_ROOTS):
+            continue
+        try:
+            if int(pid) <= 1 or int(pid) == os.getpid():
+                continue
+        except ValueError:
+            continue
+        res.append((int(secs), pid, cmd))
+    res.sort(reverse=True)
+    return res
+
+
+def reap_orphaned_scans():
+    """Kill parentless home-directory scans and their trees. Returns trees reaped."""
+    if SCAN_ORPHAN_MAX_MIN <= 0:
+        return 0
+    killed = 0
+    kids = _children_by_ppid()
+    for secs, pid, cmd in _orphaned_scan_procs():
+        if secs < SCAN_ORPHAN_MAX_MIN * 60:
+            continue
+        tree = _descendants(pid, kids)
+        for child in reversed(tree):
+            sh("kill", "-9", child)
+        sh("kill", "-9", pid)
+        journal("process_hygiene", "reaped-orphan-scan",
+                f"pid={pid} age={secs // 60}min limit={SCAN_ORPHAN_MAX_MIN}min "
+                f"+{len(tree)} descendant(s) {cmd[:80]}")
+        killed += 1
+    return killed
+
+
 def _reap_oldest_agent():
     procs = _agent_procs()
     if procs:
@@ -582,6 +674,12 @@ def process_hygiene():
     # orphaned build/test processes (parentless, holding CPU — see _orphaned_build_procs)
     try:
         reap_orphaned_builds()
+    except Exception:
+        pass
+    # orphaned home-directory scans (parentless, a full core each — see
+    # _orphaned_scan_procs; two of them held this Mac at load 67 on 2026-09-03)
+    try:
+        reap_orphaned_scans()
     except Exception:
         pass
     # orphaned llama-servers (parentless, holding VRAM)
