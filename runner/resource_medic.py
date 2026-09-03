@@ -345,7 +345,11 @@ def _orphaned_build_procs():
 #: these was started by a gate, never by a person at a shell, so once it is parentless
 #: there is nobody left who could read its exit status -- not in 30 minutes, not ever.
 _GATE_OWNED_PATHS = (
-    "/.orch-scratch/", "build-overlay-", "integration-worktrees/",
+    # Both spellings: the scratch root moved to `.orch-scratch.noindex` so macOS stops
+    # indexing it, and a process started before that change still has overlays under
+    # the old name. Matching only the new one would leave those orphans unreaped.
+    "/.orch-scratch/", "/.orch-scratch.noindex/", "build-overlay-",
+    "integration-worktrees/",
     "/private/tmp/claude-", "clean-clone-",
 )
 

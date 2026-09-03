@@ -27,6 +27,35 @@ import pytest
 import scratch
 
 
+def test_the_default_root_is_noindex_suffixed():
+    """The mechanism that actually works, after the marker demonstrably did not.
+
+    8a6c0305 wrote `.metadata_never_index` and said plainly it was best-effort. Over
+    the following hour on the same machine mds_stores read 76.6% -> 8.8% -> 132.7%:
+    the marker is honoured at a volume root, not dependably for a directory. macOS
+    DOES skip any directory whose NAME ends in `.noindex`, and that needs no admin
+    password and no per-machine setup a new Mac could miss.
+    """
+    assert scratch.DEFAULT_ROOT.endswith(".noindex")
+    assert not scratch.is_purgeable(scratch.DEFAULT_ROOT)
+
+
+def test_the_legacy_root_is_still_recognised_as_fleet_owned():
+    """An overlay left under the old name must still be reapable, not orphaned."""
+    import resource_medic
+    assert any(".orch-scratch/" in p for p in resource_medic._GATE_OWNED_PATHS)
+    assert any(".orch-scratch.noindex/" in p for p in resource_medic._GATE_OWNED_PATHS)
+    assert scratch.LEGACY_ROOT.endswith(".orch-scratch")
+
+
+def test_an_explicitly_configured_root_still_wins(monkeypatch, tmp_path):
+    """The default moved; ORCH_SCRATCH_ROOT is still authoritative."""
+    monkeypatch.setattr(scratch, "is_purgeable", lambda path: False)
+    chosen = tmp_path / "somewhere-else"
+    monkeypatch.setenv("ORCH_SCRATCH_ROOT", str(chosen))
+    assert scratch.root() == str(chosen)
+
+
 def test_the_scratch_root_is_marked(monkeypatch, tmp_path):
     # pytest's tmp_path lives under /private/tmp, which scratch.root() refuses on
     # purpose -- that refusal is the point of this module and has its own test

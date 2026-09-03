@@ -40,7 +40,34 @@ import tempfile
 PURGEABLE_PREFIXES = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp",
                       "/var/folders", "/private/var/folders", "/dev/shm")
 
-DEFAULT_ROOT = os.path.join(os.path.expanduser("~"), ".orch-scratch")
+#: The `.noindex` suffix is the point, not decoration.
+#:
+#: 8a6c0305 wrote `.metadata_never_index` markers into the scratch root and said, in
+#: as many words, that this is best-effort and not guaranteed. It was not guaranteed.
+#: Measured across the following hour on the same machine:
+#:
+#:     mds_stores   76.6%  ->  8.8%  ->  132.7%
+#:
+#: It oscillates; the marker is honoured at a volume root and not dependably for an
+#: arbitrary directory. macOS DOES skip any directory whose NAME ends in `.noindex`,
+#: and that is a mechanism this fleet owns outright -- no admin password, no System
+#: Settings, no per-machine setup a new Mac would silently miss.
+#:
+#: What lives here is build overlays and staging checkouts holding cloned
+#: node_modules -- 76,928 files per clone, cloned again per merge candidate, then
+#: deleted. Indexing them is an FSEvents storm and an index update for files that
+#: exist for minutes, and LOAD is what resource_governor clamps lanes on, so it is
+#: paid in merge throughput.
+#:
+#: Changing the default abandons whatever is in the old root. That is safe precisely
+#: because this directory is disposable by definition -- and in-flight builds hold
+#: absolute paths they resolved at start, so nothing moves under a running build.
+DEFAULT_ROOT = os.path.join(os.path.expanduser("~"), ".orch-scratch.noindex")
+
+#: The pre-2026-09-03 root. Still recognised by tooling that classifies a process as
+#: fleet-owned (see resource_medic._GATE_OWNED_PATHS) so an overlay left there by a
+#: process started before this change is still reaped rather than orphaned forever.
+LEGACY_ROOT = os.path.join(os.path.expanduser("~"), ".orch-scratch")
 
 
 class PurgeableScratchRoot(RuntimeError):
