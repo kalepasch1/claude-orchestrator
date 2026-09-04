@@ -57,10 +57,29 @@ def _safe_member(member, destination):
     return True
 
 
+#: Runtime links the overlay never needs, matched on the LAST path segment.
+#:
+#: A per-branch install is linked as ``node_modules~<slug>`` (e.g.
+#: ``node_modules~agent_cade-tribunal-counterparty-implement-login-step``) so
+#: two branches can hold separate installs side by side. The original rule
+#: matched only the bare name or a ``/node_modules`` suffix, so a suffixed link
+#: was neither safe (it points outside the overlay) nor omittable, and
+#: ``materialize`` raised "unsafe archive member" — killing an entire QA overlay
+#: over a directory whose contents QA does not read. Fail-soft is the convention
+#: here: skip the link, record it, keep going.
+_RUNTIME_LINK_PREFIXES = ("node_modules",)
+_RUNTIME_LINK_EXACT = frozenset({"node_modules", ".env", ".env.local"})
+
+
 def _omittable_runtime_link(member):
-    normalized = member.name.strip("/")
-    return (normalized in {"node_modules", ".env", ".env.local"}
-            or normalized.endswith("/node_modules"))
+    normalized = (member.name or "").strip("/")
+    if not normalized:
+        return False
+    segment = normalized.rsplit("/", 1)[-1]
+    if segment in _RUNTIME_LINK_EXACT:
+        return True
+    # `node_modules~<slug>`: a per-branch install, not a repository directory.
+    return any(segment.startswith(prefix + "~") for prefix in _RUNTIME_LINK_PREFIXES)
 
 
 def _attach_gitdir(repo, destination, commit):
