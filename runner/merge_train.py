@@ -852,9 +852,9 @@ def _clear_integration_index(repo):
                 for d in stale:
                     if os.path.isdir(d):
                         shutil.rmtree(d, ignore_errors=True)
-                print(f"merge_train: cleared a rebase left in progress in the "
-                      f"integration worktree — until that is gone every later rebase "
-                      f"there fails before it starts", flush=True)
+                print("merge_train: cleared a rebase left in progress in the "
+                      "integration worktree — until that is gone every later rebase "
+                      "there fails before it starts", flush=True)
         staged = _git(repo, "diff", "--cached", "--name-only")
         if staged.returncode != 0 or not (staged.stdout or "").strip():
             return False
