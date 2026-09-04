@@ -48,6 +48,24 @@ def validate_canary(response_text) -> bool:
     return ok
 
 
+def process_response(response_text) -> int:
+    """Validate `response_text` and return the process exit code for it.
+
+    0 when the canary marker is present, 1 when it is absent — the same contract
+    `main()` already exposes, lifted out so a caller that has the text in hand can
+    reuse the validation + final-summary log without going through argv.
+
+    The summary is logged at INFO on success and ERROR on failure, so a failing
+    canary is visible in a deploy-window log that is filtered to warnings and above.
+    """
+    ok = validate_canary(response_text)
+    if ok:
+        logger.info("Validation result: success")
+        return 0
+    logger.error("Validation result: failure")
+    return 1
+
+
 class GeminiResponseError(ValueError):
     """The payload was not a Gemini generateContent response we can read text from."""
 
@@ -255,12 +273,8 @@ def main(argv=None) -> int:
     if args and args[0] == "--request-only":
         rest = args[1:]
         return request_only(rest[0] if rest else None)
-    text = " ".join(args)
-    if validate_canary(text):
-        logger.info("canary: validation passed")
-        return 0
-    logger.error("canary: validation failed")
-    return 1
+    # Delegated so the CLI exit code and process_response() cannot drift apart.
+    return process_response(" ".join(args))
 
 
 if __name__ == "__main__":
