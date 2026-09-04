@@ -513,6 +513,28 @@ def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:
     result["strategy"] = "regression-blocked"
     result["manual_files"] = result.get("resolved_files") or []
     result["error"] = f"REGRESSION BLOCKED — merge rolled back, branch preserved: {findings}"
+    # SAY IT HERE, NOT ONLY IN THE RETURN VALUE.
+    #
+    # This function is the fleet's most consequential "no": it undoes a merge that has
+    # already been committed. Whether that no is ever RECORDED depended entirely on the
+    # caller reading result["error"] -- continuous_merger does, and others do not.
+    #
+    # The cost of that gap, read off master's reflog on 2026-09-04:
+    #
+    #     05:35:48  merge agent/backlog-batch-beethoven-52d9da1
+    #     05:35:52  reset: moving to af2ea939...          (4 seconds later)
+    #     ... four more branches, each merged and reset ...
+    #     06:31:45  merge agent/backlog-batch-beethoven-52d9da1     <- the same six
+    #     06:31:49  reset: moving to af2ea939...             again, an hour later
+    #
+    # Six branches, merged and rolled back, then merged and rolled back again the next
+    # cycle, indefinitely -- and runner.log holds three REGRESSION BLOCKED lines in
+    # total, all from 2026-08-18. The work is safe (the branch is deliberately kept),
+    # but nothing on disk says which gate refused it or why, so nobody can either fix
+    # the branch or agree with the gate. It just runs forever.
+    print(f"auto_conflict_resolver: REGRESSION BLOCKED — rolled {repo} back to "
+          f"{pre_sha[:12]}, branch {result.get('branch')} preserved: {findings[:400]}",
+          flush=True)
     return result
 
 
