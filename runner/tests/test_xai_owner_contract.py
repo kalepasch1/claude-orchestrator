@@ -90,9 +90,29 @@ class OwnerModuleLocationTest(unittest.TestCase):
             self.assertNotEqual(model_gateway.provider_for_model(model), "xai", model)
 
     def test_the_credential_is_read_from_the_environment_only(self):
+        """No hardcoded key, and the lookup goes through the alias table.
+
+        This used to require the literal `os.environ.get("XAI_API_KEY"`. That is
+        the spelling provider_credentials.py exists to replace: a key stored as
+        GROK_API_KEY or XAPI_KEY is a perfectly good xAI credential, and reading
+        one env name directly is exactly how "xai" got left out of routing while
+        a working key sat in the environment. model_gateway now asks
+        provider_credentials, which owns the alias table and reads nothing but
+        the environment — so requiring the old spelling would push the owner
+        module back to the narrower behaviour.
+
+        What the test is actually for is unchanged and still here: the key comes
+        from the environment, and no literal key is in the source.
+        """
         with open(os.path.join(RUNNER, "model_gateway.py"), encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn('os.environ.get("XAI_API_KEY"', source)
+        self.assertTrue(
+            'provider_credentials.get(\'xai\')' in source
+            or 'provider_credentials.get("xai")' in source
+            or 'os.environ.get("XAI_API_KEY"' in source,
+            "the xAI credential must come from the environment — directly, or "
+            "through provider_credentials, which reads nothing else",
+        )
         self.assertNotIn("xai-", source.replace("_xai", "").replace('"xai"', ""),
                          "no literal xAI key may appear in the owner module")
 

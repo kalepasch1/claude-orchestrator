@@ -26,14 +26,24 @@ RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if RUNNER_DIR not in sys.path:
     sys.path.insert(0, RUNNER_DIR)
 
-# A stub `db` so importing the state machine never needs a live database.
-if "db" not in sys.modules:  # pragma: no cover - depends on test ordering
-    _stub = types.ModuleType("db")
-    _stub.select = lambda table, params=None: []
-    _stub.update = lambda table, patch, **kw: None
-    sys.modules["db"] = _stub
+# A private `db` stub, installed only for THIS import.
+#
+# This was `if "db" not in sys.modules: sys.modules["db"] = stub`, which is wrong
+# in both directions and test_sys_modules_shadowing exists to catch it: under
+# pytest conftest imports the real db first, so the guard SKIPS and task_state_machine
+# binds the live client; run standalone, the guard fires and leaves a stub in
+# sys.modules that every test collected afterwards then receives. The guard had
+# to go, not just move.
+#
+# import_with_stubs gives this module a private copy bound to the stub and
+# restores sys.modules exactly as it found it, so nothing leaks either way.
+import env_during_import  # noqa: E402
 
-import task_state_machine as tsm  # noqa: E402
+_stub = types.ModuleType("db")
+_stub.select = lambda table, params=None: []
+_stub.update = lambda table, match, patch: None
+
+tsm = env_during_import.import_with_stubs("task_state_machine", db=_stub)
 
 
 class FakeDB:

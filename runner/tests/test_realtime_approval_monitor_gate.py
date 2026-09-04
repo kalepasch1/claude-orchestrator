@@ -22,14 +22,25 @@ RUNNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if RUNNER not in sys.path:
     sys.path.insert(0, RUNNER)
 
-if "db" not in sys.modules:  # pragma: no cover - depends on test ordering
-    _stub = types.ModuleType("db")
-    _stub.select = lambda *a, **k: []
-    _stub.update = lambda *a, **k: None
-    _stub.insert = lambda *a, **k: None
-    sys.modules["db"] = _stub
+# A private `db` stub, installed only for THIS import.
+#
+# This was `if "db" not in sys.modules: sys.modules["db"] = stub`, which is wrong
+# in both directions and test_sys_modules_shadowing exists to catch it: under
+# pytest conftest imports the real db first, so the guard SKIPS and realtime_approval_monitor
+# binds the live client; run standalone, the guard fires and leaves a stub in
+# sys.modules that every test collected afterwards then receives. The guard had
+# to go, not just move.
+#
+# import_with_stubs gives this module a private copy bound to the stub and
+# restores sys.modules exactly as it found it, so nothing leaks either way.
+import env_during_import  # noqa: E402
 
-import realtime_approval_monitor as rtm  # noqa: E402
+_stub = types.ModuleType("db")
+_stub.select = lambda *a, **k: []
+_stub.update = lambda *a, **k: None
+_stub.insert = lambda *a, **k: None
+
+rtm = env_during_import.import_with_stubs("realtime_approval_monitor", db=_stub)
 
 
 def _card(**overrides):

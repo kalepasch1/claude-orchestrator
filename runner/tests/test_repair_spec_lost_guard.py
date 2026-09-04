@@ -87,10 +87,26 @@ class TestRealSpecStillRepaired:
 class TestAttemptCounterUnaffected:
     """The prompt guard must not change the repair bookkeeping."""
 
-    @pytest.mark.parametrize("prompt", [None, "", REAL_SPEC])
-    def test_attempt_still_advances(self, prompt):
-        patch = ar.repair_patch(_task(prompt=prompt, attempt=3), "boom")
+    def test_attempt_still_advances(self):
+        """A task with a real spec is requeued, and the counter moves."""
+        patch = ar.repair_patch(_task(prompt=REAL_SPEC, attempt=3), "boom")
         assert patch["attempt"] == 4
+
+    @pytest.mark.parametrize("prompt", [None, ""])
+    def test_a_task_with_no_spec_is_parked_rather_than_advanced(self, prompt):
+        """Not advancing the counter here is the point, not an oversight.
+
+        This case used to be parametrized alongside REAL_SPEC and asserted
+        attempt == 4 for all three. repair_patch now answers a promptless task
+        with a terminal QUARANTINED patch instead: with no implementation spec
+        there is nothing for a repair to converge on, so requeueing it only
+        burns attempts toward the ceiling and buries the row. Asserting the
+        counter still advances would pin exactly that burn.
+        """
+        patch = ar.repair_patch(_task(prompt=prompt, attempt=3), "boom")
+        assert patch["state"] == "QUARANTINED"
+        assert "attempt" not in patch, "a parked task must not have its counter advanced"
+        assert "unspecified-prompt" in patch["note"]
 
     def test_attempt_advances_without_the_prompt_column(self):
         assert ar.repair_patch(_task(attempt=3), "boom")["attempt"] == 4
