@@ -51,7 +51,17 @@ test('attested-outcomes: modifying issuer invalidates attestation', () => {
 
   const tampered: Passport = {
     ...passport,
-    claims: [{ ...passport.claims[0]!, issuer: 'malicious_issuer' }],
+    claims: [
+      {
+        ...passport.claims[0]!,
+        // Deliberately not a ProductId. The whole point of this case is that a
+        // forged issuer must invalidate the digest, so the value has to be off
+        // the closed union. Widening ProductId to admit it would weaken a real
+        // constraint to satisfy a test, so the violation is localized here.
+        // @ts-expect-error -- forged issuer: not a ProductId, by design
+        issuer: 'malicious_issuer',
+      },
+    ],
   };
 
   const result = verifyPassport(tampered);
