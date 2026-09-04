@@ -49,8 +49,11 @@ class FakeDB:
             raise RuntimeError("postgrest unreachable")
         return [self.row] if self.row else []
 
-    def update(self, table, patch, **kwargs):
-        self.updates.append((patch, kwargs))
+    def update(self, table, match, patch):
+        # Mirrors db.update(table, match, patch) exactly. The recorded tuple
+        # keeps the patch first so a drifting signature fails here, at the
+        # seam, rather than silently in every assertion below.
+        self.updates.append((patch, match))
         return patch
 
 

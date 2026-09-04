@@ -91,15 +91,23 @@ def _project_summary():
     """Per-project task state breakdown."""
     try:
         import db
-        rows = db.sql(
-            "SELECT p.name, t.state, count(*)::int AS cnt "
-            "FROM tasks t JOIN projects p ON t.project_id = p.id "
-            "GROUP BY p.name, t.state ORDER BY p.name"
+        # This was a db.sql GROUP BY over a join. db is a PostgREST client with no
+        # raw-SQL channel, so the call raised AttributeError and this function has
+        # only ever returned None — which snapshot() renders as UNKNOWN. PostgREST
+        # does the join through the foreign key, so ask for the state and the
+        # project's name together and group the rows here.
+        rows = db.select_all(
+            "tasks", {"select": "state,projects(name)"}
         ) or []
         summary = {}
         for r in rows:
-            name = r.get("name", "unknown")
-            summary.setdefault(name, {})[r.get("state", "?")] = r.get("cnt", 0)
+            project = r.get("projects") or {}
+            if isinstance(project, list):  # PostgREST returns a list for some rels
+                project = project[0] if project else {}
+            name = project.get("name") or "unknown"
+            state = r.get("state") or "?"
+            per_project = summary.setdefault(name, {})
+            per_project[state] = per_project.get(state, 0) + 1
         return summary
     except Exception:
         return None  # UNKNOWN, not "no projects" — see _throughput.

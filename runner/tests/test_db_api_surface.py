@@ -57,7 +57,7 @@ KNOWN_BROKEN = {
     # db.query — raw SQL, 14 sites (config_drift's and metaopt's two are fixed).  None of these modules is imported by
     # runner.py or any live loop; all are entered only by their own __main__.
     ("runner/bots/de_chancery.py", 72), ("runner/bots/de_chancery.py", 130),
-    ("runner/continuous_test.py", 152),
+    # continuous_test._record_failure is FIXED — db.upsert("fleet_config", ...).
     ("runner/cx_determination_bundling.py", 107),
     ("runner/cx_tribunal_model.py", 99),
     ("runner/error_alerter.py", 98),
@@ -71,7 +71,8 @@ KNOWN_BROKEN = {
     # carries the economic ordering, host affinity and dependency predicate this
     # query does not, so pointing the API at it is a behaviour decision, not a
     # translation.
-    ("runner/alert_rules_engine.py", 129),
+    # alert_rules_engine._collect_metrics is FIXED — filtered db.count per state.
+    # It was the first statement in the try, so the whole metric set was unreachable.
     # config_sync.report_sync_status is FIXED (2026-08-25) — it now calls
     # db.upsert("fleet_config", ...) instead of db.sql, so it writes the
     # monitoring row it has always claimed to write. Removed from the inventory
@@ -81,7 +82,8 @@ KNOWN_BROKEN = {
     ("runner/investor_metrics_dashboard.py", 23),
     ("runner/metric_history.py", 211),
     ("runner/orchestration_api.py", 125),
-    ("runner/realtime_monitor.py", 30), ("runner/realtime_monitor.py", 81),
+    ("runner/realtime_monitor.py", 30),
+    # realtime_monitor._project_summary is FIXED — PostgREST embed, grouped here.
     # db.execute — raw SQL against a preview/prod promotion path.  Worth naming
     # separately: promote_preview_to_prod() and promote_or_rollback() have never
     # executed a statement, and both report success.
@@ -92,8 +94,9 @@ KNOWN_BROKEN = {
     ("runner/promote_decision.py", 79), ("runner/promote_decision.py", 85),
     ("runner/promote_decision.py", 124),
     # db.subscribe/unsubscribe — a realtime API the PostgREST client never had.
-    ("runner/realtime_approval_monitor.py", 165),
-    ("runner/realtime_approval_monitor.py", 203),
+    # realtime_approval_monitor's db.subscribe/db.unsubscribe sit inside
+    # `if hasattr(db, ...)` and can never raise; the guard now recognises that,
+    # so they are not remaining work and no longer belong in this inventory.
 }
 
 
@@ -171,6 +174,39 @@ def _locally_shadowed_lines(tree):
     return lines
 
 
+def _hasattr_guarded_lines(tree):
+    """Lines inside `if hasattr(db, "name"): ...` — deliberate feature detection.
+
+    A call that is only reached when the attribute is proven to exist cannot raise
+    AttributeError, so it is not the failure this guard is looking for. Reporting
+    it anyway pushes correct code onto the KNOWN_BROKEN inventory, which is meant
+    to be a list of real remaining work; anything parked there that is not broken
+    makes the inventory less trustworthy, not more.
+
+    Only the guarded attribute is exempted, and only inside the body it guards: an
+    unrelated `db.whatever()` in the same `if` is still reported.
+    """
+    exempt = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (isinstance(test, ast.Call) and isinstance(test.func, ast.Name)
+                and test.func.id == "hasattr" and len(test.args) == 2):
+            continue
+        target, name = test.args
+        if not (isinstance(target, ast.Name) and target.id == "db"):
+            continue
+        if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+            continue
+        for stmt in node.body:
+            for sub in ast.walk(stmt):
+                if (isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name)
+                        and sub.value.id == "db" and sub.attr == name.value):
+                    exempt.add((sub.lineno, sub.attr))
+    return exempt
+
+
 def _is_test(rel):
     base = os.path.basename(rel)
     return base.startswith("test_") or "/tests/" in rel or rel.startswith("tests/")
@@ -187,6 +223,7 @@ def _module_db_accesses():
         if tree is None:
             continue
         skip = _locally_shadowed_lines(tree)
+        guarded = _hasattr_guarded_lines(tree)
         calls = {}
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -197,6 +234,8 @@ def _module_db_accesses():
                     and node.value.id == "db"):
                 continue
             if node.lineno in skip:
+                continue
+            if (node.lineno, node.attr) in guarded:
                 continue
             found.append((rel, node.lineno, node.attr, calls.get((node.lineno, node.attr))))
     return found

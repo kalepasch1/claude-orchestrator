@@ -164,21 +164,40 @@ def _record_steering(event_type: str, verdict: Dict[str, Any],
 
 def _open_premerge_card(verdict: Dict[str, Any], project: Optional[str],
                         task_id: Optional[str]) -> Optional[str]:
-    """A pre-merge escalate must BLOCK, so it becomes an approval card."""
+    """A pre-merge escalate must BLOCK, so it becomes an approval card.
+
+    THIS CARD HAS NEVER BEEN CREATED. The insert named three columns the
+    approvals table does not have — `state` (it is `status`), `summary` (it is
+    `title`) and `task_id` (there is no such column) — so PostgREST answered 400
+    every time, and the bare `except Exception: return None` turned that into an
+    ordinary "no card", indistinguishable from a verdict that did not need one.
+
+    That matters more here than in a monitor: this is the blocking path. An
+    escalate at pre-merge is supposed to stop the merge behind a human decision,
+    and for the life of this function it has instead returned None and let the
+    loop continue. The task id now travels in `slug`, which exists and is what
+    the rest of the fleet keys cards by.
+    """
     try:
         import db
         row = db.insert("approvals", {
             "kind": "legal_gate",
             "project": project,
-            "task_id": task_id,
-            "state": "pending",
-            "summary": f"Illuminati escalate at {verdict.get('phase')}",
+            "slug": f"illuminati-legal-gate-{task_id}" if task_id else "illuminati-legal-gate",
+            "status": "pending",
+            "title": f"Illuminati escalate at {verdict.get('phase')}",
             "detail": verdict.get("rationale") or "",
         })
         if isinstance(row, dict):
             return str(row.get("id") or "") or None
+        if isinstance(row, list) and row and isinstance(row[0], dict):
+            return str(row[0].get("id") or "") or None
         return None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Fail-soft, but never silent: a blocking gate that could not be opened
+        # is the one failure that must not look like "nothing to block".
+        sys.stderr.write(f"[illuminati_cothink] BLOCKING approval card could NOT be "
+                         f"opened for {project}/{task_id}: {exc}\n")
         return None
 
 

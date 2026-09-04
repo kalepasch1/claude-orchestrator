@@ -135,10 +135,28 @@ def _collect_metrics():
     metrics = {}
     try:
         import db
-        # Queue state counts
-        rows = db.sql("SELECT state, count(*)::int AS cnt FROM tasks GROUP BY state") or []
-        state_counts = {r["state"]: r["cnt"] for r in rows}
-        total = sum(state_counts.values()) or 1
+        # Queue state counts.
+        #
+        # This was `db.sql("SELECT state, count(*) ... GROUP BY state")`. db is a
+        # PostgREST client and has never had a raw-SQL channel, so that line raised
+        # AttributeError on the FIRST statement of the try — every metric below it
+        # was unreachable and _collect_metrics returned nothing but the error. The
+        # alert engine has been evaluating every rule against a missing value, which
+        # is exactly the calm-green-board failure the handler below warns about.
+        #
+        # PostgREST answers a filtered count without returning rows, so ask it once
+        # per state we actually read rather than pulling the whole tasks table into
+        # memory to group it here.
+        # PENDING_REVIEW is deliberately not in this list. It is not a value of the
+        # task state enum — asking PostgREST to filter on it answers 400, which is
+        # how it was found once the db.sql above stopped masking everything. The
+        # pending-approval count comes from the approvals table, below.
+        _COUNTED_STATES = ("QUARANTINED", "QUEUED", "RUNNING")
+        state_counts = {st: (db.count("tasks", {"state": f"eq.{st}"}) or 0)
+                        for st in _COUNTED_STATES}
+        # The ratio's denominator is every task in every state, not just the four
+        # above — counting only those would make quarantine_ratio read far too high.
+        total = db.count("tasks") or 1
         metrics["quarantine_ratio"] = state_counts.get("QUARANTINED", 0) / total
         metrics["queued_count"] = state_counts.get("QUEUED", 0)
         metrics["running_count"] = state_counts.get("RUNNING", 0)
@@ -158,7 +176,10 @@ def _collect_metrics():
                                         "updated_at": f"gte.{cutoff_1h}"}) or []
         metrics["merge_rate_1h"] = len(merged_1h)
 
-        metrics["pending_approvals"] = state_counts.get("PENDING_REVIEW", 0)
+        # Approvals are their own table with their own lowercase status enum; this
+        # metric previously read a task state that has never existed, so it was
+        # reporting 0 pending approvals no matter how many were waiting.
+        metrics["pending_approvals"] = db.count("approvals", {"status": "eq.pending"}) or 0
     except Exception as e:
         # Was `pass`. Silence here is the worst possible failure of a monitor: with no
         # metrics every `lt` rule evaluates against None, `_compare` returns False, and
