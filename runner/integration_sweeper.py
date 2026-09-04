@@ -547,11 +547,28 @@ def _age_seconds(ts):
 
 
 def pressure(limit=1000):
+    """Per-project backlog pressure: how much passed work is waiting to integrate.
+
+    Reads EVERY matching row, not the first `limit` of them. This was a capped
+    `db.select(..., order=updated_at.asc, limit=200)`, and db's own truncated-scan
+    detector had been flagging it: "tasks returned exactly its limit (200) ordered
+    by updated_at.asc. Anything past the cap is invisible to this caller."
+
+    Ascending order made that worse than an undercount. The cap always fell on the
+    OLDEST rows, so once the backlog exceeded it the newest waiting work could not
+    appear in the pressure figure at all — no matter how long it waited, or how
+    much of it there was. Pressure is the signal for how starved a project is, so
+    a number that saturates and then stops responding is the one thing it must not
+    be.
+
+    `limit` is now the paging budget rather than a silent horizon: select_all pages
+    to exhaustion and says so out loud if it ever reaches the cap.
+    """
     projects = {p["id"]: p for p in (db.select("projects") or [])}
-    rows = db.select("tasks", {"select": "id,slug,project_id,state,note,updated_at",
-                               "state": "in.(DONE,BLOCKED,RUNNING)",
-                               "order": "updated_at.asc",
-                               "limit": str(limit)}) or []
+    rows = db.select_all("tasks", {"select": "id,slug,project_id,state,note,updated_at",
+                                   "state": "in.(DONE,BLOCKED,RUNNING)"},
+                         order="updated_at.asc",
+                         max_rows=max(int(limit or 0), 1000)) or []
     out = {}
     for t in rows:
         if not _looks_passed(t):
