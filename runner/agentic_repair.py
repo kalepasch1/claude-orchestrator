@@ -19,7 +19,14 @@ MARKER = "AGENTIC-REPAIR DIRECTIVE"
 # --- Repair termination -----------------------------------------------------------------
 # Every repair path in the fleet (auto_remediate, merge_train, queue_janitor, periodic,
 # blocker_quarantine, approval_merge, runner) funnels through repair_patch(). Individual call
-# sites cap themselves with `transient_retries`, but that counter is per-cause and some sites
+# sites cap themselves with `transient_retries`. CORRECTED 2026-08-24: that counter is NOT
+# per-cause — it is a single shared column that conflict, testfail, buildfail, missing-branch,
+# approval_merge and dag_optimizer all increment, so a budget spent on one cause silently
+# denies every other cause its repairs. merge_train's regression guard was quarantining tasks
+# on their FIRST regression finding for exactly this reason, while writing "after 2 repair
+# attempts" into the note; it now derives its own per-cause count. Other sites still share the
+# column. The comment previously said the opposite, and the wrong belief is what hid the bug.
+# Some sites also
 # preserve rather than increment it, so nothing bounded the TOTAL number of times a single task
 # could be re-queued. Measured 2026-08-03: live tasks at remediation_count 19, 21, 23, 24, 26, 28
 # — several with attempt=0, i.e. repaired two dozen times without ever running. ~700 repair
