@@ -23,6 +23,7 @@ if os.path.isfile(env_path):
             os.environ.setdefault(k, v.strip().strip('"').strip("'"))
 
 import db  # noqa: E402
+import quarantine_reason  # noqa: E402
 
 PROJECT_NAME = sys.argv[1] if len(sys.argv) > 1 else "beethoven"
 
@@ -50,6 +51,8 @@ def main():
     page = 1000
     cat_counts = collections.Counter()
     cat_samples = collections.defaultdict(list)
+    reason_counts = collections.Counter()
+    reason_samples = collections.defaultdict(list)
     uncategorized_samples = []
     fetched = 0
     while True:
@@ -79,6 +82,15 @@ def main():
                 cat_counts["(unparsed)"] += 1
                 if len(uncategorized_samples) < 3:
                     uncategorized_samples.append((r.get("slug"), note[:250]))
+            # Reason is a separate axis from category and is the one that names a
+            # remedy. It reads the explicit tag when present and falls back to
+            # classifying the note, so rows parked by the twenty-odd modules that
+            # never wrote a category still land somewhere actionable instead of
+            # in "(unparsed)".
+            reason = quarantine_reason.classify(note)
+            reason_counts[reason] += 1
+            if reason != quarantine_reason.UNKNOWN and len(reason_samples[reason]) < 3:
+                reason_samples[reason].append((r.get("slug"), note[:250]))
         if len(rows) < page:
             break
         offset += page
@@ -90,6 +102,24 @@ def main():
     for cat, n in cat_counts.most_common():
         pct = 100 * n / fetched if fetched else 0
         print(f"  {cat:16s} {n:5d}  ({pct:.1f}%)")
+
+    print()
+    print("=" * 70)
+    print("REASON BREAKDOWN (what would actually unstick each item)")
+    print("=" * 70)
+    for reason, n in reason_counts.most_common():
+        pct = 100 * n / fetched if fetched else 0
+        print(f"  {reason:20s} {n:5d}  ({pct:.1f}%)  -> "
+              f"{quarantine_reason.remedy_for(reason)}")
+
+    print()
+    print("=" * 70)
+    print("SAMPLE NOTES PER REASON (up to 3 each)")
+    print("=" * 70)
+    for reason, samples in reason_samples.items():
+        print(f"\n--- {reason} ---")
+        for slug, note in samples:
+            print(f"  [{slug}] {note}")
 
     print()
     print("=" * 70)
