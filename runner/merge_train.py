@@ -741,6 +741,60 @@ def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, 
     return "regressfail"
 
 
+
+#: Integration worktrees live here and nowhere else. The check is a path test rather
+#: than a flag because the safety argument IS the location: these directories are
+#: created, used and destroyed by integration_runtime, and no human works in one.
+_INTEGRATION_WORKTREE_MARKER = os.path.join(".runtime", "integration-worktrees")
+
+
+def _clear_integration_index(repo):
+    """Put an integration worktree's index back before rebasing in it. Never raises.
+
+    ONE STAGED FILE STOPPED A WHOLE PROJECT MERGING.
+
+    `git rebase` refuses outright when the index is dirty --
+
+        error: cannot rebase: Your index contains uncommitted changes.
+
+    -- with no unmerged paths, so the caller reported "rebase conflict", named no
+    files, and paid for a full agent rebuild. Every card after the first in that pass
+    got the same answer, because the index stayed dirty for the life of the worktree.
+
+    MEASURED 2026-09-04 in the live beethoven integration worktree: 246 staged paths,
+    almost all `.recovery-intent-<slug>.txt` markers -- one per card the pass had
+    already handled -- staged by something running `git add -A` and never committed.
+    Beethoven logged 304 REDOs and zero merges in that window.
+
+    Scoped to integration worktrees BY PATH, and that is the whole safety argument:
+    integration_runtime creates, uses and destroys these directories, no human works
+    in one, and its own contract calls them disposable. A canonical checkout reaching
+    this function is left exactly as it is -- it may be someone's editor state, and
+    resetting it is not this train's business.
+
+    Untracked files are left alone too. node_modules and .nuxt live here and are
+    linked in on purpose; `git rebase` does not mind them, only the index.
+    """
+    try:
+        if _INTEGRATION_WORKTREE_MARKER not in os.path.realpath(str(repo or "")):
+            return False
+        staged = _git(repo, "diff", "--cached", "--name-only")
+        if staged.returncode != 0 or not (staged.stdout or "").strip():
+            return False
+        names = [n for n in staged.stdout.splitlines() if n.strip()]
+        _git(repo, "reset", "--quiet", "HEAD", "--")
+        _git(repo, "checkout", "--", ".")
+        print(f"merge_train: cleared {len(names)} staged path(s) from the integration "
+              f"worktree index before rebasing — a dirty index makes git refuse the "
+              f"rebase outright, which this train has been recording as a content "
+              f"conflict (first: {names[0]})", flush=True)
+        return True
+    except Exception as exc:      # bookkeeping must never fail an integration pass
+        print(f"merge_train: could not clear the integration index ({type(exc).__name__}: "
+              f"{exc}); continuing", flush=True)
+        return False
+
+
 def _rebase_onto_base(repo, branch, base):
     """Step 2: rebase the branch onto the CURRENT base. Returns (ok, conflict_detail).
     Frees any leftover agent worktree first (approval_merge._free_branch — git refuses to
@@ -748,6 +802,7 @@ def _rebase_onto_base(repo, branch, base):
     conflict_detail is a newline-separated list of conflicting filenames (empty on success),
     captured before --abort so repair directives can name the specific files."""
     approval_merge._free_branch(repo, branch)
+    _clear_integration_index(repo)
     if _git(repo, "merge-base", "--is-ancestor", base, branch).returncode == 0:
         return True, ""  # already based on current base
     attempt = _git(repo, "rebase", base, branch, timeout=300)
