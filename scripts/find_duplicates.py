@@ -14,11 +14,13 @@ emits one CSV row per definition site:
     file_lines, inbound_refs, collected_by_pytest, verdict
 
 `verdict` marks exactly one row per symbol as `canonical`; the rest are `duplicate`.
-Canonical is chosen by, in order: the file is collected by the merge gate
-(runner/tests/ or tests/, or a non-test module), most inbound references, largest
-definition. That ordering matters here — the largest copies of these particular
-duplicates live in files pytest never collects, so "largest wins" alone would
+Canonical is chosen by, in order: the file is collected by pytest, most inbound
+references, largest definition. That ordering matters — "largest wins" alone would
 nominate dead code as canonical.
+
+Which files count as collected is READ FROM `pytest.ini`'s `testpaths`, not assumed.
+It was assumed once, the assumption went stale, and the resulting inventory called
+~4,600 lines of live test code dead. See collected_dirs().
 """
 from __future__ import annotations
 
@@ -31,16 +33,56 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# The merge gate runs: pytest runner/tests tests
-COLLECTED_DIRS = ("runner/tests", "tests")
+#: Fallback when pytest.ini declares no testpaths. Historically this was the whole
+#: answer, hardcoded — see collected_dirs() for why that produced a false inventory.
+DEFAULT_COLLECTED_DIRS = ("runner/tests", "tests")
 
 
-def is_collected(rel_path: str) -> bool:
+def collected_dirs(root: Path = REPO_ROOT) -> tuple:
+    """Where pytest actually collects from, read from pytest.ini's `testpaths`.
+
+    THIS USED TO BE A HARDCODED ("runner/tests", "tests") AND IT WENT STALE.
+
+    pytest.ini now declares `testpaths = runner`, which collects the 152 test files
+    at `runner/test_*.py` as well as `runner/tests/`. The constant did not, so this
+    tool reported every one of those files as `collected_by_pytest = NO` — and the
+    inventory it generated concluded that "29 of the 34 definition sites sit in files
+    pytest never collects … ~4,600 lines of uncollected test code", with a suggested
+    follow-up of deleting seven of them.
+
+    Those files run. Acting on that report would have deleted ~4,600 lines of LIVE
+    test coverage on the strength of a constant that disagreed with the config file
+    six directories away. A duplication tool whose collection model is wrong does not
+    produce a slightly-off inventory; it inverts the canonical-selection rule, which
+    ranks "is it collected" FIRST.
+
+    Reading the config is the fix. Fail-soft: an unreadable or testpaths-less
+    pytest.ini falls back to the old pair, which is still better than nothing.
+    """
+    try:
+        import configparser
+        parser = configparser.ConfigParser()
+        parser.read(root / "pytest.ini")
+        raw = parser.get("pytest", "testpaths", fallback="").strip()
+        paths = tuple(p.strip().rstrip("/") for p in raw.split() if p.strip())
+        if not paths:
+            return DEFAULT_COLLECTED_DIRS
+        # Union, not replacement: `testpaths` governs a bare `pytest`, but CI also
+        # names targets explicitly (`pytest runner/tests tests`). A file collected by
+        # either route is collected. Narrowing to testpaths alone would just move the
+        # false negative from runner/*.py onto tests/*.py.
+        return tuple(dict.fromkeys(paths + DEFAULT_COLLECTED_DIRS))
+    except Exception:
+        return DEFAULT_COLLECTED_DIRS
+
+
+def is_collected(rel_path: str, dirs=None) -> bool:
     """True if pytest actually collects this file under the merge-gate command."""
     name = Path(rel_path).name
     if not name.startswith("test_"):
         return True  # a normal module: imported by callers, not collected
-    return any(rel_path.startswith(d + "/") for d in COLLECTED_DIRS)
+    roots = collected_dirs() if dirs is None else dirs
+    return any(rel_path == d or rel_path.startswith(d + "/") for d in roots)
 
 
 def candidate_files(root: Path, topic: str) -> list[Path]:
