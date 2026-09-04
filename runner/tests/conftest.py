@@ -91,7 +91,7 @@ _REPLACEABLE_MODULES = (
     "agentic_coders", "agentic_repair", "branch_lease", "capacity_pacer",
     "causal_attribution", "claude_cli", "db", "exec_telemetry", "kill_switch", "log",
     "notify", "prompt_assembler", "provider_terms", "queue_counters", "requests",
-    "retry_policy", "runner", "subscription_guard",
+    "retry_policy", "router_stats", "runner", "subscription_guard", "task_artifacts",
 )
 
 # Synthetic-only: invented by a test, with no real module behind the name. They still
@@ -104,7 +104,6 @@ _SYNTHETIC_ONLY_MODULES = frozenset({
     "_runner_module_for_timeout_tests",
     "_runner_module_under_test",
     "_test_hot_mod",
-    "router_stats",
 })
 
 
