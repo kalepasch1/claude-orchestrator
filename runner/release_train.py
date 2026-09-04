@@ -2400,7 +2400,22 @@ def run():
         return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                thread_name_prefix="release-project") as pool:
-        return list(pool.map(worker, projects))
+        results = list(pool.map(worker, projects))
+    # RELEASE CURRENCY (slice-4): record an inspectable pass/fail snapshot once
+    # per pass. blocked_triage.release_currency_check() already ALERTS when prod
+    # falls behind, but it is write-only, negative-only and self-limited to one
+    # scan per 6h — so "the train ran and the fleet was current" and "nobody
+    # looked" are the same artifact. This makes currency at ship time a positive,
+    # queryable record. Advisory only: it never blocks a release, and it never
+    # writes a release_currency_scan row, which would advance the alarm's gate
+    # and suppress its next real scan.
+    try:
+        import release_currency_report
+        release_currency_report.gate(source="release_train")
+    except Exception as _rcr_exc:
+        print(f"release_train: currency report skipped ({type(_rcr_exc).__name__})",
+              flush=True)
+    return results
 
 
 # ── dependency-aware release orchestration ────────────────────────────────────
