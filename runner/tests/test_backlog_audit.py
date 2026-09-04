@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import backlog_audit as ba  # noqa: E402
 
 
+# A stub and nothing else: template header, a hex Intent line, no stated request
+# anywhere. This is what the audit exists to find.
 COLLAPSED_PROMPT = """PATCH TEMPLATE 11e3eb1efa96
 Intent: 258e15 333b7e269c12 aaac4e acceptance access active adapt adding architecture
 Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
@@ -26,7 +28,19 @@ Prior merged patterns to adapt:
 [patch-template:11e3eb1efa96]
 
 SOURCE vigil/cont-aaac4e similarity=0.15: PATCH TEMPLATE c1486760bb7d
+"""
 
+# The same stub text, but carrying a real English directive under the
+# "# Original improvement request" marker. This is NOT collapsed, and the
+# distinction is the whole point of _own_body(): counting a consolidated batch
+# that QUOTES the stubs it replaced as itself collapsed is what made the
+# recovery loop re-recover its own output every cycle.
+#
+# This fixture used to BE ``COLLAPSED_PROMPT``, from before _own_body existed
+# (fixture 2026-08-13, _own_body 2026-08-24). The detector changed on purpose
+# and the fixture did not follow, so four tests in this file were asserting the
+# behaviour the fix deliberately removed.
+QUOTES_STUBS_BUT_STATES_INTENT = COLLAPSED_PROMPT + """
 # Original improvement request
 In the repository, repair any configured base branch mismatch so the active base is master.
 """
@@ -74,6 +88,15 @@ class DetectorTests(unittest.TestCase):
     def test_a_generated_stub_is_collapsed(self):
         self.assertTrue(ba.is_collapsed(COLLAPSED_PROMPT))
 
+    def test_a_batch_that_quotes_stubs_but_states_intent_is_not_collapsed(self):
+        """The re-recovery churn this audit exists to end.
+
+        The text quotes template headers and a hex Intent line, but it carries a
+        real request underneath. Calling that collapsed makes the recovery loop
+        re-recover its own consolidated output, forever.
+        """
+        self.assertFalse(ba.is_collapsed(QUOTES_STUBS_BUT_STATES_INTENT))
+
     def test_an_ordinary_prompt_is_not_collapsed(self):
         self.assertFalse(ba.is_collapsed(REAL_PROMPT))
 
@@ -113,7 +136,14 @@ class ExtractionTests(unittest.TestCase):
         self.assertTrue(all(0.0 <= s["similarity"] <= 1.0 for s in sources))
 
     def test_intent_summary_recovers_the_english_the_generator_left(self):
-        summary = ba.intent_summary(COLLAPSED_PROMPT)
+        """The English is in the quoting fixture, because that is where it exists.
+
+        A prompt that carries a stated request under "# Original improvement
+        request" is exactly the one intent_summary can recover English from —
+        and, per is_collapsed, exactly the one that is NOT a collapsed stub. The
+        two facts belong to the same fixture.
+        """
+        summary = ba.intent_summary(QUOTES_STUBS_BUT_STATES_INTENT)
         self.assertIn("base branch mismatch", summary)
         self.assertNotIn("PATCH TEMPLATE", summary)
 
