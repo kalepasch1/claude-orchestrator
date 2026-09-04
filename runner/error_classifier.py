@@ -201,3 +201,86 @@ def error_rate(category=None, window_secs=300):
         return len(entries)
     except Exception:
         return 0
+
+
+# --- Reporting (the half the module was missing) ---------------------------------------
+#
+# track() has always recorded classified errors into a ring buffer, and recent_errors() /
+# error_rate() can query it — but nothing ever SUMMARISED it, so the gap this slice names
+# ("no real-time reporting or detailed logs for debugging") was real: the data existed and
+# there was no way to look at it. An operator asking "what is failing right now, and is it
+# one thing or many?" had to read a hundred raw entries.
+
+#: Window a "right now" report covers, in seconds. ORCH_-prefixed so fleet_control.py can
+#: push it without a code change.
+REPORT_WINDOW_SECS = int(os.environ.get("ORCH_ERROR_REPORT_WINDOW_SECS", "300"))
+
+
+def report(window_secs=None, top_n=5):
+    """A digest of what is failing right now. Never raises; empty dict shape on failure.
+
+    Returns {window_secs, total, by_category, by_severity, top_categories, retryable,
+    latest}. `retryable` is the count that is_retryable() would let through, because the
+    operationally useful split is not "how many errors" but "how many of these will clear
+    on their own" — a burst of transient errors and a burst of logic errors need opposite
+    responses, and a bare total cannot tell them apart.
+    """
+    try:
+        window = REPORT_WINDOW_SECS if window_secs is None else int(window_secs)
+        cutoff = time.time() - window
+        entries = [e for e in _ring if e.get("ts", 0) > cutoff]
+
+        by_category, by_severity = {}, {}
+        retryable = 0
+        for e in entries:
+            cat = e.get("category") or UNKNOWN
+            sev = e.get("severity") or ERROR
+            by_category[cat] = by_category.get(cat, 0) + 1
+            by_severity[sev] = by_severity.get(sev, 0) + 1
+            if cat in (TRANSIENT, RESOURCE):
+                retryable += 1
+
+        ranked = sorted(by_category.items(), key=lambda kv: (-kv[1], kv[0]))
+        latest = sorted(entries, key=lambda e: e.get("ts", 0), reverse=True)[:top_n]
+        return {
+            "window_secs": window,
+            "total": len(entries),
+            "by_category": by_category,
+            "by_severity": by_severity,
+            "top_categories": ranked[:top_n],
+            "retryable": retryable,
+            "latest": [{"category": e.get("category"), "severity": e.get("severity"),
+                        "hook": e.get("hook", ""), "task_id": e.get("task_id"),
+                        "message": str(e.get("message", ""))[:200]} for e in latest],
+        }
+    except Exception:
+        return {"window_secs": 0, "total": 0, "by_category": {}, "by_severity": {},
+                "top_categories": [], "retryable": 0, "latest": []}
+
+
+def render_report(digest=None):
+    """One human-readable block for a log line or an operator ping. Never raises."""
+    try:
+        d = report() if digest is None else digest
+        if not d.get("total"):
+            return f"no errors in the last {d.get('window_secs', 0)}s"
+        head = (f"{d['total']} error(s) in {d['window_secs']}s "
+                f"({d['retryable']} self-clearing, {d['total'] - d['retryable']} not)")
+        cats = ", ".join(f"{name}={n}" for name, n in d.get("top_categories", []))
+        lines = [head, f"  by category: {cats}" if cats else ""]
+        for e in d.get("latest", []):
+            lines.append(f"  [{e.get('severity')}] {e.get('category')}"
+                         f"{'/' + e['hook'] if e.get('hook') else ''}: {e.get('message', '')}")
+        return "\n".join(l for l in lines if l)
+    except Exception:
+        return "error report unavailable"
+
+
+def reset_tracking():
+    """Clear the ring buffer. For tests and for an operator starting a fresh window."""
+    global _ring, _ring_idx
+    try:
+        _ring = []
+        _ring_idx = 0
+    except Exception:
+        pass

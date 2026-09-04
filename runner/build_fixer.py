@@ -54,12 +54,54 @@ def _pick_fixer():
         return None
 
 
+#: Categories where the build log describes something OUTSIDE the code. Asking a model to
+#: name the file that fixes a rate limit yields a plausible, wrong answer.
+NON_CODE_CATEGORIES = ("transient", "resource", "permission")
+
+
+def classify_build_failure(build_log):
+    """(category, is_code_defect) for a red build. Fail-soft: ("unknown", True).
+
+    Defaults to True — treat an unrecognised failure as a code defect and let the model
+    look at it. Suppressing the fix directive on a real build break would be the more
+    expensive mistake, so the guard only fires on a POSITIVE match.
+    """
+    try:
+        import error_classifier
+        verdict = error_classifier.classify(str(build_log or ""))
+        category = (verdict or {}).get("category") or "unknown"
+        return category, category not in NON_CODE_CATEGORIES
+    except Exception:
+        return "unknown", True
+
+
+def _non_code_failure(build_log):
+    """Reason to skip the model call, or "" when the build log looks like a real defect."""
+    category, is_code = classify_build_failure(build_log)
+    return "" if is_code else category
+
+
 def fix_directive(build_log, diff="", task_prompt="", project=None):
     """Return a short actionable fix directive for the build error, or '' if unavailable."""
     if os.environ.get("ORCH_BUILD_FIXER", "true").lower() != "true":
         return ""
     if not (build_log or "").strip():
         return ""
+
+    # CLASSIFY BEFORE SPENDING A MODEL CALL. Not every red build is a code defect. A
+    # network reset, a 429, a provider overload or an exhausted budget all arrive here as
+    # a failed build log, and asking a model "name the file and the change that fixes
+    # this" produces a confident, wrong directive — which is then injected into the task
+    # note, so the NEXT attempt is steered by an explanation of a problem that was never
+    # in the code. A transient failure is fixed by retrying, not by editing a file.
+    #
+    # runner/error_classifier.py already encodes exactly this taxonomy (TRANSIENT /
+    # RESOURCE / PERMISSION / TOOLCHAIN / CONFLICT / LOGIC) and had NO callers anywhere in
+    # runner/. This is its first one.
+    reason = _non_code_failure(build_log)
+    if reason:
+        return ""
+
     pick = _pick_fixer()
     if not pick:
         return ""
