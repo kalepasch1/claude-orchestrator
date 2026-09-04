@@ -29,6 +29,7 @@ Environment:
     ORCH_AUTO_RESOLVE_ENABLED    Kill switch (default: true)
     ORCH_AUTO_RESOLVE_MAX_FILES  Max conflict files to auto-resolve per branch (default: 5)
 """
+import json
 import os
 import re
 import subprocess
@@ -502,6 +503,84 @@ def _verify_merge(repo: str, pre_sha: str, base: str, branch: str,
 verify_merge = _verify_merge
 
 
+#: How long a rejection stands for the SAME (branch tip, base tip) pair. Long enough to
+#: stop an hourly cycle re-asking a settled question; short enough that a gate fix or a
+#: changed verdict is picked up the same day.
+REJECT_LEDGER_TTL_S = float(os.environ.get("ORCH_MERGE_REJECT_TTL_S", "43200") or 43200)
+
+
+def _reject_ledger_path():
+    home = os.environ.get("CLAUDE_ORCH_HOME") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")
+    return os.path.join(home, "merge_rejections.json")
+
+
+def _reject_ledger_load():
+    try:
+        with open(_reject_ledger_path()) as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {k: v for k, v in data.items()
+            if isinstance(v, dict) and (now - float(v.get("at", 0))) <= REJECT_LEDGER_TTL_S}
+
+
+def _reject_key(repo, branch, pre_sha, branch_sha):
+    return f"{os.path.realpath(str(repo))}\0{branch}\0{pre_sha}\0{branch_sha}"
+
+
+def _already_refused(repo, branch, pre_sha, branch_sha):
+    """Has this EXACT merge already been gated and rolled back?
+
+    THE CYCLE THIS ENDS. Read off master's reflog, 2026-09-04:
+
+        05:35:48  merge agent/backlog-batch-beethoven-52d9da1
+        05:35:52  reset: moving to af2ea939...          (four seconds later)
+        ... four more branches, each merged and immediately reset ...
+        06:31:45  merge agent/backlog-batch-beethoven-52d9da1    <- the same six
+        06:31:49  reset: moving to af2ea939...             again, an hour later
+
+    Six branches merged, gated, rolled back, then merged, gated and rolled back again
+    the next cycle. The work is safe -- _reject_merge deliberately keeps the branch --
+    but the fleet re-asks a question it has already answered, and each round costs a
+    real merge, a full anti-regression gate run and a hard reset of the base branch.
+
+    Keyed on BOTH tips, and that is the whole safety argument. The gate is a pure
+    function of the two trees it compares, so re-running it on an unchanged pair cannot
+    return a different verdict. The moment either side moves the key changes and the
+    merge is attempted again -- a fixed branch, an advanced base, or a changed gate all
+    get their fresh answer. A TTL bounds it even if neither moves.
+    """
+    if not pre_sha or not branch_sha:
+        return None
+    try:
+        row = _reject_ledger_load().get(_reject_key(repo, branch, pre_sha, branch_sha))
+    except Exception:
+        return None
+    return (row or {}).get("findings") or None
+
+
+def _remember_refusal(repo, branch, pre_sha, branch_sha, findings):
+    """Best-effort: bookkeeping must never break a merge path."""
+    if not pre_sha or not branch_sha:
+        return
+    try:
+        data = _reject_ledger_load()
+        data[_reject_key(repo, branch, pre_sha, branch_sha)] = {
+            "at": time.time(), "branch": branch, "findings": str(findings)[:400]}
+        path = _reject_ledger_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:
     """Undo a merge that would destroy code and route the branch to manual review.
 
@@ -535,6 +614,8 @@ def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:
     print(f"auto_conflict_resolver: REGRESSION BLOCKED — rolled {repo} back to "
           f"{pre_sha[:12]}, branch {result.get('branch')} preserved: {findings[:400]}",
           flush=True)
+    _remember_refusal(repo, result.get("branch"), pre_sha,
+                      result.get("_branch_sha") or "", findings)
     return result
 
 
@@ -548,6 +629,19 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
     # Pre-merge SHA — the anti-regression gate's "before" tree, and the rollback target.
     _pre = _git(["git", "rev-parse", "HEAD"], repo)
     pre_sha = _pre.stdout.strip() if _pre.returncode == 0 else ""
+    _bs = _git(["git", "rev-parse", branch], repo)
+    branch_sha = _bs.stdout.strip() if _bs.returncode == 0 else ""
+    result["_branch_sha"] = branch_sha
+
+    # Do not re-ask a question already answered on these exact two tips. See
+    # _already_refused for why an unchanged pair cannot produce a different verdict.
+    _prior = _already_refused(repo, branch, pre_sha, branch_sha)
+    if _prior and not dry_run:
+        result["merged"] = False
+        result["strategy"] = "regression-blocked"
+        result["error"] = ("REGRESSION BLOCKED (already refused on these exact tips; "
+                           f"branch preserved): {_prior}")
+        return result
 
     # Step 1: attempt normal merge
     merge_result = _git(["git", "merge", "--no-ff", branch, "-m",
