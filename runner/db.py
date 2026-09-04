@@ -270,7 +270,14 @@ _SECRET_PATTERNS = re.compile(
     r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
     r"|"
     # GitHub PATs and tokens (github_pat_, ghp_, gho_, ghs_, ghu_, ghr_)
-    r"(?:github_pat_|gh[posur]_)[A-Za-z0-9_]{20,}"
+    #
+    # The floor is 8, not 20. A real PAT is 36+ characters after the prefix, so 20
+    # caught every intact one — but a token does not have to be intact to be a
+    # credential, and the way these actually reach a log is inside git's own error
+    # output, which truncates. `ghp_` and its siblings are not a shape that occurs
+    # in prose or in identifiers; there is nothing else they can be, so there is
+    # nothing to lose by matching a short one.
+    r"(?:github_pat_|gh[posur]_)[A-Za-z0-9_]{8,}"
     r"|"
     # Vercel tokens (vcp_)
     r"vcp_[A-Za-z0-9]{20,}"
@@ -289,7 +296,13 @@ _SECRET_PATTERNS = re.compile(
     r"xai-[A-Za-z0-9]{20,}"
     r"|"
     # Generic key=value patterns
-    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
+    #
+    # `pat` and `personal_access_token` are here because ORCH_GIT_PAT is the name
+    # THIS fleet stores its GitHub credential under, and it was not in the list —
+    # so `ORCH_GIT_PAT=ghp_...` passed through the redactor untouched while a
+    # `token=` spelling of the same secret was caught.
+    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential"
+    r"|personal[_-]?access[_-]?token|pat)"
     r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
     r"|"
     # Generic bearer tokens
