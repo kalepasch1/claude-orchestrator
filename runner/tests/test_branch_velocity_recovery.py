@@ -39,6 +39,7 @@ class ControllerTestBase(unittest.TestCase):
             self.addCleanup(p.stop)
 
     @staticmethod
+<<<<<<< HEAD
     def _count_stub(depth, pinned=0):
         """Answer db.count per QUERY, not with one blanket value.
 
@@ -57,23 +58,48 @@ class ControllerTestBase(unittest.TestCase):
                 # that reports more pinned rows than queued rows describes a queue that
                 # cannot exist, and effective_depth would floor at 0 for the wrong reason.
                 return min(pinned, depth)
+=======
+    def _depth_counter(depth, pinned=0):
+        """A db.count stand-in that answers the two queries run() makes DIFFERENTLY.
+
+        run() calls db.count twice per sample: once for total queued depth, and once
+        with {"pinned": "is.true"} for express-lane depth, which it subtracts to get
+        effective_depth. A blanket return_value answers both with the same number, so
+        effective_depth is max(0, d - d) == 0 forever, the integral never accumulates
+        and every clamp/pressure assertion below reads 0. That is a mock artefact, not
+        controller behaviour — the express-lane exclusion landed after these tests were
+        written and the stub was never taught about the second query.
+        """
+        def _count(_table, filt=None):
+            if (filt or {}).get("pinned"):
+                return pinned
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
             return depth
         return _count
 
     def run_with_depths(self, depths, pinned=0, **overrides):
+<<<<<<< HEAD
         """Run the controller once per depth sample; return list of decisions.
 
         `depths` are TOTAL queued depth. `pinned` is how many of those are express-lane
         work, which the integral deliberately excludes; it defaults to 0 so the samples
         drive the controller exactly as the test names describe.
         """
+=======
+        """Run the controller once per depth sample; return list of decisions."""
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
         results = []
         ctx = [patch.object(qv, k, v) for k, v in overrides.items()]
         for c in ctx:
             c.start()
         try:
             for d in depths:
+<<<<<<< HEAD
                 with patch.object(qv.db, "count", side_effect=self._count_stub(d, pinned)):
+=======
+                with patch.object(qv.db, "count",
+                                  side_effect=self._depth_counter(d, pinned)):
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
                     results.append(qv.run())
         finally:
             for c in ctx:

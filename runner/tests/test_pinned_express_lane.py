@@ -82,6 +82,7 @@ class TestPinnedExpressLane(unittest.TestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
     def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+<<<<<<< HEAD
         """Run claim_task against a mocked DB and return the claimed slug.
 
         `projects` and `controls` are forwarded to _make_select so a test can
@@ -91,6 +92,14 @@ class TestPinnedExpressLane(unittest.TestCase):
         proves the express lane beats PROJECT priority, not just task
         priority — died with TypeError instead of asserting anything.
         """
+=======
+        # `projects` was missing from this helper while two tests below already passed
+        # it, so they died with TypeError instead of exercising the express lane, and a
+        # third silently claimed nothing because the default single-project fixture has
+        # no paused/priority variety. _make_select has always accepted it; only the
+        # helper failed to thread it through.
+        """Run claim_task against a mocked DB and return the claimed slug."""
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -103,10 +112,13 @@ class TestPinnedExpressLane(unittest.TestCase):
 
         sel = _make_select(queued, active=active or [], done=done or [],
                            controls=controls or [], projects=projects)
+<<<<<<< HEAD
         # claim_task reads projects through a module-level 300s cache. Without this the
         # first test to run freezes the project table for the whole file and a test's own
         # `projects` fixture is silently ignored.
         db.invalidate_projects_cache()
+=======
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -363,10 +375,38 @@ class TestPinnedExpressLane(unittest.TestCase):
             _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
+<<<<<<< HEAD
         # The pin must NOT rescue a task whose project was filtered out: project
         # eligibility is a gate, the express lane only reorders what survives it.
         self.assertEqual(self._claim(tasks, projects=projects, controls=controls),
                          "unpinned-active")
+=======
+        # The fixtures the test describes now actually exist. Previously it supplied
+        # neither the projects nor the pause row, so _make_select returned the default
+        # single "p1" project, NEITHER task was claimable, and the assertion failed on
+        # None — it was proving nothing about paused filtering. db.py reads the pause
+        # from a controls row (scope=project, paused=true), not from the project record.
+        projects = [
+            {"id": "p-paused", "name": "paused-proj", "priority": 1,
+             "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-active", "name": "active-proj", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+        ]
+        controls = [{"scope": "project", "project": "paused-proj", "paused": True,
+                     "updated_by": "operator"}]
+        self.assertEqual(
+            self._claim(tasks, projects=projects, controls=controls), "unpinned-active")
+
+
+        # NOTE (recovery, unresolved): this assertion does NOT discriminate on the pause
+        # flag — flipping paused to False leaves "unpinned-active" claimed, i.e. the
+        # pinned task is unclaimable here for some other reason (both fixtures carry
+        # repo_path=None, and claim_task also filters on host affinity). The test is now
+        # at least EXECUTING against the fixtures it describes, where before it asserted
+        # against None and proved nothing. Making it genuinely discriminating needs the
+        # express-lane owner to say which of pause / host-affinity / priority is meant to
+        # win; deliberately not guessed at here.
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -390,6 +430,7 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     """Edge case tests for pinned express lane."""
 
     def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+<<<<<<< HEAD
         """Run claim_task against a mocked DB and return the claimed slug.
 
         `projects` and `controls` are forwarded to _make_select so a test can
@@ -397,6 +438,14 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
         Without the `projects` parameter every multi-project ordering test raised
         TypeError at call time instead of exercising the express lane at all.
         """
+=======
+        # `projects` was missing from this helper while two tests below already passed
+        # it, so they died with TypeError instead of exercising the express lane, and a
+        # third silently claimed nothing because the default single-project fixture has
+        # no paused/priority variety. _make_select has always accepted it; only the
+        # helper failed to thread it through.
+        """Run claim_task against a mocked DB and return the claimed slug."""
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -409,10 +458,13 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
 
         sel = _make_select(queued, active=active or [], done=done or [],
                            controls=controls or [], projects=projects)
+<<<<<<< HEAD
         # claim_task reads projects through a module-level 300s cache. Without this the
         # first test to run freezes the project table for the whole file and a test's own
         # `projects` fixture is silently ignored.
         db.invalidate_projects_cache()
+=======
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")

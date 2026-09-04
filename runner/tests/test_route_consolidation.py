@@ -130,13 +130,23 @@ class TestRouteConsolidation(unittest.TestCase):
         self.assertEqual((coder, source), ("deepseek", "agentic_coders.pick"))
 
     def test_syntax(self):
+        import os
         import py_compile
+<<<<<<< HEAD
         # Derived from __file__, not a repo-root-relative literal: pytest runs
         # from runner/, so this failed on the invocation directory rather than
         # on the syntax it exists to check.
         target = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "route_consolidation.py")
         py_compile.compile(target, doraise=True)
+=======
+        # Resolve relative to this test file so the check passes regardless of
+        # pytest's working directory (CI runs the suite from runner/).
+        py_compile.compile(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "route_consolidation.py"),
+            doraise=True,
+        )
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
 
 if __name__ == "__main__":

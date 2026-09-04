@@ -564,5 +564,72 @@ class TestConfigEnvVars(unittest.TestCase):
                 os.environ.pop("ORCH_CONFIG_CACHE_TTL_SEC", None)
 
 
+class TtlConfigIsConsumedAtRuntimeTest(unittest.TestCase):
+    """ORCH_CONFIG_CACHE_TTL_SEC must be consumed on read, not frozen at import.
+
+    The consumer used to snapshot the TTL in __init__, so a fleet-wide push of
+    this key changed nothing until every process restarted — the config was
+    published but never consumed. These tests assert observable behaviour
+    (cache honoured vs bypassed) with no importlib.reload().
+    """
+
+    def setUp(self):
+        self._old = os.environ.get("ORCH_CONFIG_CACHE_TTL_SEC")
+        config_consumer.invalidate_cache()
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("ORCH_CONFIG_CACHE_TTL_SEC", None)
+        else:
+            os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = self._old
+        config_consumer.invalidate_cache()
+
+    def _ttl(self):
+        return config_consumer._consumer._cache_ttl_sec
+
+    def test_default_when_unset(self):
+        os.environ.pop("ORCH_CONFIG_CACHE_TTL_SEC", None)
+        self.assertEqual(self._ttl(), 60.0)
+
+    def test_new_value_consumed_without_reload(self):
+        os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = "120"
+        self.assertEqual(self._ttl(), 120.0)
+        os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = "5"
+        self.assertEqual(self._ttl(), 5.0)
+
+    def test_malformed_value_is_fail_soft_not_raising(self):
+        os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = "not-a-number"
+        self.assertEqual(self._ttl(), 60.0)
+        os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = ""
+        self.assertEqual(self._ttl(), 60.0)
+
+    def test_negative_value_clamped_to_zero(self):
+        os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = "-30"
+        self.assertEqual(self._ttl(), 0.0)
+
+    def test_ttl_change_takes_effect_on_cache_behaviour(self):
+        """A long TTL serves the cached value; dropping it to 0 re-reads."""
+        fake = mock.MagicMock()
+        fake.get_fleet_config.return_value = "first"
+        with mock.patch.object(config_consumer, "fleet_control", fake):
+            os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = "300"
+            self.assertEqual(config_consumer.load_config("some_key", "d"), "first")
+
+            fake.get_fleet_config.return_value = "second"
+            # still cached under the long TTL
+            self.assertEqual(config_consumer.load_config("some_key", "d"), "first")
+
+            # fleet pushes TTL=0 -> cache bypassed, new value consumed immediately
+            os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = "0"
+            self.assertEqual(config_consumer.load_config("some_key", "d"), "second")
+
+    def test_module_import_survives_malformed_fleet_value(self):
+        """A bad fleet value must not wedge importers of config_consumer."""
+        os.environ["ORCH_CONFIG_CACHE_TTL_SEC"] = "garbage"
+        import importlib
+        reloaded = importlib.reload(config_consumer)
+        self.assertEqual(reloaded._consumer._cache_ttl_sec, 60.0)
+
+
 if __name__ == "__main__":
     unittest.main()

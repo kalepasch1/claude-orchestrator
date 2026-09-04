@@ -59,6 +59,7 @@ def hint(task):
     if not hits:
         return ""
     h = hits[0]
+<<<<<<< HEAD
     # One fleet-wide floor: this path and find_transplant_source used to disagree
     # (env default 0.18 here vs a hardcoded 0.25 there), so the same candidate was
     # "similar enough" or not depending on which door it came through. Defensive
@@ -66,6 +67,23 @@ def hint(task):
     # must be rejected, not raise.
     similarity = h.get("similarity", 0)
     if not transplant_discipline.transplant_admissible(similarity):
+=======
+    # Merge note: master read `similarity` here and gated on the env-defaulted
+    # 0.18 floor. This branch replaced that with transplant_discipline, whose
+    # whole point is ONE floor (0.55) — so the union keeps master's `similarity`
+    # binding (the hint text below interpolates it) and this branch's gate.
+    #
+    # The 0.18 fallback is deliberately NOT reinstated: the rationale above says
+    # a barely-related "proven patch" is worse than starting clean, so if the
+    # discipline module cannot answer we emit no hint at all rather than
+    # silently reverting to the weaker floor. Fail closed.
+    similarity = h.get("similarity", 0)
+    try:
+        admissible = transplant_discipline.transplant_admissible(similarity)
+    except Exception:
+        admissible = False
+    if not admissible:
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
         return ""
     return (f"{MARK}: before drafting from scratch, adapt the proven patch "
             f"{h.get('project', '?')}/{h.get('slug', '?')} (similarity {similarity}).\n"

@@ -28,6 +28,7 @@ except Exception:
     fleet_control = None
 
 
+<<<<<<< HEAD
 DEFAULT_CACHE_TTL_SEC = 60.0
 DEFAULT_CACHE_MAX_ENTRIES = 1000
 
@@ -52,6 +53,9 @@ def _env_number(name: str, default: float, cast=float, minimum=None):
     except Exception as exc:
         print(f"[config_consumer] {name} unusable ({exc}); using default {default}", flush=True)
         return default
+=======
+_DEFAULT_CACHE_TTL_SEC = 60.0
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
 
 class _ConfigConsumer:
@@ -63,6 +67,7 @@ class _ConfigConsumer:
 
     @property
     def _cache_ttl_sec(self) -> float:
+<<<<<<< HEAD
         """Re-read on every use so a fleet-pushed TTL takes effect without a restart.
 
         Reading it once in __init__ meant the value was frozen at process start; a
@@ -89,6 +94,27 @@ class _ConfigConsumer:
             return
         for key in sorted(self._cache, key=lambda k: self._cache[k][1])[:len(self._cache) - limit]:
             self._cache.pop(key, None)
+=======
+        """TTL for load_config(), read at USE time, not at import time.
+
+        Two defects this closes:
+          1. Reading ORCH_CONFIG_CACHE_TTL_SEC once in __init__ froze the value
+             at import, so a fleet-wide push of that key (fleet_control) was
+             never consumed until every process restarted — the config existed
+             but nothing consumed it.
+          2. A bare float() on a malformed fleet value raised at import time,
+             wedging every module that imports config_consumer. Config parsing
+             must be fail-soft like the rest of this module.
+        Negative values are clamped to 0 (cache disabled) rather than rejected.
+        """
+        try:
+            raw = os.environ.get("ORCH_CONFIG_CACHE_TTL_SEC", "").strip()
+            if not raw:
+                return _DEFAULT_CACHE_TTL_SEC
+            return max(0.0, float(raw))
+        except Exception:
+            return _DEFAULT_CACHE_TTL_SEC
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
     def load_all(self) -> Dict[str, str]:
         """Return all ORCH_* prefixed environment variables as a dict (without prefix)."""

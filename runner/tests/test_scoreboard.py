@@ -43,7 +43,9 @@ class TestScoreboard(unittest.TestCase):
             sb._SCOREBOARD_FILE = old
 
     def test_syntax(self):
+        import os
         import py_compile
+<<<<<<< HEAD
         # Derived from __file__, not a repo-root-relative literal: pytest runs
         # from runner/, where "runner/scoreboard.py" does not exist, so this
         # test failed on where it was invoked from rather than on the syntax
@@ -51,6 +53,14 @@ class TestScoreboard(unittest.TestCase):
         target = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "scoreboard.py")
         py_compile.compile(target, doraise=True)
+=======
+        # Resolve relative to this test file so the check passes regardless of
+        # pytest's working directory (CI runs the suite from runner/).
+        py_compile.compile(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scoreboard.py"),
+            doraise=True,
+        )
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
 
 if __name__ == "__main__":

@@ -4,7 +4,9 @@ import unittest
 
 class TestWebConsole(unittest.TestCase):
     def test_syntax_check(self):
+        import os
         import py_compile
+<<<<<<< HEAD
         # Absolute path derived from THIS file. The literal "runner/web_console.py" only
         # resolved when pytest happened to run from the repo root; CI runs the runner
         # suite with working-directory: runner, where it raised FileNotFoundError —
@@ -13,6 +15,14 @@ class TestWebConsole(unittest.TestCase):
         target = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "web_console.py")
         py_compile.compile(target, doraise=True)
+=======
+        # Resolve relative to this test file so the check passes regardless of
+        # pytest's working directory (CI runs the suite from runner/).
+        py_compile.compile(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web_console.py"),
+            doraise=True,
+        )
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
     def test_handler_class_exists(self):
         from runner.web_console import ConsoleHandler, start_console

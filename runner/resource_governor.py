@@ -224,6 +224,7 @@ def _per_task_gb():
     return float(os.environ.get("PER_TASK_GB", "0.15"))
 
 
+<<<<<<< HEAD
 # --- Pruning knobs (opt-in per category) ---
 # 2026-08-27: these five were the last import-time snapshots left in this module. The
 # throttling knobs above (_ceiling/_disk_soft/_disk_hard/_ram_hard/...) were converted to
@@ -258,6 +259,29 @@ def _predict_window_h():
     return float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
 
 
+=======
+# --- Pruning knobs (opt-in per category, read live from env per call) ---
+def _log_keep_days():
+    """Days of logs to retain before pruning."""
+    return int(os.environ.get("LOG_KEEP_DAYS", "7"))
+
+def _prune_node_modules():
+    """Whether to prune node_modules directories (opt-in, rebuildable)."""
+    return os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
+
+def _prune_docker():
+    """Whether to prune Docker images and stopped containers (opt-in)."""
+    return os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
+
+def _prune_lib_caches():
+    """Whether to prune ~/Library/Caches (opt-in, aggressive)."""
+    return os.environ.get("PRUNE_LIB_CACHES", "false").lower() == "true"
+
+def _predict_window_h():
+    """Hours ahead to predict disk breach (for predictive throttling)."""
+    return float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
+
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 os.makedirs(HOME, exist_ok=True)
 
 

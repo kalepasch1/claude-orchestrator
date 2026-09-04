@@ -20,12 +20,19 @@ Usage:
   python3 periodic.py spec
   python3 periodic.py txn
 """
+<<<<<<< HEAD
 import os, sys, subprocess, time, json, socket, urllib.error
 import contextlib, threading
 
 try:
     import signal
 except ImportError:  # pragma: no cover - signal is present on every supported platform
+=======
+import os, sys, subprocess, time, json, socket, urllib.error, contextlib, threading
+try:
+    import signal
+except Exception:  # pragma: no cover - signal is always present on POSIX
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
     signal = None
 # Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
 # prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
@@ -97,6 +104,7 @@ _JOB_MAX_RUNTIME_S = int(os.environ.get("ORCH_PERIODIC_JOB_MAX_RUNTIME_S", "3600
 _WEDGE_SKIPS = int(os.environ.get("ORCH_PERIODIC_WEDGE_SKIPS", "3"))
 _SKIP_STATE_PATH = os.path.join(_RUNTIME, "periodic-skips.json")
 
+<<<<<<< HEAD
 # Hard wall-clock cap on ONE job invocation.
 #
 # The skip counter above detects a wedge after the fact; it cannot end one. A job that
@@ -159,12 +167,82 @@ def _time_limit(seconds, job):
             signal.signal(signal.SIGALRM, previous)
         except (ValueError, AttributeError, OSError):
             pass
+=======
+# _JOB_MAX_RUNTIME_S above only lets the NEXT invocation reap a stale holder — it does nothing
+# to the wedged process itself, which keeps running unbounded and keeps holding the lock. That is
+# how 'quarantine' sat wedged for 2906s across 3 consecutive skipped invocations: every skip
+# exited 0, so nothing downstream noticed, and the holder was never actually bounded.
+#
+# So bound the job itself. A job that blows its budget is killed at the budget, the lock is
+# released on the way out, and the invocation exits NONZERO so the failure is visible.
+_JOB_HARD_TIMEOUT_S = int(os.environ.get("ORCH_PERIODIC_JOB_TIMEOUT_S", str(_JOB_MAX_RUNTIME_S)))
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
 # Exit codes, so a scheduler/wrapper can tell the outcomes apart.
 _EX_OK = 0
 _EX_SKIPPED = 75        # EX_TEMPFAIL: legitimately busy, try again next interval
 _EX_WEDGED = 1          # the job has not run for _WEDGE_SKIPS intervals — this is a failure
+<<<<<<< HEAD
 _EX_TIMEOUT = 2         # the job started but had to be interrupted — it did not finish
+=======
+_EX_TIMEOUT = 2         # the job ran but blew its wall-clock budget and was killed
+
+
+class JobTimeout(Exception):
+    """A periodic job exceeded its hard wall-clock budget and was aborted."""
+
+
+class _TimedOut(object):
+    """Sentinel: the job started but was killed at its hard timeout."""
+
+    def __init__(self, job, seconds):
+        self.job, self.seconds = job, seconds
+
+
+def _job_timeout_s(job):
+    """Wall-clock budget for *job*, with a per-job override.
+
+    ORCH_PERIODIC_JOB_TIMEOUT_S__<job> beats ORCH_PERIODIC_JOB_TIMEOUT_S. A value <= 0 disables
+    the bound for that job (escape hatch for a genuinely long-running batch job).
+    """
+    override = os.environ.get(f"ORCH_PERIODIC_JOB_TIMEOUT_S__{job}")
+    if override is not None:
+        try:
+            return int(override)
+        except ValueError:
+            pass
+    return _JOB_HARD_TIMEOUT_S
+
+
+@contextlib.contextmanager
+def _hard_timeout(seconds, job):
+    """Abort the wrapped block with JobTimeout after *seconds*.
+
+    SIGALRM is deliberate rather than a watchdog thread: it interrupts a blocking read inside C
+    code (a socket with no timeout, a subprocess wait), which is exactly the class of hang that
+    wedged this job. A thread could only observe the hang, not break it.
+
+    Degrades to a no-op where SIGALRM cannot be armed — non-main thread or non-POSIX — so
+    importing/calling jobs from a worker never breaks.
+    """
+    if not seconds or seconds <= 0 or signal is None or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _fire(signum, frame):
+        raise JobTimeout(f"{job}: exceeded hard timeout of {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.alarm(int(seconds))
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
 
 
 class _Skipped(object):
@@ -455,6 +533,7 @@ def _invoke_job(job):
         and let the next one run. Disabling here would take a healthy job offline for the
         duration of an outage, which is the opposite of what we want.
     """
+<<<<<<< HEAD
     seconds = _job_timeout(job)
     try:
         with _time_limit(seconds, job):
@@ -470,6 +549,21 @@ def _invoke_job(job):
         # return a typed result so the process can exit non-zero instead of reporting success.
         _escalate_timeout(job, seconds, str(exc))
         return _TimedOut(job, str(exc), seconds)
+=======
+    seconds = _job_timeout_s(job)
+    started = time.time()
+    try:
+        with _hard_timeout(seconds, job):
+            return JOBS[job]()
+    except JobTimeout:
+        held = int(time.time() - started)
+        print(f"periodic {job}: TIMEOUT — aborted after {held}s (budget {seconds}s). The job was "
+              f"killed rather than left holding its lock; raise "
+              f"ORCH_PERIODIC_JOB_TIMEOUT_S__{job} if this job legitimately needs longer.",
+              file=sys.stderr, flush=True)
+        _escalate_timeout(job, held, seconds)
+        return _TimedOut(job, held)
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
@@ -501,6 +595,27 @@ def _invoke_job(job):
         print(f"periodic {job}: skipped this cycle — transient network error "
               f"({type(exc).__name__}: {exc}). The job is fine; the next invocation runs.")
         return None
+
+
+def _escalate_timeout(job, held, budget):
+    """Record a timeout as real work, the same way a wedge is escalated.
+
+    A timeout that only prints is the bug this fix exists to remove: the failure has to survive
+    into somewhere a human or the queue will see it.
+    """
+    try:
+        db.insert("approvals", {
+            "project": "", "kind": "periodic_timeout", "status": "pending",
+            "title": f"periodic job '{job}' hit its {budget}s hard timeout",
+            "detail": (f"periodic.py aborted '{job}' after {held}s. Reproduce with:\n"
+                       f"    cd runner && python3 -c \"import periodic; periodic.JOBS['{job}']()\"\n"
+                       f"Find the unbounded call (subprocess without timeout, blocking socket "
+                       f"read, or deadlock) and bound it at the source."),
+            "risk": "the job is no longer wedging the scheduler, but it is also not completing, "
+                    "so its work is not getting done",
+        })
+    except Exception:
+        pass  # never let escalation fail the runner
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
@@ -1606,7 +1721,15 @@ if __name__ == "__main__":
     # rc 0 = the job ran. rc 75 = legitimately busy, retry next interval. rc 1 = WEDGED.
     # rc 2 = started but had to be interrupted, so its work for this cycle did not happen.
     # Returning 0 for a skip is what let three of four jobs no-op through a verification pass
+<<<<<<< HEAD
     # while every caller recorded success; a timeout reported success the same way.
+=======
+    # while every caller recorded success.
+    if isinstance(outcome, _TimedOut):
+        print(f"periodic {job}: exiting {_EX_TIMEOUT} — TIMEOUT after {outcome.seconds}s",
+              file=sys.stderr, flush=True)
+        sys.exit(_EX_TIMEOUT)
+>>>>>>> agent/improve-enhance-testing-framework-slice-4
     if isinstance(outcome, _Skipped):
         if outcome.wedged:
             print(f"periodic {job}: exiting {_EX_WEDGED} — WEDGED ({outcome.skips} consecutive "
