@@ -50,7 +50,18 @@ def _run_cmd(cmd: str, cwd: str, timeout: int = None) -> dict:
 
 
 def _detect_test_cmd(repo_path: str) -> str:
-    """Auto-detect the project's test command from package.json or pyproject.toml."""
+    """Auto-detect the project's test command from package.json or pyproject.toml.
+
+    NEVER append `|| true` (or any other exit-code swallow) to a command returned from
+    here. `_run_cmd` derives `passed` from `returncode == 0`, and `run_unit_tests`
+    reports `failed: 0 if passed else 1` — so a swallowed exit code does not merely
+    hide a failure, it makes this module structurally incapable of reporting one. Every
+    pytest-based project came back green, always, however broken.
+
+    Same defect as package.json's `npm test`, which ended in `|| true` and made the
+    fleet's merge gate unfailable. A test reporter that cannot report a failure is
+    worse than no reporter: it is a green light with nothing behind it.
+    """
     if UNIT_TEST_CMD:
         return UNIT_TEST_CMD
 
@@ -71,12 +82,12 @@ def _detect_test_cmd(repo_path: str) -> str:
     # Check for pytest
     for name in ("pyproject.toml", "setup.cfg", "pytest.ini"):
         if os.path.isfile(os.path.join(repo_path, name)):
-            return "python -m pytest --tb=short -q 2>&1 || true"
+            return "python -m pytest --tb=short -q"
 
     # Check runner/tests
     test_dir = os.path.join(repo_path, "runner", "tests")
     if os.path.isdir(test_dir):
-        return f"python -m pytest {test_dir} --tb=short -q 2>&1 || true"
+        return f"python -m pytest {test_dir} --tb=short -q"
 
     return ""
 
@@ -103,7 +114,7 @@ def run_browser_tests(repo_path: str) -> dict:
     if not BROWSER_TESTS_ENABLED:
         return {"ok": True, "note": "browser tests disabled (set ORCH_BROWSER_TESTS=true)"}
 
-    cmd = BROWSER_TEST_CMD or "python -m pytest tests/browser --tb=short -q 2>&1 || true"
+    cmd = BROWSER_TEST_CMD or "python -m pytest tests/browser --tb=short -q"
     result = _run_cmd(cmd, repo_path, timeout=TEST_TIMEOUT * 2)
     return {
         "ok": result["passed"],
