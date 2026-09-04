@@ -101,17 +101,43 @@ class _ConfigConsumer:
         except Exception:
             return {}
 
+    def _env_lookup(self, key: str) -> str:
+        """Resolve ORCH_{key} from the environment, upper-case first.
+
+        Recovered defect (orch-config-consumption, 2026-08-24): this consumer
+        read `f"ORCH_{key}"` verbatim while fleet_control.get_fleet_config reads
+        `f"ORCH_{key}".upper()`. Environment variables are conventionally
+        upper-case and fleet_control writes them that way, so any caller passing
+        a lower- or mixed-case key silently got the DEFAULT here while the very
+        same key resolved correctly through fleet_control — a fleet-wide config
+        push would appear to apply on one path and be ignored on the other.
+
+        Upper-case is tried first so the two paths agree; the verbatim key is
+        kept as a fallback so an existing exactly-cased ORCH_ variable that is
+        NOT upper-case keeps working. Fail-soft: never raises.
+        """
+        try:
+            if not key or not isinstance(key, str):
+                return ""
+            for env_key in (f"ORCH_{key}".upper(), f"ORCH_{key}"):
+                value = os.environ.get(env_key, "").strip()
+                if value:
+                    return value
+            return ""
+        except Exception:
+            return ""
+
     def get(self, key: str, default: str = "") -> str:
         """Get ORCH_{key} from environment, stripping whitespace.
 
-        Returns default if key is None/empty/not found/whitespace-only.
-        Never raises — fail-soft by design.
+        Case-insensitive on the key (see _env_lookup) so this agrees with
+        fleet_control.get_fleet_config. Returns default if key is
+        None/empty/not found/whitespace-only. Never raises — fail-soft by design.
         """
         try:
             if not key or not isinstance(key, str):
                 return default
-            env_key = f"ORCH_{key}"
-            value = os.environ.get(env_key, "").strip()
+            value = self._env_lookup(key)
             return value if value else default
         except Exception:
             return default
