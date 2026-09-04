@@ -429,7 +429,7 @@ def wip_stash_rescue(st=None):
 STRANDED_ABSENT_RATIO = float(os.environ.get("SENTINEL_STRANDED_ABSENT_RATIO", "0.5"))
 
 
-def _is_really_absent_from(base, mb, sha, path):
+def _is_really_absent_from(base, mb, sha, path, ratio=None):
     """Has this file's branch work actually failed to reach `base`, by CONTENT?
 
     THE FALSE ALARM THIS ENDS. `preserve-ec580138-fleet-work` fired this alert every
@@ -469,7 +469,7 @@ def _is_really_absent_from(base, mb, sha, path):
         return True          # base does not have the file at all -- genuinely absent
     body = current.stdout or ""
     absent = sum(1 for a in added if a not in body)
-    return (absent / len(added)) >= STRANDED_ABSENT_RATIO
+    return (absent / len(added)) >= (STRANDED_ABSENT_RATIO if ratio is None else ratio)
 
 
 
@@ -537,6 +537,103 @@ def stranded_commit_rescue(st=None):
         except Exception:
             pass
     st["stranded_branches"] = len(found)
+
+
+#: How far back in the base branch's reflog to look for commits it no longer contains.
+SENTINEL_DROPPED_REFLOG_DEPTH = int(os.environ.get("SENTINEL_DROPPED_REFLOG_DEPTH", "400"))
+
+#: A dropped commit must be more clearly gone than a stranded branch before it is
+#: reported. Branches are few and deliberate; the base branch's reflog is thousands of
+#: entries of ordinary rebasing, and a scan that cries wolf there is worse than none --
+#: which is the lesson stranded_commit_rescue had already learned the hard way.
+DROPPED_ABSENT_RATIO = float(os.environ.get("SENTINEL_DROPPED_ABSENT_RATIO", "0.9"))
+
+#: Alert only once per dropped sha; the reflog keeps it for ninety days.
+_DROPPED_SEEN = set()
+
+
+def dropped_commit_rescue(st=None):
+    """Commits that were ON the base branch and are no longer reachable from it.
+
+    THE BLIND SPOT THIS FILLS. stranded_commit_rescue scans local BRANCHES. On
+    2026-09-04 a commit was found that no branch could have announced:
+
+        2e8bb545  fix(repo-lock): one repo got two locks, because the key was a
+                  path spelling
+
+    It had been on master. It is reachable from nothing now -- it survives only as a
+    dangling merge with a stash entry beside it -- and the fix it carried
+    (realpath-canonicalised lock keys, so that ~/claude-orchestrator and
+    /Users/kpasch/Documents/beethoven/claude-orchestrator stop taking two different
+    locks on one repository) was simply absent from the working tree again. Nothing
+    announced that. It surfaced weeks-of-debugging later, as a test failing for no
+    reason anyone had caused.
+
+    A branch-only scan is structurally unable to see this: the commit is on no branch.
+    The reflog is, and it is cheap -- `git reflog show master` returns 5,633 entries in
+    under a second on this repository, and only the newest SENTINEL_DROPPED_REFLOG_DEPTH
+    are considered.
+
+    Content-aware for the same reason stranded_commit_rescue now is: a rebase rewrites
+    every sha it touches, so "not reachable" is the normal state of an ordinary day's
+    work and reporting it would be noise on a scale nobody reads. Only a commit whose
+    ADDED LINES are absent from the base's current content is a real loss.
+    """
+    st = {} if st is None else st
+    base = os.environ.get("ORCH_DEFAULT_BRANCH", "master")
+    r = git("reflog", "show", base, f"--max-count={SENTINEL_DROPPED_REFLOG_DEPTH}",
+            "--format=%H")
+    if r.returncode != 0:
+        return
+    found = []
+    for sha in dict.fromkeys((r.stdout or "").split()):
+        if sha in _DROPPED_SEEN:
+            continue
+        if git("merge-base", "--is-ancestor", sha, base).returncode == 0:
+            continue                      # still on the branch; nothing to say
+        # AGAINST ITS FIRST PARENT, NOT ITS MERGE BASE.
+        #
+        # merge-base..sha spans a whole branch's history, so for the auto-resolved
+        # merges this fleet produces it hands back every line that branch ever
+        # touched -- and any of those files that has been EDITED on base since will
+        # read as "absent" line by line. First measured run, depth 60: 13 alerts, and
+        # spot-checking the samples found runner/rca_engine.py, realtime_sync.py,
+        # config_approval_engine.py, vercel_config_guard.py and experiment_analyzer.py
+        # all present on master. Only two were real.
+        #
+        # sha^..sha is what this commit actually introduced. Narrower, far cheaper,
+        # and it is the question being asked: did what this commit brought in survive?
+        parent = git("rev-parse", "--verify", f"{sha}^").stdout.strip()
+        if not parent:
+            continue                      # a root commit; nothing to compare against
+        changed = git("diff", "--name-only", parent, sha).stdout or ""
+        touched = [f for f in changed.splitlines()
+                   if f.startswith("runner/") or f.startswith("web/")]
+        touched = [f for f in touched
+                   if _is_really_absent_from(base, parent, sha, f,
+                                             ratio=DROPPED_ABSENT_RATIO)]
+        _DROPPED_SEEN.add(sha)
+        if not touched:
+            continue                      # rewritten, or landed under another sha
+        subject = (git("log", "-1", "--format=%s", sha).stdout or "").strip()
+        found.append({"sha": sha[:10], "files": len(touched),
+                      "sample": touched[:5], "subject": subject[:120]})
+    for f in found:
+        log(f"DROPPED-COMMIT ALERT: {f['sha']} was on {base} and is reachable from "
+            f"nothing now, and {f['files']} of its runner/web file(s) are absent from "
+            f"{base}'s current content — '{f['subject']}' — sample {f['sample']}")
+    if found:
+        try:
+            import db as _db, json as _json
+            _db.insert("coordination_tasks", {
+                "task_type": "dropped_commit_alert",
+                "payload": _json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                        "base": base, "commits": found[:20]})[:8000]},
+                       upsert=False)
+        except Exception:
+            pass
+    st["dropped_commits"] = len(found)
+
 
 
 # ── 2b. nested-worktree hygiene ───────────────────────────────────────────────
@@ -1163,6 +1260,7 @@ def main():
     try:
         wip_stash_rescue(st)   # anonymous WIP-on-base stashes become branches: unloseable
         stranded_commit_rescue(st)  # side-branch commits not in base: self-announcing
+        dropped_commit_rescue(st)   # and commits that left the graph entirely
     except Exception as e:
         log("wip-stash-rescue-error", e)
     try:

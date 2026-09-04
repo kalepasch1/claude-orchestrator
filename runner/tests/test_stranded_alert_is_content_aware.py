@@ -119,3 +119,77 @@ def test_short_lines_alone_never_count_as_landed_work(repo):
     mb = _git(repo, "merge-base", "master", side).stdout.strip()
     # Nothing substantive was added, so there is nothing to call stranded.
     assert not sentinel._is_really_absent_from("master", mb, side, "runner/tiny.py")
+
+
+# ── commits that leave the graph entirely ────────────────────────────────────
+
+def test_a_commit_dropped_from_the_base_branch_is_reported(repo, monkeypatch):
+    """The blind spot: stranded_commit_rescue scans BRANCHES, and this is on none.
+
+    Found this way on 2026-09-04: 2e8bb545 ("one repo got two locks, because the key
+    was a path spelling") had been on master, was reachable from nothing, and the fix
+    it carried was simply absent from the working tree again. Nothing announced it; it
+    surfaced later as a test failing for no reason anyone had caused.
+    """
+    _git(repo, "checkout", "-b", "work")
+    (repo / "runner" / "dropped.py").write_text("\n".join(LINES) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "a real improvement")
+    good = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    # it was on master, and then master moved away from it
+    _git(repo, "checkout", "master")
+    _git(repo, "merge", "--ff-only", "work")
+    _git(repo, "reset", "--hard", "HEAD~1")
+    _git(repo, "branch", "-D", "work")
+    assert _git(repo, "merge-base", "--is-ancestor", good, "master").returncode != 0
+
+    monkeypatch.setattr(sentinel, "_DROPPED_SEEN", set())
+    seen = []
+    monkeypatch.setattr(sentinel, "log", lambda m: seen.append(m))
+    st = {}
+    sentinel.dropped_commit_rescue(st)
+    assert st["dropped_commits"] == 1, seen
+    assert any("dropped.py" in m for m in seen), seen
+
+
+def test_a_commit_whose_content_came_back_is_not_reported(repo, monkeypatch):
+    """Rebasing rewrites every sha it touches. Reporting that would be pure noise."""
+    _git(repo, "checkout", "-b", "work2")
+    (repo / "runner" / "rebased.py").write_text("\n".join(LINES) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "improvement")
+    _git(repo, "checkout", "master")
+    _git(repo, "merge", "--ff-only", "work2")
+    _git(repo, "reset", "--hard", "HEAD~1")
+    _git(repo, "branch", "-D", "work2")
+    # the same content lands again under a different sha, as a rebase produces
+    (repo / "runner" / "rebased.py").write_text("\n".join(LINES) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "improvement, rebased")
+
+    monkeypatch.setattr(sentinel, "_DROPPED_SEEN", set())
+    seen = []
+    monkeypatch.setattr(sentinel, "log", lambda m: seen.append(m))
+    st = {}
+    sentinel.dropped_commit_rescue(st)
+    assert st["dropped_commits"] == 0, seen
+
+
+def test_each_dropped_commit_is_announced_once(repo, monkeypatch):
+    """The reflog keeps a sha for ninety days; the alert must not."""
+    _git(repo, "checkout", "-b", "work3")
+    (repo / "runner" / "once.py").write_text("\n".join(LINES) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "improvement")
+    _git(repo, "checkout", "master")
+    _git(repo, "merge", "--ff-only", "work3")
+    _git(repo, "reset", "--hard", "HEAD~1")
+    _git(repo, "branch", "-D", "work3")
+
+    monkeypatch.setattr(sentinel, "_DROPPED_SEEN", set())
+    monkeypatch.setattr(sentinel, "log", lambda m: None)
+    first, second = {}, {}
+    sentinel.dropped_commit_rescue(first)
+    sentinel.dropped_commit_rescue(second)
+    assert first["dropped_commits"] == 1 and second["dropped_commits"] == 0
