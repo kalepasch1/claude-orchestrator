@@ -15,6 +15,13 @@ import os, sys, json, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+try:
+    import express_lane
+except Exception as _e:  # fail-soft: the controller must run even if the module moves
+    express_lane = None
+    print(f"[queue-velocity] express_lane unavailable ({_e}); "
+          f"operator-origin shelve protection degraded")
+
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 STATE_FILE = os.path.join(HOME, "queue_velocity_state.json")
 WINDOW_S = 900  # 15 minutes
@@ -183,7 +190,8 @@ def _shelve_lowest_ev(count):
         # a backlog drove the integral over threshold, the I-action fired, and the express work
         # itself got shelved. Pinning is an explicit operator instruction; the PID does not get
         # to override it. Low confidence is not a reason to drop pinned work.
-        tasks = db.select("tasks", {"select": "id,slug,confidence,project_id,pinned",
+        tasks = db.select("tasks", {"select": "id,slug,confidence,project_id,pinned,"
+                                              "submitted_by,submitted_by_label",
                                      "state": "eq.QUEUED",
                                      "pinned": "not.is.true",
                                      "order": "confidence.asc.nullsfirst",
@@ -196,6 +204,20 @@ def _shelve_lowest_ev(count):
             # migration, so the server-side filter can be silently dropped; never rely on it alone.
             if t.get("pinned"):
                 print(f"[queue-velocity] refusing to shelve pinned task {t.get('slug')}")
+                continue
+            # OPERATOR ORIGIN IS ALSO EXEMPT. Pinning was the only exemption, but a
+            # drop-box task carries no pin and usually has no confidence score yet, so it
+            # sorted FIRST in `confidence.asc.nullsfirst` — the PID shelved the owner's own
+            # directives preferentially over the machine-generated work they outrank at
+            # claim time. Both of the tasks that produced this fix carry the note "shelved
+            # by queue-velocity PID (low EV, integral too high)". An unscored task is
+            # unmeasured, not low-value, and the operator's instruction is not the PID's to
+            # override.
+            operator, why = (express_lane.is_operator_origin(t)
+                             if express_lane is not None else (False, "unavailable"))
+            if operator:
+                print(f"[queue-velocity] refusing to shelve operator task "
+                      f"{t.get('slug')} ({why})")
                 continue
             action, detail = _recovery_action(t)
             if action == "recovered":
