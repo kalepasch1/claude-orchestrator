@@ -19,6 +19,7 @@ Runs every couple minutes; also callable. This is the "self-remedy everything" l
 """
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import base_branch
 import db
 import legal_filter
 import pipeline_contract
@@ -764,7 +765,9 @@ def _spawn_subtasks(task, subs, return_ids=False):
         try:
             row = db.insert("tasks", {
                 "project_id": task.get("project_id"), "slug": child, "kind": "build", "state": "QUEUED",
-                "remediation_count": 0, "base_branch": task.get("base_branch") or "main",
+                # `or "main"` here propagated a wrong base onto every decomposed child.
+                "remediation_count": 0,
+                "base_branch": base_branch.resolve(task=task),
                 "material": bool(task.get("material")),
                 "prompt": prompt_text,
                 "note": f"auto-decomposed from {task['slug']}"})
