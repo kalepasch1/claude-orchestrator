@@ -208,7 +208,12 @@ def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
     try:
         with commit_overlay.checkout(repo, branch, prefix="build-overlay-") as overlay:
             tmp = overlay["path"]
-            dependency_prewarm.link_shared_runtime(repo, tmp)
+            # share_generated=False: a production build regenerates .nuxt itself.
+            # Linking the checkout's copy in pointed this build at a DEV-mode
+            # .nuxt (app.config.mjs carries `import.meta.hot`) and postcss died
+            # on it — a red that says nothing about the commit, and the reason
+            # no production proof could be earned from this path.
+            dependency_prewarm.link_shared_runtime(repo, tmp, share_generated=False)
             removed = _apply_vercelignore(tmp, overlay["files"]) if vercel_context else []
             # Same shell problem as the test gate: `bash -lc` sources ~/.bash_profile, but
             # nvm is initialised in ~/.zshrc on this host, so a login bash never sees node.

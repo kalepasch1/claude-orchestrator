@@ -895,7 +895,7 @@ def runtime_root(repo):
 GENERATED_SHARED_DIRS = (".nuxt",)
 
 
-def link_shared_runtime(repo, worktree):
+def link_shared_runtime(repo, worktree, share_generated=True):
     """Reuse warmed node_modules/env files in an ephemeral worktree.
 
     This intentionally mirrors the package-root discovery above so nested apps
@@ -930,6 +930,30 @@ def link_shared_runtime(repo, worktree):
     Symlinked rather than cloned, unlike node_modules: it is small, it is
     regenerable, and a worktree that runs `nuxt prepare` should refresh the
     shared copy rather than fork a stale one.
+
+    WHY A PRODUCTION BUILD PASSES share_generated=False
+    ---------------------------------------------------
+    Everything above is about a worktree that RUNS tests. A worktree that runs
+    the production build is the opposite case: it generates .nuxt itself, as
+    the first thing it does, so it needs nothing linked — and linking it is not
+    merely redundant, it is what made the build fail.
+
+    The main checkout's .nuxt holds whatever mode it was last used in. Ours
+    holds a dev state: .nuxt/app.config.mjs contains `import.meta.hot`. Point a
+    production build at that through a symlink and postcss reads a dev artifact
+    and dies with
+
+        [vite:css] [postcss] Cannot use 'import.meta' outside a module
+
+    against web/assets/main.css, which names a file that has nothing wrong with
+    it. Bisected in a faithful replica of the build overlay: identical tree,
+    identical cloned node_modules, .env linked — green without the .nuxt link,
+    red with it, twice each. The same commit builds green in the real checkout.
+
+    That is a gate failing an innocent commit, which is worse than a gate that
+    does not run: production_push_guard refused the promotion, correctly by its
+    own logic, on evidence the harness manufactured. It also means the two
+    trees write into one .nuxt concurrently, which is a race nobody wants.
     """
     roots = package_roots(repo) or [repo]
     linked = []
@@ -1007,6 +1031,7 @@ def link_shared_runtime(repo, worktree):
         activate_modules(modules, os.path.join(target_root, "node_modules"))
         for shared in (".env", ".env.local"):
             link_one(os.path.join(root, shared), os.path.join(target_root, shared))
-        for generated in GENERATED_SHARED_DIRS:
-            link_one(os.path.join(root, generated), os.path.join(target_root, generated))
+        if share_generated:
+            for generated in GENERATED_SHARED_DIRS:
+                link_one(os.path.join(root, generated), os.path.join(target_root, generated))
     return linked
