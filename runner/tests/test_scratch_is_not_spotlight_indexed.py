@@ -159,3 +159,27 @@ def test_a_worktree_path_is_still_what_it_was(monkeypatch, tmp_path):
     repo = str(tmp_path)
     expected_key = hashlib.sha256(os.path.realpath(repo).encode()).hexdigest()[:20]
     assert integration_runtime._worktree_path(repo).endswith(expected_key)
+
+
+def test_the_retired_default_arriving_through_the_environment_is_refused(monkeypatch):
+    """A LIVE process carried ORCH_SCRATCH_ROOT=<LEGACY_ROOT> from before the fix.
+
+    pid 79470 -- a fleet worker started 2026-09-04 00:43, under a keepalive.sh
+    running since 2026-09-02 -- had both ORCH_SCRATCH_ROOT and TMPDIR pointing at
+    the indexed root, so every overlay its children built landed back there (one of
+    them an `expo export` at 180% CPU when this was found). The runner/.env that
+    originally pinned it had already been corrected; the value was arriving from a
+    process environment nobody can edit without a restart. exclude_from_spotlight is
+    called on it and does not hold -- which is the whole reason the `.noindex`
+    SUFFIX replaced the marker file.
+    """
+    monkeypatch.setenv("ORCH_SCRATCH_ROOT", scratch.LEGACY_ROOT)
+    assert scratch.root() == scratch.DEFAULT_ROOT
+
+
+def test_only_the_retired_default_is_refused(monkeypatch, tmp_path):
+    """Any other explicit path really is an operator's choice, and still wins."""
+    monkeypatch.setattr(scratch, "is_purgeable", lambda path: False)
+    chosen = tmp_path / "my-scratch"
+    monkeypatch.setenv("ORCH_SCRATCH_ROOT", str(chosen))
+    assert scratch.root() == str(chosen)

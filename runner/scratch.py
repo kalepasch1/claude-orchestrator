@@ -70,6 +70,49 @@ DEFAULT_ROOT = os.path.join(os.path.expanduser("~"), ".orch-scratch.noindex")
 LEGACY_ROOT = os.path.join(os.path.expanduser("~"), ".orch-scratch")
 
 
+_ANNOUNCED_MIGRATION = set()
+
+
+def _retire_the_legacy_default(configured):
+    """Treat an inherited `ORCH_SCRATCH_ROOT=<LEGACY_ROOT>` as the ghost it is.
+
+    Moving the default to `.noindex` was inert on this machine once already, because
+    runner/.env pinned the old path. That file was corrected -- and the old value
+    kept arriving anyway, from a LIVE PROCESS ENVIRONMENT:
+
+        pid 79470, started 2026-09-04 00:43, a fleet worker under keepalive.sh
+        (running since 2026-09-02, i.e. from before the fix)
+          ORCH_SCRATCH_ROOT=/Users/kpasch/.orch-scratch
+          TMPDIR=/Users/kpasch/.orch-scratch
+
+    Children inherit it, so every overlay that worker built landed back in the
+    indexed root -- one of them an `expo export` at 180% CPU at the time this was
+    found. `exclude_from_spotlight` is already called on it and does not hold; that
+    is the whole reason the `.noindex` SUFFIX was adopted instead of the marker file.
+
+    So one specific value is refused: LEGACY_ROOT, the pre-2026-09-03 default. It is
+    not an operator's choice, it is the old default arriving late through an
+    environment nobody can edit without a restart. Any OTHER explicit override is
+    still honoured exactly as before (with the existing indexable warning), because
+    that one really is a choice.
+
+    Nothing is lost: scratch is disposable by definition, and in-flight builds hold
+    absolute paths they resolved at start, so nothing moves under a running build.
+    """
+    try:
+        same = os.path.abspath(os.path.expanduser(configured)) == os.path.abspath(LEGACY_ROOT)
+    except Exception:
+        return configured
+    if not same:
+        return configured
+    if LEGACY_ROOT not in _ANNOUNCED_MIGRATION:
+        _ANNOUNCED_MIGRATION.add(LEGACY_ROOT)
+        print(f"[scratch] ORCH_SCRATCH_ROOT={LEGACY_ROOT} is the retired default, which "
+              f"macOS indexes; using {DEFAULT_ROOT} instead. Restart long-lived fleet "
+              f"processes to stop inheriting the old value.", flush=True)
+    return DEFAULT_ROOT
+
+
 class PurgeableScratchRoot(RuntimeError):
     """Raised when the configured scratch root is a directory the OS may clear."""
 
@@ -90,6 +133,7 @@ def root() -> str:
     scratch root that quietly falls back to /tmp is the defect, not the fix.
     """
     configured = os.environ.get("ORCH_SCRATCH_ROOT", "").strip() or DEFAULT_ROOT
+    configured = _retire_the_legacy_default(configured)
     path = os.path.abspath(os.path.expanduser(configured))
     if is_purgeable(path):
         raise PurgeableScratchRoot(
