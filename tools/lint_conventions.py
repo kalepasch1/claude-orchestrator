@@ -197,9 +197,26 @@ class ConventionChecker(ast.NodeVisitor):
                         f'Magic number {val} in expression should be assigned to named constant'
                     ))
 
+    #: Method names the standard library DEFINES, in the case it defines them in.
+    #:
+    #: unittest calls setUp/tearDown/setUpClass/tearDownClass by exact name; a rule
+    #: telling you to rename them to snake_case is telling you to break the
+    #: framework, and the only way to comply is to stop using unittest. Flagging
+    #: them taught readers that NAMING_CONVENTION hits are things you cannot act
+    #: on, which is how a linter stops being read. Ten test files in runner/tests
+    #: alone carry these; they were all sitting in the grandfathered baseline.
+    _FRAMEWORK_METHOD_NAMES = frozenset({
+        "setUp", "tearDown", "setUpClass", "tearDownClass",
+        "setUpModule", "tearDownModule", "addTypeEqualityFunc",
+        "assertEqual", "assertTrue", "assertFalse", "assertRaises",
+        "runTest", "shortDescription", "subTest", "maxDiff",
+    })
+
     def _check_function_naming(self, node: ast.FunctionDef) -> None:
         """Check function names follow snake_case."""
         name = node.name
+        if name in self._FRAMEWORK_METHOD_NAMES:
+            return
         if not name.startswith('_'):
             if not self._is_snake_case(name):
                 self.violations.append(ConventionViolation(
@@ -237,9 +254,26 @@ class ConventionChecker(ast.NodeVisitor):
                 self._check_try_except(child)
 
     def _check_try_except(self, try_node: ast.Try) -> None:
-        """Verify try/except blocks have appropriate error handling."""
+        """Verify try/except blocks have appropriate error handling.
+
+        The rule is named FAIL_SOFT_ERROR and the defect it exists to catch is a
+        handler that swallows an exception and says nothing — the shape that made
+        four db call sites in this repo look like "nothing to report" for months
+        while they had never once worked.
+
+        A handler that RAISES, or that CONTINUES or BREAKS a loop, is not that.
+        It has made an explicit decision about control flow, and there is no
+        `return` it could add: `except OSError: continue` inside a loop cannot be
+        rewritten to satisfy a return-only rule without changing what it does. So
+        those were violations no one could act on, which is how a rule with 3,276
+        hits becomes something readers skip past.
+
+        What still counts: a handler whose body neither returns, raises, nor
+        redirects the loop — `pass`, or a bare log-and-fall-through.
+        """
+        _HANDLED = (ast.Return, ast.Raise, ast.Continue, ast.Break)
         for handler in try_node.handlers:
-            has_return = any(isinstance(stmt, ast.Return) for stmt in handler.body)
+            has_return = any(isinstance(stmt, _HANDLED) for stmt in handler.body)
 
             if not has_return:
                 self.violations.append(ConventionViolation(

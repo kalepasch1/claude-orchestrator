@@ -16,6 +16,12 @@ no network.
 """
 import pathlib
 
+#: A floor, not a count: the suite asserts the executor skill set has not
+#: silently shrunk, so this rises when skills are added and never tracks them
+#: exactly.
+MIN_EXECUTOR_SKILLS = 16
+
+
 import pytest
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[2] / "cowork-skills"
@@ -41,7 +47,9 @@ def _executable_sql(p):
 
 def test_skill_files_are_present():
     """If the glob silently matches nothing, every test below vacuously passes."""
-    assert len(SKILLS) >= 16, f"expected >=16 executor skills under {SKILL_DIR}, found {len(SKILLS)}"
+    assert len(SKILLS) >= MIN_EXECUTOR_SKILLS, (
+        f"expected >={MIN_EXECUTOR_SKILLS} executor skills under {SKILL_DIR}, "
+        f"found {len(SKILLS)}")
 
 
 @pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.name)
