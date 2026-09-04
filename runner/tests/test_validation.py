@@ -43,16 +43,27 @@ sys.modules["_repo_root_canary_for_validation"] = canary
 _spec.loader.exec_module(canary)
 
 
+#: The exact verdict lines canary.main() emits. Named once so a future
+#: rewording fails in one place with an obvious message, rather than in two
+#: tests that look like the validator broke.
+_VERDICT_OK = "Validation result: success"
+_VERDICT_BAD = "Validation result: failure"
+
+
 def test_marker_present_exits_zero_and_logs_success(caplog):
     """The healthy path: marker found -> exit 0, and the log says so."""
     with caplog.at_level(logging.INFO, logger=canary.logger.name):
         exit_code = canary.main(["this response is a canary"])
 
     assert exit_code == 0
-    assert any("validation passed" in record.message for record in caplog.records), \
+    # The verdict line is "Validation result: <success|failure>". This used to look
+    # for "validation passed"/"validation failed", wording canary.py stopped using
+    # on 2026-08-24 — two hours after this test was last touched. The contract the
+    # docstring describes never changed; only the sentence did.
+    assert any(_VERDICT_OK in record.message for record in caplog.records), \
         f"expected a success line, got {[r.message for r in caplog.records]}"
     # The two branches must never both appear — that would mean the verdict was ambiguous.
-    assert not any("validation failed" in record.message for record in caplog.records)
+    assert not any(_VERDICT_BAD in record.message for record in caplog.records)
 
 
 def test_marker_absent_exits_one_and_logs_failure(caplog):
@@ -66,7 +77,7 @@ def test_marker_absent_exits_one_and_logs_failure(caplog):
         exit_code = canary.main(["gemini returned nothing useful"])
 
     assert exit_code == 1
-    failures = [r for r in caplog.records if "validation failed" in r.message]
+    failures = [r for r in caplog.records if _VERDICT_BAD in r.message]
     assert failures, f"expected a failure line, got {[r.message for r in caplog.records]}"
     assert failures[0].levelno >= logging.ERROR, \
         f"failure logged at {failures[0].levelname}; must be ERROR or higher"

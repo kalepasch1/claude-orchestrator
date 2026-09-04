@@ -215,15 +215,34 @@ class TestDerivedViews(_ScoreboardTempFile):
         self.assertEqual(scoreboard.trend("feature", "nobody"), [])
 
     # was test_lead_time_failsoft (DB errors must not crash the computation).
-    # The equivalent real path: router_stats._rebuild() blowing up must leave
-    # persist_snapshot() returning None instead of raising into the scheduler.
+    # The equivalent real path: router_stats._rebuild() blowing up must not raise
+    # into the scheduler.
+    #
+    # It used to return None here, and this test asserted that. bc0ceef2
+    # (2026-08-30) changed it deliberately: writing an empty snapshot bare
+    # produced 634 consecutive hollow records in which "the fleet did no work"
+    # and "the collector died" were indistinguishable on read-back. So fail-soft
+    # now means a snapshot that SAYS why it is empty, and asserting None again
+    # would pin exactly the blindness that fix removed. What matters is still
+    # that nothing propagates — and now also that the cause survives.
     def test_persist_snapshot_failsoft_when_router_stats_raises(self):
         def _boom():
             raise RuntimeError("db down")
 
         with patch.object(router_stats, "_rebuild", _boom):
-            self.assertIsNone(scoreboard.persist_snapshot())
-        self.assertFalse(os.path.exists(self.history_file))
+            snapshot = scoreboard.persist_snapshot()
+
+        self.assertEqual(snapshot["routes"], {})
+        self.assertEqual(snapshot["empty_reason"]["cause"], "router_stats_unavailable")
+        self.assertIn("db down", snapshot["empty_reason"]["error"])
+
+        # This line used to assert the history file was NOT written. That was
+        # true of the bare-empty-snapshot era and is the other half of the same
+        # blindness: the run happened, so a record of it belongs in the history
+        # — carrying the cause, so a reader can tell this hour from an idle one.
+        self.assertTrue(os.path.exists(self.history_file))
+        last = json.loads(open(self.history_file).read().strip().splitlines()[-1])
+        self.assertEqual(last["empty_reason"]["cause"], "router_stats_unavailable")
 
 
 class TestRunEntryPoint(_ScoreboardTempFile):
