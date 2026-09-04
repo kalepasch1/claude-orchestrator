@@ -525,6 +525,140 @@ def adaptation_directive(task, limit=3, target_files=None):
     return "NO REUSABLE DIFF: no proven prior work matched; draft net-new code."
 
 
+# --- Conflict analysis stage ------------------------------------------------
+#
+# The reuse pipeline could find a proven diff, adapt it, and score it, but it
+# could not say "this one cannot be applied here, stop and rebase by hand". So a
+# patch that genuinely conflicts produced either a silent no-op or an agent that
+# quietly gave up on reuse and drafted net-new code — the expensive failure this
+# library exists to prevent. `analyze_patch_conflict` is the missing verdict: it
+# retries a bounded number of apply strategies and, when they all fail, reports
+# WHERE the collision is and WHICH proven patch to rebase, rather than guessing.
+
+#: How many apply strategies to try before declaring a manual rebase necessary.
+ORCH_PATCH_APPLY_RETRIES = max(1, int(os.environ.get("ORCH_PATCH_APPLY_RETRIES", "4")))
+
+#: Tried in order, most faithful first. Each is a genuinely different apply
+#: strategy rather than the same command repeated: an identical retry against an
+#: unchanged tree can only produce an identical failure, so repeating it would
+#: burn the retry budget without ever changing the outcome.
+PATCH_APPLY_STRATEGIES = [
+    ("exact", []),
+    ("three-way", ["-3"]),
+    ("recount", ["--recount"]),
+    ("fuzzy-context", ["--ignore-whitespace", "-C1"]),
+]
+
+
+def _apply_strategies(retry_limit):
+    """The strategy list truncated or extended to exactly `retry_limit` entries."""
+    limit = max(1, int(retry_limit))
+    strategies = PATCH_APPLY_STRATEGIES[:limit]
+    while len(strategies) < limit:  # extend by repeating the loosest strategy
+        strategies.append(PATCH_APPLY_STRATEGIES[-1])
+    return strategies
+
+
+def _file_lines(repo_path, path, start, count):
+    """`count` lines of `path` from 1-based `start`. Empty list on any error."""
+    try:
+        with open(os.path.join(repo_path, path), "r", errors="replace") as handle:
+            lines = handle.read().splitlines()
+    except Exception:
+        return []
+    begin = max(0, int(start) - 1)
+    return lines[begin:begin + max(0, int(count))]
+
+
+def _incoming_lines(section_lines):
+    """The added/context payload a hunk wants to install, markers stripped."""
+    out = []
+    for line in section_lines:
+        if line.startswith(("+++", "---", "@@", "diff --git", "index ")):
+            continue
+        if line.startswith(("+", " ")):
+            out.append(line[1:])
+    return out
+
+
+def analyze_patch_conflict(repo_path, patch, source_hash=None,
+                           retry_limit=None):
+    """Decide whether `patch` can be applied to `repo_path` or needs a human.
+
+    Applies the patch with progressively looser strategies, at most
+    `retry_limit` of them (default ORCH_PATCH_APPLY_RETRIES = 4). Nothing is
+    ever written: every attempt is `git apply --check`, so a caller can ask this
+    question without touching the working tree.
+
+    Returns a report dict, always with a `status`:
+      * "applied"              — a strategy would apply cleanly; `strategy` names it.
+      * "needs_manual_rebase"  — every strategy failed. `conflicts` lists one entry
+        per colliding hunk with `file`, `line_range`, `base_lines` and
+        `incoming_lines`, and `reuse_recommendation` names the source patch to
+        rebase. The two line lists are the SAME region before and after:
+        `base_lines` is that span as the target file actually reads now,
+        `incoming_lines` is how the patch wants it to read. Both are hunk-level
+        and therefore include the patch's context lines — a bare list of the
+        changed lines is not enough for a human to locate the region.
+      * "invalid_input"        — no patch or no repo; nothing to decide.
+    Never raises: a git that is missing, hung or broken reports as a conflict
+    with the error attached, because "we could not prove this applies" must not
+    be mistaken for "it applies".
+    """
+    report = {"status": "invalid_input", "attempts": [], "conflicts": [],
+              "reuse_recommendation": "", "strategy": None}
+    if not patch or not isinstance(patch, str) or not repo_path:
+        return report
+    if not os.path.isdir(repo_path):
+        report["status"] = "invalid_input"
+        return report
+
+    limit = ORCH_PATCH_APPLY_RETRIES if retry_limit is None else retry_limit
+    report["status"] = "needs_manual_rebase"
+    payload = patch if patch.endswith("\n") else patch + "\n"
+
+    for name, flags in _apply_strategies(limit):
+        try:
+            proc = subprocess.run(
+                ["git", "apply", "--check"] + flags + ["-"],
+                cwd=repo_path, input=payload, capture_output=True,
+                text=True, timeout=60,
+            )
+            ok = proc.returncode == 0
+            detail = (proc.stderr or proc.stdout or "").strip()
+        except Exception as exc:  # git missing, timeout, anything
+            ok, detail = False, str(exc)
+        report["attempts"].append({"strategy": name, "ok": ok, "detail": detail[:500]})
+        if ok:
+            report["status"] = "applied"
+            report["strategy"] = name
+            return report
+
+    # Every strategy failed: say where, and what to rebase.
+    affected = identify_affected_lines(patch)
+    sections = dict(_split_file_sections(patch))
+    for path, hunks in affected.items():
+        for hunk in (hunks or [{"old_start": 1, "old_count": 0,
+                                "new_start": 1, "new_count": 0}]):
+            start = hunk.get("old_start", 1)
+            count = hunk.get("old_count", 0)
+            report["conflicts"].append({
+                "file": path,
+                "line_range": [start, start + max(0, count - 1)],
+                "base_lines": _file_lines(repo_path, path, start, count),
+                "incoming_lines": _incoming_lines(sections.get(path, [])),
+            })
+
+    attempts = len(report["attempts"])
+    cite = source_hash or "unknown-source"
+    report["reuse_recommendation"] = (
+        f"Patch {cite} does not apply to {os.path.basename(os.path.abspath(repo_path))} "
+        f"after {attempts} apply strategies; rebase {cite} by hand onto the current "
+        f"tree rather than drafting net-new code."
+    )
+    return report
+
+
 def stats():
     """Return library statistics for operator observability."""
     try:

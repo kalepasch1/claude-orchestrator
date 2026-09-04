@@ -459,6 +459,19 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     # would otherwise get in_session_prompt()'s fallback — "Complete the task '<slug>'." — written
     # back over the real specification, permanently destroying the task's content and guaranteeing
     # the next run produces nothing useful. Silently omitting the field leaves the prompt intact.
-    if "prompt" in task:
+    #
+    # Key PRESENCE is not enough. A row can carry a `prompt` key whose value is
+    # NULL or empty — a partially-hydrated select, a failed regeneration — and
+    # then original_prompt() returns "" and in_session_prompt() falls back to the
+    # same "Complete the task '<slug>'." stub, which is written back over the real
+    # specification exactly as before. That is the "spec-lost" quarantine cause,
+    # still firing 28 times a week with the presence-only guard in place.
+    #
+    # So require real spec content, not just the column. When there is none there
+    # is by definition nothing worth preserving in the patch either, and omitting
+    # the field leaves whatever the DB holds untouched — the same fail-soft choice
+    # the presence guard already makes. in_session_prompt keeps its fallback: it is
+    # safe for building an in-session prompt, and harmful only when written back.
+    if "prompt" in task and original_prompt(task):
         patch["prompt"] = in_session_prompt(task, signal, category=category, directive=directive)
     return patch
