@@ -67,7 +67,31 @@ _SECRET_PATTERNS = {"secret", "key", "token", "password", "api_key", "pat"}
 
 # Vendor-issued credential prefixes. A literal starting with one of these is a secret
 # no matter what it is assigned to.
-_SECRET_VALUE_PREFIXES = ("sk-", "sk_", "api-", "pk_", "secret_", "token_", "ghp_", "xoxb-")
+#
+# ALL ENTRIES MUST BE LOWERCASE: both call sites test `value_str.lower().startswith(...)`,
+# so a mixed-case prefix here can never match. Google keys are `AIza...`, hence `aiza`.
+#
+# The list stopped at the vendors that existed when it was written, and the fleet has
+# since added more. Measured against the live checker, a literal beginning `xai-`,
+# `gsk_`, `AIza` or `glpat-` was NOT flagged — four current credential formats (xAI,
+# Groq, Google, GitLab) could be committed past a linter whose entire job is to stop
+# exactly that. The same four are redacted by runner/key_broker.py, so the repo already
+# recognised them as credential-shaped in one place and not the other.
+_SECRET_VALUE_PREFIXES = (
+    "sk-", "sk_", "api-", "pk_", "secret_", "token_", "ghp_", "xoxb-",
+    # added after measuring the gap:
+    "xai-",      # xAI
+    "gsk_",      # Groq
+    # Google API keys are `AIzaSy…`. The shorter `aiza` was tried first and rejected: it
+    # matches ordinary words such as "aizawa", and a security linter that fires on prose
+    # is one a developer switches off.
+    "aizasy",
+    "glpat-",    # GitLab personal access token
+    "github_pat_",  # GitHub fine-grained PAT
+    "xoxp-", "xoxa-",  # other Slack token classes alongside the bot token already listed
+    "anthropic-",
+    "hf_",       # Hugging Face
+)
 
 
 def _is_indirected_secret_value(value: str) -> bool:
