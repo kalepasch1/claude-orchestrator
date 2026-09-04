@@ -3396,3 +3396,22 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
     except Exception:
         # Outermost fail-soft: never crash on heartbeat errors
         pass
+
+def breaker_open():
+    """Is the control plane currently considered unreachable?
+
+    READ-ONLY on purpose. `_breaker_blocks()` has a side effect — it ELECTS the caller
+    as the half-open prober — so a scheduled job asking "should I even start?" must not
+    use it, or it consumes the one probe slot and then exits without probing, leaving
+    every other caller fast-failing for another full cooldown.
+
+    Never raises: a caller deciding whether to run must not be taken down by the check.
+    """
+    try:
+        if not DB_BREAKER_ENABLED:
+            return False
+        with _BREAKER_LOCK:
+            return time.monotonic() < _BREAKER["open_until"]
+    except Exception:
+        return False
+
