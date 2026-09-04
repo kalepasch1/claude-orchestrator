@@ -84,7 +84,9 @@ class TestPinnedExpressLane(unittest.TestCase):
     def _claim(self, queued, active=None, done=None, controls=None, projects=None):
         """Run claim_task against a mocked DB and return the claimed slug.
 
-        `projects` is forwarded to _make_select. It used to be missing, so
+        `projects` and `controls` are forwarded to _make_select so a test can
+        describe its own project table (priorities, names) and its own pause rows.
+        `projects` used to be missing, so
         test_multiple_projects_with_pinned_express_lane — the one test that
         proves the express lane beats PROJECT priority, not just task
         priority — died with TypeError instead of asserting anything.
@@ -101,6 +103,10 @@ class TestPinnedExpressLane(unittest.TestCase):
 
         sel = _make_select(queued, active=active or [], done=done or [],
                            controls=controls or [], projects=projects)
+        # claim_task reads projects through a module-level 300s cache. Without this the
+        # first test to run freezes the project table for the whole file and a test's own
+        # `projects` fixture is silently ignored.
+        db.invalidate_projects_cache()
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -326,27 +332,41 @@ class TestPinnedExpressLane(unittest.TestCase):
         self.assertEqual(self._claim(tasks), "pinned-task")
 
     def test_paused_project_filtering_happens_before_express_lane(self):
-        """Pinned tasks in paused projects are filtered out before sorting.
+        """A PAUSED project's pinned task is filtered out before the express lane.
 
-        Previously asserted against the DEFAULT projects fixture, which only
-        defines `p1` — so BOTH tasks referenced unknown projects, both were
-        filtered, claim_task returned None, and the test failed for a reason
-        unrelated to what it claims to check. The fixture now actually models
-        the scenario: `p-active` is present (claimable), `p-paused` is absent
-        from the project list, which is how a paused/unavailable project
-        presents to claim_task.
+        Two earlier versions of this test both passed without testing the thing in
+        its name:
+
+          * the original asserted against the DEFAULT projects fixture, which only
+            defines `p1`, so BOTH tasks referenced unknown projects, both were
+            dropped, and the assertion held for a reason unrelated to pausing;
+          * the next version omitted `p-paused` from the projects list entirely,
+            which tests project ABSENCE, not project PAUSE — a different code path
+            (host affinity) that would keep passing even if pause filtering were
+            deleted outright.
+
+        The fixture below models a real pause: both projects exist and are
+        claimable, and the paused one is paused the way production pauses it —
+        claim_task resolves pauses by project NAME through the controls table, so
+        `paused-proj` carries a matching controls row. The paused project is also
+        given the BETTER priority (1 vs 5), so if pause filtering regressed the
+        pinned task would win and this test would fail, which is the point.
         """
         projects = [
-            {"id": "p-active", "name": "active", "priority": 5,
+            {"id": "p-paused", "name": "paused-proj", "priority": 1,
+             "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-active", "name": "active-proj", "priority": 5,
              "concurrency_weight": 1, "repo_path": None},
         ]
+        controls = [{"project": "paused-proj", "paused": True, "updated_by": "operator"}]
         tasks = [
             _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
         # The pin must NOT rescue a task whose project was filtered out: project
         # eligibility is a gate, the express lane only reorders what survives it.
-        self.assertEqual(self._claim(tasks, projects=projects), "unpinned-active")
+        self.assertEqual(self._claim(tasks, projects=projects, controls=controls),
+                         "unpinned-active")
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -372,10 +392,10 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     def _claim(self, queued, active=None, done=None, controls=None, projects=None):
         """Run claim_task against a mocked DB and return the claimed slug.
 
-        `projects` is forwarded to _make_select. It used to be missing, so
-        test_multiple_projects_with_pinned_express_lane — the one test that
-        proves the express lane beats PROJECT priority, not just task
-        priority — died with TypeError instead of asserting anything.
+        `projects` and `controls` are forwarded to _make_select so a test can
+        describe its own project table (priorities, names) and its own pause rows.
+        Without the `projects` parameter every multi-project ordering test raised
+        TypeError at call time instead of exercising the express lane at all.
         """
         claimed = []
 
@@ -389,6 +409,10 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
 
         sel = _make_select(queued, active=active or [], done=done or [],
                            controls=controls or [], projects=projects)
+        # claim_task reads projects through a module-level 300s cache. Without this the
+        # first test to run freezes the project table for the whole file and a test's own
+        # `projects` fixture is silently ignored.
+        db.invalidate_projects_cache()
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
