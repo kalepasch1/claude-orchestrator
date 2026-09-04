@@ -5,16 +5,35 @@ ci_test_gate.py - CI/CD test pipeline gate for the orchestrator.
 Runs the project's test_cmd on a branch and gates merge on the result.
 Integrates with incremental_test_oracle for targeted test selection.
 
-Thresholds:
-  - test pass rate must be >= ORCH_CI_PASS_THRESHOLD (default 100%)
-  - test duration must be <= ORCH_CI_MAX_DURATION_S (default 300s)
+The gate:
+  - the test command must exit 0
+  - it must finish inside ORCH_CI_MAX_DURATION_S (default 300s), which is enforced as
+    the subprocess timeout: overrunning it is a TIMEOUT, reported as a failure
 
 Env vars:
     ORCH_CI_TEST_GATE            "true" (default) to enable
-    ORCH_CI_PASS_THRESHOLD       minimum pass rate 0.0-1.0 (default: 1.0)
     ORCH_CI_MAX_DURATION_S       max test duration in seconds (default: 300)
-    ORCH_CI_DRY_RUN              "true" for dry-run mode
+    ORCH_CI_DRY_RUN              "true" (DEFAULT) — records the verdict and allows the
+                                 merge anyway. Set "false" to make this gate binding.
     ORCH_CI_AUTO_BLOCK           "true" to auto-block merge on failure
+
+TWO KNOBS REMOVED HERE, 2026-08-24, because they did nothing:
+
+  ORCH_CI_PASS_THRESHOLD was documented above as "test pass rate must be >= ..." and
+  declared as a module constant. It was never read. A pass RATE was never computed at
+  all — the gate is binary on the command's exit code — so an operator who set it to
+  0.9 to tolerate a flaky suite got 1.0 behaviour and no indication why. A knob that
+  lies about what it controls is worse than an absent one.
+
+  `if result["duration_s"] > MAX_DURATION` was unreachable. MAX_DURATION is passed to
+  subprocess.run as `timeout`, so a run that exceeds it raises TimeoutExpired and comes
+  back passed=False, and the `not passed` branch returns before the duration check is
+  ever evaluated. The "tests too slow" verdict could not be produced. The bound is real
+  and still enforced — as a timeout, which is where it always actually lived.
+
+If a genuine pass-rate tolerance is wanted, it needs a parser for the runner's summary
+output and a decision about which formats to support; that is a feature, not a
+restoration, and it should not be implied by a constant nobody reads.
 """
 import os, sys, subprocess, time, json
 
@@ -24,7 +43,6 @@ _log = _log_mod.get("ci_test_gate")
 import db
 
 ENABLED = os.environ.get("ORCH_CI_TEST_GATE", "true").lower() in ("1", "true", "yes", "on")
-PASS_THRESHOLD = float(os.environ.get("ORCH_CI_PASS_THRESHOLD", "1.0") or 1.0)
 MAX_DURATION = float(os.environ.get("ORCH_CI_MAX_DURATION_S", "300") or 300)
 DRY_RUN = os.environ.get("ORCH_CI_DRY_RUN", "true").lower() in ("1", "true", "yes", "on")
 AUTO_BLOCK = os.environ.get("ORCH_CI_AUTO_BLOCK", "true").lower() in ("1", "true", "yes", "on")
@@ -98,9 +116,6 @@ def gate_merge(project_id, task_slug, repo_path, test_cmd, branch=None):
             except Exception:
                 pass
         return {"allow": False, "reason": f"tests failed (exit {result['exit_code']})", "test_result": result}
-
-    if result["duration_s"] > MAX_DURATION:
-        return {"allow": False, "reason": f"tests too slow ({result['duration_s']}s > {MAX_DURATION}s)", "test_result": result}
 
     return {"allow": True, "reason": "tests passed", "test_result": result}
 
