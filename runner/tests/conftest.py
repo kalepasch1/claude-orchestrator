@@ -16,77 +16,6 @@ _PROVIDER_DEFAULTS = {
 }
 
 
-#: Gate kill-switches. Every one exists to turn a guard OFF, so inheriting one
-#: from the machine means testing a system with that guard already disabled.
-_GATE_KILL_SWITCHES = (
-    "ORCH_DISABLE_TOOLCHAIN_GATE",
-    "ORCH_DISABLE_MEM_GATE",
-    "ORCH_DISABLE_LOCAL_MODELS",
-    "ORCH_DISABLE_VERCEL_CHECKS_CACHE",
-)
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _tests_never_write_to_the_live_runtime_dir(tmp_path_factory):
-    """Point every runtime writer at a temp dir for the whole session.
-
-    94 modules resolve their state and log paths from CLAUDE_ORCH_HOME, defaulting
-    to the repo's .runtime/. Nothing overrode it under pytest, so guard tests
-    appended their fixtures straight into the production log files. By 2026-08-30
-    the tails of automerge-discard-guard.log, divergent-authorship-guard.log and
-    vercel-config-guard.log were pure test noise — rows naming /tmp/tmpXXXX repos,
-    branch "topic", file "f.py", project "test" — sitting in 10-14MB files that an
-    operator reads to find out what the fleet actually did. Reading those tails on
-    2026-08-30 I concluded the guards had never run against a real repo at all;
-    they had, and the fixtures were burying the evidence.
-
-    Session-scoped so it lands before the per-test env snapshot in
-    _restore_environment_after_test, which then restores this value rather than
-    the machine's.
-    """
-    sandbox = tmp_path_factory.mktemp("orch-runtime")
-    os.environ["CLAUDE_ORCH_HOME"] = str(sandbox)
-    os.environ.setdefault("ORCH_SCOREBOARD_DIR", str(sandbox))
-    yield sandbox
-
-
-@pytest.fixture(autouse=True)
-def _gates_are_on_unless_a_test_says_otherwise(monkeypatch):
-    """A gate must not be off just because this machine has it off.
-
-    Importing almost anything under runner/ pulls in db, whose _load_env() reads
-    runner/.env into os.environ. That file is gitignored and machine-local: 260
-    keys, 230 of them read by tracked product code, and only 30 also set by a
-    test. So roughly two hundred configuration values that no reviewer sees can
-    decide a test's verdict.
-
-    Found the concrete way: runner/.env line 520 sets
-    ORCH_DISABLE_TOOLCHAIN_GATE=1, so toolchain_gate.is_ready_cached() returned
-    True for everything and the two tests in test_toolchain_gate.py that expected
-    a BLOCK had been failing. The ones expecting True kept passing, which is why
-    it read as a logic bug rather than an environment one — every assertion was
-    satisfied by "always returns True".
-
-    Only the DISABLE switches are cleared, and only these four: their whole
-    purpose is to turn a guard off, so a suite that inherits one is testing a
-    system with that guard already gone. Everything else in .env is left alone —
-    neutralising 230 keys would break tests that legitimately depend on the
-    machine's configuration, and this is a guard, not a sandbox. A test that
-    wants the disabled path sets the variable itself with patch.dict, which
-    takes effect after this fixture and wins.
-    """
-    for name in _GATE_KILL_SWITCHES:
-        monkeypatch.delenv(name, raising=False)
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _runner_stays_a_package():
-    """See _keep_runner_importable_as_a_package. Runs before every test."""
-    _keep_runner_importable_as_a_package()
-    yield
-
-
 @pytest.fixture(autouse=True)
 def _restore_environment_after_test():
     """A test's routing/config overrides must never affect later tests."""
@@ -131,80 +60,6 @@ def _reset_projects_cache():
 
 
 @pytest.fixture(autouse=True)
-def _db_breaker_starts_closed():
-    """No test inherits another test's opinion that the control plane is down.
-
-    db's circuit breaker is process-global on purpose: one thread discovering the
-    origin is unreachable spares every other thread the full timeout. Inside a test
-    session that reach makes any test which touches the real origin a trap for every
-    test after it — ten consecutive unreachable calls open the breaker for its whole
-    cooldown, and from then on db._req raises ControlPlaneDown before reaching the
-    code under test.
-
-    Seen twice in one session: test_db_retries::test_get_retries_transient_dns_failure
-    never got to count its retries, and test_crash_loop_detector's task write died on
-    a breaker someone else had opened. Both pass alone.
-
-    Reset BEFORE the test, not after, so a test that deliberately opens the breaker
-    (test_db_breaker_writes) still owns its own state while it runs.
-    """
-    _real_db.reset_breaker()
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _evict_leaked_module_doubles():
-    """Put back any real runner module a test swapped for a Mock and did not restore.
-
-    _restore_real_modules() already runs at every module boundary, which is enough for a
-    fake installed at import time. It is not enough for a double installed and leaked
-    INSIDE a test — a threaded patch.dict whose restores interleave, or a test that raises
-    before its context manager unwinds. Those leak for the remainder of the session and
-    the symptom lands on some unrelated file much later.
-
-    Only Mock-shaped stand-ins are evicted here; a types.ModuleType fake is the deliberate
-    module-scope convention in this suite and is left alone until the next module boundary.
-    """
-    yield
-    _evict_stub_shadows()
-    _reinstate_missing_real_modules()
-
-
-def _reinstate_missing_real_modules():
-    """Put back a remembered module that a test DELETED from sys.modules.
-
-    THE DUPLICATE-MODULE LEAK (2026-08-25). _evict_stub_shadows above handles a
-    real module replaced by a double. It does nothing for a real module simply
-    removed, and removal is the more damaging of the two, because Python does not
-    leave a hole: the next `import db` anywhere builds a SECOND module object from
-    the same source, and from then on the session has two live copies of the
-    control-plane client.
-
-    Every module that imported db earlier keeps copy A -- including this
-    conftest's own _REAL_MODULES registry and every test file's module-level
-    `import db`. Any code that does `import db` INSIDE a function then resolves
-    copy B. A test that patches db.select on the object it holds is patching A
-    while the code under test reads B, so the patch silently does nothing and the
-    product runs against the real client. It passes alone and fails in suite, and
-    the failure lands on whichever file happens to come later.
-
-    Found via runner/tests/test_db_env_interlock.py, which popped "db" and
-    "subscription_guard" to import throwaway copies and never put the originals
-    back -- 20 failures across two unrelated files. That file is fixed, but a
-    hole in sys.modules is never something a test wants left behind, so it is
-    also closed here rather than only at its one known source.
-
-    Deliberately narrow: only names already in _REAL_MODULES (so it can only ever
-    restore something this session actually had) and only when the name is ABSENT
-    (a test that installed its own double keeps it; that is _evict_stub_shadows'
-    job, on its own rules).
-    """
-    for name, module in _REAL_MODULES.items():
-        if name not in sys.modules:
-            sys.modules[name] = module
-
-
-@pytest.fixture(autouse=True)
 def _reset_tdd_gate_cache():
     """tdd_gate memoizes its fleet_config reads for 30s on module globals.
 
@@ -219,163 +74,70 @@ def _reset_tdd_gate_cache():
     _real_tdd_gate.invalidate_cache()
 
 
-# Control-plane modules a test replaced via sys.modules[...] = ModuleType(...).
+# Every control-plane module any test replaces via sys.modules[...] = ModuleType(...)
+# must be listed here, or it leaks into every module imported afterwards.
 #
-# This used to be a hand-written list with the instruction "keep in sync with
-# grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py". It was not in sync,
-# and a list maintained by grep never will be: the five names below were registered
-# and twelve more were not. test_monthly_audit.py alone installs empty stubs for
-# model_policy, model_gateway, claude_cli, queue_counters and prompt_assembler at
-# IMPORT time and never removes them, so every test module collected after it saw a
-# `model_policy` with nothing in it — which is why ~35 files passed alone and failed
-# in-suite with errors like "cannot import name revenue_keywords".
+# The list used to be maintained by hand under a "keep in sync with this grep" note.
+# It had drifted: the grep names twenty modules and only these five were listed, so a
+# synthetic claude_cli, agentic_coders, notify, retry_policy, branch_lease and the rest
+# survived the restore and leaked into every module imported after them — the exact
+# failure this block exists to prevent, and a standing source of "passes alone, fails
+# in-suite" results. A comment asking a human to re-run a grep is not a mechanism.
 #
-# So the registry learns instead. Any module that lives under runner/ and is real
-# (has a __file__) gets remembered the first time we see it; if a later test swaps it
-# for a stub, the real one goes back before the next module is imported. Nothing has
-# to be listed by hand, and a new polluting test cannot silently widen the blast
-# radius.
-_RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Derive it instead. Names that are not importable modules of their own (a test's
+# private ModuleType, or a package that is not installed) are simply absent, which is
+# the correct restore behaviour: there is no real module to put back.
+_REPLACEABLE_MODULES = (
+    "agentic_coders", "agentic_repair", "branch_lease", "capacity_pacer",
+    "causal_attribution", "claude_cli", "db", "exec_telemetry", "kill_switch", "log",
+    "notify", "prompt_assembler", "provider_terms", "queue_counters", "requests",
+    "retry_policy", "runner", "subscription_guard",
+)
 
-_REAL_MODULES = {
-    "db": _real_db,
-    "kill_switch": _real_kill_switch,
-    "log": _real_log,
-    "subscription_guard": _real_subscription_guard,
-    "provider_terms": _real_provider_terms,
-}
-
-
-def _is_real_runner_module(module):
-    """True for an imported module whose source file lives in runner/."""
-    path = getattr(module, "__file__", None)
-    if not path:
-        return False
-    try:
-        return os.path.dirname(os.path.abspath(path)) == _RUNNER_DIR
-    except Exception:
-        return False
+# Synthetic-only: invented by a test, with no real module behind the name. They still
+# have to be handled — a fake left registered under any name outlives the test that made
+# it — but the correct undo is to REMOVE the entry, not to put something back. Kept
+# separate from _REAL_MODULES so that map stays exactly what its name promises: real
+# module objects.
+_SYNTHETIC_ONLY_MODULES = frozenset({"_runner_module_under_test", "_test_hot_mod"})
 
 
-def _remember_real_modules():
-    for name, module in list(sys.modules.items()):
-        if "." in name or name in _REAL_MODULES:
-            continue
-        if _is_real_runner_module(module):
-            _REAL_MODULES[name] = module
+def _resolve_real_modules():
+    """Real module objects for every name a test may replace, best-effort.
 
-
-def _evict_stub_shadows():
-    """Drop synthetic stand-ins that shadow a real runner/ module.
-
-    Remembering is not enough on its own: a test that stubs a module the suite has
-    never imported (test_monthly_audit stubs model_policy at import time, and nothing
-    before it imports model_policy) leaves nothing to restore. Here the stub — a bare
-    ModuleType with no __file__, for a name that has a real runner/<name>.py behind it
-    — is simply evicted, so the next `import <name>` loads the real source. Stubs for
-    modules that do NOT live in runner/ (a fake `requests`, say) are left alone; they
-    shadow nothing this suite owns.
+    Uses sys.modules first so an already-imported module is captured as-is rather than
+    re-executed, and never imports one that is not already importable — conftest runs
+    before every test in the suite, so an import error here would take the whole run
+    down to protect against a leak.
     """
-    for name, module in list(sys.modules.items()):
-        if "." in name or module is None:
-            continue
-        if not os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py")):
-            continue
-        if not _is_stand_in(module):
-            continue
-        real = _REAL_MODULES.get(name)
-        if real is not None:
-            sys.modules[name] = real
-        else:
-            del sys.modules[name]
+    import importlib
+    resolved = {}
+    for name in _REPLACEABLE_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            try:
+                module = importlib.import_module(name)
+            except Exception:
+                continue
+        resolved[name] = module
+    return resolved
 
 
-def _is_stand_in(module):
-    """True when this sys.modules entry is a test double rather than a real module.
-
-    Two shapes, and the second is the one that got away. A `types.ModuleType` with no
-    __file__ is the documented fake in this suite. A MagicMock is not a module at all —
-    and it answers `getattr(m, "__file__")` with another Mock, so a __file__ check reads
-    it as real and leaves it in place.
-
-    That is not hypothetical: test_canary_ollama_22 runs `patch.dict(sys.modules, {"db":
-    MagicMock()})` inside five concurrent threads, and patch.dict restores by clearing and
-    re-filling the dict — interleaved restores park the mock in sys.modules["db"] for the
-    rest of the session. Every later `@patch("db.select")` then patches the leftover mock
-    while the real db runs unpatched and reaches for a live database.
-    """
-    import types
-    if not isinstance(module, types.ModuleType):
-        return True
-    return not getattr(module, "__file__", None)
+_REAL_MODULES = _resolve_real_modules()
+# The five that were always listed are load-bearing: if one of them failed to resolve,
+# the guard is silently weaker than it looks, so say so rather than proceeding quietly.
+for _required in ("db", "kill_switch", "log", "subscription_guard", "provider_terms"):
+    if _REAL_MODULES.get(_required) is None:  # pragma: no cover - import-time invariant
+        raise RuntimeError(f"conftest could not resolve real module {_required!r}; "
+                           "module-leak protection would be incomplete")
 
 
 def _restore_real_modules():
-    _remember_real_modules()
     sys.modules.update(_REAL_MODULES)
-    _evict_stub_shadows()
-
-
-#: The repository root, which must stay AHEAD of runner/ on sys.path.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_RUNNER_DIR = os.path.join(_REPO_ROOT, "runner")
-
-
-def _keep_runner_importable_as_a_package():
-    """Ensure `runner` still names the PACKAGE, not runner/runner.py.
-
-    Both spellings are in use across this suite. A test that does
-    `import task_state_machine` needs runner/ on sys.path; a test that does
-    `from runner.task_state_machine import ...` needs the repo root on it. Both
-    can be present — what decides which module the name `runner` resolves to is
-    which comes FIRST.
-
-    Nearly every test file does a `sys.path.insert(0, ...)` at module scope and
-    none of them undo it, so the winner is simply whichever file was imported
-    most recently. runner/tests/test_python39_compat.py inserted runner/ at
-    position 0 and sorts late in the collection order, so from that point on
-    `runner` resolved to runner/runner.py — a module with no __path__ — and
-    every later `from runner.X import Y` died with
-
-        ModuleNotFoundError: No module named 'runner.X'; 'runner' is not a package
-
-    That is 35 failures across six files, every one of which passes in
-    isolation: test_done_to_merged_conversion, test_route_consolidation,
-    test_branch_recovery_validate_repository, test_task_state_machine,
-    test_repo_access_healer and test_train_status_backfill.
-
-    Rather than police 700 files' sys.path edits, restore the ORDER here, before
-    each TEST runs. runner/ is left in place, so the bare-name imports keep
-    working; only the precedence is asserted.
-
-    Per test, not per module: the victims' `from runner.X import Y` sits inside
-    the test methods, and test_python39_compat's damage is done in its own test
-    body — it imports all ~910 runner modules, dozens of which insert runner/ at
-    sys.path[0] at their own import time. A collection-time repair is undone
-    before the first victim runs.
-    """
-    if not os.path.isdir(_RUNNER_DIR):
-        return
-
-    # 1. Precedence on sys.path.
-    if _RUNNER_DIR in sys.path:
-        runner_at = sys.path.index(_RUNNER_DIR)
-        if _REPO_ROOT not in sys.path[:runner_at]:
-            while _REPO_ROOT in sys.path:
-                sys.path.remove(_REPO_ROOT)
-            sys.path.insert(sys.path.index(_RUNNER_DIR), _REPO_ROOT)
-
-    # 2. Evict a `runner` already bound to runner/runner.py.
-    #
-    # Fixing the path alone is not enough, and this is the half that is easy to
-    # miss: once sys.modules["runner"] holds the MODULE runner/runner.py, the
-    # import system finds it there and never consults sys.path again, so
-    # `import runner.X` keeps failing with a corrected path. It is also invisible
-    # to _evict_stub_shadows(), which looks for fakes without a __file__ — this
-    # entry is a real module, just the wrong one for the name.
-    bad = sys.modules.get("runner")
-    if bad is not None and not hasattr(bad, "__path__"):
-        del sys.modules["runner"]
+    # A name with no real module behind it cannot be restored, only cleared. Leaving the
+    # fake registered lets it outlive the test that installed it.
+    for _synthetic in _SYNTHETIC_ONLY_MODULES:
+        sys.modules.pop(_synthetic, None)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -383,7 +145,6 @@ def pytest_pycollect_makemodule(module_path, parent):
     """Prevent synthetic control-plane modules from leaking into later modules."""
     yield
     _restore_real_modules()
-    _keep_runner_importable_as_a_package()
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -405,7 +166,6 @@ def pytest_collectstart(collector):
     """
     if isinstance(collector, pytest.Module):
         _restore_real_modules()
-        _keep_runner_importable_as_a_package()
     yield
 
 
@@ -430,7 +190,6 @@ def pytest_collectstart(collector):
 # a real socket. There is no opt-out for the missing-timeout guard: add the
 # timeout.
 # ─────────────────────────────────────────────────────────────────────────────
-import ipaddress as _ipaddress
 import socket as _socket
 import subprocess as _subprocess
 import warnings
@@ -460,38 +219,6 @@ class UnboundedSubprocessInTest(UserWarning):
     """A test spawned a subprocess with no timeout; one was supplied for it."""
 
 
-# Loopback is not "somebody else's uptime".
-#
-# A test that binds an ephemeral port on 127.0.0.1 and then talks to it — which
-# is the only honest way to test an HTTP handler end to end — depends on nothing
-# outside this process. Refusing it made the guard fail the exact tests it was
-# never aimed at (canary.start_metrics_server()'s five request tests), while the
-# remote hosts it does aim at are all off-box by definition.
-_LOOPBACK_HOSTS = ("localhost", "localhost.localdomain", "ip6-localhost")
-
-
-def _is_loopback(address):
-    """True when this address is this machine talking to itself.
-
-    ipaddress does the parsing rather than a prefix match, because a prefix
-    match says yes to "127.example.com" — a real remote host that would then
-    walk straight through the guard.
-    """
-    host = address[0] if isinstance(address, tuple) and address else address
-    if not isinstance(host, str):
-        return False
-    host = host.strip("[]").split("%", 1)[0].lower()   # strip v6 brackets/zone
-    if host in _LOOPBACK_HOSTS:
-        return True
-    try:
-        parsed = _ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    # ::ffff:127.0.0.1 is loopback; IPv6Address.is_loopback alone says no.
-    return bool((parsed.ipv4_mapped if getattr(parsed, "ipv4_mapped", None)
-                 else parsed).is_loopback)
-
-
 # Long enough for a real local git or npm call, short enough that a wedged child
 # cannot hold the suite. Nothing legitimate in these tests takes this long.
 _DEFAULT_SUBPROCESS_TIMEOUT = 30
@@ -515,7 +242,7 @@ def _hermetic(request, monkeypatch):
     def _blocked_connect(self, address, *a, **kw):
         # AF_UNIX has no address family risk and is how local tooling talks to
         # itself; only IP sockets leave the machine.
-        if self.family in (_socket.AF_INET, _socket.AF_INET6) and not _is_loopback(address):
+        if self.family in (_socket.AF_INET, _socket.AF_INET6):
             raise NetworkAccessInTest(
                 111,  # ECONNREFUSED, so errno-inspecting callers behave normally
                 f"Connection refused by the test suite's hermetic guard: {address!r}. "
@@ -541,13 +268,8 @@ def _hermetic(request, monkeypatch):
     # when stdin is captured.
     for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
         monkeypatch.setenv(var, "http://127.0.0.1:9")
-    # ...but never for loopback. urllib in THIS process honours http_proxy too,
-    # so an empty no_proxy sent a test's request to its own ephemeral port
-    # through the discard-port proxy and got it refused. The proxy exists to
-    # short-circuit children reaching REMOTE hosts; exempting the local machine
-    # costs it nothing and stops it hijacking in-process loopback calls.
-    for var in ("no_proxy", "NO_PROXY"):
-        monkeypatch.setenv(var, "localhost,127.0.0.1,::1")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setenv("NO_PROXY", "")
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     monkeypatch.setenv("GIT_ASKPASS", "/usr/bin/false")
     monkeypatch.setenv("SSH_ASKPASS", "/usr/bin/false")
