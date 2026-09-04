@@ -14,7 +14,7 @@ import json
 import re
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 import hashlib
@@ -531,6 +531,186 @@ def get_recent_merges(limit: int = 20) -> list[dict]:
         return []
     merges = _read_memory()
     return merges[-limit:]
+
+
+# ---------------------------------------------------------------------------
+# Diff parsing (spec §2) and keyword retrieval (spec §5).
+#
+# `capture_merge` above records `files_affected` and nothing about the SIZE or
+# the difficulty of a merge, so "what did this branch actually do" could not be
+# answered from memory without re-reading git. These add the missing fields —
+# insertions, deletions, conflict_resolutions — and cap the file list, because a
+# 900-file vendored-dependency merge otherwise crowds every other record out of
+# a 50-merge memory file.
+# ---------------------------------------------------------------------------
+
+# Beyond this the list stops being informative and starts being ballast.
+MAX_TRACKED_FILES = 50
+
+
+def _dedupe_and_cap(paths: list[str], limit: int = MAX_TRACKED_FILES) -> list[str]:
+    """Unique paths in first-seen order, capped, with a `+N more` marker.
+
+    Order is preserved rather than sorted: git lists the diff in tree order, and
+    the first files are the ones a reader recognises. `-m --first-parent` can
+    repeat a path across parents, hence the dedupe.
+    """
+    seen: dict[str, None] = {}
+    for path in paths:
+        cleaned = (path or "").strip()
+        if cleaned:
+            seen.setdefault(cleaned, None)
+
+    unique = list(seen)
+    if len(unique) <= limit:
+        return unique
+    return unique[:limit] + [f"+{len(unique) - limit} more"]
+
+
+def _parse_numstat(text: str) -> tuple[list[str], int, int]:
+    r"""Parse `git diff --numstat` output into (paths, insertions, deletions).
+
+    Binary files are reported by git as `-\t-\tpath`. They are counted as files
+    changed but contribute no line counts, because "0 lines" and "not a text
+    file" are different facts and summing them would understate a merge that
+    replaced an image.
+    """
+    paths: list[str] = []
+    insertions = deletions = 0
+
+    for line in (text or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added, removed, path = parts[0], parts[1], parts[-1]
+        paths.append(path)
+        if added.isdigit():
+            insertions += int(added)
+        if removed.isdigit():
+            deletions += int(removed)
+
+    return paths, insertions, deletions
+
+
+def _count_conflict_resolutions(patch: str) -> int:
+    """Count conflict blocks left in a patch.
+
+    Counts `<<<<<<<` opening markers only. `=======` is deliberately NOT counted
+    on its own: it is also how people underline headings in markdown and rst,
+    and this repo is full of both, so counting it would report conflicts in
+    every documentation merge. One opening marker is one conflict block, which
+    is the number a reader actually wants.
+    """
+    count = 0
+    for line in (patch or "").splitlines():
+        stripped = line.lstrip("+- ")
+        if stripped.startswith("<<<<<<<"):
+            count += 1
+    return count
+
+
+def _to_iso_utc(raw: str) -> str:
+    """Normalise a git author date to ISO-8601 UTC.
+
+    Two records that disagree about timezone cannot be ordered by string
+    comparison, and this file is read back as JSON and sorted as text. Falls
+    back to now() rather than returning an empty string: an undated record is
+    indistinguishable from a corrupt one.
+    """
+    value = (raw or "").strip()
+    if value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.isoformat() + "Z"
+            return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except Exception:
+            pass
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_merge_diff(commit_hash: str, branch_name: str, cwd: str = ".") -> dict:
+    """Extract the spec §2 record for one merged commit.
+
+    Returns, always:
+        files_changed        deduped, capped at MAX_TRACKED_FILES with `+N more`
+        insertions           int
+        deletions            int
+        conflict_resolutions int
+        branch_name          as supplied
+        merge_date           ISO-8601 UTC
+
+    Fail-soft by construction: every git read goes through `_safe_run`, which
+    returns "" on any failure, so a missing commit or an unavailable git yields
+    a well-formed record with zeroed counts rather than an exception. A caller
+    writing memory must not be wedged by a repo it cannot read.
+
+    `-m --first-parent` matches `capture_merge`: for a true merge commit a plain
+    diff prints nothing at all, which is how `files_affected` came back empty
+    for every merge before that flag was added.
+    """
+    numstat = _safe_run(
+        ["git", "diff-tree", "--no-commit-id", "--numstat", "-r", "-m", "--first-parent", commit_hash],
+        cwd=cwd,
+    )
+    paths, insertions, deletions = _parse_numstat(numstat)
+
+    patch = _safe_run(
+        ["git", "show", "--format=", "--unified=0", "-m", "--first-parent", commit_hash],
+        cwd=cwd,
+    )
+
+    return {
+        "files_changed": _dedupe_and_cap(paths),
+        "insertions": insertions,
+        "deletions": deletions,
+        "conflict_resolutions": _count_conflict_resolutions(patch),
+        "branch_name": branch_name,
+        "merge_date": _to_iso_utc(
+            _safe_run(["git", "log", "-1", "--format=%aI", commit_hash], cwd=cwd)
+        ),
+    }
+
+
+def find_merges(keyword: Optional[str] = None, limit: int = 20) -> list[dict]:
+    """Recorded merges, optionally filtered by `keyword`. Returns [] on error.
+
+    With no keyword this is `get_recent_merges`. With one, it matches
+    case-insensitively across branch, message and the file list — the three
+    things someone actually remembers about a merge they are trying to find.
+
+    A keyword that matches nothing returns [], never everything. Falling back to
+    the full list on a failed search is how a filter silently stops filtering.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    if limit <= 0:
+        return []
+
+    merges = _read_memory()
+
+    if keyword is None or not str(keyword).strip():
+        return merges[-limit:]
+
+    needle = str(keyword).strip().lower()
+
+    def matches(record: dict) -> bool:
+        try:
+            haystack = " ".join(
+                [
+                    str(record.get("branch") or record.get("branch_name") or ""),
+                    str(record.get("message") or ""),
+                    " ".join(str(p) for p in (record.get("files_affected") or record.get("files_changed") or [])),
+                ]
+            ).lower()
+            return needle in haystack
+        except Exception:
+            # A malformed record is not a match, and is not a crash either.
+            return False
+
+    return [m for m in merges if matches(m)][-limit:]
 
 
 def _tracking_stats() -> dict:
