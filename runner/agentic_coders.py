@@ -712,6 +712,18 @@ def _pick_raw(task, slot_index=0):
             if candidates:
                 return candidates[0]["name"]
         fc = _spec(forced)
+        # `_provider_healthy` is applied here too. Every other branch of this selector
+        # filters on it, but the forced-coder fast path did not — so a task pinned to a
+        # provider that is demoted for dead credits/auth kept selecting that provider on
+        # every attempt. That is exactly how the canary-gemini-25 build tasks burned five
+        # attempts each against xai's `403 permission-denied … used all available credits`
+        # while the demote registry already knew the provider was down. A pin is a routing
+        # preference, not an override of provider liveness: when the forced coder's
+        # provider is dead we fall through to normal selection, which is the same thing
+        # the non-forced paths do. `_provider_healthy` fails OPEN, so an undeterminable
+        # provider still honours the pin.
+        if fc and not _provider_healthy(fc):
+            fc = None
         if forced == "claude" and fc and fc["cap"] >= need and _within_cap(fc) and _allowed_by_terms(fc, sensitivity):
             return "claude"
         if fc and fc["cap"] >= need and _within_cap(fc) and not _heavy_ollama_saturated(fc):
