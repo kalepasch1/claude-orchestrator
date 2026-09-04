@@ -1,0 +1,33 @@
+# Optional runtime dependencies — features that stay dormant without them.
+#
+# Every package here backs a guarded `try: import X / except ImportError` in
+# `runner/`. The code degrades cleanly when they are absent, so they are NOT in
+# requirements.txt and `scripts/verify_deps.py` does not read this file: a
+# machine that never uses the WS transport should not be forced to install it.
+#
+# The gap this closes: because the imports are guarded, nothing in the repo ever
+# named these packages. An operator who wanted the redis queue or the websocket
+# config transport had to read the ImportError message to learn what to install.
+# Now there is a manifest.
+#
+#   pip install -r requirements-optional.txt
+#
+# Lower bounds only, matching the convention in requirements.txt. This file adds
+# declarations only — it changes no existing pin.
+
+# runner/task_queue_interface.py — RedisTaskQueue backend.
+# Without it, that backend raises RuntimeError and the in-process queue is used.
+redis>=5.0
+
+# runner/ws_config_transport.py — live fleet-config push over websockets.
+# Without it the transport logs "WS transport dormant" and stays off; config
+# still propagates through the DB gateway (fleet_control.py).
+websocket-client>=1.7
+
+# runner/claude_cli.py — in-process Agent SDK path.
+# Without it _HAS_AGENT_SDK stays False and the CLI subprocess path is used.
+claude-agent-sdk>=0.1
+
+# scripts/delete_remote_branches.py — remote branch cleanup helper.
+# Without it the script exits with an install hint rather than running.
+gitpython>=3.1

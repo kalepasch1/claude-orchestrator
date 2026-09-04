@@ -9,3 +9,8 @@
 
 pytest>=8.0
 pytest-timeout>=2.2
+
+# runner/tests/test_session_proof_of_work_config.py imports pytz for the
+# America/New_York deadline assertion. The import is inside a try, so the test
+# silently skipped its own assertion on any machine built from the manifest.
+pytz>=2024.1
