@@ -13,6 +13,13 @@ jobs:
   darwin-kernel:
     name: darwin-kernel — test + typecheck
     runs-on: ubuntu-latest
+    # Every other workflow in this repo bounds its jobs; ci.yml was the one that did
+    # not, so all three jobs inherited GitHub's 360-minute default. That is not
+    # theoretical here: the runner suite has been observed to hang rather than fail
+    # (three full local runs stalled), and a hung job would hold a runner for six hours
+    # per push while the queue waited behind it. These jobs take seconds today, so the
+    # bound is generous — it is a fuse, not a performance budget.
+    timeout-minutes: 15
     container:
       image: node:22-alpine
     defaults:
@@ -44,6 +51,8 @@ jobs:
   runner-guards:
     name: runner — offline guard tests
     runs-on: ubuntu-latest
+    # The offline guards run in ~3s. A minute is a fuse for the hang case, not a budget.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -100,6 +109,9 @@ jobs:
   task-reconciliation:
     name: tasks — reconcile against the queue
     runs-on: ubuntu-latest
+    # This one talks to the control plane, so it is the most likely to hang on a
+    # network stall rather than return an error.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
