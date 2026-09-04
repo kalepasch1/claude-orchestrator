@@ -115,14 +115,14 @@ def auto_recover_missing_branches(dry_run=True, max_recover=10):
                                                        order="id.asc") or [])}
     except Exception as e:
         print(f"auto_recover: DB error fetching projects: {e}")
-        return {"recovered": 0, "missing": 0}
+        return {"recovered": 0, "missing": 0, "would_recover": 0, "dry_run": bool(dry_run)}
     try:
         # Same full scan as main(): a recovery pass that only ever sees the first
         # unordered page can never recover a branch that fell outside it.
         done_tasks = _all_done_tasks(_RECOVER_COLUMNS)
     except Exception as e:
         print(f"auto_recover: DB error fetching tasks: {e}")
-        return {"recovered": 0, "missing": 0}
+        return {"recovered": 0, "missing": 0, "would_recover": 0, "dry_run": bool(dry_run)}
 
     missing = []
     for t in done_tasks:
@@ -134,11 +134,12 @@ def auto_recover_missing_branches(dry_run=True, max_recover=10):
 
     if not missing:
         print("auto_recover: no missing branches found")
-        return {"recovered": 0, "missing": 0}
+        return {"recovered": 0, "missing": 0, "would_recover": 0, "dry_run": bool(dry_run)}
 
     print(f"auto_recover: {len(missing)} missing branches detected")
 
     recovered = 0
+    would_recover = 0
     for t, proj in missing[:max_recover]:
         slug = t.get("slug", "")
         recovery_slug = f"recover-{slug}"
@@ -156,7 +157,13 @@ def auto_recover_missing_branches(dry_run=True, max_recover=10):
 
         if dry_run:
             print(f"  DRY-RUN  would create recovery task for: {slug}")
-            recovered += 1
+            # Counted separately, NOT as `recovered`. This used to increment the same
+            # counter the real path does, so the returned dict reported recovery work
+            # that had not happened — and since the only fleet-wide caller runs this in
+            # dry-run permanently, every "recovered" number it could have reported was
+            # for a task nobody created. A count labelled recovered for work that did
+            # not occur is the same class of lie as reporting a merge as a deployment.
+            would_recover += 1
             continue
 
         # Create recovery task
@@ -177,8 +184,13 @@ def auto_recover_missing_branches(dry_run=True, max_recover=10):
         except Exception as exc:
             print(f"  ERROR  failed to create recovery for {slug}: {exc}")
 
-    result = {"recovered": recovered, "missing": len(missing)}
-    print(f"auto_recover complete: {recovered}/{len(missing)} recovery tasks created (dry_run={dry_run})")
+    result = {"recovered": recovered, "missing": len(missing),
+              "would_recover": would_recover, "dry_run": bool(dry_run)}
+    if dry_run:
+        print(f"auto_recover complete: DRY RUN — {would_recover}/{len(missing)} recovery "
+              f"tasks WOULD be created; none were")
+    else:
+        print(f"auto_recover complete: {recovered}/{len(missing)} recovery tasks created")
     return result
 
 
