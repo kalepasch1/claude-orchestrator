@@ -230,8 +230,30 @@ def _ensure_tool_path():
     os.environ["PATH"] = os.pathsep.join(parts)
 
 _load_env()
+# PIN THE RUNTIME HOME, BUT DO NOT OVERRIDE A HOME THE PROCESS ALREADY CHOSE.
+#
+# runner.py and periodic.py pin this same value, and there it is right: they are ENTRY
+# POINTS and they own the process. db.py is a LIBRARY, imported by nearly every module
+# in the fleet, and it was assigning unconditionally -- so whatever the process had
+# already decided was silently replaced the moment anything touched the database layer.
+#
+# That defeats the one mechanism 94 modules use to keep state out of the live fleet.
+# tests/conftest.py sets CLAUDE_ORCH_HOME to a sandbox for exactly this reason, and the
+# first `import db` after it undid the sandbox. Caught 2026-09-04 by a probe run with an
+# explicit CLAUDE_ORCH_HOME that nonetheless wrote into the live
+# .runtime/merge_train_defer_counts.json:
+#
+#     before import: /tmp/probe2
+#     after  import: /Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime
+#
+# setdefault keeps the original purpose intact -- a process that never set a home still
+# gets the canonical one, which is what stops state scattering across stale or absent
+# values -- while an explicit choice by an entry point, an operator or a test fixture now
+# survives. ORCH_CANONICAL_RUNTIME_HOME=false still disables it entirely.
 if os.environ.get("ORCH_CANONICAL_RUNTIME_HOME", "true").lower() in ("1", "true", "yes", "on"):
-    os.environ["CLAUDE_ORCH_HOME"] = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")
+    os.environ.setdefault(
+        "CLAUDE_ORCH_HOME",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime"))
 _ensure_tool_path()
 
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
