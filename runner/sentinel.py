@@ -423,6 +423,56 @@ def wip_stash_rescue(st=None):
         st["wip_rescued_total"] = int(st.get("wip_rescued_total", 0)) + rescued
 
 
+#: A branch file counts as stranded only when this share of the substantive lines it
+#: added is absent from the base's CURRENT content. Not 100%: a line reformatted or
+#: renamed on the way in should not resurrect a whole file as "lost".
+STRANDED_ABSENT_RATIO = float(os.environ.get("SENTINEL_STRANDED_ABSENT_RATIO", "0.5"))
+
+
+def _is_really_absent_from(base, mb, sha, path):
+    """Has this file's branch work actually failed to reach `base`, by CONTENT?
+
+    THE FALSE ALARM THIS ENDS. `preserve-ec580138-fleet-work` fired this alert every
+    ~6 minutes for over two weeks -- "holds 11 runner/web files not in master", naming
+    runner/merge_train.py, runner/db.py, runner/stderr_digest.py. Checked line by line
+    on 2026-09-04, ten of those eleven files were ALREADY on master in full:
+
+        runner/merge_train_report.py        162 added lines,   0 absent from master
+        runner/tools/reconcile_orch_rescue.py  186 added,      0 absent
+        runner/done_to_merged.py            172 added,         3 absent
+        runner/stderr_digest.py              67 added,         2 absent
+
+    The work landed by another route -- a rebuild, a redo, a different branch -- which
+    is the normal way this fleet lands anything. Comparing by PATH cannot tell that
+    apart from work that was lost, so a branch whose contents are fully merged looked
+    identical to a branch about to be forgotten.
+
+    That is worse than no alert. An alarm that has been wrong every six minutes for a
+    fortnight is one a reader learns to skip, and the next real stranding scrolls past
+    inside it. (The eleventh file, runner/test_contracts_smarter.py, is a genuinely
+    separate 979-line implementation of a test master solved differently in 1046 -- a
+    duplicate, not a loss.)
+
+    Cheap by construction: one `git diff -U0` and one `git show` per candidate file,
+    and only for branches that already passed the ancestor, age and path filters.
+    """
+    diff = git("diff", "-U0", mb, sha, "--", path).stdout or ""
+    added = [line[1:].strip() for line in diff.splitlines()
+             if line.startswith("+") and not line.startswith("+++")]
+    # Short lines are punctuation, imports and closing braces: they match by accident
+    # in any file and would make everything look landed.
+    added = [a for a in added if len(a) > 12]
+    if not added:
+        return False
+    current = git("show", f"{base}:{path}")
+    if current.returncode != 0:
+        return True          # base does not have the file at all -- genuinely absent
+    body = current.stdout or ""
+    absent = sum(1 for a in added if a not in body)
+    return (absent / len(added)) >= STRANDED_ABSENT_RATIO
+
+
+
 def stranded_commit_rescue(st=None):
     """MAKE THE BRANCH-STRANDING CLASS SELF-ANNOUNCING (operator directive 2026-07-31).
 
@@ -468,6 +518,7 @@ def stranded_commit_rescue(st=None):
         changed = git("diff", "--name-only", mb or base, sha).stdout or ""
         touched = [f for f in changed.splitlines()
                    if f.startswith("runner/") or f.startswith("web/")]
+        touched = [f for f in touched if _is_really_absent_from(base, mb or base, sha, f)]
         if not touched:
             continue
         found.append({"branch": name, "tip": sha[:10], "files": len(touched),
