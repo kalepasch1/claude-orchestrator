@@ -19,6 +19,7 @@ import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_cli
 import tdd_gate
+import wiring_policy
 import tests_first_gate
 import design_sources
 import error_handling_utils
@@ -48,6 +49,7 @@ defines the shared interfaces/types/API signatures/DB schema that the others bui
 against (and ONLY those - no implementation). EVERY other task MUST list "contracts"
 in its deps. This lets parallel branches agree on boundaries up front so they cannot
 structurally conflict at merge time.
+""" + wiring_policy.WIRING_RULE + """
 REQUEST:
 """
 
@@ -370,7 +372,11 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
         # full shard: the LLM planner (wide-shallow DAG), with the deterministic section-shard
         # as a robustness fallback so a big prompt never collapses to one master-task.
         try:
-            r = claude_cli.run(META + spec + master, PLAN_MODEL,
+            # The CURRENT unwired-module list, so the planner is told what this
+            # repo already left dead rather than only warned in general terms.
+            # Fail-soft: "" when the repo is unreadable or absent.
+            import_ctx = wiring_policy._build_import_context(repo)
+            r = claude_cli.run(META + spec + import_ctx + master, PLAN_MODEL,
                                timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))
             m = re.search(r"\[.*\]", r["text"], re.S)
             tasks = json.loads(m.group(0)) if m else []
@@ -406,6 +412,10 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
 
     # Apply TDD-first enforcement if configured
     tasks = _apply_tdd_gating(tasks)
+
+    # Attach the wiring reminder to any task that creates logic with no surface
+    # in its file scope. Runs after TDD gating so write_tests phases inherit it too.
+    _, tasks = wiring_policy.augment_plan(tasks, repo)
 
     # Apply tests-first gate: split tasks whose proof references a missing test file
     tasks = tests_first_gate.apply_gate(tasks, repo_path=repo)
