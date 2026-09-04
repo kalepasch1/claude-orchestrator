@@ -1535,6 +1535,23 @@ def invalidate_projects_cache():
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     _guard_fleet_config(table, row)
+    # APPROVAL FLOOD GATE (2026-08-07): ~30 modules insert approvals directly and
+    # kind=self alone had produced 100,851 undecided rows. Dedupe + rate-limit at the
+    # one choke point they all share rather than in every caller. Fail-open by design.
+    if table == "approvals" and isinstance(row, dict):
+        try:
+            import approval_admission
+            _ok, _why = approval_admission.admit(row)
+            if not _ok:
+                import logging
+                logging.getLogger("db").info(
+                    "approval-gate: dropped approval kind=%s title=%.80s — %s",
+                    row.get("kind"), row.get("title") or "", _why)
+                return None
+        except Exception as _e:
+            import logging
+            logging.getLogger("db").debug(
+                "approval-gate infra error (%s); fail-open", _e)
     if table == "tasks" and isinstance(row, dict):
         # Keep the persisted DAG shape deterministic for every insertion route,
         # including upserts. A SQL NULL here makes independent tasks disappear
