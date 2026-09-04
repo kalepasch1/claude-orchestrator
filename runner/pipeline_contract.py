@@ -502,6 +502,24 @@ def artifact(prompt: str, project: str = "", kind: str = "build", source: str = 
         return "{}"
 
 
+def deferred_artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+                      slug: str = "", material: bool = False) -> str:
+    """Return the deferred pipeline contract as stable JSON without live routing.
+
+    Used for intake and high-volume intake pathways where deferring live lookups
+    avoids serial query overhead. Returns valid JSON with the same schema as artifact().
+    Fail-soft: returns "{}" on any error.
+    """
+    try:
+        return json.dumps(
+            build_deferred_plan(prompt, project=project, kind=kind, source=source,
+                                slug=slug, material=material),
+            sort_keys=True,
+        )
+    except Exception:
+        return "{}"
+
+
 def task_fields(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
                 slug: str = "", material: bool = False, existing_note: str = "",
                 model: Optional[str] = None, force_coder: Optional[str] = None) -> Dict[str, Any]:
