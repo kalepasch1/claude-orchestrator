@@ -244,6 +244,72 @@ def _terminal_patch(task, category, rc, blind, signal=""):
 
 NEVER_RAN_NOTE = "requeue: never attempted — nothing to repair"
 
+UNSPECIFIED_NOTE_PREFIX = "unspecified-prompt:"
+
+#: preflight_check verdicts that mean THE PROMPT CANNOT BE IMPLEMENTED, as opposed to the
+#: verdicts about a task's history ("exhausted N attempts", recycled notes). Only these are
+#: grounds for terminating early — a well-specified task that has failed on a hard bug is
+#: exactly the kind of work repair exists to retry.
+#: "prompt too short/empty to be actionable" is deliberately NOT here. Terseness is not
+#: unimplementability — "fix the failing lockfile test" is four words and perfectly
+#: actionable — and including it parked 11 legitimately-specified tasks in the existing
+#: suites on the first try. The two verdicts kept below identify prompts with no request in
+#: them at all: a bare template stub, or pure orchestration metadata. Preflight still blocks
+#: a too-short prompt at DISPATCH; it just is not grounds for terminating the task.
+_UNSPECIFIED_REASON_MARKERS = (
+    "PATCH TEMPLATE or garbage prompt",
+    "metadata-only prompt with no implementation spec",
+)
+
+
+def is_unspecified(task):
+    """True when the task's PROMPT carries no implementable request.
+
+    WHY THIS SHORT-CIRCUITS THE CEILING. "repair-ceiling: rework after 8 repairs without
+    reaching a completed state" is the single largest named quarantine cause on this fleet
+    (30 rows in 7 days, vs 15 for the next one). The ceiling itself is correct — it is the
+    safety valve that stopped tasks reaching remediation_count 28. But reaching it costs
+    EIGHT full repair cycles, and for a task whose prompt is a bare "PATCH TEMPLATE <hex>"
+    stub every one of those eight was predetermined: no coder can implement a prompt that
+    contains no request, so the outcome after eight tries is identical to the outcome after
+    one. Observed in this queue: rows at attempt 9, 13 and 36 whose prompts preflight
+    classifies as garbage at attempt 0.
+
+    Terminating at the first repair instead of the eighth removes ~7/8 of the cost of the
+    largest quarantine cause, and produces a note that names the real problem ("no
+    implementation spec") rather than the symptom ("did not converge"), which is what an
+    operator needs in order to fix or delete the row.
+
+    Fail-soft: if preflight_filter is unavailable or raises, the answer is False — an
+    unavailable classifier must never be read as grounds for terminating a task.
+    """
+    if not isinstance(task, dict) or "prompt" not in task:
+        return False
+    try:
+        import preflight_filter
+    except ImportError:
+        return False
+    try:
+        reason = str(preflight_filter.preflight_check(task) or "")
+    except Exception:
+        return False
+    return any(marker in reason for marker in _UNSPECIFIED_REASON_MARKERS)
+
+
+def _unspecified_patch(task, rc):
+    """Park an unimplementable task now, rather than after eight identical failures."""
+    note = ("%s no implementation spec in the prompt, so repair cannot converge — parked "
+            "at remediation_count=%s instead of burning to the ceiling. attempt=%s. Rewrite "
+            "the prompt with a concrete request and requeue, or delete the row."
+            % (UNSPECIFIED_NOTE_PREFIX, rc, task.get("attempt")))
+    return {
+        "state": "QUARANTINED",
+        "account": None,
+        "updated_at": "now()",
+        "remediation_count": rc,
+        "note": note[:900],
+    }
+
 # --- Operator-decision records ----------------------------------------------------------
 # Slug prefixes the playbooks use when they STOP a loop and ask a human to decide. These rows
 # are not work items: their content is a question, their state is the question's status, and
@@ -434,6 +500,13 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     # bug would discard work that was never given a chance to run.
     if blind and "attempt" in task and int(task.get("attempt") or 0) <= 0:
         return _never_ran_patch(task)
+    # Checked AFTER the never-ran guard, deliberately. A task that has never run still gets
+    # its plain requeue: a repair pass may yet rewrite the prompt into something real, and
+    # quarantining it here would discard work that was never given a chance — the same
+    # mistake _never_ran_patch was written to undo. But once a task has actually run and
+    # STILL has no implementable prompt, seven more repair cycles cannot change that.
+    if is_unspecified(task):
+        return _unspecified_patch(task, rc)
     if blind and rc >= BLIND_REPAIR_CEILING:
         return _terminal_patch(task, category, rc, blind, signal)
     if blind:
