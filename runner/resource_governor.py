@@ -149,13 +149,39 @@ def _per_task_gb():
 
 
 # --- Pruning knobs (opt-in per category) ---
-LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
-PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
-PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
-PRUNE_LIB_CACHES = os.environ.get("PRUNE_LIB_CACHES", "false").lower() == "true"
-# Predictive throttling: fit a trend line to recent disk_pct samples and throttle
-# preemptively if extrapolation breaches DISK_HARD within this many hours.
-PREDICT_WINDOW_H = float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
+# 2026-08-27: these five were the last import-time snapshots left in this module. The
+# throttling knobs above (_ceiling/_disk_soft/_disk_hard/_ram_hard/...) were converted to
+# live env reads on 2026-07-11 for exactly this reason, but the pruning knobs were missed,
+# so half of fleet_control.load_config()'s per-loop push took effect on a running governor
+# and half did not: raising LOG_KEEP_DAYS or flipping PRUNE_DOCKER centrally changed nothing
+# until every governor process was restarted, while a DISK_SOFT_PCT change applied at once.
+# Same fix, same shape — read from env on each call.
+def _log_keep_days():
+    """Age (days) beyond which rotated logs are pruned. Read live from LOG_KEEP_DAYS."""
+    return int(os.environ.get("LOG_KEEP_DAYS", "7"))
+
+
+def _prune_node_modules():
+    """Opt-in: prune node_modules in inactive worktrees. Read live from PRUNE_NODE_MODULES."""
+    return os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
+
+
+def _prune_docker():
+    """Opt-in: run `docker image prune`. Read live from PRUNE_DOCKER."""
+    return os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
+
+
+def _prune_lib_caches():
+    """Opt-in (aggressive): prune ~/Library/Caches. Read live from PRUNE_LIB_CACHES."""
+    return os.environ.get("PRUNE_LIB_CACHES", "false").lower() == "true"
+
+
+def _predict_window_h():
+    """Predictive throttling: fit a trend line to recent disk_pct samples and throttle
+    preemptively if extrapolation breaches DISK_HARD within this many hours."""
+    return float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
+
+
 os.makedirs(HOME, exist_ok=True)
 
 
@@ -321,7 +347,7 @@ def _predicted_disk_pct(horizon_seconds=None):
     Returns (predicted_pct_at_horizon, hours_to_hard) or (None, None) if insufficient data.
     """
     if horizon_seconds is None:
-        horizon_seconds = PREDICT_WINDOW_H * 3600
+        horizon_seconds = _predict_window_h() * 3600
     try:
         rows = db.select("resource_events", {"select": "value,created_at", "kind": "eq.disk",
                                               "order": "created_at.desc", "limit": "20"}) or []
@@ -511,13 +537,13 @@ def prune():
                     shutil.rmtree(d, ignore_errors=True); freed_notes.append(os.path.relpath(d, repo))
 
         # 3) node_modules (opt-in — large but rebuildable with npm install)
-        if PRUNE_NODE_MODULES:
+        if _prune_node_modules():
             for d in glob.glob(os.path.join(repo, "**/node_modules"), recursive=True):
                 if os.path.isdir(d) and "-wt" not in d:
                     shutil.rmtree(d, ignore_errors=True); freed_notes.append("node_modules:" + os.path.relpath(d, repo))
 
     # 4) stale logs
-    cutoff = time.time() - LOG_KEEP_DAYS * 86400
+    cutoff = time.time() - _log_keep_days() * 86400
     for f in glob.glob(os.path.join(HOME, "logs", "*")):
         try:
             if os.path.getmtime(f) < cutoff:
@@ -526,7 +552,7 @@ def prune():
             pass
 
     # 5) Docker (opt-in — removes dangling images + stopped containers)
-    if PRUNE_DOCKER:
+    if _prune_docker():
         try:
             subprocess.run(["docker", "system", "prune", "-f", "--filter", "until=48h"],
                            capture_output=True, timeout=60)
@@ -535,7 +561,7 @@ def prune():
             pass
 
     # 6) ~/Library/Caches (opt-in — aggressive, removes Xcode DerivedData etc.)
-    if PRUNE_LIB_CACHES:
+    if _prune_lib_caches():
         lib_cache = os.path.expanduser("~/Library/Caches")
         safe_targets = ["com.apple.dt.Xcode", "Homebrew"]
         for target in safe_targets:
@@ -709,7 +735,7 @@ def govern():
 
     # Predictive check: prune now if trend says we'll hit DISK_HARD within the window
     pred_pct, hours_to_hard = _predicted_disk_pct()
-    if hours_to_hard is not None and 0 < hours_to_hard < PREDICT_WINDOW_H and used < disk_hard:
+    if hours_to_hard is not None and 0 < hours_to_hard < _predict_window_h() and used < disk_hard:
         print(f"governor: predictive prune — at trend rate disk will hit {disk_hard}% in {hours_to_hard:.1f}h")
         _event("predict", pred_pct, f"will breach {disk_hard}% in {hours_to_hard:.1f}h", "predictive prune")
         prune()
