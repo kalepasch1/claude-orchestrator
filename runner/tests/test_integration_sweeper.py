@@ -130,6 +130,10 @@ class TestIntegrationSweeper(unittest.TestCase):
                     return []
                 if (params or {}).get("slug") == "eq.recover-missing-branch-feat-x":
                     return []
+                # The original is DONE, not MERGED, so the already-integrated probe
+                # must come back empty — this is exactly the recoverable case.
+                if (params or {}).get("state") == "in.(MERGED)":
+                    return []
                 return [task]
             return []
 
@@ -281,6 +285,70 @@ class TestLocalBranchAudit(unittest.TestCase):
             out = integration_sweeper.local_branch_audit("/repo", slugs=["wt-slug"])
         self.assertEqual(len(out["stale_worktrees"]), 1)
         self.assertEqual(out["stale_worktrees"][0]["branch"], "agent/wt-slug")
+
+
+# ---------------------------------------------------------------------------
+# Recreate-loop regression (2026-08-25).
+#
+# _active_recovery_index used db.select(..., "limit": "5000"); PostgREST caps a
+# response at 1,000 rows, so with 1,264 active recover-missing-branch-* rows the
+# tail was invisible to dedup.  Every sweep re-filed the same slugs,
+# queue_bankruptcy quarantined them minutes later ("original task <slug> is
+# already DONE/MERGED"), and the quarantined rows were still outside the visible
+# page on the next sweep -- 14 identical rows across 2 batches ~80min apart for
+# canary-fleet-verify-20260824-a1..a7.
+# ---------------------------------------------------------------------------
+
+class RecreateLoopGuardTest(unittest.TestCase):
+
+    def test_recovery_index_pages_to_exhaustion(self):
+        """The index must be a FULL SCAN, not a capped single page."""
+        seen = {}
+
+        def _select_all(table, params=None, **kw):
+            seen[params.get("slug")] = params
+            return [{"slug": "recover-missing-branch-a1",
+                     "state": "QUARANTINED", "project_id": "p1"}]
+
+        fake = MagicMock()
+        fake.select_all.side_effect = _select_all
+        fake.select.side_effect = AssertionError(
+            "index must not use the 1000-row-capped db.select")
+        with patch.object(integration_sweeper, "db", fake):
+            index = integration_sweeper._active_recovery_index()
+        self.assertEqual(fake.select_all.call_count, 2)
+        for params in seen.values():
+            self.assertNotIn("limit", params,
+                             "a client-side limit reintroduces the truncation bug")
+        self.assertIn(("p1", "a1"), index["exact"])
+
+    def test_quarantined_recovery_blocks_refile(self):
+        """A QUARANTINED recovery row still counts as already-filed."""
+        index = {"exact": {("p1", "canary-fleet-verify-20260824-a1")}, "rework": []}
+        self.assertTrue(integration_sweeper._existing_recovery_indexed(
+            "p1", "canary-fleet-verify-20260824-a1", index))
+
+    def test_no_recovery_filed_for_merged_original(self):
+        """A MERGED original has nothing to recover — its branch was cleaned up."""
+        task = {"id": "t1", "slug": "canary-fleet-verify-20260824-a1",
+                "project_id": "p1", "state": "DONE", "kind": "canary"}
+        proj = {"id": "p1", "name": "beethoven", "repo_path": "/repo",
+                "default_base": "master"}
+        fake = MagicMock()
+        fake.select.return_value = [{"id": "t1", "state": "MERGED"}]
+        with patch.object(integration_sweeper, "db", fake):
+            filed = integration_sweeper._handle_missing_branch(
+                task, proj, recovery_index={"exact": set(), "rework": []})
+        self.assertFalse(filed)
+        fake.insert.assert_not_called()
+
+    def test_merged_probe_fails_open(self):
+        """A DB error on the probe must not stall the sweep."""
+        fake = MagicMock()
+        fake.select.side_effect = RuntimeError("db down")
+        with patch.object(integration_sweeper, "db", fake):
+            self.assertFalse(integration_sweeper._original_already_integrated(
+                {"slug": "feat-x", "project_id": "p1"}))
 
 
 if __name__ == "__main__":
