@@ -439,3 +439,141 @@ class TestStaleHost(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunEntryPointTests(unittest.TestCase):
+    """`run()` is the periodic entry point of the remediation phase — the thing the
+    scheduler actually calls — and nothing tested it. That is the wrong function to
+    leave uncovered: it is the one that decides whether ONE broken remediator stops
+    the rest, and the remediation phase is where prolonged downtime is measured.
+    """
+
+    def setUp(self):
+        for cls in rb.REMEDIATORS:
+            os.environ.pop(f"ORCH_REMEDIATOR_{cls.name.upper()}", None)
+        self.addCleanup(self._clear_modes)
+
+    def _clear_modes(self):
+        for cls in rb.REMEDIATORS:
+            os.environ.pop(f"ORCH_REMEDIATOR_{cls.name.upper()}", None)
+
+    def test_every_remediator_is_reported_even_when_all_are_off(self):
+        """Silence and 'all off' must not look the same to an operator."""
+        summary = rb.run(store=FakeStore())
+        self.assertEqual(len(summary), len(rb.REMEDIATORS))
+        self.assertEqual({s["remediator"] for s in summary},
+                         {c.name for c in rb.REMEDIATORS})
+        self.assertTrue(all(s["mode"] == rb.MODE_OFF for s in summary))
+
+    def test_default_is_off_for_every_remediator(self):
+        """Fail-safe default: an unset env means this bot does not act."""
+        for cls in rb.REMEDIATORS:
+            self.assertEqual(rb.mode_for(cls.name), rb.MODE_OFF, cls.name)
+
+    def test_one_failing_remediator_does_not_stop_the_others(self):
+        """The property that matters. A raise inside one cycle used to be the
+        difference between 'one bot is broken' and 'remediation stopped'."""
+        broken = rb.REMEDIATORS[0]
+
+        class Boom(FakeStore):
+            def read(self, *a, **k):
+                raise RuntimeError("control plane unreachable")
+
+        def build(cls, store=None, mode=None, **kw):
+            if cls is broken:
+                raise RuntimeError("cycle failed")
+            return real_build(cls, store=store, mode=mode, **kw)
+
+        real_build = rb.build
+        rb.build = build
+        self.addCleanup(lambda: setattr(rb, "build", real_build))
+
+        summary = rb.run(store=FakeStore())
+        self.assertEqual(len(summary), len(rb.REMEDIATORS))
+        errored = [s for s in summary if "error" in s]
+        self.assertEqual([s["remediator"] for s in errored], [broken.name])
+        self.assertTrue(all("counts" in s for s in summary if "error" not in s))
+
+    def test_a_failure_is_reported_not_swallowed(self):
+        """A remediator that cannot run must say so in the summary; a silent skip
+        is indistinguishable from a clean cycle."""
+        real_build = rb.build
+        rb.build = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("kaboom"))
+        self.addCleanup(lambda: setattr(rb, "build", real_build))
+
+        summary = rb.run(store=FakeStore())
+        self.assertTrue(all("kaboom" in s.get("error", "") for s in summary))
+
+    def test_observe_mode_reports_without_writing(self):
+        """Observe is the safe rollout step; it must never mutate the outside world."""
+        for cls in rb.REMEDIATORS:
+            os.environ[f"ORCH_REMEDIATOR_{cls.name.upper()}"] = "observe"
+        store = FakeStore()
+        summary = rb.run(store=store)
+        self.assertTrue(all(s["mode"] == rb.MODE_OBSERVE for s in summary))
+        self.assertEqual(store.writes, [], "observe mode wrote to the store")
+
+    def test_an_unrecognised_mode_is_off_not_on(self):
+        """Fail closed: a typo in the env must not enable a bot that acts."""
+        name = rb.REMEDIATORS[0].name
+        for raw in ("maybe", "ON!", "2", "", "   ", "disabled"):
+            os.environ[f"ORCH_REMEDIATOR_{name.upper()}"] = raw
+            self.assertEqual(rb.mode_for(name), rb.MODE_OFF, repr(raw))
+
+
+class EvidenceGateTests(unittest.TestCase):
+    """_has_evidence decides whether a row keeps its state. The remediator DEMOTES
+    on a miss, so a false negative costs a real success its state — which is why
+    the check is deliberately generous, and why that generosity needs pinning."""
+
+    def test_any_single_field_counts(self):
+        for field in rb.EVIDENCE_FIELDS:
+            self.assertTrue(rb._has_evidence({field: "x"}), field)
+
+    def test_an_empty_row_has_no_evidence(self):
+        self.assertFalse(rb._has_evidence({}))
+
+    def test_blank_and_whitespace_strings_are_not_evidence(self):
+        """A column defaulted to '' must not read as proof that work happened."""
+        for value in ("", "   ", "\n", "\t"):
+            self.assertFalse(rb._has_evidence({"commit_sha": value}), repr(value))
+
+    def test_falsy_non_strings_are_not_evidence(self):
+        for value in (None, 0, False, [], {}):
+            self.assertFalse(rb._has_evidence({"outcome_id": value}), repr(value))
+
+    def test_truthy_non_strings_are_evidence(self):
+        """outcome_id is an integer in some rows; a valid id must count."""
+        self.assertTrue(rb._has_evidence({"outcome_id": 41682}))
+
+    def test_unrelated_fields_are_not_evidence(self):
+        self.assertFalse(rb._has_evidence({"slug": "x", "state": "DONE", "id": 7}))
+
+
+class HoursSinceTests(unittest.TestCase):
+    """Fail-soft AND fail-closed: an unreadable timestamp must report as brand new,
+    so a parse bug can never make a remediator act on every row at once."""
+
+    def test_an_unparseable_timestamp_reads_as_zero_hours(self):
+        for ts in ("not-a-date", "yesterday", "2026-13-45T99:99:99Z", "{}"):
+            self.assertEqual(rb._hours_since(ts, time.time()), 0.0, ts)
+
+    def test_a_missing_timestamp_reads_as_zero_hours(self):
+        for ts in (None, "", 0):
+            self.assertEqual(rb._hours_since(ts, time.time()), 0.0, repr(ts))
+
+    def test_a_real_age_is_measured(self):
+        now = time.time()
+        import datetime
+        stamp = datetime.datetime.fromtimestamp(
+            now - 7200, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertAlmostEqual(rb._hours_since(stamp, now), 2.0, places=1)
+
+    def test_a_future_timestamp_never_reports_negative_age(self):
+        """Clock skew between machines is normal; a negative age would underflow
+        every 'older than N hours' comparison into acting immediately."""
+        now = time.time()
+        import datetime
+        stamp = datetime.datetime.fromtimestamp(
+            now + 3600, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertEqual(rb._hours_since(stamp, now), 0.0)
