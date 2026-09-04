@@ -160,10 +160,11 @@ def _time_limit(seconds, job):
         except (ValueError, AttributeError, OSError):
             pass
 
-# Exit codes, so a scheduler/wrapper can tell the three outcomes apart.
+# Exit codes, so a scheduler/wrapper can tell the outcomes apart.
 _EX_OK = 0
 _EX_SKIPPED = 75        # EX_TEMPFAIL: legitimately busy, try again next interval
 _EX_WEDGED = 1          # the job has not run for _WEDGE_SKIPS intervals — this is a failure
+_EX_TIMEOUT = 2         # the job started but had to be interrupted — it did not finish
 
 
 class _Skipped(object):
@@ -171,6 +172,23 @@ class _Skipped(object):
 
     def __init__(self, job, reason, wedged=False, skips=0):
         self.job, self.reason, self.wedged, self.skips = job, reason, wedged, skips
+
+
+class _TimedOut(dict):
+    """Sentinel: the job started but was interrupted by the hard timeout.
+
+    Subclasses dict deliberately. The existing contract — `_invoke_job` returns a
+    mapping with a truthy "timeout" and the job name — is what callers and tests
+    read, and it stays exactly that. What it adds is a TYPE, so the exit path can
+    tell "interrupted, work unfinished" apart from "ran and returned a dict".
+    Without that distinction a timed-out run exits 0, which is the same silence
+    the wedge detector was built to end: the scheduler records success for work
+    that did not happen.
+    """
+
+    def __init__(self, job, detail, seconds):
+        super().__init__(timeout=True, job=job, detail=detail, timeout_s=seconds)
+        self.job, self.detail, self.seconds = job, detail, seconds
 
 
 def _skip_state():
@@ -271,6 +289,85 @@ def _alert_wedged(job, entry, pid, age):
         print(f"periodic {job}: could not file wedge remediation task ({exc})")
 
 
+def _escalate_timeout(job, seconds, detail):
+    """A job that had to be interrupted is unfinished work — escalate it like a wedge.
+
+    The wedge path already escalates, because a job that never RUNS is invisible loss. A job
+    that runs and gets cut off mid-flight is the same loss wearing a different hat: the lock is
+    released and the next cycle proceeds, so from the outside it looks like recovery, and the
+    print alone scrolls past. Same destinations `_alert_wedged` uses, so both failures land
+    where operators already look. Every step is fail-soft: an escalation that raised would take
+    down the runner it exists to report on.
+
+    Returns the set of destinations that actually accepted the report. "We timed out and could
+    not tell anyone" is strictly worse than "we timed out", and an escalation path that cannot
+    say which is which reproduces, one level up, the exact silence this function exists to end.
+    """
+    delivered = set()
+    headline = (f"periodic {job}: TIMEOUT — interrupted after {seconds}s; the job did not "
+                f"finish and its work for this cycle was lost")
+    print(headline, file=sys.stderr, flush=True)
+    delivered.add("stderr")
+    try:
+        import notify
+        notify.send(headline[:400])
+        delivered.add("notify")
+    except Exception as exc:
+        # Fail-soft, but never silent: a dropped notification is itself a reason this
+        # class of failure stays invisible, so say which destination was lost.
+        print(f"periodic {job}: timeout notify failed ({exc}); continuing", flush=True)
+    try:
+        db.insert("approvals", {
+            "project": "ORCHESTRATOR", "kind": "self", "status": "pending",
+            "title": headline[:200],
+            "why": (f"'{job}' exceeded its {seconds}s budget and was interrupted by SIGALRM so "
+                    f"it would release the singleton lock. The lock being freed is the point — "
+                    f"but the job still did not do its work, and a timeout that only prints "
+                    f"exits 0, so the scheduler records success.")[:1000],
+            "value": "Distinguishes 'ran' from 'was cut off'. A job silently timing out every "
+                     "cycle is indistinguishable from a healthy one if the exit code is 0.",
+            "risk": (f"detail: {detail}. Raise the budget with "
+                     f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')} if this "
+                     f"job is legitimately this slow, or fix what makes it unbounded.")[:1000],
+        })
+        delivered.add("approvals")
+    except Exception as exc:
+        print(f"periodic {job}: could not file timeout approval card ({exc}); continuing",
+              flush=True)
+    try:
+        import guard_tasks
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_id = ""
+        for row in (db.select("projects", {"select": "id,repo_path"}) or []):
+            if os.path.abspath(row.get("repo_path") or "") == os.path.abspath(root):
+                project_id = row.get("id")
+                break
+        filer = guard_tasks.Filer("periodic-timeout", max_per_run=3)
+        filer.file(project_id, guard_tasks.stable_slug("timeout", job),
+                   (f"The periodic job '{job}' exceeded its {seconds}s hard timeout and was "
+                    f"interrupted ({detail}).\n\n"
+                    f"The timeout works as designed: the singleton lock is released, so the job "
+                    f"is not wedged. The problem is that it never COMPLETES — every cycle starts "
+                    f"the work and throws it away.\n\n"
+                    f"Find what makes `JOBS['{job}']()` unbounded — an unpaged query over a "
+                    f"growing table, a per-row network call with no aggregate budget, or a "
+                    f"retry loop. Bound the work itself rather than raising the budget. "
+                    f"Reproduce with:\n"
+                    f"    cd runner && python3 -c \"import periodic; periodic.JOBS['{job}']()\""),
+                   severity=guard_tasks.CRITICAL, project_name="ORCHESTRATOR",
+                   title=headline[:200], escalate_why=headline)
+        delivered.add("remediation_task")
+    except Exception as exc:
+        print(f"periodic {job}: could not file timeout remediation task ({exc})")
+
+    if delivered == {"stderr"}:
+        # Every durable destination refused. Nothing outside this process log knows the job
+        # was cut off, which is the failure this whole path exists to prevent — say so plainly.
+        print(f"periodic {job}: TIMEOUT ESCALATION REACHED NO DURABLE DESTINATION — the only "
+              f"record of this timeout is this log line", file=sys.stderr, flush=True)
+    return delivered
+
+
 def _read_lock_holder(lock_path):
     """Return (pid, started_at) recorded by the current holder, or (None, None)."""
     try:
@@ -358,8 +455,9 @@ def _invoke_job(job):
         and let the next one run. Disabling here would take a healthy job offline for the
         duration of an outage, which is the opposite of what we want.
     """
+    seconds = _job_timeout(job)
     try:
-        with _time_limit(_job_timeout(job), job):
+        with _time_limit(seconds, job):
             return JOBS[job]()
     except JobTimeout as exc:
         # Loud on purpose. The whole failure mode being fixed here is that a wedged job
@@ -368,7 +466,10 @@ def _invoke_job(job):
               f"released and the next invocation can actually run. Raise the budget with "
               f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')} if this job "
               f"is legitimately this slow.")
-        return {"timeout": True, "job": job, "detail": str(exc)}
+        # Releasing the lock fixed the wedge; it did NOT make the work happen. Escalate and
+        # return a typed result so the process can exit non-zero instead of reporting success.
+        _escalate_timeout(job, seconds, str(exc))
+        return _TimedOut(job, str(exc), seconds)
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
@@ -1503,12 +1604,17 @@ if __name__ == "__main__":
             pass
     outcome = _run_job_locked(job)
     # rc 0 = the job ran. rc 75 = legitimately busy, retry next interval. rc 1 = WEDGED.
+    # rc 2 = started but had to be interrupted, so its work for this cycle did not happen.
     # Returning 0 for a skip is what let three of four jobs no-op through a verification pass
-    # while every caller recorded success.
+    # while every caller recorded success; a timeout reported success the same way.
     if isinstance(outcome, _Skipped):
         if outcome.wedged:
             print(f"periodic {job}: exiting {_EX_WEDGED} — WEDGED ({outcome.skips} consecutive "
                   f"skips, reason: {outcome.reason})", file=sys.stderr, flush=True)
             sys.exit(_EX_WEDGED)
         sys.exit(_EX_SKIPPED)
+    if isinstance(outcome, _TimedOut):
+        print(f"periodic {job}: exiting {_EX_TIMEOUT} — TIMEOUT after {outcome.seconds}s "
+              f"({outcome.detail})", file=sys.stderr, flush=True)
+        sys.exit(_EX_TIMEOUT)
     sys.exit(_EX_OK)
