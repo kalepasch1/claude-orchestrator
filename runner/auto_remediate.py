@@ -46,6 +46,41 @@ _HUMAN = re.compile(r"credential needed|missing credential|auth failure|secret|m
 _CAP_CARD = re.compile(r"blocked after \d+ auto-fixes|can't self-revise|needs a look:|re-scope needed", re.I)
 _PARKED = re.compile(r"ev-parked|near-zero expected value|preflight: predicted no committable|permission denial|tool use", re.I)
 _MAX_TURNS = re.compile(r"max_turns|maximum number of turns|reached.*turn.*limit", re.I)
+
+# Shelving is the end of the automated line: the next reader is a human re-scoping
+# the task, and the note is all they get.
+_NOTE_LIMIT = 500
+_TAIL_BUDGET = 220
+
+
+def _shelve_note(rc, note, log_tail):
+    """The shelve note, with the failure evidence preserved rather than dropped.
+
+    This used to be `(prefix + note)[:500]`, which lost the two things a human
+    actually needs. The ERROR ITSELF lives in `log_tail`, not `note` — the run
+    builds `signal = note + log_tail` for matching but only `note` reached the
+    shelved row, so the terminal reason never survived. And a long accumulated
+    note pushed everything past the 500-char cap, so even the note could be cut
+    mid-word with no indication anything was missing.
+
+    Now the tail gets a reserved budget at the end (marked `| last error:` and
+    ellipsised when truncated, so a clipped note is visibly clipped), and the
+    note is trimmed around it. Still one field, still capped — nothing else in
+    the pipeline has to change.
+    """
+    prefix = f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
+    tail = " ".join(str(log_tail or "").split())
+    body = str(note or "")
+    if not tail:
+        return (prefix + body)[:_NOTE_LIMIT]
+    if len(tail) > _TAIL_BUDGET:
+        tail = tail[-(_TAIL_BUDGET - 1):]
+        tail = "…" + tail
+    suffix = f" | last error: {tail}"
+    room = max(0, _NOTE_LIMIT - len(prefix) - len(suffix))
+    if len(body) > room:
+        body = (body[:max(0, room - 1)] + "…") if room else ""
+    return (prefix + body + suffix)[:_NOTE_LIMIT]
 _TOO_LONG = re.compile(r"prompt is too long|context.*limit|single-exchange conversation cannot be compacted", re.I)
 _READY_UNCOMMITTED = re.compile(r"ready to commit|git commit|changes are safe|implementation is complete", re.I)
 _ENV_BUILDFAIL = re.compile(r"integrate BUILDFAIL|production build red|build error", re.I)
@@ -120,8 +155,7 @@ def run(limit=120):
                         continue
             db.update("tasks", {"id": t["id"]},
                       {"state": "SHELVED", "account": None, "updated_at": "now()",
-                       "note": (f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
-                                + note)[:500]})
+                       "note": _shelve_note(rc, note, t.get("log_tail"))})
             shelved += 1
             continue
 
