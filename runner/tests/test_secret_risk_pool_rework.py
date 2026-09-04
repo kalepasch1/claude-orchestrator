@@ -59,6 +59,22 @@ _VENDOR_PREFIX_CASES = [
     ("token_", 'key: str = "token_abc"'),
     ("ghp_", 'key: str = "ghp_abc"'),
     ("xoxb-", 'key: str = "xoxb-abc"'),
+    # The second wave, added to _SECRET_VALUE_PREFIXES after measuring that a
+    # literal beginning xai-/gsk_/AIzaSy/glpat- was NOT flagged — four live
+    # credential formats a linter whose whole job is this was letting through.
+    # This table did not follow, and test_every_vendor_prefix_has_a_case exists
+    # precisely to make that omission fail rather than pass quietly.
+    ("xai-", 'key: str = "xai-abc"'),
+    ("gsk_", 'key: str = "gsk_abc"'),
+    # Google keys are AIzaSy…; the constant is lowercase because matching is
+    # case-insensitive, so the literal here is spelled the way a real key is.
+    ("aizasy", 'key: str = "AIzaSyabc"'),
+    ("glpat-", 'key: str = "glpat-abc"'),
+    ("github_pat_", 'key: str = "github_pat_abc"'),
+    ("xoxp-", 'key: str = "xoxp-abc"'),
+    ("xoxa-", 'key: str = "xoxa-abc"'),
+    ("anthropic-", 'key: str = "anthropic-abc"'),
+    ("hf_", 'key: str = "hf_abc"'),
 ]
 
 

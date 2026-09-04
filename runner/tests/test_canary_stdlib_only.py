@@ -38,6 +38,15 @@ ALLOWED_TOP_LEVEL = {
     "signal", "contextlib", "functools", "collections", "traceback",
     # first-party siblings, resolved from runner/ and always present with canary.py
     "canary_validation",
+    # dotenv is third-party, and it is here DELIBERATELY rather than by drift.
+    # The rule this test enforces exists because canary.py is the deploy gate and
+    # runs before dependencies are installed, so a third-party import could make
+    # it fail to import at the moment it is meant to be gating. canary.py imports
+    # this one inside try/except ImportError and sets load_dotenv = None on
+    # failure, so that failure mode does not exist here: the module imports
+    # cleanly on a box that has never heard of python-dotenv, and load_env()
+    # returns False. Every other third-party name still fails this test.
+    "dotenv",
 }
 
 #: Named because it is the specific import that was requested. If canary.py ever
