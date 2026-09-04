@@ -51,13 +51,13 @@ index 1111111..2222222 100644
 --- a/pkg/mod.py
 +++ b/pkg/mod.py
 @@ -3,7 +3,7 @@ import os
- 
- 
+
+
  def alpha():
 -    return 0
 +    return 1
- 
- 
+
+
  class Widget:
 @@ -12,4 +12,4 @@ class Widget:
      def method_one(self):

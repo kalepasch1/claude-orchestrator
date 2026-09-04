@@ -162,6 +162,10 @@ jobs:
   dependency-manifest:
     name: deps — manifest installs and imports
     runs-on: ubuntu-latest
+    # A pip install that stalls on the network hangs until GitHub's 360-minute
+    # default kills it, holding a runner for six hours over a job that takes
+    # about a minute. This is a fuse, not a performance budget.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
