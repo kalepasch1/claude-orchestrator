@@ -519,21 +519,41 @@ class ConventionChecker(ast.NodeVisitor):
                     f'Public function "{node.name}" raises on bad input; use try/except with sensible defaults instead'
                 ))
 
-        # A bare `except: pass` silently swallows every error including
-        # KeyboardInterrupt/SystemExit — that is silent failure, not fail-soft
-        # (fail-soft returns a sensible default). Flag it in public functions.
+        # A handler whose body is only `pass` silently swallows the error — that
+        # is silent failure, not fail-soft (fail-soft returns a sensible default,
+        # re-raises deliberately, or at minimum records the error).
+        #
+        # This used to require a BARE except. CLAUDE.md is explicit that broad
+        # catches are this repo's documented convention and that the defect is
+        # the silence, not the breadth: "A silent `except Exception: pass` is the
+        # defect; a logged one is the convention." Typing the exception does not
+        # make an empty body any less silent, so the type check is gone.
         for child in self._own_nodes(node):
             if not isinstance(child, ast.Try):
                 continue
             for handler in child.handlers:
-                bare = handler.type is None
-                only_pass = all(isinstance(stmt, ast.Pass) for stmt in handler.body)
-                if bare and only_pass:
+                if self._handler_is_silent(handler):
                     self._record(ConventionViolation(
                         self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
-                        f'Public function "{node.name}" has a bare "except: pass"; '
-                        'catch specific exceptions and return a sensible default instead'
+                        f'Public function "{node.name}" swallows errors with an empty '
+                        'except handler; return a sensible default or record the error'
                     ))
+
+    @staticmethod
+    def _handler_is_silent(handler: ast.ExceptHandler) -> bool:
+        """True when an except body does nothing but `pass`.
+
+        A docstring-only body counts as silent too: a string literal explaining
+        why the error is ignored is documentation, not handling.
+        """
+        body = [
+            stmt for stmt in handler.body
+            if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str))
+        ]
+        if not body:
+            return True
+        return all(isinstance(stmt, ast.Pass) for stmt in body)
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
         """

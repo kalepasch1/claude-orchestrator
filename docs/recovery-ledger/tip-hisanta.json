@@ -1,0 +1,149 @@
+{
+  "base": "origin/master",
+  "base_sha": "8a2e2e16327fafdeeb4cc0637a7e728eecba783d",
+  "counts": {
+    "DIVERGED": 6,
+    "IDENTICAL": 1,
+    "SUPERSEDED_BY_NEWER": 4
+  },
+  "items": [
+    {
+      "base_blob": "beb779995b35640eacff705d14de72e2ab015715",
+      "conflict_markers": false,
+      "disposition": "base strictly extends the snapshot (+22/-0); every line the snapshot would restore is a line the base added later",
+      "path": "hisanta/__init__.py",
+      "snapshot_blob": "52cebebdf39139dd56a0f5f59beaac67ee9e7764",
+      "snapshot_to_base": {
+        "added": 22,
+        "deleted": 0
+      },
+      "verdict": "SUPERSEDED_BY_NEWER"
+    },
+    {
+      "base_blob": "1ef50193c7ac17a6d8d536fe0f9cde7ad73fd37a",
+      "conflict_markers": false,
+      "disposition": "base strictly extends the snapshot (+183/-0); every line the snapshot would restore is a line the base added later",
+      "path": "hisanta/contracts/family.py",
+      "snapshot_blob": "6a7b04e5343bb6e1a45abacdbb5f6576a4a50e06",
+      "snapshot_to_base": {
+        "added": 183,
+        "deleted": 0
+      },
+      "verdict": "SUPERSEDED_BY_NEWER"
+    },
+    {
+      "base_blob": "94974ef785e831b0877be84832f23f271259979d",
+      "conflict_markers": false,
+      "disposition": "base strictly extends the snapshot (+49/-0); every line the snapshot would restore is a line the base added later",
+      "path": "hisanta/hisanta/contracts/family.py",
+      "snapshot_blob": "2d962a64bb8ec75290a208b26770c5e457800683",
+      "snapshot_to_base": {
+        "added": 49,
+        "deleted": 0
+      },
+      "verdict": "SUPERSEDED_BY_NEWER"
+    },
+    {
+      "base_blob": "249b7a02e911ed1e3a69623f126802366ebb6978",
+      "conflict_markers": false,
+      "disposition": "base strictly extends the snapshot (+90/-0); every line the snapshot would restore is a line the base added later",
+      "path": "hisanta/hisanta/mastery/engine.py",
+      "snapshot_blob": "b84feed1f8d53fe49e3f01edca7c5893cb40d79b",
+      "snapshot_to_base": {
+        "added": 90,
+        "deleted": 0
+      },
+      "verdict": "SUPERSEDED_BY_NEWER"
+    },
+    {
+      "base_blob": "740a40163b515b79ca961437bfb296ae0d5280fb",
+      "disposition": "snapshot blob equals base blob; nothing was lost",
+      "path": "hisanta/tests/test_contract_singleton.py",
+      "snapshot_blob": "740a40163b515b79ca961437bfb296ae0d5280fb",
+      "verdict": "IDENTICAL"
+    },
+    {
+      "base_blob": "85aab0c8763e2d40e0cdc255a47a023480d4d96e",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+9/-5 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/benchmark_redlines.py",
+      "snapshot_blob": "51202f4e208a5f194b44799f9d2812aed30db08b",
+      "snapshot_to_base": {
+        "added": 9,
+        "deleted": 5
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "add50dc7a888944b72fd7d4e4d6d6142a9d9e1b5",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+2/-20 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/claude_cli.py",
+      "snapshot_blob": "a9b7445ed0f51dd54fbe7ef65ce80ae104f2f14a",
+      "snapshot_to_base": {
+        "added": 2,
+        "deleted": 20
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "2a9c76769d800aef4e614e91fd1c3d2c81865a9e",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+11/-5 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/expert_corps.py",
+      "snapshot_blob": "1dc465fa0d8bae190a85ed276789f1db487a1752",
+      "snapshot_to_base": {
+        "added": 11,
+        "deleted": 5
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "7ac156500883b9b45bf69bf05626bf336505363d",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+9/-5 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/foulkon_sync.py",
+      "snapshot_blob": "6ff8b9b5bfd450016bd8d429ab5fd1b1e0c7721a",
+      "snapshot_to_base": {
+        "added": 9,
+        "deleted": 5
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "10ea2cecdb7eb0882ff193e2aa2a7be3abfea9ec",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+38/-52 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/slo_controller.py",
+      "snapshot_blob": "3f322dd92d635be6fa1617aff59360dd349210e1",
+      "snapshot_to_base": {
+        "added": 38,
+        "deleted": 52
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "ce6ea3ab71c0188bc3946c600b0e0bee03f975fd",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+1/-23 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/tests/test_slo_controller.py",
+      "snapshot_blob": "859b311e6a0966dfa3ac969b18ca12eed04fd9a2",
+      "snapshot_to_base": {
+        "added": 1,
+        "deleted": 23
+      },
+      "verdict": "DIVERGED"
+    }
+  ],
+  "needs_human_review": [
+    "runner/benchmark_redlines.py",
+    "runner/claude_cli.py",
+    "runner/expert_corps.py",
+    "runner/foulkon_sync.py",
+    "runner/slo_controller.py",
+    "runner/tests/test_slo_controller.py"
+  ],
+  "nothing_recoverable": false,
+  "snapshot": "358297fa",
+  "snapshot_sha": "358297faa18ff03172ac9f7240ce981e825e13bb"
+}
