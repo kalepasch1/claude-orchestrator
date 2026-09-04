@@ -99,7 +99,13 @@ _REPLACEABLE_MODULES = (
 # it — but the correct undo is to REMOVE the entry, not to put something back. Kept
 # separate from _REAL_MODULES so that map stays exactly what its name promises: real
 # module objects.
-_SYNTHETIC_ONLY_MODULES = frozenset({"_runner_module_under_test", "_test_hot_mod"})
+_SYNTHETIC_ONLY_MODULES = frozenset({
+    "_repo_root_canary_for_validation",
+    "_runner_module_for_timeout_tests",
+    "_runner_module_under_test",
+    "_test_hot_mod",
+    "router_stats",
+})
 
 
 def _resolve_real_modules():
