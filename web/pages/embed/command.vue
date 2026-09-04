@@ -22,7 +22,7 @@ import {
   makeEnvelope,
   parseEnvelope,
   type EmbedSurface,
-} from '~/server/utils/embedProtocol'
+} from '~/shared/embedProtocol'
 
 definePageMeta({ layout: false })
 
