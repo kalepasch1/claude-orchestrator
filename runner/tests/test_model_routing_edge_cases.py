@@ -68,12 +68,27 @@ class EdgeCaseInputHandlingTest(unittest.TestCase):
         self.assertEqual(provider, "deepseek")
 
     def test_extreme_token_length_prompt(self):
-        """Very long prompt should not crash routing."""
+        """Very long prompt should not crash routing.
+
+        agentic=True routes through agentic_coders, not through mg.available, so
+        patching only the latter left this assertion at the mercy of whatever
+        coders happened to be configured — and of whatever an earlier test in
+        this file had left in os.environ. It passed alone and returned 'codex'
+        in file order, which is a test measuring the machine rather than the
+        code. Both seams are controlled now, so the answer is the routing
+        logic's own.
+        """
         extreme_prompt = "x" * 1000000  # 1M characters
-        # Routing should succeed regardless of prompt length
-        with patch.object(model_policy.mg, "available", return_value=["claude"]):
+        self.assertEqual(len(extreme_prompt), 1000000)
+
+        coder = MagicMock()
+        coder.route.return_value = {"provider": "claude", "model": "claude-haiku-4-5-20251001",
+                                    "coder": "claude", "cap": 10, "cost": 1}
+        with patch.dict(sys.modules, {"agentic_coders": coder}), \
+                patch.object(model_policy.mg, "available", return_value=["claude"]):
             provider, model, why = model_policy.choose("review", agentic=True)
         self.assertEqual(provider, "claude")
+        self.assertTrue(model, "routing must return a model, not an empty string")
 
     def test_malformed_diff_metadata_skip_llm_verify(self):
         """should_skip_llm_verify should handle missing fields gracefully."""

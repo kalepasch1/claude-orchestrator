@@ -134,7 +134,7 @@ class TestInvalidKeyIsNeverRetried(unittest.TestCase):
         # so a handler (pytest's, or an embedding app's) may own the stream.
         with patch.object(probe, "probe_gemini",
                           side_effect=probe.InvalidKeyError("GEMINI_API_KEY rejected")), \
-             patch.dict(os.environ, {"GEMINI_API_KEY": "x"}), \
+             patch.dict(os.environ, {"GEMINI_API_KEY": "A" * 40}), \
              self.assertLogs(probe.logger, level="ERROR") as captured:
             self.assertEqual(probe.main(), 1)
         self.assertTrue(any("GEMINI_API_KEY rejected" in line for line in captured.output),

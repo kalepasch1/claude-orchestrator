@@ -50,9 +50,29 @@ class TestValidationFailureZeroesTheGauge(_GaugeCase):
         self.assertFalse(canary.validate_canary(""))
         self.assertEqual(self.gauge(), 0)
 
-    def test_a_successful_validation_leaves_the_gauge_alone(self):
+    def test_a_successful_validation_stamps_a_fresh_timestamp(self):
+        """A live success must be visible to the heartbeat.
+
+        This used to assert the gauge was left ALONE at the seeded value. That is
+        the defect validate_canary's success path was written to close: only the
+        promote verdict in main() ever stamped canary_last_success, so a canary
+        that demonstrably survived the pipeline hop left the gauge reading
+        whatever it read before — a live success was invisible to any alert of
+        the form `time() - canary_last_success > threshold`. Asserting the stale
+        value would pin that blindness back in.
+
+        The gauge holds a UNIX timestamp, so the assertion is that it advanced
+        past the seed and is recent — not a literal, which would be a clock test.
+        """
+        import time
+
+        before = time.time()
         self.assertTrue(canary.validate_canary("this response contains a canary token"))
-        self.assertEqual(self.gauge(), 1_700_000_000.0)
+        stamped = self.gauge()
+        self.assertGreater(stamped, 1_700_000_000.0,
+                           "the seeded value survived; the success was not recorded")
+        self.assertGreaterEqual(stamped, before)
+        self.assertLessEqual(stamped, time.time() + 1)
 
     def test_a_substring_near_miss_is_still_a_failure(self):
         """Word-boundary matching is the unified semantics; "precanary" must not pass."""

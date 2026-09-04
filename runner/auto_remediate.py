@@ -94,7 +94,7 @@ _NOTE_LIMIT = 500
 _TAIL_BUDGET = 220
 
 
-def _shelve_note(rc, note, log_tail):
+def _shelve_note(rc, note, log_tail, prefix=None):
     """The shelve note, with the failure evidence preserved rather than dropped.
 
     This used to be `(prefix + note)[:500]`, which lost the two things a human
@@ -109,7 +109,12 @@ def _shelve_note(rc, note, log_tail):
     note is trimmed around it. Still one field, still capped — nothing else in
     the pipeline has to change.
     """
-    prefix = f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
+    # `prefix` is a parameter because there are two shelve branches with different
+    # reasons, and the second one was inlining `(its_prefix + note)[:500]` — the
+    # exact expression this helper was written to replace. That branch therefore
+    # dropped log_tail, which is where the error actually is, and could cut the
+    # note mid-word with nothing to show it had been cut.
+    prefix = prefix or f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
     tail = " ".join(str(log_tail or "").split())
     body = str(note or "")
     if not tail:
@@ -241,9 +246,11 @@ def run(limit=120):
         if over_attempt_cap(t) and rc < HARD_CAP and not _requires_human_hold(t, signal):
             db.update("tasks", {"id": t["id"]},
                       {"state": "SHELVED", "account": None, "updated_at": "now()",
-                       "note": (f"shelved after {int(t.get('attempt') or 0)} attempts "
-                                f"(attempt cap {_attempt_hard_cap()}; remediation_count "
-                                f"stalled at {rc}) — needs human re-scope. " + note)[:500]})
+                       "note": _shelve_note(
+                           rc, note, t.get("log_tail"),
+                           prefix=(f"shelved after {int(t.get('attempt') or 0)} attempts "
+                                   f"(attempt cap {_attempt_hard_cap()}; remediation_count "
+                                   f"stalled at {rc}) — needs human re-scope. "))})
             shelved += 1
             continue
 
