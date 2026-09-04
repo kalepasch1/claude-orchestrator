@@ -99,7 +99,10 @@ def test_cli_missing_file_is_fail_soft(capsys):
 def test_module_is_runnable_as_a_script(tmp_path):
     snapshot = tmp_path / "s.txt"
     snapshot.write_text(TASK_TEXT, encoding="utf-8")
-    repo_root = Path(__file__).resolve().parents[1]
+    # parents[2], not [1]: this file moved from tools/ into tools/tests/, so the
+    # repo root — which `python -m tools.enumerate_evidence_items` must run from
+    # — is now two levels up rather than one.
+    repo_root = Path(__file__).resolve().parents[2]
     proc = subprocess.run(
         [sys.executable, "-m", "tools.enumerate_evidence_items", "-i", str(snapshot)],
         cwd=str(repo_root),

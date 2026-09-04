@@ -13,7 +13,11 @@ import importlib.util
 import os
 import unittest
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# The module under test is in tools/, one level up: this file moved into
+# tools/tests/ because write_guard refuses a test file written directly to
+# 'tools' — tests belong in a tests/ directory. Loading by path means the
+# move has to be reflected here; nothing else about the test changes.
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SPEC = importlib.util.spec_from_file_location(
     "recovery_ledger_publish", os.path.join(_HERE, "recovery_ledger_publish.py")
 )
