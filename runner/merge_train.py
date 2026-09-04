@@ -750,8 +750,35 @@ def _rebase_onto_base(repo, branch, base):
     approval_merge._free_branch(repo, branch)
     if _git(repo, "merge-base", "--is-ancestor", base, branch).returncode == 0:
         return True, ""  # already based on current base
-    if _git(repo, "rebase", base, branch, timeout=300).returncode != 0:
+    attempt = _git(repo, "rebase", base, branch, timeout=300)
+    if attempt.returncode != 0:
         detail = (_git(repo, "diff", "--name-only", "--diff-filter=U").stdout or "").strip()
+        if not detail:
+            # A REBASE CAN FAIL WITHOUT A SINGLE CONFLICTING LINE.
+            #
+            # `git rebase` also refuses outright: the branch is checked out in another
+            # worktree, the ref does not exist, the tree is dirty, a hook rejects it.
+            # None of those produce unmerged paths, so `detail` is empty -- and every
+            # caller of this function then reports the outcome as
+            #
+            #     REDO (rebase conflict, rebuild on fresh orchestrator/dev (2/4))
+            #
+            # with no files named, and pays for a FULL AGENT REBUILD of a task whose
+            # content may be perfectly mergeable.
+            #
+            # MEASURED 2026-09-04, one merge-train log window: 157 REDOs, all beethoven,
+            # and 156 of them carried no file list at all. Git had said why every single
+            # time, on a stderr this function discarded.
+            #
+            # Logged rather than returned: `detail` is a FILE LIST to twelve call sites
+            # and several guard tests ("Conflicting files: {detail}"), and a git error
+            # rendered into that sentence would be a second wrong message on top of the
+            # first. The reason belongs where someone reading 156 identical lines can
+            # find it.
+            why = stderr_digest.digest(
+                (attempt.stderr or "") + "\n" + (attempt.stdout or ""), 240)
+            print(f"merge_train: rebase of {branch} onto {base} failed with NO unmerged "
+                  f"paths — this is not a content conflict: {why}", flush=True)
         _git(repo, "rebase", "--abort")
         return False, detail
     return True, ""
