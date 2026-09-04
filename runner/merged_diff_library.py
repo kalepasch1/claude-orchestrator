@@ -115,9 +115,31 @@ def adapter_template(files=None, diff=""):
     return " ".join(parts)[:800]
 
 
+def redact_secrets(text):
+    """Return `text` with every credential-shaped line replaced by a marker.
+
+    The adapt boundary (`adapt_diff`) already refuses to carry a secret across
+    from one task to another, but that gate ran *after* the secret was already
+    persisted: `record()` wrote the raw diff into `merged_diffs`, and `find()`
+    later hands that stored diff back out (and `directive()` renders it into a
+    different project's prompt). Redacting at the write boundary means the
+    credential never enters memory at all, so there is nothing to leak even if
+    a future reader forgets to call the reuse-side gate. Fail-soft on bad input.
+    """
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    if not contains_secret(text):
+        return text
+    out = []
+    for line in text.splitlines():
+        out.append("[redacted-secret]" if contains_secret(line) else line)
+    return "\n".join(out)
+
+
 def record(project, slug, kind, prompt, repo, base, head):
     files = _changed_files(repo, base, head)
-    diff = _diff(repo, base, head)
+    diff = redact_secrets(_diff(repo, base, head))
+    prompt = redact_secrets(prompt)
     feat = features(prompt, diff, files)
     row = {"project": project, "slug": slug, "kind": kind, "prompt": prompt,
            "diff": diff[:60000], "files": files, **feat}
