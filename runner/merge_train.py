@@ -1272,6 +1272,63 @@ GATE_LOAD_DEFER_MAX = int(os.environ.get("ORCH_GATE_LOAD_DEFER_MAX", "3") or 3)
 _DEFER_COUNTS = {}
 _DEFER_LOCK = threading.Lock()
 
+#: How long a card's deferral history stays relevant. Long enough that a card cannot
+#: escape the cap by being retried later in the same busy stretch; short enough that a
+#: card is not gated-regardless days after a burst that had nothing to do with it.
+DEFER_LEDGER_TTL_S = float(os.environ.get("ORCH_GATE_LOAD_DEFER_TTL_S", "21600") or 21600)
+
+
+def _defer_ledger_path():
+    """Honours CLAUDE_ORCH_HOME, for the reason _gate_load_ledger_path spells out."""
+    home = os.environ.get("CLAUDE_ORCH_HOME") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")
+    return os.path.join(home, "merge_train_defer_counts.json")
+
+
+def _defer_counts_load():
+    """slug -> deferrals so far, dropping entries past DEFER_LEDGER_TTL_S."""
+    try:
+        with open(_defer_ledger_path()) as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {k: v for k, v in data.items()
+            if isinstance(v, dict) and (now - float(v.get("at", 0))) <= DEFER_LEDGER_TTL_S}
+
+
+def _defer_counts_bump(slug, counts):
+    """Record one more deferral for `slug`. Best-effort: bookkeeping never fails a pass."""
+    counts[slug] = {"n": int(counts.get(slug, {}).get("n", 0)) + 1, "at": time.time()}
+    try:
+        path = _defer_ledger_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(counts, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return counts[slug]["n"]
+
+
+def clear_defer_count(slug):
+    """Forget a card's deferrals once it has actually been gated."""
+    try:
+        counts = _defer_counts_load()
+        if slug not in counts:
+            return
+        counts.pop(slug, None)
+        path = _defer_ledger_path()
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(counts, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
 
 def _should_defer_for_load(slug, per_core=None):
     """(defer?, why). Never raises; a broken load reading gates normally.
@@ -1287,12 +1344,22 @@ def _should_defer_for_load(slug, per_core=None):
             per_core = _load_per_core()
         if per_core is None or per_core < GATE_LOAD_DEFER:
             return False, ""
+        # ON DISK, NOT IN THIS PROCESS.
+        #
+        # GATE_LOAD_DEFER_MAX exists so that "wait for a calm machine" can never become
+        # "never merge" -- its own comment says so. It never once fired. The counter was
+        # a module-level dict, and a merge_train pass is a process: every pass began at
+        # zero, deferred the card to 1/3, and exited. Measured 2026-09-04 over one log
+        # window: 36 deferrals, ALL of them "(1/3)", not a single 2 or 3. On a box
+        # sitting at load/core 5 that is not a delay, it is a dead end -- exactly the
+        # failure the cap was written to prevent.
         with _DEFER_LOCK:
-            seen = _DEFER_COUNTS.get(slug, 0)
+            counts = _defer_counts_load()
+            seen = int(counts.get(slug, {}).get("n", 0))
             if seen >= GATE_LOAD_DEFER_MAX:
                 return False, ""
-            _DEFER_COUNTS[slug] = seen + 1
-            count = seen + 1
+            count = _defer_counts_bump(slug, counts)
+            _DEFER_COUNTS[slug] = count
         return True, (f"load/core {per_core:.2f} over the {GATE_LOAD_DEFER:.2f} hard "
                       f"threshold — not gating yet ({count}/{GATE_LOAD_DEFER_MAX}); "
                       f"card left undecided, nothing recorded against it")
@@ -3311,6 +3378,10 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         return "load-deferred"
 
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
+    # The card got its gate; its deferral history has served its purpose. Without this
+    # the ledger would carry a card at 3/3 forever and the next busy stretch would gate
+    # it immediately, which is the opposite of what the cap is for.
+    clear_defer_count(slug)
     _diff_qa_note = ""
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         # SAY WHAT THIS DECIDED AND WHY. This whole block used to end in
