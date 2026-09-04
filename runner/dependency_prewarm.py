@@ -744,11 +744,46 @@ def runtime_root(repo):
     return _ready_snapshot(repo) or repo
 
 
+#: Generated, gitignored directories a fresh worktree needs but that no install
+#: step produces. See the .nuxt note in link_shared_runtime.
+GENERATED_SHARED_DIRS = (".nuxt",)
+
+
 def link_shared_runtime(repo, worktree):
     """Reuse warmed node_modules/env files in an ephemeral worktree.
 
     This intentionally mirrors the package-root discovery above so nested apps
     get their own dependency symlinks instead of falling back to missing CLIs.
+
+    WHY .nuxt IS LINKED TOO
+    -----------------------
+    node_modules was not enough, and the way it failed wasted whole sessions.
+    A fresh worktree has only tracked files, so `.nuxt/tsconfig.json` — which
+    Nuxt generates and git ignores — is absent. Vitest then dies with
+
+        TSConfckParseError: ... .nuxt/tsconfig.json ... ENOENT
+
+    on roughly ten files. That reads as broken tests, not as an unprepared
+    checkout, so the agent that claimed the task starts debugging source it
+    never touched. Operator feedback in this queue reports it twice, in almost
+    the same words, months apart:
+
+        "Fresh worktrees fail 8 vitest files out of the box because
+         .nuxt/tsconfig.json is not generated; the failure looks like broken
+         tests but is [not]"
+        "Fresh worktrees reliably fail ~10 vitest files until `npx nuxt
+         prepare` generates .nuxt/tsconfig.json — this recurred exactly as
+         prior operator [feedback]"
+
+    Recurring identically is the tell that nothing had been fixed, only worked
+    around. Linking it here costs nothing — .nuxt is generated and already
+    warmed in the main checkout — and it happens on the one path every worktree
+    goes through, rather than in a per-repo README nobody reads under time
+    pressure.
+
+    Symlinked rather than cloned, unlike node_modules: it is small, it is
+    regenerable, and a worktree that runs `nuxt prepare` should refresh the
+    shared copy rather than fork a stale one.
     """
     roots = package_roots(repo) or [repo]
     linked = []
@@ -809,4 +844,6 @@ def link_shared_runtime(repo, worktree):
         activate_modules(modules, os.path.join(target_root, "node_modules"))
         for shared in (".env", ".env.local"):
             link_one(os.path.join(root, shared), os.path.join(target_root, shared))
+        for generated in GENERATED_SHARED_DIRS:
+            link_one(os.path.join(root, generated), os.path.join(target_root, generated))
     return linked
