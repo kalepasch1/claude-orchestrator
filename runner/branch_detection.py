@@ -39,16 +39,34 @@ def _git(repo, *args):
         return -1, "", str(e)
 
 
-def _list_agent_branches(repo_path):
-    """Return set of agent branch names (without 'agent/' prefix)."""
-    rc, out, _ = _git(repo_path, "branch", "--list", "agent/*")
-    if rc != 0 or not out:
-        return set()
-    return {
-        b.strip().lstrip("* ").replace("agent/", "", 1)
-        for b in out.splitlines()
-        if b.strip()
-    }
+def _list_agent_branches(repo_path, include_remote=False):
+    """Return set of agent branch names (without 'agent/' prefix).
+
+    `include_remote` also counts remote-tracking branches (refs/remotes/*/agent/*).
+    It defaults False so existing callers keep their exact semantics; see
+    detect_missing_branches for why the missing-branch check needs it True.
+    """
+    names = set()
+    rc, out, _ = _git(repo_path, "for-each-ref", "--format=%(refname)", "refs/heads/agent/")
+    if rc == 0 and out:
+        names |= {
+            line.strip()[len("refs/heads/agent/"):]
+            for line in out.splitlines()
+            if line.strip().startswith("refs/heads/agent/")
+        }
+    if include_remote:
+        rc, out, _ = _git(repo_path, "for-each-ref", "--format=%(refname)", "refs/remotes/")
+        if rc == 0 and out:
+            for line in out.splitlines():
+                ref = line.strip()
+                if not ref.startswith("refs/remotes/"):
+                    continue
+                rest = ref[len("refs/remotes/"):]
+                # <remote>/agent/<slug> — split off the remote name only.
+                remote, _, branch = rest.partition("/")
+                if remote and branch.startswith("agent/"):
+                    names.add(branch[len("agent/"):])
+    return {n for n in names if n}
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +112,14 @@ def detect_missing_branches(repo_path, tasks):
     if not repo_path or not os.path.isdir(repo_path):
         return []
     active_states = {"QUEUED", "RUNNING", "BLOCKED", "IN_PROGRESS"}
-    branches = _list_agent_branches(repo_path)
+    # REMOTE COUNTS. This used to list LOCAL branches only, which contradicts the fleet's
+    # own lifecycle: CLAUDE.md states the worktree is removed after push while "the
+    # agent/{slug} branch persists for merge-train pickup". A pushed branch whose local
+    # ref was pruned therefore read as MISSING, and the fleet filed recover-missing-branch
+    # tasks for work that was sitting on origin waiting to be merged. Recreating such a
+    # branch forks one change into two and hands the merge train a conflict — the exact
+    # failure the reconciliation contract warns about.
+    branches = _list_agent_branches(repo_path, include_remote=True)
     missing = []
     for task in (tasks or []):
         slug = task.get("slug", "")
