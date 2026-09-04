@@ -162,3 +162,31 @@ def test_untracked_files_survive(tmp_path):
 
     assert merge_train._clear_integration_index(wt) is True
     assert os.path.exists(os.path.join(wt, "node_modules", "keep.js"))
+
+
+def test_a_rebase_left_in_progress_is_aborted(tmp_path, capsys):
+    """A pass killed mid-rebase poisons its worktree for every later card.
+
+    Observed live on beethoven's slot immediately after the index clearing above went
+    in: 75 further refusals, this time
+        fatal: It seems that there is already a rebase-merge directory ...
+    Nothing recovers from that on its own, and `reset HEAD` cannot: HEAD is itself
+    mid-rebase.
+    """
+    wt = _as_integration_worktree(tmp_path)
+    _seed(wt)
+    _git(wt, "checkout", "-b", "feature")
+    open(os.path.join(wt, "a.txt"), "w").write("branch\n")
+    _git(wt, "commit", "-am", "branch edit")
+    _git(wt, "checkout", "main")
+    open(os.path.join(wt, "a.txt"), "w").write("main\n")
+    _git(wt, "commit", "-am", "main edit")
+
+    # leave a rebase in progress, exactly as a killed pass does
+    _git(wt, "rebase", "main", "feature")
+    gitdir = _git(wt, "rev-parse", "--absolute-git-dir").stdout.strip()
+    assert os.path.isdir(os.path.join(gitdir, "rebase-merge")), "fixture did not stick"
+
+    merge_train._clear_integration_index(wt)
+    assert not os.path.isdir(os.path.join(gitdir, "rebase-merge"))
+    assert "cleared a rebase left in progress" in capsys.readouterr().out

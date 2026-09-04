@@ -778,6 +778,42 @@ def _clear_integration_index(repo):
     try:
         if _INTEGRATION_WORKTREE_MARKER not in os.path.realpath(str(repo or "")):
             return False
+        # A HALF-FINISHED REBASE IS THE SAME PROBLEM, ONE LAYER DOWN.
+        #
+        # A pass killed mid-rebase (a restart, the watchdog, the resource medic)
+        # leaves .git/rebase-merge behind. Every later rebase in that worktree then
+        # dies with "It seems that there is already a rebase-merge directory", and the
+        # index it left staged is not something `reset HEAD` can put back, because
+        # HEAD is itself mid-rebase. Observed live on beethoven's slot immediately
+        # after this helper started clearing indexes: 75 further refusals.
+        #
+        # --abort is the right verb and the safe one here for the same reason as
+        # below: the worktree is disposable, and the branch it was rebasing still
+        # points where it did before the rebase started.
+        gitdir = _git(repo, "rev-parse", "--git-dir")
+        if gitdir.returncode == 0:
+            root = os.path.join(repo, (gitdir.stdout or "").strip()) \
+                if not os.path.isabs((gitdir.stdout or "").strip()) \
+                else (gitdir.stdout or "").strip()
+            stale = [os.path.join(root, d) for d in ("rebase-merge", "rebase-apply")
+                     if os.path.isdir(os.path.join(root, d))]
+            if stale:
+                _git(repo, "rebase", "--abort")
+                # --abort ITSELF FAILS when the commit it wants to return to is gone:
+                #     Aborting
+                #     fatal: could not move back to ce3e2874...
+                # and it leaves the directory behind, so the worktree stays wedged.
+                # Observed live on beethoven 2026-09-04. Removing the state directory
+                # is the documented recovery and is safe here for the same reason the
+                # rest of this helper is: the worktree is disposable and the branch
+                # being rebased still points where it did before the rebase began.
+                import shutil
+                for d in stale:
+                    if os.path.isdir(d):
+                        shutil.rmtree(d, ignore_errors=True)
+                print(f"merge_train: cleared a rebase left in progress in the "
+                      f"integration worktree — until that is gone every later rebase "
+                      f"there fails before it starts", flush=True)
         staged = _git(repo, "diff", "--cached", "--name-only")
         if staged.returncode != 0 or not (staged.stdout or "").strip():
             return False
