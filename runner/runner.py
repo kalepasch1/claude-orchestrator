@@ -3567,6 +3567,21 @@ def _queue_depth():
     return _qdepth["n"]
 
 
+def _note_skip(job: str, reason: str, context=None) -> None:
+    """Record a scheduler skip so the reason survives past this log line.
+
+    Skip reasons used to exist only as stdout, which made "why did nothing run?"
+    unanswerable once the log rotated. skip_visibility keeps a bounded,
+    structured ledger that the build summary and API responses render from.
+    Fail-soft: never let bookkeeping stop a skip from happening.
+    """
+    try:
+        import skip_visibility
+        skip_visibility.note_skip(job, reason, context=context, logger=_log)
+    except Exception as e:
+        _log.debug("skip_visibility unavailable: %s", e)
+
+
 def _fire_periodic(job: str) -> None:
     # LEAN MODE (opt-in, default off): skip the periodic housekeeping/standings jobs for the
     # heaviest self-play subsystems (colosseum, cade tournaments, agent market, the committee
@@ -3580,6 +3595,7 @@ def _fire_periodic(job: str) -> None:
     # reverting to the default (off) if it doesn't help.
     if _LEAN_MODE_ON() and job in _LEAN_MODE_SKIP:
         print(f"[sched] {job} skipped — ORCH_LEAN_MODE=true", flush=True)
+        _note_skip(job, "ORCH_LEAN_MODE=true")
         return False
     # don't run uncounted proactive spenders unless explicitly enabled
     if job in _PROACTIVE and not _proactive_on():
@@ -3589,6 +3605,7 @@ def _fire_periodic(job: str) -> None:
         reason = drain_policy.skip_reason(job, queue_depth=_queue_depth())
         if reason:
             print(f"[sched] {job} skipped — {reason}; draining backlog first", flush=True)
+            _note_skip(job, reason)
             return False
     except Exception as e:
         print(f"[sched] {job} drain policy unavailable ({e})", flush=True)
@@ -3596,12 +3613,15 @@ def _fire_periodic(job: str) -> None:
     ceiling = _queue_gen_ceiling()
     if job in _GENERATORS and _queue_depth() > ceiling:
         print(f"[sched] {job} throttled — queue depth > {ceiling} (draining backlog first)", flush=True)
+        _note_skip(job, f"throttled — queue depth > {ceiling}",
+                   context={"ceiling": ceiling, "queue_depth": _queue_depth()})
         return False
     # PID controller: queue_velocity pauses generators when velocity is positive for 2+ windows
     try:
         import queue_velocity
         if queue_velocity.is_generator_paused(job):
             print(f"[sched] {job} paused by queue-velocity PID controller", flush=True)
+            _note_skip(job, "paused by queue-velocity PID controller")
             return False
     except Exception as e:
         _log.debug("hook queue_velocity failed: %s", e)
@@ -3611,6 +3631,7 @@ def _fire_periodic(job: str) -> None:
         try:
             if kill_switch.is_paused():
                 print(f"[sched] {job} skipped (paused)", flush=True)
+                _note_skip(job, "kill-switch paused")
                 return False
         except Exception as e:
             _log.debug("hook kill_switch failed: %s", e)

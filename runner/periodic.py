@@ -1449,6 +1449,12 @@ if __name__ == "__main__":
         reason = drain_policy.skip_reason(job)
         if reason:
             print(f"periodic {job}: skipped ({reason}; draining backlog first)")
+            try:
+                import skip_visibility
+                print(skip_visibility.render_build_summary([
+                    skip_visibility.build_record(job, reason)]))
+            except Exception:
+                pass
             sys.exit(0)
     except Exception as e:
         print(f"periodic {job}: drain policy unavailable ({e})")

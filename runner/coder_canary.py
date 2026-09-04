@@ -97,22 +97,41 @@ def _historical_prompt(project_id):
     return CANARY_PROMPT
 
 
+def _skipped(reason):
+    """Skip payload carrying a classified, actionable reason for API consumers.
+
+    Callers that only read ``reason`` keep working unchanged; the added fields
+    let a build summary or API response explain the skip instead of showing a
+    bare ``queued: 0``.
+    """
+    payload = {"queued": 0, "reason": reason}
+    try:
+        import skip_visibility
+        rec = skip_visibility.record("coder_canary.py", reason)
+        if rec is not None:
+            payload["skip"] = rec.as_dict()
+            payload["skip_summary"] = skip_visibility.render_build_summary([rec])
+    except Exception:
+        pass
+    return payload
+
+
 def run(limit_per_coder=2):
     # Default flipped to OFF: synthetic routing-sample canaries are self-directed work that
     # never reaches a user. Machinery kept intact; set ORCH_CODER_CANARIES=1 to restore.
     import self_work_gate
     if not self_work_gate.allow_generator("ORCH_CODER_CANARIES", "coder_canary.run"):
-        return {"queued": 0, "reason": "disabled"}
+        return _skipped("disabled")
     try:
         import drain_policy
         reason = drain_policy.skip_reason("coder_canary.py")
         if reason:
-            return {"queued": 0, "reason": f"drain: {reason}"}
+            return _skipped(f"drain: {reason}")
     except Exception:
         pass
     project = _project()
     if not project:
-        return {"queued": 0, "reason": "no project"}
+        return _skipped("no project")
     sensitivity = os.environ.get("ORCH_CANARY_SENSITIVITY", "standard")
     active_for, existing_slugs = _canary_state(project["id"])
     canary_prompt = _historical_prompt(project["id"])
