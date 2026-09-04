@@ -552,6 +552,49 @@ DROPPED_ABSENT_RATIO = float(os.environ.get("SENTINEL_DROPPED_ABSENT_RATIO", "0.
 _DROPPED_SEEN = set()
 
 
+#: `Merge branch 'agent/xyz' (auto-resolved)` and `Merge branch 'agent/xyz'`.
+_MERGED_BRANCH = re.compile(r"^Merge branch '([^']+)'")
+
+
+def _source_branch_survives(sha):
+    """Was this merge UNDONE ON PURPOSE, with its work deliberately kept?
+
+    auto_conflict_resolver._reject_merge exists to roll back a merge whose anti-
+    regression gate found it would destroy code, and its contract is explicit:
+
+        The branch is deliberately NOT deleted: after a reset it is the only
+        remaining copy of the work, and deleting it is how code became
+        unrecoverable in the first place.
+
+    In master's reflog that reads as a strict alternation --
+
+        reset: moving to af2ea939...
+        commit (merge): Merge branch 'agent/canary-claude-27-slice-1' (auto-resolved)
+        reset: moving to af2ea939...
+        commit (merge): Merge branch 'agent/canary-codex-28-verify-behavior...'
+        reset: moving to af2ea939...
+
+    -- and every one of those merges is unreachable afterwards. They are not losses.
+    Checked 2026-09-04 on five of them, including the one whose content this scan
+    flagged most loudly (7c76bd291e, runner/vercel_config_guard.py, 53 of 58 added
+    lines absent from master): all five source branches were still there.
+
+    Without this check the scan alerts on every rejected merge -- which on this fleet
+    is a repeating cycle over the same branches -- and becomes the boy who cried wolf
+    that stranded_commit_rescue had just been fixed for being. The whole value of the
+    alert is that a human believes it.
+    """
+    subject = (git("log", "-1", "--format=%s", sha).stdout or "").strip()
+    m = _MERGED_BRANCH.match(subject)
+    if not m:
+        return False
+    branch = m.group(1)
+    for ref in (branch, f"origin/{branch}", f"refs/archive/{branch}"):
+        if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
+            return True
+    return False
+
+
 def dropped_commit_rescue(st=None):
     """Commits that were ON the base branch and are no longer reachable from it.
 
@@ -606,6 +649,8 @@ def dropped_commit_rescue(st=None):
         parent = git("rev-parse", "--verify", f"{sha}^").stdout.strip()
         if not parent:
             continue                      # a root commit; nothing to compare against
+        if _source_branch_survives(sha):
+            continue                      # rolled back ON PURPOSE; see the helper
         changed = git("diff", "--name-only", parent, sha).stdout or ""
         touched = [f for f in changed.splitlines()
                    if f.startswith("runner/") or f.startswith("web/")]

@@ -193,3 +193,55 @@ def test_each_dropped_commit_is_announced_once(repo, monkeypatch):
     sentinel.dropped_commit_rescue(first)
     sentinel.dropped_commit_rescue(second)
     assert first["dropped_commits"] == 1 and second["dropped_commits"] == 0
+
+
+def test_a_merge_rolled_back_on_purpose_is_not_reported(repo, monkeypatch):
+    """auto_conflict_resolver._reject_merge undoes a merge and KEEPS the branch.
+
+    Its contract is explicit: "The branch is deliberately NOT deleted: after a reset it
+    is the only remaining copy of the work." In master's reflog that reads as
+
+        reset: moving to af2ea939...
+        commit (merge): Merge branch 'agent/canary-claude-27-slice-1' (auto-resolved)
+        reset: moving to af2ea939...
+
+    -- and the merge commit is unreachable afterwards. It is not a loss. Checked live
+    on 2026-09-04: all five sampled source branches were still present, and with this
+    filter the scan went from 13 alerts to 0 across 200 reflog entries.
+    """
+    _git(repo, "checkout", "-b", "agent/some-work")
+    (repo / "runner" / "rejected.py").write_text("\n".join(LINES) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "work the gate will refuse")
+    _git(repo, "checkout", "master")
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "merge", "--no-ff", "-m", "Merge branch 'agent/some-work'", "agent/some-work")
+    _git(repo, "reset", "--hard", before)          # _reject_merge
+
+    monkeypatch.setattr(sentinel, "_DROPPED_SEEN", set())
+    seen = []
+    monkeypatch.setattr(sentinel, "log", lambda m: seen.append(m))
+    st = {}
+    sentinel.dropped_commit_rescue(st)
+    assert st["dropped_commits"] == 0, seen
+
+
+def test_a_rolled_back_merge_whose_branch_was_deleted_is_reported(repo, monkeypatch):
+    """The preservation IS the safety. Without the branch, the work is gone."""
+    _git(repo, "checkout", "-b", "agent/other-work")
+    (repo / "runner" / "gone.py").write_text("\n".join(LINES) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "work")
+    _git(repo, "checkout", "master")
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "merge", "--no-ff", "-m", "Merge branch 'agent/other-work'", "agent/other-work")
+    _git(repo, "reset", "--hard", before)
+    _git(repo, "branch", "-D", "agent/other-work")
+
+    monkeypatch.setattr(sentinel, "_DROPPED_SEEN", set())
+    seen = []
+    monkeypatch.setattr(sentinel, "log", lambda m: seen.append(m))
+    st = {}
+    sentinel.dropped_commit_rescue(st)
+    assert st["dropped_commits"] == 1, seen
+    assert any("gone.py" in m for m in seen), seen
