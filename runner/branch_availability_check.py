@@ -56,6 +56,14 @@ def branch_exists_remote(repo, branch):
     try:
         r = subprocess.run(["git", "ls-remote", "--heads", "origin", branch],
                            cwd=repo, capture_output=True, text=True, timeout=15)
+        # RETURNCODE FIRST. An unreachable origin, a missing remote or a auth
+        # failure all produce empty stdout, and reading that as "no such branch"
+        # converts a network problem into a false MISSING verdict -- which is what
+        # files a reconstruct-the-patch task for work that is on origin the whole
+        # time. Unanswerable must stay None (unknown), never False, and must not
+        # be cached: the next call may well reach origin.
+        if r.returncode != 0:
+            return None
         exists = bool(r.stdout.strip())
         _cache_set(repo, f"remote:{branch}", exists)
         return exists
@@ -89,8 +97,14 @@ def verify_base_branch(project, base_branch=None):
     if try_fetch_branch(repo, base):
         return True, f"base branch '{base}' fetched from remote"
     remote = branch_exists_remote(repo, base)
-    if remote:
+    if remote is True:
         return False, f"base branch '{base}' exists on remote but fetch failed"
+    if remote is None:
+        # Could not ask origin. Still not queueable, but say WHY -- reporting this
+        # as "not found on remote" is a claim we did not verify, and downstream
+        # that claim becomes a reconstruct-the-patch task for work that exists.
+        return False, (f"base branch '{base}' not found locally and origin could "
+                       f"not be reached -- existence on remote UNKNOWN, not confirmed absent")
     return False, f"base branch '{base}' not found locally or on remote"
 
 
