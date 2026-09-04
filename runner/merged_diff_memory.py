@@ -59,7 +59,18 @@ def _log_error(msg, context=""):
 
 
 def _get_merged_commits(repo=".", lookback_days=None):
-    """Return list of (commit_hash, commit_msg) tuples merged to master in the last N days."""
+    """(commit_hash, commit_msg) for merges worth learning from in the last N days.
+
+    Filtered, not raw. Every commit returned here goes on to
+    `_extract_patterns_from_commit()`, which spends three git subprocesses plus a
+    quality-gate pass on it — and a revert, a WIP merge, or a merge of a
+    non-agent branch cannot yield a reusable convention, so that work buys a
+    guaranteed rejection. The filter runs on the message alone, before any
+    subprocess is spawned for the commit.
+
+    Fail-soft: if the predicate module cannot be imported the scan still runs
+    unfiltered, because losing the whole window is worse than scanning noise.
+    """
     if lookback_days is None:
         lookback_days = LOOKBACK
     try:
@@ -72,10 +83,42 @@ def _get_merged_commits(repo=".", lookback_days=None):
                 parts = line.split(None, 1)
                 if len(parts) >= 2:
                     commits.append((parts[0], parts[1]))
-        return commits
+        try:
+            from merge_candidate import filter_merge_candidates
+        except ImportError as e:
+            _log_error(f"merge_candidate unavailable, scanning unfiltered: {e}", f"repo={repo}")
+            return commits
+        kept = filter_merge_candidates(commits)
+        if len(kept) != len(commits):
+            _log_error(
+                f"merged-diff scan: {len(commits) - len(kept)} of {len(commits)} merges "
+                f"skipped as non-candidates (reverts, WIP, non-agent branches)",
+                f"repo={repo}",
+            )
+        return kept
     except Exception as e:
         _log_error(f"Failed to get merged commits: {e}", f"repo={repo}")
         return []
+
+
+def _record_worth_keeping(pattern):
+    """True when an extracted record has at least one changed file worth learning from.
+
+    Mirrors `merge_candidate.is_merge_candidate_commit`'s path rule against the shape
+    `_extract_patterns_from_commit` returns (which carries `files` but no raw diff).
+    Fail-soft: an unimportable predicate keeps the record, because dropping real
+    signal is worse than keeping noise.
+    """
+    if not isinstance(pattern, dict):
+        return False
+    try:
+        from merge_candidate import is_ignored_path
+    except ImportError:
+        return True
+    files = pattern.get("files")
+    if not isinstance(files, (list, tuple)) or not files:
+        return False
+    return any(not is_ignored_path(f) for f in files)
 
 
 def _extract_patterns_from_commit(repo, commit_hash):
@@ -360,10 +403,24 @@ def run(repo=".", dry_run=False):
         result["merged_count"] = len(commits)
 
         patterns = []
+        skipped_ignored = 0
         for commit_hash, msg in commits:
             p = _extract_patterns_from_commit(repo, commit_hash)
-            if p:
-                patterns.append(p)
+            if not p:
+                continue
+            # Record-level gate. The message filter above cannot see the diff, so a
+            # merge whose every changed file is a lockfile, a vendored dependency or
+            # build output still reaches here — and carries nothing reusable.
+            if not _record_worth_keeping(p):
+                skipped_ignored += 1
+                continue
+            patterns.append(p)
+        if skipped_ignored:
+            _log_error(
+                f"merged-diff scan: {skipped_ignored} extracted commit(s) skipped — "
+                f"no changed file outside the ignored set",
+                f"repo={repo}",
+            )
 
         result["patterns_count"] = len(patterns)
 
