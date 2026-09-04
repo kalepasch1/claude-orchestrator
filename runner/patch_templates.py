@@ -288,6 +288,47 @@ def find_template(slug):
     return {}
 
 
+#: Entries retained in the local JSONL fallback. It is append-only and BOTH `lookup()`
+#: and `find_template()` scan it end to end, so without a bound it is a slow leak with an
+#: O(n) read on the dependency-recovery path — the same reasoning CLAUDE.md gives for
+#: bounding the diff cache. ORCH_-prefixed so it is fleet-pushable via fleet_control.py.
+FALLBACK_MAX_ENTRIES = max(1, int(os.environ.get("ORCH_PATCH_TEMPLATE_FALLBACK_MAX", "500")))
+
+
+def _prune_fallback(path, keep=None):
+    """Trim the local store to its newest `keep` entries. True if it was rewritten.
+
+    Newest-wins is the existing read semantics — `find_template` takes the LAST matching
+    line — so pruning from the FRONT preserves exactly what a reader would have returned.
+    Fail-soft: any error leaves the file untouched and returns False. A failed prune must
+    never lose a template; an oversized file is a slow problem, a truncated one is not.
+    """
+    keep = FALLBACK_MAX_ENTRIES if keep is None else max(1, int(keep))
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return False
+    if len(lines) <= keep:
+        return False
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(lines[-keep:])
+        os.replace(tmp, path)   # atomic: a crash mid-prune cannot leave a half file
+        log.info("patch_templates: pruned local store %d -> %d entries",
+                 len(lines), keep)
+        return True
+    except OSError as exc:
+        log.warning("patch_templates: could not prune %s (%s); leaving it intact",
+                    path, exc)
+        try:
+            os.unlink(path + ".tmp")
+        except OSError:
+            pass
+        return False
+
+
 def _store(task, template_id, body):
     row = {"project": task.get("project_id") or "unknown",
            "title": f"patch template {task.get('slug') or template_id}",
@@ -297,13 +338,20 @@ def _store(task, template_id, body):
            "created_at": "now()"}
     try:
         db.insert("knowledge", row, upsert=True)
-    except Exception:
+    except Exception as exc:
         path = _fallback_path()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a") as f:
                 f.write(json.dumps({"ts": time.time(), "task": task.get("slug"),
                                     "template_id": template_id, "body": body}) + "\n")
+            # SAY SO. A template that reached only local disk is invisible to every
+            # other host, so a recovery pass on another Mac will not find it and will
+            # rebuild the work. Silently succeeding here is what makes that undetectable.
+            log.warning("patch_templates: knowledge write failed (%s); template %s for "
+                        "%s is LOCAL-ONLY at %s and invisible to other hosts",
+                        exc, template_id, task.get("slug"), path)
+            _prune_fallback(path)
         except OSError:
             pass
 
