@@ -168,6 +168,51 @@ def last_production_deploy(vercel_project):
     return None
 
 
+#: Subdirectories scanned for a real Vercel project when the repo ROOT declares
+#: no-deploy. Kept to one level and to conventional names so the sweep stays cheap.
+ORCH_DEPLOY_SILENCE_SUBROOTS = tuple(
+    s.strip() for s in os.environ.get(
+        "ORCH_DEPLOY_SILENCE_SUBROOTS", "web,app,site,frontend,www,client,apps"
+    ).split(",") if s.strip()
+)
+
+
+def _read_vercel_json(path):
+    """Parsed vercel.json at `path`, or {} — never raises (fail-soft)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh) or {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _config_declares_no_deploy(cfg):
+    """True when this one vercel.json disables deploys for every branch."""
+    if not isinstance(cfg, dict):
+        return False
+    enabled = ((cfg.get("git") or {}).get("deploymentEnabled"))
+    if enabled is False:
+        return True
+    if isinstance(enabled, dict) and enabled and not any(
+            v is True for v in enabled.values()):
+        return True
+    return False
+
+
+def _config_enables_any_branch(cfg):
+    """True when this one vercel.json enables deploys for at least one branch."""
+    if not isinstance(cfg, dict):
+        return False
+    enabled = ((cfg.get("git") or {}).get("deploymentEnabled"))
+    if enabled is True:
+        return True
+    if isinstance(enabled, dict):
+        return any(v is True for v in enabled.values())
+    # No `git.deploymentEnabled` key at all means Vercel's default: deploys ARE on.
+    git_cfg = cfg.get("git")
+    return isinstance(git_cfg, dict) and "deploymentEnabled" not in git_cfg
+
+
 def deployment_intentionally_disabled(repo):
     """True when the repo's own vercel.json declares that it does not deploy.
 
@@ -175,20 +220,36 @@ def deployment_intentionally_disabled(repo):
     never meant to deploy" (the orchestrator itself, tooling repos, libraries). Without this
     the detector alerts forever on projects that are behaving exactly as configured, and an
     alert that is always on is the same as no alert.
+
+    A ROOT-LEVEL DISABLE DOES NOT COVER A SUBDIRECTORY PROJECT. This is the false negative
+    that hid a real outage class, and this repository is the canonical example of it. Its
+    root vercel.json disables git deploys, but that file is a DUPLICATE-PROJECT GUARD, not
+    a statement that the repo does not ship: its own `_comment` says the only Vercel
+    project is `web/` (root directory `web`), that a duplicate project was once
+    auto-created by importing the repo ROOT, and that this file exists so the duplicate can
+    never silently build. `web/vercel.json` then enables the default branch explicitly
+    (`{"*": false, "master": true}`).
+
+    Reading only the root, the detector concluded "this repo does not deploy" and returned
+    None — permanently suppressing deploy-silence alerts for the project that actually
+    serves production. Suppression is meant to silence a project configured not to deploy,
+    not to blind the detector to the one that is. So: if any deploy root under this repo
+    ENABLES a branch, the repo does deploy and silence there is a genuine incident.
     """
-    for candidate in (os.path.join(repo, "vercel.json"),):
-        try:
-            with open(candidate, encoding="utf-8") as fh:
-                cfg = json.load(fh) or {}
-        except (OSError, ValueError):
+    if not repo or not isinstance(repo, str):
+        return False
+    root_cfg = _read_vercel_json(os.path.join(repo, "vercel.json"))
+    if not _config_declares_no_deploy(root_cfg):
+        return False
+    # The root says no-deploy. Before trusting that for the whole repo, check whether a
+    # subdirectory holds the project that really does deploy.
+    for sub in ORCH_DEPLOY_SILENCE_SUBROOTS:
+        sub_path = os.path.join(repo, sub, "vercel.json")
+        if not os.path.isfile(sub_path):
             continue
-        enabled = ((cfg.get("git") or {}).get("deploymentEnabled"))
-        if enabled is False:
-            return True
-        if isinstance(enabled, dict) and enabled and not any(
-                v is True for v in enabled.values()):
-            return True
-    return False
+        if _config_enables_any_branch(_read_vercel_json(sub_path)):
+            return False
+    return True
 
 
 def evaluate(project_row, silence_days=None):
