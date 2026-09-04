@@ -227,6 +227,88 @@ def _shard_coarse(master: str, max_tasks: int) -> list:
     return merged
 
 
+#: Fallback acceptance test used when a shard's file scope tells us nothing more specific.
+#: ORCH_-prefixed so it is fleet-pushable via fleet_control.py rather than edited per machine.
+DEFAULT_ACCEPTANCE_TEST = os.environ.get(
+    "ORCH_DEFAULT_ACCEPTANCE_TEST", "python3 -m pytest runner/tests -q")
+
+#: Proof strings a model emits that read like an acceptance test but cannot be executed.
+#: These are treated as MISSING, because an unrunnable proof is what lets a shard land with
+#: "tests pass" asserted by nobody.
+_VAGUE_PROOFS = (
+    "tests pass", "test passes", "suite green", "all tests pass", "n/a", "none",
+    "manual", "manual verification", "verify manually", "tbd", "todo", "build passes",
+)
+
+_TEST_FILE_RE = re.compile(r'(?:^|[,\s/])((?:[\w./-]*/)?tests?/[\w./-]*test_[\w.-]+\.py)')
+_PY_FILE_RE = re.compile(r'(?:^|[,\s])((?:[\w./-]*/)?([\w-]+)\.py)')
+
+
+def _is_concrete_proof(proof) -> bool:
+    """A proof is concrete only if it is a non-trivial string that is not one of the
+    known hand-wave phrases. Fail-soft: anything unparseable is 'not concrete', which
+    only ever causes us to ATTACH a test, never to drop one."""
+    if not isinstance(proof, str):
+        return False
+    stripped = proof.strip()
+    if len(stripped) < 8:
+        return False
+    return stripped.lower().rstrip(".") not in _VAGUE_PROOFS
+
+
+def _derive_acceptance_test(task) -> str:
+    """Derive a runnable acceptance test command for one planned shard.
+
+    Preference order, most specific first:
+      1. a test file named in the task's file scope / prompt -> run exactly that file
+      2. a source file named there -> run its conventional sibling suite
+      3. DEFAULT_ACCEPTANCE_TEST
+    """
+    scope = ""
+    try:
+        scope = "%s %s" % (task.get("file_scope", "") or "", task.get("prompt", "") or "")
+    except Exception:
+        return DEFAULT_ACCEPTANCE_TEST
+
+    m = _TEST_FILE_RE.search(scope)
+    if m:
+        return "python3 -m pytest %s -q" % m.group(1)
+
+    for full, stem in _PY_FILE_RE.findall(scope):
+        if "test" in stem:
+            continue
+        prefix = full.rsplit("/", 1)[0] + "/" if "/" in full else ""
+        return "python3 -m pytest %stests/test_%s.py -q" % (prefix, stem)
+
+    return DEFAULT_ACCEPTANCE_TEST
+
+
+def ensure_acceptance_tests(tasks):
+    """Guarantee that EVERY independently-buildable shard carries its own concrete,
+    runnable acceptance test.
+
+    The planner prompt asks the model for one, but nothing enforced it, so shards
+    routinely arrived with no `proof` at all (or "tests pass", which no runner can
+    execute). A shard with no acceptance test is not independently verifiable, which
+    is the entire point of splitting the build task up in the first place.
+
+    Never overwrites a proof that is already concrete. Fail-soft: on any error the
+    task list is returned untouched — a planner that raises here would wedge intake.
+    """
+    if not tasks:
+        return tasks
+    try:
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            if _is_concrete_proof(t.get("proof")):
+                continue
+            t["proof"] = _derive_acceptance_test(t)
+    except Exception as e:
+        sys.stderr.write(f"[planner] ensure_acceptance_tests failed ({e}); proofs unchanged\n")
+    return tasks
+
+
 def plan(master: str, repo: str = None, project: str = None) -> list:
     spec = ""
     if repo:
@@ -394,6 +476,11 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
 
     # GOLDEN PATHS + STRATEGY-AWARE GENERATION (Wave C, Part 4, compounding half).
     tasks = _apply_golden_path(tasks, project=project, repo=repo)
+
+    # Last pass, deliberately: every shard leaves the planner with a runnable acceptance
+    # test, whatever earlier passes did to the plan (sharding, coarsening, golden paths and
+    # suppression all mint or rewrite tasks, and any of them can drop a proof).
+    tasks = ensure_acceptance_tests(tasks)
 
     return tasks
 
