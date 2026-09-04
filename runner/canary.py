@@ -6,6 +6,10 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
+
+Those variables (and METRICS_URL) may also live in a `.env` file: the CLI calls
+load_env() before evaluating. Import stays side-effect free — only main() reads
+the file — and a real environment variable always beats the file.
 """
 import os, sys, json, logging, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -15,6 +19,39 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # validate_canary() was called. Same crash-free-until-used class as the
 # _metrics_server regression noted below. Bind the logger next to the imports.
 _log = logging.getLogger(__name__)
+
+# Every threshold this module reads comes from the environment (see the module
+# docstring), but nothing ever loaded a .env, so an operator had to export
+# METRICS_URL and all four CANARY_* knobs by hand before each run — and a
+# forgotten export reads as "no threshold configured" rather than as an error,
+# which is the quiet way to promote a bad deploy.
+#
+# python-dotenv is declared in requirements.txt, but the import stays guarded:
+# canary.py runs on deploy boxes that may predate the manifest, and a canary
+# that cannot import is a canary that cannot report.
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - covered via monkeypatch in the tests
+    load_dotenv = None
+
+
+def load_env(path=None):
+    """Populate os.environ from a .env file. Returns True when one was loaded.
+
+    Fail-soft by contract: a missing python-dotenv, a missing file, or a
+    malformed file all return False rather than raising. Real environment
+    variables always win over the file — dotenv does not override what is
+    already set — so `METRICS_URL=... python -m canary` still behaves as before
+    and none of the existing callers change.
+    """
+    if load_dotenv is None:
+        _log.debug("canary: python-dotenv not installed; .env ignored")
+        return False
+    try:
+        return bool(load_dotenv(path) if path else load_dotenv())
+    except Exception as exc:  # noqa: BLE001 - a bad .env must not wedge the canary
+        _log.warning("canary: .env present but unreadable (%s); ignoring", exc)
+        return False
 
 # RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
 # (auto-resolved)' dropped the `threading` / `http.server` imports and these two module
@@ -302,6 +339,13 @@ def main(argv=None):
     on the verdict without parsing stdout.
     """
     argv = sys.argv[1:] if argv is None else argv
+
+    # Load .env here rather than at import time. Importing canary must stay a pure,
+    # side-effect-free act — the test suite and the metrics server both import this
+    # module, and a module-scope load_dotenv() would silently reshape os.environ
+    # for every one of them. Only the CLI, which is the thing an operator actually
+    # configures, reads the file.
+    load_env()
 
     # `--heartbeat` reports staleness WITHOUT evaluating: the whole point is to answer
     # "is this canary still beating" from outside, at a moment when running an evaluation
