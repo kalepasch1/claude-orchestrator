@@ -446,6 +446,164 @@ def apply_routing(scored):
     return {"routed": routed, "lane": "revenue-critical", "top_n": REVENUE_CRITICAL_LANE_SIZE}
 
 
+# ── FAST LANE: shorter SLA + dedicated capacity ──────────────────────────────
+#
+# `apply_routing` above already ANNOTATES the top revenue tasks with
+# lane="revenue-critical", and lane_scheduler boosts their priority. Priority
+# alone is not a fast lane. Under saturation every lane competes for the same
+# slots, so a boosted task waits behind whatever is already running and the
+# "fast" lane is only fast while the fleet is idle — which is exactly when
+# nobody needed it. The two things the section asks for are the two this
+# section adds: a SHORTER SLA that says when the lane has failed, and DEDICATED
+# CAPACITY that is not available to anything else.
+#
+# Both are pure functions over injected values (no clock read, no DB) so the
+# behaviour is testable without a fleet.
+
+REVENUE_CRITICAL_LANE = "revenue-critical"
+
+#: SLA per lane, in minutes. Revenue-critical is deliberately several times
+#: tighter than the default: the point of the lane is that a breach there is a
+#: different event from a breach anywhere else.
+LANE_SLA_MINUTES = {
+    REVENUE_CRITICAL_LANE: int(os.environ.get("ORCH_REVENUE_CRITICAL_SLA_MINUTES", "60")),
+}
+DEFAULT_SLA_MINUTES = int(os.environ.get("ORCH_DEFAULT_SLA_MINUTES", "480"))
+
+#: Share of total lanes reserved for revenue-critical work, and the floor.
+#: The floor exists because a reservation that rounds to zero on a small fleet
+#: is not a reservation. The cap exists because a lane that can take the whole
+#: fleet is not a lane, it is a stop-the-world.
+RESERVED_CAPACITY_FRACTION = float(os.environ.get("ORCH_REVENUE_CRITICAL_CAPACITY_FRACTION", "0.25"))
+RESERVED_CAPACITY_MAX_FRACTION = float(os.environ.get("ORCH_REVENUE_CRITICAL_CAPACITY_MAX", "0.5"))
+
+
+def lane_sla_minutes(lane):
+    """SLA budget for a lane. Unknown lanes get the default, never no budget."""
+    if not isinstance(lane, str):
+        return DEFAULT_SLA_MINUTES
+    return LANE_SLA_MINUTES.get(lane, DEFAULT_SLA_MINUTES)
+
+
+def _parse_epoch_minutes(value):
+    """Minutes since epoch for an ISO-8601 string, or None if unreadable."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(text).timestamp() / 60.0
+    except Exception:
+        return None
+
+
+def sla_status(task, now_iso):
+    """Age, budget and breach for one task.
+
+    Returns a dict, never raises. An unreadable timestamp reports `unknown`
+    rather than `breached=False`: "we cannot tell" and "it is fine" are
+    different answers, and only one of them should keep a task out of the
+    escalation list.
+    """
+    lane = (task or {}).get("lane") if isinstance(task, dict) else None
+    budget = lane_sla_minutes(lane)
+    created = _parse_epoch_minutes((task or {}).get("created_at") if isinstance(task, dict) else None)
+    now = _parse_epoch_minutes(now_iso)
+    if created is None or now is None:
+        return {"lane": lane, "budget_minutes": budget, "age_minutes": None,
+                "minutes_remaining": None, "breached": False, "unknown": True}
+    age = max(0.0, now - created)
+    return {"lane": lane, "budget_minutes": budget, "age_minutes": round(age, 2),
+            "minutes_remaining": round(budget - age, 2), "breached": age > budget,
+            "unknown": False}
+
+
+def reserved_capacity(total_lanes):
+    """Slots reserved for revenue-critical work.
+
+    At least one whenever the fleet has any capacity at all, and never more than
+    RESERVED_CAPACITY_MAX_FRACTION of it, so bulk work is slowed but never
+    starved. A non-numeric or non-positive fleet size reserves nothing.
+    """
+    try:
+        total = int(total_lanes)
+    except (TypeError, ValueError):
+        return 0
+    if total <= 0:
+        return 0
+    reserved = int(math.floor(total * RESERVED_CAPACITY_FRACTION))
+    ceiling = max(1, int(math.floor(total * RESERVED_CAPACITY_MAX_FRACTION)))
+    return max(1, min(reserved if reserved > 0 else 1, ceiling, total))
+
+
+def admit(tasks, total_lanes, now_iso=None):
+    """Decide which queued tasks occupy the fleet this cycle.
+
+    Revenue-critical tasks fill the reserved slots first, breach-first so the
+    lane's own failures are cleared before its fresh work. Everything else —
+    including revenue-critical tasks beyond the reservation — competes for the
+    shared remainder in the order it was given.
+
+    Returns `{admitted, reserved, shared, reserved_used, starved_bulk}`. Pure:
+    it decides, it does not write.
+    """
+    rows = [t for t in (tasks or []) if isinstance(t, dict)]
+    reserved = reserved_capacity(total_lanes)
+    try:
+        total = max(0, int(total_lanes))
+    except (TypeError, ValueError):
+        total = 0
+
+    critical = [t for t in rows if t.get("lane") == REVENUE_CRITICAL_LANE]
+    bulk = [t for t in rows if t.get("lane") != REVENUE_CRITICAL_LANE]
+
+    if now_iso:
+        # Breach first: a lane that has already missed its SLA is the reason the
+        # lane exists, so it goes before the fresh work behind it.
+        critical = sorted(critical, key=lambda t: 0 if sla_status(t, now_iso)["breached"] else 1)
+
+    in_reserved = critical[:reserved]
+    overflow = critical[len(in_reserved):]
+
+    shared_slots = max(0, total - len(in_reserved))
+    # The shared pool is SHARED. An earlier cut put the revenue overflow at the
+    # front of it, and a test caught what that means under load: 20 revenue
+    # tasks against 8 lanes admitted zero bulk work. The reservation exists to
+    # stop bulk work crowding out revenue; it must not become the reverse, or
+    # the queue behind it never moves and every non-revenue task ages out. So
+    # the remainder is interleaved — revenue keeps its floor, bulk keeps a
+    # share, and neither can take the whole fleet.
+    in_shared = []
+    left, right = list(overflow), list(bulk)
+    while len(in_shared) < shared_slots and (left or right):
+        if left:
+            in_shared.append(left.pop(0))
+        if len(in_shared) < shared_slots and right:
+            in_shared.append(right.pop(0))
+
+    return {
+        "admitted": in_reserved + in_shared,
+        "reserved": reserved,
+        "reserved_used": len(in_reserved),
+        "shared": shared_slots,
+        # Bulk work that did not fit. Reported so "the fast lane is starving the
+        # queue" is a number somebody can look at rather than a suspicion.
+        "starved_bulk": max(0, len(bulk) - sum(1 for t in in_shared if t.get("lane") != REVENUE_CRITICAL_LANE)),
+    }
+
+
+def sla_breaches(tasks, now_iso):
+    """Every task past its lane's SLA, worst overrun first. Fail-soft."""
+    out = []
+    for task in (tasks or []):
+        if not isinstance(task, dict):
+            continue
+        status = sla_status(task, now_iso)
+        if status["breached"]:
+            out.append({"id": task.get("id"), **status})
+    return sorted(out, key=lambda s: s["age_minutes"] - s["budget_minutes"], reverse=True)
+
+
 def run():
     """Daily job: compute revenue scoring, apply routing, log stats."""
     if not ENABLED:
