@@ -128,3 +128,37 @@ jobs:
         # --check reports without rewriting the files. Exit 1 when any task file
         # is MISSING or AMBIGUOUS in the queue.
         run: python3 runner/tools/reconcile_task_files.py --check
+
+  # DEPENDENCY MANIFEST — the acceptance check that existed and never ran.
+  #
+  # scripts/verify_deps.py calls itself "Acceptance check for the dependency
+  # manifest" and fails when a package declared in requirements*.txt is not
+  # importable, or when `runner` itself cannot be imported. Nothing invoked it, so
+  # it could only catch drift that someone already suspected and went looking for.
+  #
+  # The drift is documented in requirements.txt's own header: the file "previously
+  # listed only requests/python-dotenv/prometheus-client, so a fresh clone that ran
+  # pip install -r requirements.txt still could not import large parts of runner/".
+  # requirements-dev.txt records the same class of failure a second time, for
+  # pytest-timeout: declared nowhere, so the merge gate died with "unrecognized
+  # arguments: --timeout" on any machine built from the manifest.
+  #
+  # Both were found by a person hitting them. This job is what finds the third one:
+  # it installs from the manifest ALONE — never an ad-hoc `pip install X` — so a
+  # package that is only present because a developer's laptop happens to have it
+  # fails here instead of on the next clean machine.
+  dependency-manifest:
+    name: deps — manifest installs and imports
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install from the manifest only
+        run: pip install --quiet -r requirements-dev.txt
+
+      - name: Verify every declared package imports
+        run: python3 scripts/verify_deps.py
