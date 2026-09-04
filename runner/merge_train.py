@@ -1042,6 +1042,8 @@ def _share_deps_into_overlay(repo, candidate, test_cmd=""):
             except OSError:
                 pass
 
+    _share_generated_dirs_into_overlay(repo, candidate)
+
     if os.path.isfile(os.path.join(candidate, "package.json")) \
             and not os.path.exists(os.path.join(candidate, "node_modules")):
         # Last resort: install in place. Loud, because reaching here means the
@@ -1049,6 +1051,68 @@ def _share_deps_into_overlay(repo, candidate, test_cmd=""):
         print(f"merge_train: overlay {candidate} still has no node_modules after "
               "prewarm+symlink; installing in place", flush=True)
         _ensure_node_deps(candidate, test_cmd)
+
+
+def _share_generated_dirs_into_overlay(repo, candidate):
+    """Link `.nuxt` (and its kin) in from a WARM checkout. Never raises.
+
+    THE ASYMMETRY THIS FIXES (2026-09-03)
+    -------------------------------------
+    dependency_prewarm.link_shared_runtime already links .nuxt, and its docstring
+    explains why at length: a fresh worktree holds only tracked files, .nuxt is
+    generated and gitignored, and without it vitest dies on every file whose
+    tsconfig extends it --
+
+        Error: failed to resolve "extends":"./.nuxt/tsconfig.json"
+
+    reported as `(0 test)`, which reads as broken tests rather than an unprepared
+    checkout. That docstring records the same operator complaint twice, months
+    apart, and notes that recurring identically is the tell that nothing was
+    fixed. It recurred a third time, for a reason the fix could not have covered:
+
+    link_shared_runtime is handed `repo`, which here is the INTEGRATION WORKTREE --
+    a fresh checkout, so it has no .nuxt to link FROM. The node_modules path
+    learned this on 2026-08-30 and grew a fallback to `_primary_checkout_of(repo)`,
+    the human's warm checkout. The generated-directory path never did. So .nuxt was
+    linked precisely when it was not needed and skipped whenever it was.
+
+    MEASURED on darwn, 2026-09-03: 8 of 22 test files collected zero tests for this
+    reason on a clean overlay of `orchestrator/dev` with no card applied -- part of
+    a baseline that failed 114 cards in one merge-train window, each one retired,
+    marked TESTFAIL and handed an agentic repair for a defect it did not introduce.
+    Every Nuxt project in the fleet has the same shape.
+
+    Symlinked, not copied: these are generated, small and regenerable, and an
+    overlay that runs `nuxt prepare` should refresh the shared copy rather than
+    fork a stale one -- the same reasoning link_shared_runtime gives.
+    """
+    try:
+        import dependency_prewarm
+        names = tuple(getattr(dependency_prewarm, "GENERATED_SHARED_DIRS", (".nuxt",)))
+    except Exception:
+        names = (".nuxt",)
+    for donor in (repo, _primary_checkout_of(repo)):
+        if not donor or not os.path.isdir(donor):
+            continue
+        try:
+            import dependency_prewarm
+            roots = dependency_prewarm.package_roots(donor) or [donor]
+        except Exception:
+            roots = [donor]
+        for root in roots:
+            rel = os.path.relpath(root, donor)
+            for name in names:
+                src = os.path.join(root, name)
+                dst = os.path.join(candidate, rel, name) if rel != "." \
+                    else os.path.join(candidate, name)
+                if not os.path.exists(src) or os.path.exists(dst):
+                    continue
+                if not os.path.isdir(os.path.dirname(dst)):
+                    continue          # the overlay does not have that package root
+                try:
+                    os.symlink(src, dst)
+                except OSError:
+                    pass
 
 
 _GATE_ENV_CACHE = None
