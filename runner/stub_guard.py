@@ -243,6 +243,48 @@ def is_value_constant(txt, symbol):
     return bool(rx.search(txt))
 
 
+#: SCREAMING_SNAKE_CASE. In TS/JS this names a VALUE, never a function, by universal
+#: convention -- which is the entire basis of the exemption below.
+_SCREAMING_SNAKE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
+
+#: Callable syntax. If the right-hand side contains any of this it is not a value,
+#: whatever it is called.
+_CALLABLE_RHS = re.compile(r"=>|\bfunction\b|\bclass\b|\(")
+
+
+def _is_named_constant(symbol, slice_text):
+    """Is this export a named VALUE constant rather than a stubbed function?
+
+    THIS FUNCTION DID NOT EXIST, AND THE WHOLE STRUCTURAL PASS DEPENDED ON IT.
+
+    _structural_stubs called it, `_structural_stubs` wraps its body in
+    `except Exception: return []`, and the resulting AttributeError was swallowed on
+    every single call. So the structural half of a FAIL-CLOSED merge gate silently
+    reported nothing at all -- verified 2026-09-04:
+
+        export const computePrice = 0                    -> []
+        export const calculateFee = () => 0              -> []
+        export function assertEcpCounterparty(x) {...}   -> []
+
+    pyflakes says it in one line (`undefined name '_is_named_constant'`); nothing in
+    the gate's own output ever could, because a guard that finds nothing and a guard
+    that cannot run look identical from outside.
+
+    The rule, which is the one test_stub_guard_named_constants.py was written for:
+    the exemption is about VALUES. A SCREAMING_SNAKE name bound to something with no
+    arrow, no `function`, no `class` and no call is a tunable, and a tunable is
+    SUPPOSED to be a literal -- that is the REPLACEMENT_MARGIN = 0.01 false positive
+    that quarantined four unrelated smarter cards in one evening. Anything else stays
+    in scope, including `export const COMPUTE_FEE = () => 0`: the convention argument
+    is about what a name means, and it does not cover a name holding a function.
+    """
+    if not symbol or not _SCREAMING_SNAKE.match(str(symbol)):
+        return False
+    if not slice_text or _CALLABLE_RHS.search(str(slice_text)):
+        return False
+    return True
+
+
 def _home():
     return os.environ.get("CLAUDE_ORCH_HOME",
                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".runtime"))
@@ -1001,32 +1043,4 @@ if __name__ == "__main__":
         print(log)
     else:
         run()
-
-def is_value_constant(txt, symbol):
-    """Is `symbol` a named VALUE constant rather than a stubbed function?
-
-    The fabricated-return detectors ask "does this declaration's body reduce to a
-    literal". That is the right question for a function and the wrong one for a
-    constant: a threshold is SUPPOSED to be a literal. Without the distinction the
-    guard reports things like
-
-        /** The margin a challenger must beat the incumbent by. ... */
-        export const REPLACEMENT_MARGIN = 0.01
-
-    as "a regulatory gate that stopped throwing", and the remediation it files —
-    "if it is genuinely unimplemented it MUST throw" — would replace a documented,
-    actively-used tunable with an exception. That is a worse repository than the
-    one the guard started with, and it costs an agent a full run to find out.
-
-    Decided on the DECLARATION, never the name: a stubbed arrow function
-    (`export const getPrice = () => 0`) contains callable syntax and is still
-    reported, as is `= compute()`.
-    """
-    if not symbol or not txt:
-        return False
-    rx = re.compile(
-        r"^[ \t]*export\s+const\s+" + re.escape(symbol) +
-        r"\s*(?::[^=\n]*)?=\s*" + _CONST_VALUE + r"\s*(?:;|$)",
-        re.MULTILINE)
-    return bool(rx.search(txt))
 
