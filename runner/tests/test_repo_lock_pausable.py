@@ -170,3 +170,43 @@ def test_a_lease_uses_the_canonical_key(tmp_path):
         assert lease
         with repo_lock.hold_pausable(str(link), timeout=1) as through_link:
             assert not through_link
+
+
+# ── the lock directory itself ────────────────────────────────────────────────
+
+def test_a_test_run_does_not_litter_the_fleets_lock_directory(tmp_path, monkeypatch):
+    """1,252 lock files in runner/.runtime/locks, nearly all of them from pytest.
+
+    94 modules take their state directory from CLAUDE_ORCH_HOME so a test cannot write
+    into the running fleet. This one did not: LOCK_DIR resolved once at IMPORT, before
+    any fixture could redirect it. Measured 2026-09-04, the live directory was full of
+
+        {"pid": 59070, "host": "Mac.lan",
+         "repo": "/private/tmp/pytest-of-kpasch/pytest-9/test_noop_when_current_..."}
+    """
+    monkeypatch.setattr(repo_lock, "LOCK_DIR", repo_lock._DEFAULT_LOCK_DIR)
+    monkeypatch.delenv("ORCH_REPO_LOCK_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
+    assert repo_lock.lock_dir() == str(tmp_path / "locks")
+
+
+def test_an_operators_explicit_lock_dir_wins_outright(tmp_path, monkeypatch):
+    monkeypatch.setattr(repo_lock, "LOCK_DIR", repo_lock._DEFAULT_LOCK_DIR)
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ORCH_REPO_LOCK_DIR", str(tmp_path / "chosen"))
+    assert repo_lock.lock_dir() == str(tmp_path / "chosen")
+
+
+def test_a_monkeypatched_lock_dir_still_wins_over_the_home(tmp_path, monkeypatch):
+    """Several tests are specific about this module; they must keep working."""
+    monkeypatch.delenv("ORCH_REPO_LOCK_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(repo_lock, "LOCK_DIR", str(tmp_path / "explicit"))
+    assert repo_lock.lock_dir() == str(tmp_path / "explicit")
+
+
+def test_with_nothing_configured_the_module_default_stands(monkeypatch):
+    monkeypatch.setattr(repo_lock, "LOCK_DIR", repo_lock._DEFAULT_LOCK_DIR)
+    monkeypatch.delenv("ORCH_REPO_LOCK_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_ORCH_HOME", raising=False)
+    assert repo_lock.lock_dir() == repo_lock._DEFAULT_LOCK_DIR

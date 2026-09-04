@@ -45,15 +45,88 @@ import time
 
 log = logging.getLogger(__name__)
 
-LOCK_DIR = os.environ.get(
-    "ORCH_REPO_LOCK_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime", "locks"),
-)
+_DEFAULT_LOCK_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".runtime", "locks")
+
+LOCK_DIR = os.environ.get("ORCH_REPO_LOCK_DIR", _DEFAULT_LOCK_DIR)
+
+
+def lock_dir():
+    """Where the flocks live, resolved at CALL time.
+
+    Prefer this over reading LOCK_DIR directly, for the reason build_slots.slot_dir()
+    and _gate_load_ledger_path() already exist: 94 modules take their state directory
+    from CLAUDE_ORCH_HOME so a test cannot write into the running fleet, and this one
+    did not. It resolved once at IMPORT, before any fixture could redirect it.
+
+    MEASURED 2026-09-04: 1,252 lock files in the live directory
+    runner/.runtime/locks, the overwhelming majority stamped with holders like
+
+        {"pid": 59070, "host": "Mac.lan",
+         "repo": "/private/tmp/pytest-of-kpasch/pytest-9/test_noop_when_current_..."}
+
+    -- every pytest run since this module was written, littering the directory the
+    fleet serialises its real repositories through. Harmless in practice (an flock on
+    a hashed path nothing else uses) but unbounded, and one hash collision away from
+    a test contending with a live repo.
+
+    Precedence is deliberate. An explicit ORCH_REPO_LOCK_DIR is an operator pointing
+    the fleet somewhere on purpose and wins outright. A monkeypatched LOCK_DIR is a
+    test being specific about this module and wins next -- several tests do exactly
+    that, including the one that checks an unopenable directory yields a falsy lease.
+    CLAUDE_ORCH_HOME then catches everything else, which is the whole point.
+    """
+    explicit = os.environ.get("ORCH_REPO_LOCK_DIR")
+    if explicit:
+        return explicit
+    if LOCK_DIR != _DEFAULT_LOCK_DIR:
+        return LOCK_DIR
+    home = os.environ.get("CLAUDE_ORCH_HOME")
+    if home:
+        return os.path.join(home, "locks")
+    return LOCK_DIR
+
+
+def _canonical(repo):
+    """One repo, one key -- whatever path spelling the caller happens to have.
+
+    This hashed the RAW STRING, so two spellings of the same directory produced two
+    different lock files and did not exclude each other at all. Verified on this
+    machine, where ~/claude-orchestrator is a symlink to its real path:
+
+        /Users/kpasch/claude-orchestrator                      -> repo-96d7193fa0854cac
+        /Users/kpasch/Documents/beethoven/claude-orchestrator  -> repo-2b7b112e1dbf0ca3
+        same repo on disk: True        mutually exclusive: False
+
+    A caller reaching a repo through the symlink takes a lock that protects nothing
+    while another process mutates the same working copy under the other key. That is
+    precisely the failure this module exists to prevent, and both spellings are in
+    live use: the fleet's own processes are launched under one and its projects table
+    records the other.
+
+    RESTORED 2026-09-04. This landed on 2026-09-03 as 2e8bb545 and then left the
+    graph -- `git merge-base --is-ancestor 2e8bb545 master` says no, and
+    `git log -S_canonical -- runner/repo_lock.py` on master finds nothing. The commit
+    survives only as a dangling merge with a stash entry beside it. Nothing announced
+    that; it surfaced because a test written against the fix started failing. The
+    stranded-commit sentinel could not have caught it either: that scans local
+    BRANCHES, and this is reachable from none.
+
+    realpath, not abspath: abspath normalises `..` and a relative path but leaves a
+    symlink alone, which is the exact case above. Falls back to the raw string if the
+    path cannot be resolved, because a lock under an odd key still serialises the
+    callers that share that key -- strictly better than raising inside a lock helper.
+    """
+    raw = str(repo or "unknown-repo")
+    try:
+        return os.path.realpath(raw) or raw
+    except (OSError, ValueError):
+        return raw
 
 
 def _lock_path(repo):
-    key = hashlib.sha1(str(repo or "unknown-repo").encode()).hexdigest()[:16]
-    return os.path.join(LOCK_DIR, f"repo-{key}.lock")
+    key = hashlib.sha1(_canonical(repo).encode()).hexdigest()[:16]
+    return os.path.join(lock_dir(), f"repo-{key}.lock")
 
 
 def _write_holder(handle, repo, purpose):
@@ -200,11 +273,11 @@ def hold_pausable(repo, timeout=None, purpose=None):
     """
     lease = None
     try:
-        os.makedirs(LOCK_DIR, exist_ok=True)
+        os.makedirs(lock_dir(), exist_ok=True)
         handle = open(_lock_path(repo), "a+")
     except Exception as e:
         log.error("repo_lock: cannot open lock file under %s (%s: %s) — refusing the "
-                  "lock for %s", LOCK_DIR, type(e).__name__, e, repo)
+                  "lock for %s", lock_dir(), type(e).__name__, e, repo)
         yield Lease(None, repo)          # falsy
         return
     lease = Lease(handle, repo, purpose)
@@ -249,14 +322,14 @@ def hold(repo, timeout=None, purpose=None):
     was the more expensive answer, not the cheaper one."""
     f = None
     try:
-        os.makedirs(LOCK_DIR, exist_ok=True)
+        os.makedirs(lock_dir(), exist_ok=True)
         f = open(_lock_path(repo), "a+")
     except Exception as e:
         # Loud, because the caller's retry will otherwise look like ordinary contention
         # forever and nothing will say the lock directory is the problem.
         log.error("repo_lock: cannot open lock file under %s (%s: %s) — refusing the lock "
                   "for %s; git-mutating work will be deferred, not run unprotected",
-                  LOCK_DIR, type(e).__name__, e, repo)
+                  lock_dir(), type(e).__name__, e, repo)
         yield False
         return
     acquired = False
