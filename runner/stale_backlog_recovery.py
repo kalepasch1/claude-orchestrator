@@ -23,6 +23,9 @@ Env vars:
     ORCH_RETRY_BACKOFF_BASE        base retry delay in seconds (default 60)
     ORCH_RETRY_BACKOFF_MULTIPLIER  exponential backoff multiplier (default 2.0)
     ORCH_MAX_BACKOFF               retry delay cap in seconds (default 3600)
+    ORCH_MAX_RECOVERY_ATTEMPTS     attempts a task may be requeued before the
+                                   pipeline gives up and marks it STALE
+                                   (default 5); 0 disables the cap
 """
 import os
 import subprocess
@@ -73,6 +76,9 @@ MAX_CONSOLIDATIONS = max(1, _int_env("ORCH_MAX_CONSOLIDATIONS", 3))
 RETRY_BACKOFF_BASE = max(1, _int_env("ORCH_RETRY_BACKOFF_BASE", 60))
 RETRY_BACKOFF_MULTIPLIER = _float_env("ORCH_RETRY_BACKOFF_MULTIPLIER", 2.0)
 MAX_BACKOFF = max(1, _int_env("ORCH_MAX_BACKOFF", 3600))
+# 0 means "no cap"; negative values are nonsense and fall back to the default.
+_max_attempts_raw = _int_env("ORCH_MAX_RECOVERY_ATTEMPTS", 5)
+MAX_RECOVERY_ATTEMPTS = _max_attempts_raw if _max_attempts_raw >= 0 else 5
 
 VALID_ACTIONS = ("requeue", "mark_stale", "cancel")
 _TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELLED", "STALE", "MERGED")
@@ -238,6 +244,54 @@ def calculate_backoff_delay(attempt: int) -> float:
         return float(RETRY_BACKOFF_BASE)
 
 
+def _attempt_of(task: Optional[Dict]) -> int:
+    """The task's attempt count, defaulting to 1 when absent or malformed."""
+    try:
+        return max(1, int((task or {}).get("attempt") or 1))
+    except Exception:
+        return 1
+
+
+def retry_budget_exhausted(task: Optional[Dict]) -> bool:
+    """True when the task has already burned its requeue budget.
+
+    Without this, run_recovery_pipeline requeued every stale task forever: a
+    task that dies on claim reappears next pass, dies again, and the pair
+    spins for as long as the fleet is up. Callers get mark_stale instead so a
+    human sees it. MAX_RECOVERY_ATTEMPTS == 0 disables the cap entirely.
+    """
+    try:
+        if MAX_RECOVERY_ATTEMPTS <= 0:
+            return False
+        return _attempt_of(task) >= MAX_RECOVERY_ATTEMPTS
+    except Exception:
+        return False  # fail-soft: never withhold recovery because of a bad field
+
+
+def backoff_remaining(task: Optional[Dict], now: Optional[float] = None) -> float:
+    """Seconds still owed on this task's exponential backoff, 0.0 when due.
+
+    Reads ``last_attempt_at`` (falling back to ``started_at``). A task whose
+    timestamp is missing or unusable is treated as due, so a bad clock delays
+    nothing.
+    """
+    try:
+        if not isinstance(task, dict):
+            return 0.0
+        marker = task.get("last_attempt_at")
+        if marker is None:
+            marker = task.get("started_at")
+        if marker is None:
+            return 0.0
+        elapsed = (now if now is not None else time.time()) - float(marker)
+        if elapsed < 0:
+            return 0.0
+        remaining = calculate_backoff_delay(_attempt_of(task)) - elapsed
+        return remaining if remaining > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
 def apply_recovery_action(action: Optional[Dict], repo_path: str = ".") -> bool:
     """Apply a recovery action; False on any error (never raises).
 
@@ -277,7 +331,14 @@ def run_recovery_pipeline(tasks: Optional[List[Dict]], threshold_sec: Optional[i
     Idempotent and side-effect free: actions are returned for the caller to
     apply, so re-running on the same snapshot yields the same plan.
     """
-    result = {"detected_stale": 0, "consolidated": 0, "actions_queued": 0, "actions": []}
+    result = {
+        "detected_stale": 0,
+        "consolidated": 0,
+        "actions_queued": 0,
+        "actions": [],
+        "deferred_backoff": 0,
+        "exhausted": 0,
+    }
     try:
         limit = batch_limit if batch_limit is not None else BATCH_LIMIT
         batch = [t for t in (tasks or []) if isinstance(t, dict)][:max(1, int(limit))]
@@ -295,10 +356,24 @@ def run_recovery_pipeline(tasks: Optional[List[Dict]], threshold_sec: Optional[i
                     actions.append(action)
                     cancelled_ids.add(task.get("id"))
 
+        now = time.time()
         for task in stale:
             if task.get("id") in cancelled_ids:
                 continue
-            action = build_recovery_action(task, "requeue", reason="stale_running")
+            if retry_budget_exhausted(task):
+                # Stop the requeue treadmill: hand it to a human instead.
+                action = build_recovery_action(
+                    task, "mark_stale",
+                    reason=f"retry_budget_exhausted_after_{_attempt_of(task)}_attempts",
+                )
+                result["exhausted"] += 1
+            else:
+                owed = backoff_remaining(task, now)
+                if owed > 0:
+                    # Not an action: the task is simply not due yet.
+                    result["deferred_backoff"] += 1
+                    continue
+                action = build_recovery_action(task, "requeue", reason="stale_running")
             if action:
                 actions.append(action)
 
