@@ -27,6 +27,37 @@
 # Safe by design: every step is optional and skipped when absent.
 set -eu
 
+# ── 0. Machine-local settings must never enter a commit ──────────────────────────
+#
+# .claude/settings.local.json is gitignored and holds this machine's Claude Code
+# permission allowlist plus absolute home paths. It is nonetheless TRACKED on 616
+# remote branches, and the mechanism is self-perpetuating: checking out one of
+# those branches makes the file tracked in the working copy, the next stash
+# captures it, sentinel's stash-rescue turns that stash into a
+# hotfix/stash-rescue-* branch, and rescue_branch_durability pushes it. So the
+# file spreads without anyone ever choosing to commit it.
+#
+# The ignore rule alone cannot stop that — git ignores only UNTRACKED paths, and
+# on those branches it is already tracked. This refuses it at the one point every
+# copy has to pass through. Staged deletions are allowed, so cleaning it up works.
+_local_settings=$(git diff --cached --name-only --diff-filter=d | grep -x '\.claude/settings\.local\.json' || true)
+if [ -n "$_local_settings" ]; then
+  cat >&2 <<'MSG'
+[pre-commit] ✗ .claude/settings.local.json is staged — refusing the commit.
+
+This file is machine-local: it carries this box's Claude Code permission allowlist
+and absolute home paths, and it is in .gitignore for that reason. It is already
+tracked on old agent branches, which is why git's ignore rule does not catch it
+here; that is the leak this hook closes.
+
+  git rm --cached .claude/settings.local.json
+
+Then commit again. To remove it from a branch that carries it, stage the deletion —
+this hook allows that.
+MSG
+  exit 1
+fi
+
 # ── 1. The repo's own sanctioned hook set (masked by core.hooksPath otherwise) ────
 if [ -x scripts/git-hooks/pre-commit ]; then
   self="$0"
