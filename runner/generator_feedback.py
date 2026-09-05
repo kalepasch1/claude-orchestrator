@@ -41,16 +41,21 @@ def _jaccard(a, b):
     return len(a & b) / len(a | b)
 
 
-def _recent_failures(project_name="", limit=50):
+def _recent_failures(project_name="", limit=50, project_id=""):
     """Get recent failed/blocked/decomposed tasks."""
     try:
         params = {
             "select": "prompt,state,kind,slug,note",
-            "state": "in.(BLOCKED,DECOMPOSED,FAILED)",
+            # QUARANTINED added 2026-09-01: the dominant failure state in practice.
+            # Omitting it meant the gate could not see the 60 quarantined `remediate-*`
+            # tasks that quarantine_remediation was regenerating every hour.
+            "state": "in.(BLOCKED,DECOMPOSED,FAILED,QUARANTINED)",
             "order": "updated_at.desc",
             "limit": str(limit),
         }
-        if project_name:
+        if project_id:
+            params["project_id"] = f"eq.{project_id}"
+        elif project_name:
             # Get project_id first
             projects = db.select("projects", {"select": "id", "name": f"eq.{project_name}"})
             if projects:
@@ -74,10 +79,12 @@ def _queued_tasks(project_name="", limit=100):
         return []
 
 
-def should_generate(prompt, project_name="", kind="feature"):
+def should_generate(prompt, project_name="", kind="feature", project_id=""):
     """Check if a task with this prompt should be generated.
 
     Returns: {generate: bool, reason: str, similar_to: str}
+
+    `project_id` lets a caller that already holds the id skip the name lookup.
     """
     if not FEEDBACK_ENABLED:
         return {"generate": True, "reason": "feedback disabled"}
@@ -87,7 +94,7 @@ def should_generate(prompt, project_name="", kind="feature"):
         return {"generate": True, "reason": "empty prompt"}
 
     # Check 1: Similar recent failures
-    failures = _recent_failures(project_name)
+    failures = _recent_failures(project_name, project_id=project_id)
     for f in failures:
         f_tokens = _tokenize(f.get("prompt", ""))
         sim = _jaccard(prompt_tokens, f_tokens)

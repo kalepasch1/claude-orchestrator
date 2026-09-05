@@ -67,13 +67,34 @@ EXPECTED_RULES = {
     # loss would silently turn an unparseable file into a clean one.
     "PARSE_ERROR",
     "SYNTAX_ERROR",
+    # Credentials were purged from fleet_config, so a read of a credential key there
+    # yields an empty value rather than an error — a silent one, which is why it earns
+    # a rule. Registered here when the linter gained it.
+    "CREDENTIAL_CONFIG_READ",
 }
 
 
 def emitted_rule_names():
-    """Rule strings the module actually constructs, read from its source."""
+    """Rule strings the module actually constructs, read from its source.
+
+    A rule may be reported either as a quoted literal or through a module-level
+    ``RULE_<NAME> = '<NAME>'`` constant. Only the literal form used to count, so
+    when HARDCODED_SECRET moved to RULE_HARDCODED_SECRET — added deliberately, so
+    four test modules could import the id instead of hardcoding it — this
+    function stopped seeing it and reported the fleet's secret rule as REMOVED.
+    A registry that loses a rule the moment someone gives it a name is worse than
+    no registry, because the failure looks like the rule was deleted.
+    """
     source = open(os.path.join(REPO, "tools", "lint_conventions.py"), encoding="utf-8").read()
-    return set(re.findall(r"ConventionViolation\(\s*[^,]+,\s*[^,]+,\s*'([A-Z_]+)'", source))
+    literal = set(re.findall(r"ConventionViolation\(\s*[^,]+,\s*[^,]+,\s*'([A-Z_]+)'", source))
+    # RULE_X = 'X' at module scope, then referenced positionally at a report site.
+    constants = dict(re.findall(r"^(RULE_[A-Z_]+)\s*=\s*'([A-Z_]+)'", source, re.M))
+    via_constant = {
+        constants[name]
+        for name in re.findall(r"ConventionViolation\(\s*[^,]+,\s*[^,]+,\s*(RULE_[A-Z_]+)", source)
+        if name in constants
+    }
+    return literal | via_constant
 
 
 def check(code, filename="probe.py"):
@@ -104,7 +125,8 @@ class TestRuleRegistry(unittest.TestCase):
     def test_the_count_is_pinned_too(self):
         # A same-sized swap (one rule renamed into another) passes both set checks above
         # only if the names match; this makes an accidental net change loud.
-        self.assertEqual(len(EXPECTED_RULES), 8)
+        # 8 -> 9 when CREDENTIAL_CONFIG_READ was registered.
+        self.assertEqual(len(EXPECTED_RULES), 9)
 
 
 class TestEachRuleStillFires(unittest.TestCase):

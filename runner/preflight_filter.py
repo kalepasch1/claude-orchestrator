@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 preflight_filter.py — Pre-dispatch quality gate for the orchestrator.
 
@@ -13,7 +12,17 @@ Categories detected:
 4. Non-actionable prompts (too short, empty)
 5. Blocker-quarantine candidates (legal/security with no code target)
 6. Metadata-only prompts (orchestration boilerplate with no implementation spec)
+
+POSITION MATTERS. This text sat one line lower, below `from __future__ import
+annotations`, where Python does not treat it as the module docstring at all: it is
+just an expression statement that is evaluated and discarded. `__doc__` was None,
+`help(preflight_filter)` showed nothing, `pydoc` produced an empty page, and any
+tooling that reads module docs saw an undocumented module — while a reader opening
+the file saw documentation and had no reason to suspect otherwise. The docstring
+must be the FIRST statement; the only thing allowed above it is the shebang.
 """
+from __future__ import annotations
+
 import re, os, logging
 
 log = logging.getLogger(__name__)
@@ -46,6 +55,27 @@ _HAS_CODE_TARGET_RE = re.compile(
 _METADATA_ONLY_RE = re.compile(
     r"^(- source:|- project:|- task class:|- preflight|- strategy|"
     r"##\s+ORCHESTRATION|##\s+PIPELINE|spend-limit|repair directive)", re.I | re.MULTILINE)
+
+
+def _as_int(value, default: int) -> int:
+    """Coerce a value to int, returning ``default`` on anything unparseable."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+    except Exception:
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read an integer threshold from the environment. Never raises."""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    value = _as_int(str(raw).strip(), default)
+    if value != default and value < 0:
+        return default
+    return value
 
 
 def preflight_check(task: dict) -> str:
@@ -111,9 +141,15 @@ def _preflight_check_inner(task: dict) -> str:
     # keeps failing really is unactionable. A detailed one that keeps failing is evidence about
     # the fleet, and the right response is to keep it and fix the fleet. Substantial specs still
     # face a hard ceiling, so nothing retries forever.
-    max_attempts = int(os.environ.get("ORCH_PREFLIGHT_MAX_ATTEMPTS", "4"))
-    hard_ceiling = int(os.environ.get("ORCH_PREFLIGHT_HARD_CEILING", "12"))
-    substantial = int(os.environ.get("ORCH_PREFLIGHT_SUBSTANTIAL_CHARS", "500"))
+    # All three read fail-soft. A bare int() here raises ValueError on a malformed fleet
+    # push, and preflight_check is called inside apply_to_batch's loop with no guard —
+    # so one bad env value did not degrade the gate, it killed the whole batch dispatch.
+    max_attempts = _int_env("ORCH_PREFLIGHT_MAX_ATTEMPTS", 4)
+    hard_ceiling = _int_env("ORCH_PREFLIGHT_HARD_CEILING", 12)
+    substantial = _int_env("ORCH_PREFLIGHT_SUBSTANTIAL_CHARS", 500)
+    # Likewise for the row itself: `attempt` arrives from the database and has been seen
+    # as a string. Comparing str >= int raises TypeError, with the same blast radius.
+    attempt = _as_int(attempt, 0)
     _is_substantial = len((prompt or "").strip()) >= substantial
     if attempt >= hard_ceiling:
         return (f"preflight: exhausted {attempt} attempts without success "

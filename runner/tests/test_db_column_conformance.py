@@ -146,7 +146,8 @@ BASELINE = {
     ("cx_shadow_cade.py", "approvals", ("updated_at",)),
     ("economic_scheduler.py", "tasks", ("economic_score", "lane")),
     ("experiment_router.py", "tasks", ("experiment_id", "experiment_variant")),
-    ("improvement_miner.py", "tasks", ("intent_key",)),
+    # improvement_miner's intent_key is FIXED — it no longer filters on or writes
+    # a column the tasks table does not have. Removed rather than left to rot.
     ("integration_sweeper.py", "tasks", ("verify_attempts",)),
     ("kpi_eval_harness.py", "approvals", ("updated_at",)),
     ("lane_scheduler.py", "tasks", ("lane",)),

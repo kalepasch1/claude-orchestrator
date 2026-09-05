@@ -181,6 +181,10 @@ RUNNER_ID = os.environ.get("RUNNER_ID", socket.gethostname() + "-" + str(os.getp
 # honouring a restart request, so a fleet that commits to its own repo cannot restart the runner
 # faster than tasks can finish.
 _PROC_START_T = time.time()
+#: When the current self-deploy drain began, so it can be given a deadline. A dict rather
+#: than a plain global because the drain check lives inside a function that never declared
+#: one, and a stuck drain freezes every claim in the fleet -- see ORCH_RESTART_DRAIN_MAX_S.
+_DRAIN_STARTED = {}
 
 
 class _SkipRestart(Exception):
@@ -635,6 +639,12 @@ def _localize_repo_path(proj, db_path):
     return None
 
 
+def _strict_default_base():
+    """Prefer projects.default_base over a generic stored base_branch. Default on."""
+    return os.environ.get("ORCH_STRICT_DEFAULT_BASE", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _normalize_task_base(repo, proj, requested):
     """Resolve task base to a local branch that actually exists before worktree setup.
 
@@ -642,10 +652,88 @@ def _normalize_task_base(repo, proj, requested):
     configured default. Normalizing here prevents empty diffs, failed worktree setup,
     stale branch churn, and wasted agent retries.
     """
-    for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
+    # 2026-09-01: a *generic* requested base ("main"/"master") must not outrank the
+    # project's configured default. db._guard_task_base_branch already applies this rule
+    # at insert time, but it is insert-only -- a row written by an unguarded path, or an
+    # older row, still carries "main", and checking `requested` first sent that work back
+    # to the production branch at execution time. Non-generic values (release/*, hotfix/*)
+    # are deliberate and still win. Set ORCH_STRICT_DEFAULT_BASE=false to restore the old
+    # requested-first order.
+    order = (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master")
+    if _strict_default_base() and (requested or "").strip().lower() in ("", "main", "master"):
+        order = (proj.get("default_base"), requested, proj.get("prod_branch"), "main", "master")
+    for b in order:
         if _branch_exists(repo, b):
             return b
-    return requested or proj.get("default_base") or "main"
+    return proj.get("default_base") or requested or "main"
+
+
+def _dev_reset_on_drift():
+    """True only if the operator has explicitly opted back into destructive dev resets.
+
+    Default False. See _integration_base for why the default flipped on 2026-09-01.
+    """
+    return os.environ.get("ORCH_DEV_RESET_ON_DRIFT", "false").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _ref_commit_time(repo, ref):
+    """Committer timestamp of `ref`, or None if it does not resolve here."""
+    try:
+        r = subprocess.run(["git", "log", "-1", "--format=%ct", ref], cwd=repo,
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return int((r.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _freshest_upstream(repo, proj):
+    """The upstream the integration lane should track: whichever of dev or prod is newer.
+
+    Operator directive 2026-09-01: the improvement lane must replicate "/dev and /prod,
+    whichever is more recent", so improvements always build on the freshest real code
+    without a human choosing which branch that is this week.
+
+    Picking by commit date rather than by name is what makes this safe on these repos.
+    `tomorrow`'s origin/dev is 4,336 commits behind origin/main and was last touched in
+    February; a name-based rule would drag the fleet onto seven-month-old code, while the
+    freshness rule silently keeps it on main until someone actually starts committing to
+    dev again. Remote refs are preferred over local ones because the local copy can be
+    stale on any given host.
+
+    Returns a ref name, or "" if nothing resolves.
+    """
+    prod = _detect_prod_branch(repo, proj)
+    dev_name = os.environ.get("ORCH_TRACK_DEV_BRANCH", "dev")
+    candidates = []
+    for name in (dev_name, prod):
+        if not name:
+            continue
+        for ref in (f"origin/{name}", name):
+            t = _ref_commit_time(repo, ref)
+            if t is not None:
+                candidates.append((t, ref, name))
+                break
+    if not candidates:
+        return ""
+    if os.environ.get("ORCH_DEV_TRACKS_FRESHEST", "true").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        # Legacy behaviour: always track prod.
+        for _t, ref, name in candidates:
+            if name == prod:
+                return ref
+        return candidates[0][1]
+    candidates.sort(reverse=True)  # newest committer date wins
+    best_t, best_ref, best_name = candidates[0]
+    if len(candidates) > 1 and best_name != prod:
+        _log.info("integration-base: tracking %s in %s — it is newer than %s",
+                  best_ref, repo, prod)
+    return best_ref
 
 
 def _integration_base(repo, proj, task_base):
@@ -662,12 +750,29 @@ def _integration_base(repo, proj, task_base):
         prod = _detect_prod_branch(repo, proj)
         # RECURRENT-CONFLICT FIX: keep the integration base CURRENT with prod. After external pushes
         # (e.g. hotfixes to origin/main) a stale local dev drifts BEHIND prod, so every agent branch
-        # rebased onto it conflicts and releases can't promote. Fetch prod, then reset dev to it
-        # UNLESS dev is strictly ahead (contains all of prod + unreleased merges). Fail-soft; a
-        # no-op if dev is checked out in a worktree (the recovery script frees those).
+        # rebased onto it conflicts and releases can't promote.
+        #
+        # 2026-09-01 -- THIS USED TO DESTROY WORK. The old code ran `git branch -f dev prod`
+        # whenever dev was not strictly ahead, which silently discarded every merge that had
+        # landed on dev but had not yet been promoted to prod. The task rows stayed MERGED, so
+        # the loss was invisible: reflog shows 22 such resets in `tomorrow` and 9 in
+        # `apparently-law`, and phantom_merge_audit holds 10,598 tasks that claimed MERGED with
+        # nothing behind them. Fast-forward is the only safe direction. Now:
+        #     dev missing     -> create it from prod              (unchanged)
+        #     dev behind prod -> fast-forward onto prod           (nothing exists to lose)
+        #     dev diverged    -> LEAVE IT ALONE and log loudly    (it holds unpromoted merges)
+        # Set ORCH_DEV_RESET_ON_DRIFT=true to restore the old destructive behaviour.
         subprocess.run(["git", "fetch", "origin", prod], cwd=repo, capture_output=True, timeout=90)
-        pref = f"origin/{prod}" if subprocess.run(["git", "rev-parse", "--verify", f"origin/{prod}"],
-                                                  cwd=repo, capture_output=True).returncode == 0 else prod
+        dev_name = os.environ.get("ORCH_TRACK_DEV_BRANCH", "dev")
+        if dev_name and dev_name != prod:
+            subprocess.run(["git", "fetch", "origin", dev_name], cwd=repo,
+                           capture_output=True, timeout=90)
+        # Track whichever of dev/prod is actually newer, not whichever is named prod.
+        pref = _freshest_upstream(repo, proj)
+        if not pref:
+            pref = f"origin/{prod}" if subprocess.run(
+                ["git", "rev-parse", "--verify", f"origin/{prod}"],
+                cwd=repo, capture_output=True).returncode == 0 else prod
         if subprocess.run(["git", "rev-parse", "--verify", dev], cwd=repo,
                           capture_output=True).returncode != 0:
             subprocess.run(["git", "branch", dev, pref], cwd=repo, capture_output=True)
@@ -675,7 +780,31 @@ def _integration_base(repo, proj, task_base):
             strictly_ahead = subprocess.run(["git", "merge-base", "--is-ancestor", pref, dev],
                                             cwd=repo, capture_output=True).returncode == 0
             if not strictly_ahead:
-                subprocess.run(["git", "branch", "-f", dev, pref], cwd=repo, capture_output=True)
+                # `git fetch . <prod>:<dev>` updates dev ONLY if it is a fast-forward; it refuses
+                # a non-fast-forward rather than clobbering. That is exactly the guarantee we want.
+                ff = subprocess.run(["git", "fetch", ".", f"{pref}:{dev}"], cwd=repo,
+                                    capture_output=True)
+                if ff.returncode != 0:
+                    # dev may simply be the checked-out branch, which `fetch` will not write to.
+                    cur = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo,
+                                         capture_output=True, text=True)
+                    if (cur.stdout or "").strip() == dev:
+                        ff = subprocess.run(["git", "merge", "--ff-only", pref], cwd=repo,
+                                            capture_output=True)
+                if ff.returncode != 0:
+                    if _dev_reset_on_drift():
+                        subprocess.run(["git", "branch", "-f", dev, pref], cwd=repo,
+                                       capture_output=True)
+                        _log.warning(
+                            "integration-base: %s diverged from %s in %s and was FORCE-RESET "
+                            "because ORCH_DEV_RESET_ON_DRIFT is set. Unpromoted merges on %s "
+                            "have been discarded.", dev, pref, repo, dev)
+                    else:
+                        _log.warning(
+                            "integration-base: %s has diverged from %s in %s -- leaving it alone. "
+                            "It holds merges that were never promoted to prod; force-resetting "
+                            "would discard them (that bug is fixed). release_train should "
+                            "reconcile the two.", dev, pref, repo)
     except (OSError, subprocess.SubprocessError):
         return task_base
     return dev
@@ -1033,6 +1162,13 @@ def run_task(t):
         _domain_post = None
         _cost_val = 0
 
+        # Declare the project for THIS thread, so every model call made while handling
+        # this task is attributed to it and checked against its pause — without each of
+        # the 44 claude_cli.run call sites having to remember a project= keyword. Two of
+        # them did, which is why `beethoven` kept spending while paused since 24 August.
+        # Set rather than scoped: run_task has many return paths, and a worker thread's
+        # next act is always to claim another task, which overwrites this.
+        claude_cli.set_current_project(name)
         # kill switch: stop all spend on this project (or globally) at a click
         if kill_switch.is_paused(name):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")
@@ -1705,7 +1841,7 @@ def run_task(t):
             # ── REMAINING PRE-HOOKS (parallelized, all skipped when fast-path L4 skip_all) ──
             _pipeline_cost = 0
             if not _fast.get("skip_all"):
-                from concurrent.futures import ThreadPoolExecutor, as_completed
+                # (fan-out moved to prehook_pool.run_hooks — see below)
                 _uk_has_matches = bool(_uk and _uk.get("matches"))
 
                 # ── TIER 0: read-only hooks (parallel, no prompt mutation) ──────────
@@ -1795,30 +1931,28 @@ def run_task(t):
                         _log.debug("hook session_cache failed: %s", e)
                     return None
 
-                # Run Tier 0 + Tier 1 queries concurrently
-                _hook_workers = int(os.environ.get("ORCH_HOOK_WORKERS", "6"))
-                _enrichments = []
-                with ThreadPoolExecutor(max_workers=_hook_workers) as _pool:
-                    _futures = {
-                        # Tier 0 (fire-and-forget, no return value needed)
-                        _pool.submit(_hook_cade): "cade",
-                        _pool.submit(_hook_slashing): "slashing",
-                        _pool.submit(_hook_budget): "budget",
-                        # Tier 1 (collect results for serial apply)
-                        _pool.submit(_query_recycling): "recycling",
-                        _pool.submit(_query_transfer): "transfer",
-                        _pool.submit(_query_distillation): "distillation",
-                        _pool.submit(_query_debate): "debate",
-                        _pool.submit(_query_cross_templates): "cross_templates",
-                        _pool.submit(_query_session_cache): "session_cache",
-                    }
-                    for fut in as_completed(_futures):
-                        try:
-                            result = fut.result()
-                            if result and isinstance(result, dict) and result.get("hook"):
-                                _enrichments.append(result)
-                        except Exception as e:
-                            _log.debug("hook %s future failed: %s", _futures[fut], e)
+                # Run Tier 0 + Tier 1 queries concurrently.
+                # Fan-out lives in prehook_pool.run_hooks so the parallelism is
+                # assertable (runner/tests/test_prehook_pool.py) and so total wall
+                # time is LOGGED — that is the number ORCH_PREHOOK_MAX_S is judged
+                # against, and nothing used to emit it.
+                import prehook_pool
+                _pool_out = prehook_pool.run_hooks({
+                    # Tier 0 (fire-and-forget, no return value needed)
+                    "cade": _hook_cade,
+                    "slashing": _hook_slashing,
+                    "budget": _hook_budget,
+                    # Tier 1 (collect results for serial apply)
+                    "recycling": _query_recycling,
+                    "transfer": _query_transfer,
+                    "distillation": _query_distillation,
+                    "debate": _query_debate,
+                    "cross_templates": _query_cross_templates,
+                    "session_cache": _query_session_cache,
+                }, label=f"pre-hooks[{t.get('slug', '?')}]")
+                _enrichments = [r for r in _pool_out["results"]
+                                if isinstance(r, dict) and r.get("hook")]
+                _prehook_pool_wall_s = _pool_out["wall_s"]
 
                 # ── Apply Tier 1 enrichment results serially (prompt mutation) ──────
                 for _enr in _enrichments:
@@ -2464,7 +2598,23 @@ def run_task(t):
                 # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
                 # SPECULATIVE EXEC: skip if agent already proved green build
                 if not _spec_skip:
-                    qg = quality_gate.run(wt)
+                    # `base` is passed so the gate can see what THIS branch changed.
+                    # Without it quality_gate.run had no way to tell the candidate's
+                    # test files from the repo's, and its inert-test scan is a no-op.
+                    qg = quality_gate.run(wt, base=base)
+                    # AN ADVISORY FINDING ON A PASSING GATE HAD NOWHERE TO GO.
+                    #
+                    # qg["notes"] is read only inside the `if not qg["pass"]` below, so a
+                    # check that reports without blocking — which is what the inert-test
+                    # scan deliberately does while its false-positive rate is unmeasured —
+                    # was discarded on every task. It ran, produced a finding, and the
+                    # finding was dropped one line later. Zero occurrences in the logs and
+                    # zero in tasks.note, so there was also no way to gather the very data
+                    # the advisory period exists to gather.
+                    _qg_notes = str(qg.get("notes") or "")
+                    if qg["pass"] and "ADVISORY" in _qg_notes:
+                        print(f"[quality-advisory] {slug}: {_qg_notes[:300]}", flush=True)
+                        _soft_flags.append("quality: " + _qg_notes[:180])
                     if not qg["pass"]:
                         if _soft_advisory:
                             _soft_flags.append("quality: " + (qg.get("notes") or "")[:180])
@@ -3076,6 +3226,7 @@ _SCHEDULE = [
     ("ev-900",        "ev_scheduler.py",    "interval", 900),   # EV-per-token queue ordering + zero-EV parking
     ("codercanary-1800","coder_canary.py",  "interval", 1800),  # force low-risk per-coder samples for learned routing
     ("routereplay-1800","route_counterfactual.py","interval",1800), # evaluate 50 route policies on one captured trace
+    ("counterfactual-1800","counterfactual_replay_job.py","interval",1800), # replay past decisions to detect routing divergence
     ("releaseattr-600","release_attribution.py","interval",600), # exact task/commit/release causal attribution backfill
     ("ollamacal-3600","ollama_calibrator.py","interval",3600),  # calibrate local model pass rate/latency for routing
     ("histmodel-night","model_historical_canary.py","daily",(1, 20)), # real merged-task canaries per local model
@@ -3104,6 +3255,7 @@ _SCHEDULE = [
     ("sessions-120",  "session_watcher.py", "interval", 120),   # read paused/finished sessions
     ("loops-300",     "loops.py",           "interval", 300),   # per-app learning/remediation loops
     ("unstick-180",   "unstick",            "interval", 180),   # auto-requeue transient-blocked tasks
+    ("schedsnap-180", "schedsnapshot",      "interval", 180),   # heartbeat for the staleness monitor
     ("dagfix-600",    "dagfix",             "interval", 600),   # heal dep graph: ghost/redundant/orphan
     ("batchmech-900", "batchmech",          "interval", 900),   # fold mechanical tasks (cold-start save)
     ("selftune-daily","selftune",           "daily",    (7, 0)),# outcome-driven confidence tuning
@@ -3145,7 +3297,10 @@ _SCHEDULE = [
     ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
     # Independent, contract-based pipeline smoke test: catches false pressure signals,
     # stale boot code, and recovery-mode settings that otherwise survive indefinitely.
-    ("pipelineselftest-3600", "pipeline_selftest.py", "interval", 3600),
+    # Key must stay distinct from the periodic-wrapper entry below ("pipelineselftest-job-3600").
+    # Both were keyed "pipelineselftest-3600", so they shared one _sched_last slot and each
+    # actually ran every TWO hours while claiming hourly.
+    ("pipelineselftest-script-3600", "pipeline_selftest.py", "interval", 3600),
     # Drain already-written agent branches into canonical integration cards without paying an
     # agent to rewrite them. The CLI's bounded default prevents a first-run card flood.
     ("bulkshelf-600", "bulk_integrate_shelf.py", "interval", 600),
@@ -3177,7 +3332,7 @@ _SCHEDULE = [
     # Per-initiative progress rollup: strategy-round parts/subparts -> % progress, blockers,
     # deploy-readiness. Persists to coordination KV + .runtime artifact; every surface reads it.
     ("progressroll-300","progress_rollup.py","interval", 300),
-    ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
+    ("cadeextras-dy-0430", "cadeextras",      "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
     ("committeedig-wk","committeedigest",    "daily",    (6, 5)), # owner brief of sharpest dissents/reversals
@@ -3187,7 +3342,7 @@ _SCHEDULE = [
     ("committeemins-dy","committeeminutes",  "daily",    (7, 0)), # plain-English board minutes for the owner
     ("committeekg-2am","committeekg",        "daily",    (2, 40)),# build the cross-committee knowledge graph
     ("committeemeta-wk","committeemeta",     "daily",    (2, 55)),# meta-review of the expert-assembly system
-    ("cadeextras-dy","cadeextras",           "daily",    (3, 15)),# auto-run all cx_* CADE extras modules
+    ("cadeextras-dy-0315","cadeextras",      "daily",    (3, 15)),# auto-run all cx_* CADE extras modules
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
     ("errrem-30",     "error_remediation_periodic", "interval", 30),  # AI-powered error detection + config rollback
     ("quarantine-180","quarantine",         "interval", 180),   # rewrite terminal blockers into safe claimable work
@@ -3221,7 +3376,7 @@ _SCHEDULE = [
     ("worktreeguard-300","worktreeguard",   "interval", 300),   # pin uncommitted work to rescue refs (destroyed 3x on 2026-08-02)
     ("deploysilence-3600","deploysilence",  "interval", 3600),  # ZERO prod deploys in N days — absence of deploys alerts nothing
     ("rescuedur-6h", "rescuedurability",   "interval", 21600), # rescue branches must not be local-only (34 were)
-    ("pipelineselftest-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
+    ("pipelineselftest-job-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
     ("cleanclone-6h","cleanclone",          "interval", 21600), # pristine clone install+build (expensive)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
@@ -3414,6 +3569,21 @@ def _queue_depth():
     return _qdepth["n"]
 
 
+def _note_skip(job: str, reason: str, context=None) -> None:
+    """Record a scheduler skip so the reason survives past this log line.
+
+    Skip reasons used to exist only as stdout, which made "why did nothing run?"
+    unanswerable once the log rotated. skip_visibility keeps a bounded,
+    structured ledger that the build summary and API responses render from.
+    Fail-soft: never let bookkeeping stop a skip from happening.
+    """
+    try:
+        import skip_visibility
+        skip_visibility.note_skip(job, reason, context=context, logger=_log)
+    except Exception as e:
+        _log.debug("skip_visibility unavailable: %s", e)
+
+
 def _fire_periodic(job: str) -> None:
     # LEAN MODE (opt-in, default off): skip the periodic housekeeping/standings jobs for the
     # heaviest self-play subsystems (colosseum, cade tournaments, agent market, the committee
@@ -3427,6 +3597,7 @@ def _fire_periodic(job: str) -> None:
     # reverting to the default (off) if it doesn't help.
     if _LEAN_MODE_ON() and job in _LEAN_MODE_SKIP:
         print(f"[sched] {job} skipped — ORCH_LEAN_MODE=true", flush=True)
+        _note_skip(job, "ORCH_LEAN_MODE=true")
         return False
     # don't run uncounted proactive spenders unless explicitly enabled
     if job in _PROACTIVE and not _proactive_on():
@@ -3436,6 +3607,7 @@ def _fire_periodic(job: str) -> None:
         reason = drain_policy.skip_reason(job, queue_depth=_queue_depth())
         if reason:
             print(f"[sched] {job} skipped — {reason}; draining backlog first", flush=True)
+            _note_skip(job, reason)
             return False
     except Exception as e:
         print(f"[sched] {job} drain policy unavailable ({e})", flush=True)
@@ -3443,12 +3615,15 @@ def _fire_periodic(job: str) -> None:
     ceiling = _queue_gen_ceiling()
     if job in _GENERATORS and _queue_depth() > ceiling:
         print(f"[sched] {job} throttled — queue depth > {ceiling} (draining backlog first)", flush=True)
+        _note_skip(job, f"throttled — queue depth > {ceiling}",
+                   context={"ceiling": ceiling, "queue_depth": _queue_depth()})
         return False
     # PID controller: queue_velocity pauses generators when velocity is positive for 2+ windows
     try:
         import queue_velocity
         if queue_velocity.is_generator_paused(job):
             print(f"[sched] {job} paused by queue-velocity PID controller", flush=True)
+            _note_skip(job, "paused by queue-velocity PID controller")
             return False
     except Exception as e:
         _log.debug("hook queue_velocity failed: %s", e)
@@ -3458,6 +3633,7 @@ def _fire_periodic(job: str) -> None:
         try:
             if kill_switch.is_paused():
                 print(f"[sched] {job} skipped (paused)", flush=True)
+                _note_skip(job, "kill-switch paused")
                 return False
         except Exception as e:
             _log.debug("hook kill_switch failed: %s", e)
@@ -3512,6 +3688,41 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # stale-reap threshold scales with how often a job is actually supposed to run, instead of a
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
+
+
+def duplicate_schedule_keys(schedule=None):
+    """Schedule keys that appear more than once, with the entries that share them.
+
+    `_scheduler_tick` stores every job's last-fire time in `_sched_last[key]`, so
+    two entries sharing a key share ONE timestamp: whichever fires first stamps
+    it and starves the other for a full interval. Nothing raised, nothing logged
+    — the second job simply ran at half its configured cadence forever. The same
+    key is also what `_DISABLED_JOBS` matches on, so disabling one silently
+    disables the other.
+
+    Fail-soft: returns {} rather than raising if the schedule is malformed. The
+    scheduler must boot even when this diagnostic cannot.
+    """
+    try:
+        entries = _SCHEDULE if schedule is None else schedule
+        seen = {}
+        for entry in entries:
+            seen.setdefault(entry[0], []).append(entry)
+        return {k: v for k, v in seen.items() if len(v) > 1}
+    except Exception as e:  # pragma: no cover - diagnostic must never wedge boot
+        print(f"[sched] duplicate-key check skipped: {e}")
+        return {}
+
+
+def _warn_on_duplicate_schedule_keys():
+    """Make the collision loud at boot. Two entries kept the same key for weeks."""
+    for key, entries in duplicate_schedule_keys().items():
+        jobs = ", ".join(str(e[1]) for e in entries)
+        print(f"[ALARM] duplicate_schedule_key key={key} jobs=({jobs}) — these share "
+              f"one _sched_last slot and will starve each other; give each a unique key")
+
+
+_warn_on_duplicate_schedule_keys()
 
 # Launch cadence is not an execution timeout. Integration and release jobs can
 # legitimately spend tens of minutes in isolated typecheck/build worktrees. A
@@ -3733,6 +3944,31 @@ def _reap_zombie_tasks():
         print(f"[zombie-reaper] error: {e}")
 
 
+def _reap_terminal_zombies():
+    """Dispose of RUNNING tasks that repair has already failed to rescue.
+
+    `_reap_zombie_tasks()` above is the *recovery* half — it requeues stale RUNNING
+    work for another attempt, which is right for the transient majority. Nothing
+    was ever the *terminal* half, so a task whose worker keeps dying got requeued
+    forever, never reached a terminal state, and held a claim slot indefinitely.
+
+    `zombie_reap_cycle` owns its own interval gate (ORCH_ZOMBIE_REAPER_INTERVAL_S,
+    default 30s) and on/off flag (ORCH_ZOMBIE_REAPER_ENABLED), so calling it on
+    every scheduler tick is cheap and it can be turned off fleet-wide with a config
+    push rather than a code change. Fail-soft: a reap error must not wedge the tick.
+    """
+    try:
+        import zombie_reap_cycle
+        result = zombie_reap_cycle.run_once()
+        terminated = result.get("terminated") or []
+        if terminated:
+            print(f"[zombie-reap-cycle] terminated {len(terminated)} expired tasks", flush=True)
+        return result
+    except Exception as e:
+        print(f"[zombie-reap-cycle] error: {e}", flush=True)
+        return None
+
+
 # Scheduler keys (or job names) that must not fire, comma-separated.
 #
 # WHY THIS EXISTS (2026-08-06). Over three months the fleet ran 21,029 tasks and
@@ -3772,6 +4008,7 @@ def _scheduler_tick() -> None:
             except Exception as e:
                 print(f"[sched] {job} error: {e}", flush=True)
     _reap_zombie_tasks()
+    _reap_terminal_zombies()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -4045,9 +4282,46 @@ def main():
                     # Deferring, not draining: keep claiming so the lanes stay busy.
                     os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
                     raise _SkipRestart()
+                # A DRAIN THAT CANNOT CONVERGE IS AN OUTAGE, NOT A DRAIN.
+                #
+                # Draining sets ORCH_DRAINING_FOR_RESTART, which freezes new claims so the
+                # active count can fall to the threshold. If a worker thread never finishes,
+                # the count never falls, the restart never happens, and the fleet claims
+                # nothing for as long as that thread stays alive. There is no upper bound on
+                # that wait anywhere else in this loop.
+                #
+                # Observed live 2026-09-02 13:08: MAX_PARALLEL=3, so the clamp above computed
+                # _ceiling = 3 // 4 = 0 and the threshold became "wait for total quiet".
+                # Three agent threads were alive and stuck. The runner logged
+                #     [self-deploy] restart requested — draining lanes active=3 threshold=0
+                # every 30s for 39 minutes while 334 tasks sat QUEUED and the whole fleet
+                # reported 0 RUNNING across all eleven projects.
+                #
+                # The point of the drain is to let work finish before restarting -- it is a
+                # courtesy, not a correctness requirement, because keepalive restarts us and
+                # unfinished tasks are re-claimed. So it gets a deadline: past
+                # ORCH_RESTART_DRAIN_MAX_S we restart anyway and say which lanes we gave up
+                # waiting for. A restart that interrupts a hung thread costs one task's
+                # progress; a restart that never happens costs the entire queue.
+                _drain_started = _DRAIN_STARTED.get("t")
+                if _drain_started is None:
+                    _drain_started = _DRAIN_STARTED["t"] = time.time()
+                _drain_budget = max(0, int(os.environ.get("ORCH_RESTART_DRAIN_MAX_S", "900") or 0))
+                _draining_for = time.time() - _drain_started
                 if time.time() - _restart_log_t > 30:
-                    print(f"[self-deploy] restart requested — draining lanes active={len(active)} threshold={max_active}")
+                    _stuck = ", ".join(sorted(th.name for th in active)[:4]) or "unknown"
+                    print(f"[self-deploy] restart requested — draining lanes "
+                          f"active={len(active)} threshold={max_active} "
+                          f"for {int(_draining_for)}s of {_drain_budget}s; waiting on: {_stuck}",
+                          flush=True)
                     _restart_log_t = time.time()
+                if _drain_budget and _draining_for > _drain_budget:
+                    _stuck = ", ".join(sorted(th.name for th in active)[:6]) or "unknown"
+                    print(f"[self-deploy] drain did not converge in {int(_draining_for)}s "
+                          f"({len(active)} lane(s) still alive, threshold {max_active}) — "
+                          f"restarting anyway so the queue is not frozen. Waited on: {_stuck}",
+                          flush=True)
+                    sys.exit(0)
                 if len(active) <= max_active:
                     print(f"[self-deploy] restart threshold reached ({len(active)} <= {max_active}) — exiting for keepalive")
                     # restart flag intentionally NOT removed here; keepalive.sh consumes it at the
@@ -4057,6 +4331,8 @@ def main():
                 # Freeze new claims while waiting to restart so the active count can converge.
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
             else:
+                # No restart pending: forget any drain clock so the next one starts fresh.
+                _DRAIN_STARTED.pop("t", None)
                 os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
         except _SkipRestart:
             pass

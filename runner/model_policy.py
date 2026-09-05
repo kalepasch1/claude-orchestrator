@@ -210,8 +210,7 @@ def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensit
     # local(Ollama), DeepSeek, Groq, Google(Gemini), xAI, OpenAI, Claude — gets exercised and benchmarked, instead
     # of always defaulting to the single cheapest. Cost stays bounded (only cheap/free tiers + the
     # key_broker $/day cap). Turn off with ORCH_DIVERSIFY_MODELS=false to go pure cheapest-first.
-    diversify_default = "false" if os.environ.get("ORCH_CONFIDENTIAL_MODE", "false").lower() == "true" else "false"
-    if capable and os.environ.get("ORCH_DIVERSIFY_MODELS", diversify_default).lower() == "true":
+    if capable and _diversify_enabled():
         # one entry per distinct provider (cheapest model for each), then round-robin by a persistent counter
         seen, ring = set(), []
         for prov, model, tier, cap in capable:
@@ -229,6 +228,41 @@ def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensit
         prov, model, tier, cap = capable[0]
         return prov, model, f"non-agentic {task_class}: cheapest capable ({tier})"
     return "claude", "claude-sonnet-4-6", "fallback (no cheaper capable provider configured)"
+
+
+#: Diversification is opt-in. The line this replaced read
+#:
+#:     diversify_default = "false" if CONFIDENTIAL_MODE else "false"
+#:
+#: — a conditional whose two arms are identical, which is never something anyone
+#: writes on purpose. It is a half-finished edit, and it left two things wrong.
+#:
+#: The visible one: rotation was unreachable, so `route()` fell through to
+#: cheapest-first and returned capable[0] no matter what the round-robin counter
+#: said. test_successive_routes_rotate_providers_by_design caught exactly that,
+#: and it is why that test fails on master.
+#:
+#: The one that matters more: confidential mode was only ever supplying a
+#: DEFAULT. A fleet with ORCH_DIVERSIFY_MODELS=true set — which is the whole
+#: point of the flag — would keep rotating work across every vendor in the stack
+#: while believing confidential mode had stopped it. A confidentiality control
+#: that an ordinary tuning knob can override is not a control.
+#:
+#: So confidential mode is now a hard override, checked first and unconditional,
+#: and the ordinary default stays "false" — flipping a fleet-wide routing (and
+#: therefore spend) default is an operator's decision, not a bug fix's.
+DIVERSIFY_DEFAULT = "false"
+
+
+def _diversify_enabled():
+    """Should routing rotate across capable providers?
+
+    Confidential mode wins outright: whatever ORCH_DIVERSIFY_MODELS says,
+    confidential work does not get spread across every vendor in the stack.
+    """
+    if os.environ.get("ORCH_CONFIDENTIAL_MODE", "false").lower() == "true":
+        return False
+    return os.environ.get("ORCH_DIVERSIFY_MODELS", DIVERSIFY_DEFAULT).lower() == "true"
 
 
 _RR_FILE = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator")),

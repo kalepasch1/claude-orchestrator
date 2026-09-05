@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -88,21 +89,64 @@ def _probe_db():
 
 
 def _run(label, cmd, timeout):
+    """Run one recovery job, and take its whole process tree with it when it ends.
+
+    THE ORPHANS THIS MAKES (2026-09-03). The eight jobs below carry 2280s of
+    combined timeout, in a sprint the scheduler reaps long before that. Reaping
+    the sprint used to leave whatever was in flight -- release_train at 600s,
+    autopilot at 240s, merge_train at 420s -- reparented to PID 1, still holding
+    the `capture_output` pipes whose read ends died with this process.
+
+    Those orphans do not stop. Their database writes still succeed (a socket, not
+    the pipe), so they went on taking integration leases, holding build slots and
+    recording deploy_status='failed' rows alongside the live train, while every
+    `print` they reached raised BrokenPipeError. That is where 40+ rows reading
+    "QA overlay failed: [Errno 32] Broken pipe" came from.
+
+    `start_new_session` puts each job in its own process group so the kill below
+    reaches the job AND everything it spawned, rather than only the job. And the
+    kill happens on any exit, not just a timeout, so a KeyboardInterrupt or a
+    SIGTERM to this process leaves nothing behind either.
+    """
     started = time.time()
+    proc = None
     try:
-        res = subprocess.run(cmd, cwd=RUNNER_DIR, env=os.environ.copy(),
-                             text=True, capture_output=True, timeout=timeout)
+        proc = subprocess.Popen(cmd, cwd=RUNNER_DIR, env=os.environ.copy(),
+                                text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, start_new_session=True)
+        out, err = proc.communicate(timeout=timeout)
         return {
             "label": label,
-            "ok": res.returncode == 0,
-            "code": res.returncode,
+            "ok": proc.returncode == 0,
+            "code": proc.returncode,
             "seconds": round(time.time() - started, 1),
-            "stdout": (res.stdout or "")[-1200:],
-            "stderr": (res.stderr or "")[-1200:],
+            "stdout": (out or "")[-1200:],
+            "stderr": (err or "")[-1200:],
         }
-    except Exception as e:
+    except BaseException as e:      # BaseException: a SIGTERM here must not orphan a train
+        _kill_tree(proc)
         return {"label": label, "ok": False, "seconds": round(time.time() - started, 1),
-                "error": str(e)[:400]}
+                "error": f"{type(e).__name__}: {str(e)[:360]}"}
+
+
+def _kill_tree(proc):
+    """Kill a job and everything it spawned. Never raises; the caller is already failing."""
+    if proc is None or proc.poll() is not None:
+        return
+    for signal_number in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal_number)
+        except (ProcessLookupError, PermissionError, OSError):
+            break
+        try:
+            proc.wait(timeout=5)
+            return
+        except Exception:
+            continue
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 def run(force=False):

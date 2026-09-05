@@ -54,22 +54,52 @@ def db_connectivity_check(env_vars):
     if not db_url and not db_ref:
         return SmokeResult("db_connectivity", False, "no DB configured")
 
-    # Try a simple connectivity test via the runner's db module
     try:
         import db as runner_db
-        # Just verify the module loads and can reach supabase
-        if hasattr(runner_db, 'supabase') and runner_db.supabase:
-            return SmokeResult("db_connectivity", True, f"db_ref={db_ref}")
-        return SmokeResult("db_connectivity", True, f"db_ref={db_ref} (logical)")
     except Exception as e:
-        return SmokeResult("db_connectivity", False, str(e))
+        return SmokeResult("db_connectivity", False, f"db module unimportable: {e}")
+
+    client = getattr(runner_db, "supabase", None)
+    if not client:
+        # Previously this returned passed=True with the detail "(logical)".
+        # db_connectivity is one of the two CRITICAL checks — the ones whose
+        # failure aborts a promote — so "no client at all" reporting as healthy
+        # meant the abort could not fire for the case it exists to catch. A
+        # check that cannot fail is not a check.
+        return SmokeResult("db_connectivity", False,
+                           f"db_ref={db_ref} no client configured")
+
+    # Importing the module proves nothing about reachability; issue the
+    # cheapest real round-trip the db module offers and let it raise.
+    try:
+        probe = getattr(runner_db, "select", None)
+        if callable(probe):
+            probe("tasks", {"select": "id", "limit": "1"})
+            return SmokeResult("db_connectivity", True, f"db_ref={db_ref} query ok")
+        return SmokeResult("db_connectivity", True, f"db_ref={db_ref} client present")
+    except Exception as e:
+        return SmokeResult("db_connectivity", False, f"db_ref={db_ref} query failed: {e}")
 
 
 def workflow_smoke_test(base_url, env_vars):
-    """Critical workflow — create entity, query it back."""
+    """Critical workflow — create an entity and query it back.
+
+    The round-trip is deliberately local (a marker file under CLAUDE_ORCH_HOME):
+    the preview environments this runs against expose no write endpoint, so
+    there is nothing to POST to. What it therefore proves is narrow — the
+    runner's data directory is writable and readable — and the detail string now
+    says so instead of claiming a workflow was exercised end to end.
+
+    It does still require `base_url`. Previously the parameter was accepted and
+    never read, so this check passed for an environment with no deploy behind it
+    at all, which is precisely the situation a post-deploy smoke test exists to
+    notice.
+    """
     task_id = env_vars.get("PREVIEW_TASK_ID", "smoke-test")
 
-    # Simulate entity creation and retrieval via the preview env
+    if not base_url:
+        return SmokeResult("workflow_smoke", False, "no preview URL to exercise")
+
     try:
         # Write a test marker to the preview env's data dir
         marker_dir = os.path.join(HOME, "smoke-markers")
@@ -88,10 +118,17 @@ def workflow_smoke_test(base_url, env_vars):
         with open(marker_file) as f:
             read_back = json.load(f)
 
-        if read_back.get("id") == test_entity["id"]:
-            # Clean up
+        # Removed on BOTH paths. The mismatch branch used to leak its marker,
+        # so a failing run left a stale smoke-<task_id>.json that the next run
+        # for the same task would read back as its own and pass on.
+        try:
             os.remove(marker_file)
-            return SmokeResult("workflow_smoke", True, "entity round-trip ok")
+        except OSError:
+            pass
+
+        if read_back.get("id") == test_entity["id"]:
+            return SmokeResult("workflow_smoke", True,
+                               "entity round-trip ok (runner data dir)")
         return SmokeResult("workflow_smoke", False, "entity mismatch on read-back")
     except Exception as e:
         return SmokeResult("workflow_smoke", False, str(e))

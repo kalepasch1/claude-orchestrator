@@ -24,9 +24,27 @@ testable and INERT until wired. Wired into the periodic loop (~5 min) as:
     import conflict_marker_sentinel, enqueue
     conflict_marker_sentinel.sweep(REPO, enqueue.enqueue_task)
 """
+import os
 import subprocess
 
 MARKER = "^<<<<<<< "
+
+#: An ORPHAN end-marker: a `=======` / `>>>>>>>` line whose opening `<<<<<<<` is gone.
+#:
+#: This is the artifact class the marker scans above cannot see, and it is the common
+#: one. A half-resolved conflict is almost never abandoned mid-hunk — someone deletes
+#: the `<<<<<<< HEAD` line and the side they do not want, saves, and misses the closing
+#: `>>>>>>> branch` line at the bottom of the hunk. HEAD then contains a live merge
+#: artifact while `scan()`, which greps only for the opening marker, reports the file
+#: clean. "Ensure no merge artifacts remain" is not satisfied by an opening-marker grep.
+ORPHAN_MARKER = "^(=======$|>>>>>>> )"
+
+#: Files git itself leaves behind when a merge or `git apply` half-lands. `.orig` is the
+#: pre-merge copy `merge.conflictStyle` writes; `.rej` is the hunk `git apply` could not
+#: place. Both are untracked by default, so they survive `git status` habits and get
+#: committed by an agent running `git add -A` — which is exactly how this executor
+#: commits. A committed `.rej` is a merge artifact carrying a diff nobody applied.
+LEFTOVER_SUFFIXES = (".orig", ".rej")
 
 
 def _git(args, repo):
@@ -52,6 +70,37 @@ def scan_worktree(repo):
     """
     r = _git(["grep", "-l", "-e", MARKER], repo)
     return sorted({ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()})
+
+
+def scan_orphan_markers(repo):
+    """Sorted tracked files carrying an end-marker with no matching opening marker.
+
+    Files already reported by :func:`scan_worktree` are excluded — a whole, unresolved
+    conflict is that function's finding, not a half-resolution. What is left is the
+    genuinely invisible case: the opening marker was deleted, the closing one was not.
+    """
+    r = _git(["grep", "-lE", "-e", ORPHAN_MARKER], repo)
+    hits = {ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()}
+    return sorted(hits - set(scan_worktree(repo)))
+
+
+def scan_leftover_files(repo):
+    """Sorted tracked ``.orig`` / ``.rej`` paths — merge/apply debris that got committed.
+
+    Only TRACKED paths count. An untracked ``.orig`` in someone's working copy is local
+    mess; a tracked one is a merge artifact that shipped.
+    """
+    r = _git(["ls-files"], repo)
+    return sorted(
+        ln.strip()
+        for ln in (r.stdout or "").splitlines()
+        if ln.strip() and os.path.splitext(ln.strip())[1] in LEFTOVER_SUFFIXES
+    )
+
+
+def scan_artifacts(repo):
+    """Every non-marker merge artifact: orphan end-markers plus committed debris."""
+    return sorted(set(scan_orphan_markers(repo)) | set(scan_leftover_files(repo)))
 
 
 def _file_task(enqueue_fn, project_id, slug, files, prompt_head, prompt_tail):
@@ -81,20 +130,32 @@ _WT_TAIL = (" The pre-merge-commit anti-regression guard scans the working tree,
             "cleared. Resolve each file to its intended content, or restore the committed "
             "version with `git checkout -- <file>` when HEAD is already correct. Back the "
             "discarded diff up first.")
+_ART_PROMPT = ("Merge artifacts survived a resolution in: ")
+_ART_TAIL = (" These carry no opening `<<<<<<<` marker, so the marker sentinel above "
+             "reports the tree clean: either an orphan `=======`/`>>>>>>>` line whose "
+             "opening marker was deleted during a half-resolution, or a tracked "
+             "`.orig`/`.rej` file that `git add -A` committed. Delete the debris files "
+             "and resolve each orphan hunk to its intended content.")
 
 
 def sweep(repo, enqueue_fn=None, project_id=None):
-    """Detect markers on HEAD and in the working tree; file one deduped tier-1
-    remediation task per location.
+    """Detect merge damage in three places; file one deduped tier-1 task per place.
 
-    Returns {'found': [...on HEAD...], 'worktree': [...worktree-only...], 'filed': bool}.
-    'worktree' excludes anything already reported by 'found' so the two tasks do not
-    describe the same file twice.
+    Returns ``{'found': [...on HEAD...], 'worktree': [...worktree-only...],
+    'artifacts': [...orphan markers + committed .orig/.rej...], 'filed': bool}``.
+
+    The lists are disjoint and reported in escalating order of invisibility, so no file
+    is described by two tasks: 'worktree' excludes anything in 'found', and 'artifacts'
+    excludes anything in either. 'artifacts' is the half-resolved case — no opening
+    marker survives, so both marker scans call the tree clean while a live merge
+    artifact sits on HEAD.
     """
     found = scan(repo)
     worktree = [p for p in scan_worktree(repo) if p not in set(found)]
-    if not found and not worktree:
-        return {"found": [], "worktree": [], "filed": False}
+    seen = set(found) | set(worktree)
+    artifacts = [p for p in scan_artifacts(repo) if p not in seen]
+    if not found and not worktree and not artifacts:
+        return {"found": [], "worktree": [], "artifacts": [], "filed": False}
     filed = False
     if enqueue_fn is not None:
         if found:
@@ -105,4 +166,9 @@ def sweep(repo, enqueue_fn=None, project_id=None):
             filed = _file_task(enqueue_fn, project_id,
                                "remediation-conflict-markers-in-worktree", worktree,
                                _WT_PROMPT, _WT_TAIL) or filed
-    return {"found": found, "worktree": worktree, "filed": filed}
+        if artifacts:
+            filed = _file_task(enqueue_fn, project_id,
+                               "remediation-merge-artifacts", artifacts,
+                               _ART_PROMPT, _ART_TAIL) or filed
+    return {"found": found, "worktree": worktree,
+            "artifacts": artifacts, "filed": filed}

@@ -230,8 +230,30 @@ def _ensure_tool_path():
     os.environ["PATH"] = os.pathsep.join(parts)
 
 _load_env()
+# PIN THE RUNTIME HOME, BUT DO NOT OVERRIDE A HOME THE PROCESS ALREADY CHOSE.
+#
+# runner.py and periodic.py pin this same value, and there it is right: they are ENTRY
+# POINTS and they own the process. db.py is a LIBRARY, imported by nearly every module
+# in the fleet, and it was assigning unconditionally -- so whatever the process had
+# already decided was silently replaced the moment anything touched the database layer.
+#
+# That defeats the one mechanism 94 modules use to keep state out of the live fleet.
+# tests/conftest.py sets CLAUDE_ORCH_HOME to a sandbox for exactly this reason, and the
+# first `import db` after it undid the sandbox. Caught 2026-09-04 by a probe run with an
+# explicit CLAUDE_ORCH_HOME that nonetheless wrote into the live
+# .runtime/merge_train_defer_counts.json:
+#
+#     before import: /tmp/probe2
+#     after  import: /Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime
+#
+# setdefault keeps the original purpose intact -- a process that never set a home still
+# gets the canonical one, which is what stops state scattering across stale or absent
+# values -- while an explicit choice by an entry point, an operator or a test fixture now
+# survives. ORCH_CANONICAL_RUNTIME_HOME=false still disables it entirely.
 if os.environ.get("ORCH_CANONICAL_RUNTIME_HOME", "true").lower() in ("1", "true", "yes", "on"):
-    os.environ["CLAUDE_ORCH_HOME"] = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")
+    os.environ.setdefault(
+        "CLAUDE_ORCH_HOME",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime"))
 _ensure_tool_path()
 
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -248,7 +270,14 @@ _SECRET_PATTERNS = re.compile(
     r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
     r"|"
     # GitHub PATs and tokens (github_pat_, ghp_, gho_, ghs_, ghu_, ghr_)
-    r"(?:github_pat_|gh[posur]_)[A-Za-z0-9_]{20,}"
+    #
+    # The floor is 8, not 20. A real PAT is 36+ characters after the prefix, so 20
+    # caught every intact one — but a token does not have to be intact to be a
+    # credential, and the way these actually reach a log is inside git's own error
+    # output, which truncates. `ghp_` and its siblings are not a shape that occurs
+    # in prose or in identifiers; there is nothing else they can be, so there is
+    # nothing to lose by matching a short one.
+    r"(?:github_pat_|gh[posur]_)[A-Za-z0-9_]{8,}"
     r"|"
     # Vercel tokens (vcp_)
     r"vcp_[A-Za-z0-9]{20,}"
@@ -267,7 +296,13 @@ _SECRET_PATTERNS = re.compile(
     r"xai-[A-Za-z0-9]{20,}"
     r"|"
     # Generic key=value patterns
-    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
+    #
+    # `pat` and `personal_access_token` are here because ORCH_GIT_PAT is the name
+    # THIS fleet stores its GitHub credential under, and it was not in the list —
+    # so `ORCH_GIT_PAT=ghp_...` passed through the redactor untouched while a
+    # `token=` spelling of the same secret was caught.
+    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential"
+    r"|personal[_-]?access[_-]?token|pat)"
     r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
     r"|"
     # Generic bearer tokens
@@ -736,6 +771,33 @@ def _endpoints():
     return out
 
 
+def _install_resolver_cache():
+    """One DNS lookup per host per TTL, instead of one per HTTP request.
+
+    urlopen() opens a new connection every call, so every control-plane request also
+    performs a fresh name resolution. Dozens of orchestrator processes doing that
+    several times a second is enough to exhaust the macOS resolver. Measured across the
+    fleet's .err logs on 2026-09-02: 5,706 `[Errno 8] nodename nor servname provided`
+    and 99 circuit-breaker trips -- while the same name resolved in 3-4ms, five times
+    running, when asked directly. See resolver_cache.
+    """
+    try:
+        import resolver_cache
+        import urllib.parse as _p
+        hosts = []
+        for base in _endpoints():
+            host = _p.urlsplit(base).hostname
+            if host:
+                hosts.append(host)
+        if hosts:
+            resolver_cache.install(hosts)
+    except Exception:
+        pass      # a cache that cannot install is exactly today's behaviour
+
+
+_install_resolver_cache()
+
+
 def _base_urls():
     """Endpoints to try, last known-good first."""
     eps = _endpoints()
@@ -1168,14 +1230,58 @@ _OPERATOR_SLUG_PREFIXES = ("dropbox-",)
 _REFUSAL_LOGGED = {}
 
 
+def _trusted_labels():
+    """Labels an operator has explicitly chosen to trust. Empty by default.
+
+    The escape hatch for the tightening below: if a producer genuinely acts for the
+    operator but cannot set submitted_by, name its label here rather than reopening the
+    hole for all 47 of them.
+    """
+    raw = os.environ.get("ORCH_TRUSTED_SUBMITTER_LABELS", "")
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
 def _is_operator_origin(row):
-    """True when a task came from the operator (drop-box intake or an attributed submitter)."""
+    """True when a task came from the operator, ON EVIDENCE rather than on assertion.
+
+    WHAT THIS USED TO BE, AND WHY IT CHANGED (2026-09-02)
+
+        return bool(str(row.get("submitted_by") or "").strip()
+                    or str(row.get("submitted_by_label") or "").strip())
+
+    submitted_by is a user id -- the database's own evidence that a person submitted the
+    row. submitted_by_label is free text the CALLER writes about itself. Accepting either
+    meant any producer could grant itself operator authority by writing a string, and
+    operator authority is not cosmetic: it bypasses the recovery-depth cap and release
+    back-pressure, and _record_refusal logs it as an alert-worthy anomaly rather than
+    ordinary churn.
+
+    Measured on this fleet over 30 days:
+
+        tasks created                                          5,224
+        ...carrying a real submitted_by user id                    1
+        ...carrying ONLY a self-written label                  1,847
+        ...whose self-written label claims "operator"          1,642
+        distinct self-asserted labels                             47
+
+    One task in 5,224 had actual evidence behind it. 1,642 asserted operator authority
+    with nothing but a phrase they chose -- among them "ChatGPT local-build audit
+    (operator-directed)", which filed 1,920 tasks of which 138 merged and 0 ever shipped.
+    Forty-seven different producers were doing this, so it was never about one vendor.
+
+    Evidence now means: the drop-box intake prefix (524 tasks over the same period, the
+    real operator path, untouched), a genuine submitted_by id, or a label the operator has
+    explicitly trusted via ORCH_TRUSTED_SUBMITTER_LABELS. A label alone is a claim, and
+    claims from an external AI vendor are exactly what the gates exist to check.
+    """
     if not isinstance(row, dict):
         return False
     if str(row.get("slug") or "").startswith(_OPERATOR_SLUG_PREFIXES):
         return True
-    return bool(str(row.get("submitted_by") or "").strip()
-                or str(row.get("submitted_by_label") or "").strip())
+    if str(row.get("submitted_by") or "").strip():
+        return True
+    label = str(row.get("submitted_by_label") or "").strip().lower()
+    return bool(label and label in _trusted_labels())
 
 
 def _record_refusal(row, gate, reason):
@@ -1464,6 +1570,23 @@ def invalidate_projects_cache():
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     _guard_fleet_config(table, row)
+    # APPROVAL FLOOD GATE (2026-08-07): ~30 modules insert approvals directly and
+    # kind=self alone had produced 100,851 undecided rows. Dedupe + rate-limit at the
+    # one choke point they all share rather than in every caller. Fail-open by design.
+    if table == "approvals" and isinstance(row, dict):
+        try:
+            import approval_admission
+            _ok, _why = approval_admission.admit(row)
+            if not _ok:
+                import logging
+                logging.getLogger("db").info(
+                    "approval-gate: dropped approval kind=%s title=%.80s — %s",
+                    row.get("kind"), row.get("title") or "", _why)
+                return None
+        except Exception as _e:
+            import logging
+            logging.getLogger("db").debug(
+                "approval-gate infra error (%s); fail-open", _e)
     if table == "tasks" and isinstance(row, dict):
         # Keep the persisted DAG shape deterministic for every insertion route,
         # including upserts. A SQL NULL here makes independent tasks disappear
@@ -1519,6 +1642,20 @@ def insert(table, row, upsert=False):
                     return None
             except Exception:
                 pass    # fail-open: back-pressure must never break the insert path
+            # PRODUCER ADMISSION: a producer whose recent output nobody merges loses its
+            # quota until its own numbers recover. Outcome-based rather than a per-vendor
+            # rate limit, because what separates a good intake from a bad one is already
+            # recorded -- does the work it files ever merge. See producer_admission.
+            try:
+                import producer_admission
+                _ok, _why = producer_admission.verdict(row, db=sys.modules[__name__])
+                if not _ok:
+                    print(f"[producer-admission] refused {row.get('slug')}: {_why}",
+                          flush=True)
+                    _record_refusal(row, "producer_admission", _why)
+                    return None
+            except Exception:
+                pass    # fail-open: an unmeasurable producer is not a bad one
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
@@ -2585,6 +2722,17 @@ def claim_task(runner_id):
     # recovery above: express work still goes first, but only up to its own reservation.
     express_capacity = _express_capacity()
     express_lane_open = express_capacity > 0 and active_express < express_capacity
+    # The bound above only ever restrained the numeric-priority half of "express".
+    # `_pinned_rank` sits AHEAD of `_express_rank` in the sort key and was ungated, so a
+    # pinned batch still claimed every lane until it drained — which is the exact
+    # starvation _express_rank's own docstring says the ceiling exists to prevent, for the
+    # exact case it names. `_is_express_row` already counts pinned tasks against
+    # express_capacity, so the reservation was being spent without being enforced.
+    #
+    # Only fires when the reservation is genuinely FULL. With express disabled
+    # (capacity 0) or room left, pinned ordering is untouched: an operator's pin still
+    # goes first, it just cannot take the whole machine.
+    express_lane_full = express_capacity > 0 and active_express >= express_capacity
     # FAIR ROUND-ROBIN across projects: prefer the project that has gone LONGEST without activity, so
     # every app gets worked (not just the biggest/highest-priority queue). Within that, honor priority,
     # ROI weight, then FIFO. This is what lets a single-slot runner still touch ALL projects in rotation.
@@ -2640,6 +2788,9 @@ def claim_task(runner_id):
     def _pinned_rank(t):
         # Pinned tasks claim before unpinned: rank 0 for pinned, 1 for unpinned.
         # Only treat as pinned if both pinned=True and pin_rank is set and non-zero.
+        # Sorts as unpinned once the express reservation is FULL — see express_lane_full.
+        if express_lane_full:
+            return 1
         if not t.get("pinned"):
             return 1
         rank = t.get("pin_rank")
@@ -2682,6 +2833,8 @@ def claim_task(runner_id):
         # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
         # Negative ranks are valid (more negative = higher priority).
         # Rank 0 or missing treated as unpinned (rank 9999).
+        if express_lane_full:
+            return 9999
         rank = t.get("pin_rank")
         if rank is None or rank == 0:
             return 9999
@@ -3211,6 +3364,16 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
             row.update(host_update_visibility.heartbeat_fields())
         except Exception:
             pass
+        # Remember the name this machine is heartbeating under, so that after macOS
+        # renames it (this Mac has answered to six names in 30 hours) a pause or an
+        # election keyed on the OLD name is still recognised as this machine's own.
+        # Best-effort: the alias store is a cache, and losing it degrades to exactly
+        # the behaviour that existed before it.
+        try:
+            import host_identity
+            host_identity.remember(row.get("hostname"))
+        except Exception:
+            pass
         try:
             db.insert("runner_heartbeats", row, upsert=True)
             _heartbeat_fail["n"] = 0
@@ -3268,3 +3431,22 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
     except Exception:
         # Outermost fail-soft: never crash on heartbeat errors
         pass
+
+def breaker_open():
+    """Is the control plane currently considered unreachable?
+
+    READ-ONLY on purpose. `_breaker_blocks()` has a side effect — it ELECTS the caller
+    as the half-open prober — so a scheduled job asking "should I even start?" must not
+    use it, or it consumes the one probe slot and then exits without probing, leaving
+    every other caller fast-failing for another full cooldown.
+
+    Never raises: a caller deciding whether to run must not be taken down by the check.
+    """
+    try:
+        if not DB_BREAKER_ENABLED:
+            return False
+        with _BREAKER_LOCK:
+            return time.monotonic() < _BREAKER["open_until"]
+    except Exception:
+        return False
+

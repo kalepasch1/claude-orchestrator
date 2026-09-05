@@ -134,6 +134,17 @@ def detect_missing_branches(repo_path, tasks):
     if not repo_path or not os.path.isdir(repo_path):
         return []
     active_states = {"QUEUED", "RUNNING", "BLOCKED", "IN_PROGRESS"}
+    # REMOTE COUNTS. This used to list LOCAL branches only, which contradicts the fleet's
+    # own lifecycle: CLAUDE.md states the worktree is removed after push while "the
+    # agent/{slug} branch persists for merge-train pickup". A pushed branch whose local
+    # ref was pruned therefore read as MISSING, and the fleet filed recover-missing-branch
+    # tasks for work that was sitting on origin waiting to be merged. Recreating such a
+    # branch forks one change into two and hands the merge train a conflict — the exact
+    # failure the reconciliation contract warns about.
+    # No include_remote flag any more: _list_agent_branches counts local AND
+    # remote refs unconditionally now, because a branch that was pushed and had
+    # its worktree removed exists only as a remote-tracking ref on every other
+    # machine — and reporting it "missing" is what queues a duplicate recovery.
     branches = _list_agent_branches(repo_path)
     missing = []
     for task in (tasks or []):

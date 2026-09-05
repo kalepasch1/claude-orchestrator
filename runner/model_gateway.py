@@ -350,9 +350,16 @@ def _groq(model, prompt):
     return d["choices"][0]["message"]["content"], round(cost, 6)
 
 
+#: The one xAI chat endpoint. Exported so a caller has something to import instead of
+#: retyping the URL: it is currently spelled out in swarm_executor.py,
+#: vendor_capabilities.py and (as the /models sibling) model_scout.py, which is three
+#: places that can drift from the owner without anything noticing.
+XAI_CHAT_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+
+
 def _xai(model, prompt):
     """xAI Grok — real-time data, OpenAI-compatible API."""
-    d = _post("https://api.x.ai/v1/chat/completions",
+    d = _post(XAI_CHAT_ENDPOINT,
               {"Authorization": f"Bearer {provider_credentials.get('xai')}"},
               {"model": model, "messages": [{"role": "user", "content": prompt}],
                "max_tokens": 8192})
@@ -362,11 +369,34 @@ def _xai(model, prompt):
     return d["choices"][0]["message"]["content"], round(cost, 6)
 
 
+# Diagnostic fields a provider may attach to explain WHY a call ended. These must survive the
+# gateway untouched: dropping them turned "the agent hit --max-turns" into an indistinguishable
+# empty-text success, and the runner retried the same wedged call instead of escalating.
+_PASSTHROUGH_FIELDS = ("error", "terminal_reason", "error_max_turns", "returncode",
+                       "stderr", "rate_limit_type", "skipped")
+
+
+def _carry_diagnostics(src, dst):
+    """Copy provider diagnostic fields into the gateway envelope without overwriting.
+
+    Fail-soft: a provider that returns a non-mapping (or nothing) leaves ``dst`` unchanged.
+    """
+    try:
+        for key in _PASSTHROUGH_FIELDS:
+            if isinstance(src, dict) and src.get(key) is not None and key not in dst:
+                dst[key] = src[key]
+    except Exception:
+        pass
+    return dst
+
+
 def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "claude":
         import claude_cli
         r = claude_cli.run(prompt, model, project=project, max_turns=1, permission=None, timeout=timeout)
-        return {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+        out = {"text": r.get("text", ""), "cost_usd": r.get("cost_usd", 0),
+               "provider": provider, "model": model}
+        return _carry_diagnostics(r, out)
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
     else:

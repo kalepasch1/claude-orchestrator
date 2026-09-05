@@ -396,6 +396,14 @@ def run():
     returns = surface_returns()
     ct = cycle_time_by_kind()
     fty = first_try_yield()
+    # stage_metrics() was written specifically to feed meta_loop._plan_auto_tune_decisions
+    # (meta_loop.py:120,171) and was never called from here, so meta_loop had been reading
+    # 48 rows produced by ad-hoc runs. Its consumer starves without this line.
+    try:
+        staged = stage_metrics()
+    except Exception as exc:
+        print(f"improvement_measure: stage_metrics failed ({exc})")
+        staged = None
     tuning = auto_tune(ct, fty)
     print(f"improvement_measure: marked {shipped} shipped; surface returns -> {returns}")
     print(f"  cycle_time_by_kind: {ct}")
@@ -409,6 +417,7 @@ def run():
         "returns": returns,
         "cycle_time": ct,
         "first_try_yield": fty,
+        "stage_metrics": staged,
         "tuning": tuning,
     }
 

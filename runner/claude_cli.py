@@ -22,7 +22,8 @@ Usage (replace every `subprocess.run([CLAUDE_BIN,'-p',...,'--output-format','tex
 API-equivalent figure the CLI reports lives in `notional_usd`; use that when
 comparing models to each other, never when adding up money actually spent.
 """
-import os, sys, json, time, subprocess, threading, logging, asyncio
+import os, sys, json, time, subprocess, threading, logging, asyncio, tempfile, shutil
+import contextlib, contextvars
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 log = logging.getLogger(__name__)
@@ -120,10 +121,53 @@ def _record(usd, sub_usd=0):
         _save(s)
 
 
+#: THE PROJECT THE CURRENT THREAD IS WORKING ON.
+#:
+#: run() refuses a call for a paused project — but only if the caller remembered to pass
+#: `project=`, and on 2026-09-01 exactly 2 of the 44 call sites in this repo did. So
+#: `beethoven` sat paused from 24 August while its 105 queued tasks kept drawing model
+#: calls, and the pause a human clicked meant almost nothing.
+#:
+#: Making it a parameter every caller must remember is what failed. This is the ambient
+#: fact instead: runner.run_task sets it once, when it knows which project it claimed,
+#: and every model call made while handling that task inherits it. An explicit
+#: project= still wins, so nothing that already passes one changes behaviour.
+#:
+#: A ContextVar, not a global: the runner runs tasks on several worker threads at once,
+#: and each thread gets its own value.
+_CURRENT_PROJECT = contextvars.ContextVar("orch_current_project", default=None)
+
+
+def set_current_project(name):
+    """Declare which project this thread is working on. Returns the previous value."""
+    prev = _CURRENT_PROJECT.get()
+    _CURRENT_PROJECT.set(str(name) if name else None)
+    return prev
+
+
+def current_project():
+    return _CURRENT_PROJECT.get()
+
+
+@contextlib.contextmanager
+def project_scope(name):
+    """Scope a block of work to a project, restoring whatever was set before."""
+    token = _CURRENT_PROJECT.set(str(name) if name else None)
+    try:
+        yield
+    finally:
+        _CURRENT_PROJECT.reset(token)
+
+
+def _effective_project(project=None):
+    """An explicit project always wins; otherwise fall back to the thread's."""
+    return project or _CURRENT_PROJECT.get()
+
+
 def _paused(project=None):
     try:
         import kill_switch
-        return kill_switch.is_paused(project)
+        return kill_switch.is_paused(_effective_project(project))
     except Exception:
         return False
 
@@ -171,6 +215,8 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
     num_turns = 0
     returncode = 0
     rate_limit_type = None
+    is_error = False
+    subtype = None
 
     async for message in _sdk_query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -187,6 +233,16 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
                 collected_text = [message.result]
             if message.is_error:
                 returncode = 1
+            # Capture WHY it ended, not just that it did.
+            #
+            # The CLI path below returns `raw = json.loads(proc.stdout)` verbatim, so it
+            # keeps whatever the provider reported — is_error, terminal_reason. This SDK
+            # path builds `raw` fresh from a handful of fields and dropped both, so a run
+            # that died on max_turns arrived downstream as a bare returncode=1,
+            # indistinguishable from any other failure. Nothing could tell "ran out of
+            # turns, give it more" from "genuinely failed, do not retry".
+            is_error = bool(message.is_error)
+            subtype = getattr(message, "subtype", None)
         else:
             # Check for rate limit events (for account rotation signaling)
             msg_type = getattr(message, "type", None)
@@ -196,15 +252,28 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
 
     text = "\n".join(collected_text) if collected_text else ""
 
+    raw = {"result": text, "total_cost_usd": cost,
+           "usage": {"input_tokens": itok, "output_tokens": otok},
+           "agent_sdk": True, "turns": num_turns,
+           "is_error": is_error}
+    if subtype:
+        # Preserved verbatim, and normalised alongside it: the SDK spells this
+        # "error_max_turns" while the CLI path's JSON spells it "max_turns". Callers
+        # should not have to know which transport produced the result, so both paths
+        # now answer to raw["terminal_reason"].
+        raw["subtype"] = subtype
+        if "max_turns" in str(subtype):
+            raw["terminal_reason"] = "max_turns"
+        elif is_error:
+            raw["terminal_reason"] = str(subtype)
+
     return {
         "text": text,
         "cost_usd": cost,
         "input_tokens": itok,
         "output_tokens": otok,
         "returncode": returncode,
-        "raw": {"result": text, "total_cost_usd": cost,
-                "usage": {"input_tokens": itok, "output_tokens": otok},
-                "agent_sdk": True, "turns": num_turns},
+        "raw": raw,
         "stderr": "",
         "rate_limit_type": rate_limit_type,
     }
@@ -230,19 +299,59 @@ def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
 # ---------------------------------------------------------------------------
 
 def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
-        permission="acceptEdits", timeout=None, output_only=True):
+        permission="acceptEdits", timeout=None, output_only=True, sandbox=False):
     """Metered Claude call.
 
     Returns {text, cost_usd, notional_usd, input_tokens, output_tokens, returncode, raw}.
     cost_usd is billable spend (0 on a subscription); notional_usd is what the
     same tokens would have cost on the API.
+
+    `sandbox=True` is for ADVISORY calls — the ones that only want text back (a spec
+    review, a risk estimate, a draft diff). They run in a throwaway temp directory that
+    is deleted afterwards, so anything the model decides to write cannot land in a repo.
+
+    That is not hypothetical. ORCH_SKIP_PERMISSIONS defaults to true, so every call here
+    gets --dangerously-skip-permissions, and `cwd=None` inherits the CALLER's directory.
+    queue_preopt's five advisory calls passed neither, so they ran with unrestricted
+    write access inside runner/ — the orchestrator's own source tree. A "return a unified
+    diff" prompt for a task belonging to the `tomorrow` project produced
+    runner/server/utils/entity-link.ts and runner/server/utils/__tests__/ in the
+    ORCHESTRATOR repo on 2026-09-01, along with runner/daemon.py, runner/pool.py and a
+    dozen test_*_slice*.py files. None of it was on a branch, so no merge train could
+    ever pick it up; all of it made the tree dirty, which is what stopped fleet_control's
+    auto-pull and failed host_update three times running.
+
+    `project` is not decoration either: run() refuses a call for a paused project, and
+    only 2 of the 44 call sites in this repo passed it. Pausing `beethoven` therefore did
+    not stop model spend on its 105 queued tasks.
     """
+    # Resolve once, here, so the pause check AND the usage attribution downstream both
+    # see the same project — a call made inside a task but without an explicit project=
+    # was previously recorded against nothing at all.
+    project = _effective_project(project)
     if _paused(project):
         return {"text": "", "cost_usd": 0, "notional_usd": 0, "input_tokens": 0,
                 "output_tokens": 0, "returncode": 75, "raw": None,
                 "skipped": "kill_switch"}
     with _lock:
         _check_budget()          # raises CircuitOpen if over cap
+
+    # An advisory call gets a throwaway directory of its own, whatever the caller passed.
+    # Cleaned up in the finally below, so a model that writes leaves nothing behind.
+    _sandbox_dir = None
+    if sandbox:
+        _sandbox_dir = tempfile.mkdtemp(prefix="orch-advisory-")
+        cwd = _sandbox_dir
+    try:
+        return _run_inner(prompt, model, cwd, env, project, max_turns,
+                          permission, timeout, output_only)
+    finally:
+        if _sandbox_dir:
+            shutil.rmtree(_sandbox_dir, ignore_errors=True)
+
+
+def _run_inner(prompt, model, cwd, env, project, max_turns,
+               permission, timeout, output_only):
 
     # --- Route: Agent SDK vs CLI subprocess ---
     # Both paths use subscription tokens (not API billing). The SDK path gives us

@@ -6,7 +6,17 @@ missing branches, recovery backlog); this is the simpler, more fundamental check
 all of those — "is the fleet moving at all" — because a global pause makes every one of those
 throughput SLOs look like "no data" rather than "failing", so slo_controller never fired.
 
-Condition: queued > 0 AND running == 0, sustained for ORCH_STUCK_ALARM_S (default 900s = 15min).
+Condition: queued > 0 AND (running == 0 OR the global pause is older than
+ORCH_PAUSE_MAX_AGE_S), sustained for ORCH_STUCK_ALARM_S (default 900s = 15min).
+
+The pause-age half of that condition was added after the 2026-08-24 provider outage,
+which this alarm sat through in silence for 22 hours. The global controls row went
+paused=true at 04:16 UTC and stayed there; 438 tasks queued, zero merges in twelve
+hours -- and `running` was 1, not 0, because a single straggler never released its
+lane. `queued > 0 and running == 0` is therefore False, so the alarm printed
+"healthy" on every pass of a completely frozen fleet. One un-reaped lane was enough
+to mask a total outage, which is the same class of miss the module was written to
+catch: an indefinitely-held pause is a stuck fleet whether or not a lane is occupied.
 
 On trip:
   1. If the fleet is paused, ask pause_arbiter to recheck — this clears the pause immediately
@@ -27,6 +37,10 @@ import db
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 STATE_FILE = os.path.join(HOME, "fleet_stuck_alarm_state.json")
 STUCK_THRESHOLD_S = int(os.environ.get("ORCH_STUCK_ALARM_S", "900"))
+# How long a global pause may be held before it counts as a stuck fleet in its own right.
+# 4h is deliberately well above any routine pause (rollout, billing recheck, remediation
+# bounce) and well below "a working day was lost". 0 disables the pause-age condition.
+PAUSE_MAX_AGE_S = int(os.environ.get("ORCH_PAUSE_MAX_AGE_S", "14400"))
 
 
 def _load_state():
@@ -59,8 +73,45 @@ def _counts():
         return queued, running
 
 
+def _global_pause_age_s():
+    """Seconds the global pause has been held, or None if not paused / unknown.
+
+    Reads the controls row directly rather than via kill_switch.is_paused(), because the
+    age is the whole point and is_paused() only returns a bool. Fail-soft: any DB or
+    parse problem returns None, which leaves the alarm on its original condition.
+    """
+    try:
+        rows = db.select("controls", {"select": "scope,paused,updated_at",
+                                      "order": "updated_at.desc"}) or []
+    except Exception:
+        return None
+    for r in rows:                       # first global row = most recent global decision
+        if r.get("scope") != "global":
+            continue
+        if not r.get("paused"):
+            return None                  # latest global decision is "running"
+        ts = str(r.get("updated_at") or "")
+        if not ts:
+            return None
+        try:
+            if ts.endswith("Z"):
+                ts = ts[:-1] + "+00:00"
+            when = datetime.datetime.fromisoformat(ts)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=datetime.timezone.utc)
+            return max(0.0, (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds())
+        except Exception:
+            return None
+    return None
+
+
 def run():
-    """Check if the fleet is stuck (queued>0, running==0) and auto-remediate if sustained."""
+    """Check if the fleet is stuck and auto-remediate if sustained.
+
+    Stuck = queued work exists AND either nothing is running, or the global pause has
+    been held past PAUSE_MAX_AGE_S. See the module docstring for why one occupied lane
+    must not be allowed to mask an indefinite pause.
+    """
     state = _load_state()
     try:
         queued, running = _counts()
@@ -68,7 +119,9 @@ def run():
         print(f"fleet_stuck_alarm: could not read task counts ({e})")
         return {"ok": True, "skipped": "db unavailable"}
 
-    stuck_now = queued > 0 and running == 0
+    pause_age_s = _global_pause_age_s() if PAUSE_MAX_AGE_S > 0 else None
+    pause_stuck = pause_age_s is not None and pause_age_s >= PAUSE_MAX_AGE_S
+    stuck_now = queued > 0 and (running == 0 or pause_stuck)
     if not stuck_now:
         if state.get("first_seen"):
             state.pop("first_seen", None)
@@ -89,7 +142,8 @@ def run():
     age_s = time.time() - first_seen
 
     if age_s < STUCK_THRESHOLD_S:
-        print(f"fleet_stuck_alarm: queued={queued} running=0 for {age_s:.0f}s (< {STUCK_THRESHOLD_S}s threshold)")
+        print(f"fleet_stuck_alarm: queued={queued} running={running} pause_stuck={pause_stuck} "
+              f"for {age_s:.0f}s (< {STUCK_THRESHOLD_S}s threshold)")
         return {"ok": True, "stuck": True, "age_s": age_s, "queued": queued}
 
     # tripped: try auto-remediation, then always notify (deduped once per calendar day)
@@ -109,9 +163,11 @@ def run():
     today = datetime.date.today().isoformat()
     if state.get("last_alert_date") != today:
         try:
+            cause = (f"global pause held {pause_age_s/3600:.1f}h (limit {PAUSE_MAX_AGE_S/3600:.1f}h), "
+                     f"{running} running") if pause_stuck else f"{running} running"
             db.insert("approvals", {"project": "PORTFOLIO", "kind": "material",
-                "title": f"FLEET STUCK: {queued} queued, 0 running for {age_s/60:.0f}+ min",
-                "why": f"queued>0 and running=0 sustained past the {STUCK_THRESHOLD_S}s SLO. remediation attempt: {remediation}",
+                "title": f"FLEET STUCK: {queued} queued, {cause}, for {age_s/60:.0f}+ min",
+                "why": f"queued>0 with no forward motion, sustained past the {STUCK_THRESHOLD_S}s SLO ({cause}). remediation attempt: {remediation}",
                 "value": "Catches silent overnight freezes (e.g. the 2026-07-08 billing_guard deadlock) within 15-20 minutes instead of ~10 hours.",
                 "risk": "If this keeps re-firing, the runner process itself is likely down and needs a human to restart it on the Mac.",
                 "command": ""})
@@ -124,13 +180,18 @@ def run():
         db.insert("controls", {"key": "fleet_stuck_alarm",
                                "value": json.dumps({"stuck": True, "queued": queued,
                                                     "running": running, "age_s": age_s,
+                                                    "pause_age_s": pause_age_s,
+                                                    "pause_stuck": pause_stuck,
                                                     "remediation": remediation,
                                                     "checked_at": time.time()}),
                                "updated_at": "now()"}, upsert=True)
     except Exception:
         pass
-    print(f"fleet_stuck_alarm: TRIPPED — queued={queued}, running=0, age={age_s:.0f}s, remediation={remediation}")
-    return {"ok": False, "stuck": True, "queued": queued, "age_s": age_s, "remediation": remediation}
+    print(f"fleet_stuck_alarm: TRIPPED — queued={queued}, running={running}, age={age_s:.0f}s, "
+          f"pause_stuck={pause_stuck}, remediation={remediation}")
+    return {"ok": False, "stuck": True, "queued": queued, "age_s": age_s,
+            "running": running, "pause_age_s": pause_age_s, "pause_stuck": pause_stuck,
+            "remediation": remediation}
 
 
 if __name__ == "__main__":

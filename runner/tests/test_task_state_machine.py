@@ -20,8 +20,11 @@ class TestTaskStateMachine(unittest.TestCase):
 
     def test_all_states_have_entries(self):
         from runner.task_state_machine import VALID_TRANSITIONS
+        # SUPERSEDED joined the table when RUNNING -> SUPERSEDED became reachable:
+        # executors supersede a claimed task whose work turns out to already be done.
         expected_states = {"QUEUED", "RUNNING", "DONE", "MERGED", "BLOCKED",
-                           "TESTFAIL", "BUILDFAIL", "SHELVED", "DECOMPOSED", "QUARANTINED"}
+                           "TESTFAIL", "BUILDFAIL", "SHELVED", "DECOMPOSED",
+                           "QUARANTINED", "SUPERSEDED"}
         self.assertEqual(set(VALID_TRANSITIONS.keys()), expected_states)
 
     def test_merged_is_terminal(self):

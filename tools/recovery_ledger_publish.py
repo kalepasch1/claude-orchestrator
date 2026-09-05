@@ -111,12 +111,29 @@ def rest(url: str, key: str, method: str, path: str, body=None):
         return []
 
 
+def fingerprint_of(ledger: dict) -> str:
+    """The audit fingerprint, whichever key the emitting reconciler used.
+
+    reconcile_all_evidence.py writes `audit_fingerprint`; the single-kind
+    reconcilers (reconcile_local_branch_tips.py and friends) write
+    `fingerprint`. Accepting both is what keeps a ledger from being silently
+    unpublishable just because it came from the narrower tool — the failure
+    mode that leaves a fully classified ledger with zero durable records.
+    """
+    return ledger.get("audit_fingerprint") or ledger.get("fingerprint") or ""
+
+
+def evidence_kind_of(ledger: dict) -> str:
+    """Evidence kind, tolerating the single-kind reconcilers' `kind` key."""
+    return ledger.get("evidence_kind") or ledger.get("kind") or "unspecified"
+
+
 def record_for(item: dict, ledger: dict, task_slug: str, branch: str,
                commit: str) -> dict:
     files = item.get("files") or []
     return {
-        "audit_fingerprint": ledger.get("audit_fingerprint", ""),
-        "evidence_kind": ledger.get("evidence_kind", "unspecified"),
+        "audit_fingerprint": fingerprint_of(ledger),
+        "evidence_kind": evidence_kind_of(ledger),
         "base": ledger.get("base", ""),
         "source": item.get("ref") or item.get("source") or item.get("path", ""),
         "sha": item.get("sha", ""),
@@ -143,9 +160,10 @@ def main() -> int:
     with open(args.ledger) as fh:
         ledger = json.load(fh)
     items = ledger.get("items", [])
-    fingerprint = ledger.get("audit_fingerprint", "")
+    fingerprint = fingerprint_of(ledger)
     if not fingerprint:
-        raise SystemExit("ledger has no audit_fingerprint; refusing to publish")
+        raise SystemExit(
+            "ledger has no audit_fingerprint (nor fingerprint); refusing to publish")
 
     records = [
         record_for(i, ledger, args.task_slug, args.branch, args.commit)

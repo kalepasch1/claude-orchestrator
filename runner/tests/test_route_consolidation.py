@@ -1,4 +1,5 @@
 """Tests for route_consolidation."""
+import os
 import sys
 import types
 import unittest
@@ -130,7 +131,12 @@ class TestRouteConsolidation(unittest.TestCase):
 
     def test_syntax(self):
         import py_compile
-        py_compile.compile("runner/route_consolidation.py", doraise=True)
+        # Derived from __file__, not a repo-root-relative literal: pytest runs
+        # from runner/, so this failed on the invocation directory rather than
+        # on the syntax it exists to check.
+        target = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "route_consolidation.py")
+        py_compile.compile(target, doraise=True)
 
 
 if __name__ == "__main__":

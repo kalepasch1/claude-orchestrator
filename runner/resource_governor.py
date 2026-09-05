@@ -54,6 +54,82 @@ def _ram_hard():
     return float(os.environ.get("RAM_HARD_PCT", "82"))
 
 
+# ── THE CPU BRAKE ───────────────────────────────────────────────────────────────
+#
+# This governor could not see the resource that was actually exhausted.
+#
+# Every brake above measures disk or RAM. On 2026-09-01 this Mac sat at load
+# average 82-92 across 18 cores — five times oversubscribed, git and node
+# processes fighting for CPU, build proofs stretching from 14 minutes to 25+ —
+# while the governor held the throttle at the TOP of its lane band and reported
+# healthy. It was right about everything it measured: 48GB of RAM, disk fine.
+# There was simply no CPU signal anywhere in the file.
+#
+# That is the same failure shape as a posture check auditing the wrong database
+# or a confidence gate clamped so it cannot reject: the instrument reports a
+# clean number because it is not pointed at the problem.
+#
+# Load average per core is the right metric, and it is the one that means
+# "oversubscribed" rather than "busy". A machine at 1.0/core is fully used and
+# fine; sustained 3.0/core means every runnable process waits three times its
+# own length. Sampling is 1-minute load, so a brief spike from one build does
+# not clamp the fleet.
+def _cpu_soft():
+    """Load-per-core at which the fleet stops easing up. Default 1.5."""
+    return float(os.environ.get("CPU_SOFT_LOAD", "1.5"))
+
+
+def _cpu_hard():
+    """Load-per-core at which concurrency is clamped hard. Default 3.0."""
+    return float(os.environ.get("CPU_HARD_LOAD", "3.0"))
+
+
+def load_per_core():
+    """1-minute load average divided by CPU count, or None if unreadable.
+
+    None means "no signal", and every caller treats that as "do not brake" —
+    an unreadable probe must not throttle the fleet to a stop.
+    """
+    try:
+        cores = os.cpu_count() or 1
+        return round(os.getloadavg()[0] / max(1, cores), 2)
+    except (OSError, AttributeError, IndexError):
+        return None
+
+
+#: "Caller did not supply a reading", as distinct from load_per_core()'s None,
+#: which means "the machine could not be read". Collapsing those two into one
+#: None made an explicitly-unreadable probe go and measure the real machine and
+#: then clamp on it — the opposite of failing soft. Caught by the test for it.
+_MEASURE = object()
+
+
+def cpu_budget(limit, per_core=_MEASURE):
+    """Lanes the CPU can carry right now, given `limit` as the ask.
+
+    Proportional rather than a cliff. At or below soft, the ask stands. Between
+    soft and hard it scales down linearly, so the fleet eases off a loaded
+    machine instead of slamming to one lane and starving. At or above hard it is
+    one lane — the machine is thrashing and more concurrency makes it slower,
+    not faster.
+
+    Pass per_core=None to say the probe FAILED; the ask stands untouched.
+    """
+    if per_core is _MEASURE:
+        per_core = load_per_core()
+    if per_core is None:
+        return limit
+    soft, hard = _cpu_soft(), _cpu_hard()
+    if hard <= soft:
+        hard = soft + 0.1
+    if per_core <= soft:
+        return limit
+    if per_core >= hard:
+        return 1
+    scale = (hard - per_core) / (hard - soft)
+    return max(1, int(limit * scale))
+
+
 # Fleet-wide default, overridable centrally via the ORCH_RAM_FLOOR_GB fleet_config key
 # (fleet_control.load_config() pushes ORCH_* keys into os.environ every loop). Not a secret,
 # not a per-machine constant — one number both Macs converge on.
@@ -615,6 +691,7 @@ def dashboard_gauge():
         "ram_free_gb": ram_free_gb(), "ollama_loaded": ollama_loaded,
         "predicted_disk_pct_2h": pred_pct, "hours_to_hard": hours_to_hard,
         "disk_soft": _disk_soft(), "disk_hard": _disk_hard(),
+        "load_per_core": load_per_core(), "cpu_soft": _cpu_soft(), "cpu_hard": _cpu_hard(),
     }
 
 
@@ -644,6 +721,8 @@ def govern():
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()
+    per_core = load_per_core()
+    _cpu_gate_disabled = os.environ.get("ORCH_DISABLE_CPU_GATE", "").lower() in ("1", "true", "yes")
     _t_sample = time.monotonic()
     _event("disk", used, f"{free_gb}GB free")
     action = "ok"
@@ -760,7 +839,12 @@ def govern():
         _target = lane_target(free_ram, ceiling)
         set_throttle(_target); action = f"throttle->{_target}"
     elif (ram is None or ram < ram_hard - 3) and (free_ram is None or free_ram > eff_floor + 0.5):
-        set_throttle(current_limit() + 1); action = "ease up"
+        # Easing up is a RAM decision, so it needs the CPU's consent too: adding a
+        # lane to a machine already past soft load makes every running task slower.
+        if per_core is not None and per_core >= _cpu_soft():
+            action = f"hold (load/core {per_core})"
+        else:
+            set_throttle(current_limit() + 1); action = "ease up"
     else:
         action = "hold (memory elevated)"
     # Memory-budget clamp: never allow more concurrent tasks than free RAM can hold,
@@ -770,6 +854,17 @@ def govern():
         if current_limit() > mem_budget:
             set_throttle(mem_budget)
             action += f"; mem-clamp->{mem_budget}"
+    # CPU clamp: the same idea for the resource this governor could not previously
+    # see. It runs AFTER the memory clamp and after every branch above, so no
+    # healthy-path decision can route around it — which is exactly how the fleet
+    # held its band maximum at load 92.
+    if per_core is not None and not _cpu_gate_disabled:
+        cpu_lanes = cpu_budget(current_limit(), per_core)
+        if cpu_lanes < current_limit():
+            set_throttle(cpu_lanes)
+            action += f"; cpu-clamp->{cpu_lanes}"
+            _event("cpu", per_core, f"load/core {per_core} (soft {_cpu_soft()} hard {_cpu_hard()})",
+                   f"clamp to {cpu_lanes}")
     g = dashboard_gauge()
     latest_free = g.get("ram_free_gb")
     latest_ram = g.get("ram_pct")

@@ -582,6 +582,77 @@ def gc_integration_worktrees(repo, dry_run=False):
     return removed, freed, skipped
 
 
+#: Pack a repo's refs once it has more than this many LOOSE ones. Every git command that
+#: enumerates refs — and the train runs several per candidate — walks the loose ref tree
+#: file by file, so the cost is linear in a number that only ever grows.
+#:
+#: Measured on ~/Documents/smarter on 2026-09-01: 7,463 loose refs, almost all `agent/*`
+#: branches from finished tasks. `git for-each-ref` took 15s; after `git pack-refs --all`
+#: it took 6s, with 3 loose refs left and all 20,614 refs still resolvable. Nothing in
+#: this repo packed refs — `grep -rn pack-refs runner/*.py` found no call site at all,
+#: and `git gc --auto` never runs here because the fleet never invokes gc.
+#:
+#: Packing is not pruning: no ref is deleted, they move from .git/refs/** into
+#: .git/packed-refs and resolve identically. Set WORKTREE_GC_PACK_REFS_MIN=0 to disable.
+PACK_REFS_MIN_LOOSE = int(os.environ.get("WORKTREE_GC_PACK_REFS_MIN", "500"))
+
+
+def _loose_ref_count(repo, cap=20000):
+    """How many loose refs this repo has, counted cheaply and bounded."""
+    root = os.path.join(repo, ".git", "refs")
+    if not os.path.isdir(root):
+        return 0          # a worktree or a bare/odd layout; not our business
+    n = 0
+    for _dirpath, _dirnames, filenames in os.walk(root):
+        n += len(filenames)
+        if n >= cap:
+            return n
+    return n
+
+
+def pack_refs(repo, dry_run=False):
+    """Pack loose refs when there are enough of them to matter. Returns (before, after).
+
+    Fail-soft in every direction: a repo that is missing, is not a git dir, or whose
+    pack-refs fails is left exactly as it was. This is an optimisation, and an
+    optimisation must never be the reason a sweep stops.
+    """
+    if PACK_REFS_MIN_LOOSE <= 0 or not repo or not os.path.isdir(repo):
+        return (0, 0)
+    before = _loose_ref_count(repo)
+    if before < PACK_REFS_MIN_LOOSE or dry_run:
+        return (before, before)
+    # A LOCK WE LEAVE BEHIND BREAKS EVERY LATER REF UPDATE IN THIS REPO.
+    #
+    # git holds .git/packed-refs.lock for the duration of pack-refs, and _run_git bounds
+    # its subprocesses — so on a big repo the call can be KILLED mid-write, leaving the
+    # lock file behind. After that every branch create, fetch and commit in that repo
+    # fails with "Unable to create ... packed-refs.lock: File exists" until a human
+    # deletes it. That is a far worse outcome than the slow ref enumeration this is
+    # meant to fix, and it happened in this very repo the first time the code ran.
+    #
+    # So: if a lock is already there, someone else is packing (or already left one) and
+    # this is not ours to touch — skip. If there was none when we started and the call
+    # fails, the lock is unambiguously ours, and we remove it.
+    lock = os.path.join(repo, ".git", "packed-refs.lock")
+    if os.path.exists(lock):
+        return (before, before)
+    try:
+        r = _run_git(["git", "pack-refs", "--all"], repo)
+        ok = getattr(r, "returncode", 1) == 0
+    except Exception:
+        ok = False
+    if not ok:
+        try:
+            if os.path.exists(lock):
+                os.remove(lock)
+                print(f"worktree_gc: removed our own stale packed-refs.lock in {repo}")
+        except OSError:
+            pass
+        return (before, before)
+    return (before, _loose_ref_count(repo))
+
+
 def run(dry_run=False, max_seconds=None):
     """Sweep every project's stale worktrees under a hard wall-clock budget.
 
@@ -622,6 +693,15 @@ def run(dry_run=False, max_seconds=None):
                 int_freed += b
             except Exception as e:
                 print(f"worktree_gc: {p.get('name')} integration sweep error {e}")
+            # Loose refs are the third leak in the same family: nothing removes them,
+            # every ref-enumerating git command pays for them, and the train runs
+            # several per candidate. See pack_refs.
+            try:
+                _b, _a = pack_refs(repo, dry_run=dry_run)
+                if _b != _a:
+                    print(f"worktree_gc: {p['name']} packed refs {_b} -> {_a} loose")
+            except Exception as e:
+                print(f"worktree_gc: {p.get('name')} pack-refs error {e}")
     finally:
         # ALWAYS clear the budget, including on an unexpected raise. A leaked deadline
         # would make every later in-process call believe it had no time left.

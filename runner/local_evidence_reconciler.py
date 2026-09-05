@@ -447,6 +447,153 @@ def live_task_slugs(db=None, project_name: str = "") -> set:
 
 # ── Orchestration ───────────────────────────────────────────────────────────
 
+# ── Text evidence: classify a slog line, not just a live repo ───────────────
+#
+# The recovery hand-off is often a single FAILURE/SLOG line rather than a real set of
+# refs — "the evidence snapshot is incomplete" is the normal case, not the exception.
+# Enumerating the repo then yields nothing to classify, the caller reports UNKNOWN for
+# the whole hand-off, and the loop repeats. So: extract whatever identifiers the text
+# actually contains, and give every extracted item a label. An item that is missing the
+# fields a real classification needs is CONFLICTED_NEEDS_FOCUSED_TASK with a disposition
+# naming exactly what is absent — never UNKNOWN.
+
+#: Identifier shapes worth pulling out of free text. Order matters: the first pattern
+#: that claims a span owns it, so `refs/...` is not also read as a bare branch name.
+_TEXT_PATTERNS = (
+    ("rescue-ref", re.compile(r"refs/[A-Za-z0-9._/-]+")),
+    ("stash", re.compile(r"stash@\{\d+\}")),
+    ("worktree", re.compile(r"(?:/[A-Za-z0-9._-]+)*-wt/[A-Za-z0-9._/-]+")),
+    ("branch", re.compile(r"\b(?:agent|hotfix|chatgpt|codex|recover)/[A-Za-z0-9._/-]+")),
+    ("commit", re.compile(r"\b[0-9a-f]{7,40}\b")),
+)
+
+#: A classification needs at least a resolvable ref. Anything short of that is
+#: incomplete evidence, not unknown evidence.
+REQUIRED_EVIDENCE_FIELDS = ("kind", "ref")
+
+
+def extract_evidence_from_text(text: str) -> list:
+    """Pull evidence items out of a FAILURE/SLOG blob. Never raises, never returns [].
+
+    A line with no identifiers still yields ONE item — the line itself — because the
+    hand-off is the evidence when nothing else survived. That is what makes "a
+    classification for every extracted item" reachable from a single opaque line.
+    """
+    items, claimed, seen = [], [], set()
+    blob = text or ""
+
+    def overlaps(span):
+        return any(not (span[1] <= s or span[0] >= e) for s, e in claimed)
+
+    for kind, pattern in _TEXT_PATTERNS:
+        for match in pattern.finditer(blob):
+            if overlaps(match.span()):
+                continue
+            value = match.group(0).rstrip(".,;:)")
+            if not value or value in seen:
+                continue
+            claimed.append(match.span())
+            seen.add(value)
+            items.append({"kind": kind, "name": value, "ref": value, "origin": "text"})
+
+    if not items:
+        summary = " ".join(blob.split())[:200]
+        items.append({
+            "kind": "slog-line",
+            "name": summary or "(empty evidence line)",
+            "ref": "",
+            "origin": "text",
+            "missing": "no branch, ref, stash, worktree or commit identifier in the input",
+        })
+    return items
+
+
+def _missing_fields(item: dict) -> list:
+    return [f for f in REQUIRED_EVIDENCE_FIELDS if not str(item.get(f) or "").strip()]
+
+
+def classify_incomplete(item: dict, reason: str) -> dict:
+    """The zero-UNKNOWN escape hatch: incomplete evidence is CONFLICTED, with a reason."""
+    return {
+        "source": item.get("ref") or item.get("name", ""),
+        "kind": item.get("kind", ""),
+        "name": item.get("name", ""),
+        "slug": _slug_of(item),
+        "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+        "disposition": ("insufficient evidence to classify mechanically — "
+                        f"{reason}. Queue a focused task to gather it; "
+                        "no source was read, moved or modified."),
+        "unique_commits": 0,
+        "paths": [],
+        "task": "",
+        "branch": "",
+        "commit": "",
+        "detail": reason,
+    }
+
+
+def classify_any(repo: str, item: dict, ctx=None) -> dict:
+    """classify() with the UNKNOWN hole closed.
+
+    Falls back to `classify_incomplete` when the item lacks required fields, when there
+    is no usable repo context, or when the underlying classifier returns anything not in
+    CLASSIFICATIONS. Fail-soft: an exception is itself a reason for a focused task.
+    """
+    missing = _missing_fields(item)
+    if missing:
+        return classify_incomplete(item, "missing " + ", ".join(missing))
+    if not ctx or not ctx.get("base_sha"):
+        return classify_incomplete(
+            item, "no resolvable base ref in this checkout, so ancestry cannot be tested")
+    try:
+        record = classify(repo, item, ctx)
+    except Exception as exc:  # pragma: no cover - defensive
+        return classify_incomplete(item, f"classifier error: {exc}")
+    if record.get("classification") not in CLASSIFICATIONS:
+        return classify_incomplete(
+            item, f"classifier produced {record.get('classification')!r}")
+    return record
+
+
+def reconcile_text(text: str, fingerprint: str = "", *, repo: str = "", base: str = "",
+                   db=None, write: bool = False) -> dict:
+    """Ledger-ready classification of a text hand-off. Guaranteed zero UNKNOWN.
+
+    ``repo`` is optional: with one, items that name a real ref are classified against
+    live ancestry, remote branches and live orchestrator tasks; without one, every item
+    is CONFLICTED_NEEDS_FOCUSED_TASK with the missing information named. Read-only in
+    both cases — the only writes are ledger rows, and only when ``write=True``.
+    """
+    report = {
+        "repo": repo, "fingerprint": fingerprint, "base": "", "records": [],
+        "counts": {c: 0 for c in CLASSIFICATIONS}, "unknown": [],
+        "complete": False, "ledger": None, "error": None, "needs_followup": [],
+    }
+    ctx = None
+    if repo and os.path.isdir(repo):
+        try:
+            ctx = build_context(repo, base=base, live_task_slugs=live_task_slugs(db))
+            report["base"] = ctx.get("base", "")
+        except Exception as exc:  # pragma: no cover - defensive
+            report["error"] = f"context unavailable: {exc}"
+            ctx = None
+
+    for item in extract_evidence_from_text(text):
+        record = classify_any(repo, item, ctx)
+        report["records"].append(record)
+        report["counts"][record["classification"]] += 1
+
+    if write and report["records"]:
+        report["ledger"] = write_ledger(report["records"], fingerprint, db=db)
+
+    report["needs_followup"] = [
+        r["source"] or r["name"] for r in report["records"]
+        if r["classification"] in ("RECOVERABLE_VALUE", "CONFLICTED_NEEDS_FOCUSED_TASK")]
+    report["complete"] = (not report["unknown"]) and bool(report["records"]) and (
+        report["ledger"] is None or report["ledger"].get("failed", 0) == 0)
+    return report
+
+
 def reconcile(repo: str, fingerprint: str, *, base: str = "", db=None,
               items=None, write: bool = True) -> dict:
     """Enumerate, classify and (optionally) ledger every evidence item.
@@ -474,7 +621,10 @@ def reconcile(repo: str, fingerprint: str, *, base: str = "", db=None,
         return report
 
     for item in (items if items is not None else enumerate_evidence(repo)):
-        record = classify(repo, item, ctx)
+        # classify_any, not classify: an item that cannot be classified mechanically is
+        # incomplete evidence (CONFLICTED_NEEDS_FOCUSED_TASK, with the gap named), never
+        # UNKNOWN. Zero-UNKNOWN is the completion bar for this reconciliation.
+        record = classify_any(repo, item, ctx)
         report["records"].append(record)
         cls = record["classification"]
         if cls in report["counts"]:
@@ -497,12 +647,21 @@ def reconcile(repo: str, fingerprint: str, *, base: str = "", db=None,
 def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="Classify local build evidence, read-only.")
-    ap.add_argument("repo")
-    ap.add_argument("fingerprint")
+    ap.add_argument("repo", nargs="?", default="")
+    ap.add_argument("fingerprint", nargs="?", default="")
     ap.add_argument("--base", default="")
     ap.add_argument("--no-write", action="store_true")
+    ap.add_argument("--text", default="",
+                    help="classify a FAILURE/SLOG line instead of enumerating the repo "
+                         "('-' reads stdin). Emits a label for every extracted item.")
     args = ap.parse_args(argv)
-    report = reconcile(args.repo, args.fingerprint, base=args.base, write=not args.no_write)
+    if args.text:
+        blob = sys.stdin.read() if args.text == "-" else args.text
+        report = reconcile_text(blob, args.fingerprint, repo=args.repo, base=args.base,
+                                write=not args.no_write)
+    else:
+        report = reconcile(args.repo, args.fingerprint, base=args.base,
+                           write=not args.no_write)
     for record in report["records"]:
         print(f"{record['classification']:<30} {record['source']}")
     print(json.dumps({k: report[k] for k in ("base", "counts", "unknown", "complete",

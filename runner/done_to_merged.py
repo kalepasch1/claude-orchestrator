@@ -43,11 +43,20 @@ they can -- this closes the paths that do not.
 """
 
 import os
+import time
 
 import db
 
 MERGE_KINDS = ("integrate", "merge", "code-merge")
 GATE = "done-without-card"
+
+#: Minutes between FULL sweeps (no time window). The per-tick call looks at the last
+#: `within_hours` only, which is what keeps it to single-digit rows on a query that
+#: runs every 60 seconds -- but a task that goes DONE without a card and then ages out
+#: of that window would become invisible again, which is the exact bug the window was
+#: introduced to fix, only slower. So one call an hour ignores the window entirely.
+FULL_SWEEP_MIN = float(os.environ.get("ORCH_DONE_CARD_FULL_SWEEP_MIN", "60"))
+FULL_SWEEP_LIMIT = int(os.environ.get("ORCH_DONE_CARD_FULL_SWEEP_LIMIT", "2000"))
 
 # Notes that mean "finished, but there is deliberately no branch to integrate".
 # These get a recorded reason instead of a card -- they are correct, not lost.
@@ -93,12 +102,38 @@ def _deliberately_branchless(task):
     return False, ""
 
 
+def _rejection_already_recorded(slug, gate, reason):
+    """True when this exact refusal is already on file.
+
+    THE REASON IS RECORDED ONCE, NOT ONCE PER PASS. This function runs on every
+    merge-train tick -- every 60 seconds -- and a task that legitimately has no branch
+    never stops qualifying, so each one re-wrote its own row forever. Measured
+    2026-09-02:
+
+        admission_rejections rows          5,616
+        distinct slugs                       872   (6.4 duplicates each)
+
+    A row per pass is not a record, it is a metronome. Fails OPEN: an unreadable table
+    means write the row, because a missing refusal is a silent DONE task and that is the
+    failure this module exists to stop.
+    """
+    try:
+        rows = db.select("admission_rejections", {
+            "select": "id,gate,reason", "slug": f"eq.{slug}",
+            "gate": f"eq.{gate}", "limit": "20"}) or []
+    except Exception:
+        return False
+    return any(str(r.get("reason") or "") == str(reason)[:500] for r in rows)
+
+
 def record_rejection(task, reason, gate=GATE):
     """Persist why a DONE task gets no card. Fail-soft, but never silent on operator work."""
     slug = str(task.get("slug") or "")[:200]
     operator = bool(str(task.get("submitted_by") or "").strip()
                     or str(task.get("submitted_by_label") or "").strip()
                     or slug.startswith("dropbox-"))
+    if slug and _rejection_already_recorded(slug, gate, reason):
+        return True      # already on file: the contract is satisfied, not re-satisfied
     try:
         db.insert("admission_rejections", {
             "slug": slug,
@@ -117,6 +152,38 @@ def record_rejection(task, reason, gate=GATE):
     return True
 
 
+def _full_sweep_stamp_path():
+    home = os.environ.get("CLAUDE_ORCH_HOME") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), ".runtime")
+    return os.path.join(home, "done_to_merged_full_sweep.stamp")
+
+
+def _full_sweep_due(now=None):
+    """True when the hourly window-free sweep is owed. Never raises."""
+    if FULL_SWEEP_MIN <= 0:
+        return False
+    now = time.time() if now is None else now
+    try:
+        with open(_full_sweep_stamp_path()) as fh:
+            last = float((fh.read() or "0").strip() or 0)
+    except (OSError, ValueError):
+        last = 0.0
+    return (now - last) >= FULL_SWEEP_MIN * 60.0
+
+
+def _mark_full_sweep(now=None):
+    now = time.time() if now is None else now
+    path = _full_sweep_stamp_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        scratch = path + ".tmp"
+        with open(scratch, "w") as fh:
+            fh.write("%f" % now)
+        os.replace(scratch, path)
+    except OSError:
+        pass      # a stamp we cannot write means one extra full sweep, not a failure
+
+
 def reconcile_missing_cards(within_hours=24, limit=500, project_names=None):
     """Every DONE task either has a card or a recorded reason. Returns a summary dict.
 
@@ -124,23 +191,67 @@ def reconcile_missing_cards(within_hours=24, limit=500, project_names=None):
     """
     summary = {"scanned": 0, "already_carded": 0, "cards_filed": 0,
                "rejections_recorded": 0, "errors": 0}
+    # `within_hours` WAS A DEAD PARAMETER. It has been in this signature and this
+    # docstring since the function was written and never reached the query, so every
+    # tick asked for the newest 500 DONE tasks out of 1,017 and the fleet's own
+    # truncation detector said so 154 times in one log:
+    #
+    #   [db] TRUNCATED SCAN done_to_merged.py:128 -> tasks returned exactly its limit
+    #        (500) ordered by updated_at.desc. Anything past the cap is invisible
+    #
+    # Measured 2026-09-02: 517 DONE tasks sat past that cap, 6 of them with no card at
+    # all -- so the promise in the docstring above ("every DONE task either has a card
+    # or a recorded reason") was false for a third of the table, permanently, because
+    # nothing ages back into the newest 500.
+    #
+    # Using the window the signature already declares fixes both halves at once. Only 8
+    # DONE tasks were updated in the last 24h, so the per-tick scan goes from 500 rows
+    # to single digits AND stops truncating -- this runs on every merge-train pass, and
+    # the pass runs every 60 seconds. Pass within_hours=0 for a full sweep, which is
+    # what the periodic backfill wants.
+    params = {
+        # `tasks` has artifact_branch / artifact_ref / base_branch — never a
+        # bare `branch`. Selecting it returned HTTP 400 on every pass, so this
+        # reconcile scanned nothing and no DONE task was ever checked for a
+        # missing card. _branch_of() below already reads both names, which is
+        # why the mismatch survived review: the consumer was tolerant and the
+        # query was not.
+        "select": "id,slug,note,project_id,artifact_branch,"
+                  "submitted_by,submitted_by_label",
+        "state": "eq.DONE",
+        "order": "updated_at.desc",
+        "limit": str(int(limit)),
+    }
+    # ONE SWEEP AN HOUR IGNORES THE WINDOW. Narrowing the per-tick scan to 24h is what
+    # keeps it to single-digit rows, but on its own it would let a task that goes DONE
+    # without a card simply age out of view -- the same invisibility, arriving more
+    # slowly. The hourly sweep is the backstop, and it is inside this function rather
+    # than in the scheduler so it cannot be forgotten by a caller.
+    full_sweep = bool(within_hours) and _full_sweep_due()
+    if full_sweep:
+        within_hours = 0
+        limit = max(int(limit), FULL_SWEEP_LIMIT)
+        params["limit"] = str(limit)      # params was built above; keep them in step
+        print(f"[done->merged] hourly full sweep: ignoring the {FULL_SWEEP_MIN:.0f}-minute "
+              f"window, scanning up to {limit} DONE task(s)", flush=True)
+    if within_hours:
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                               time.gmtime(time.time() - float(within_hours) * 3600.0))
+        params["updated_at"] = f"gte.{cutoff}"
     try:
-        tasks = db.select("tasks", {
-            # `tasks` has artifact_branch / artifact_ref / base_branch — never a
-            # bare `branch`. Selecting it returned HTTP 400 on every pass, so this
-            # reconcile scanned nothing and no DONE task was ever checked for a
-            # missing card. _branch_of() below already reads both names, which is
-            # why the mismatch survived review: the consumer was tolerant and the
-            # query was not.
-            "select": "id,slug,note,project_id,artifact_branch,"
-                      "submitted_by,submitted_by_label",
-            "state": "eq.DONE",
-            "order": "updated_at.desc",
-            "limit": str(int(limit))}) or []
+        tasks = db.select("tasks", params) or []
     except Exception as exc:
         print(f"[done->merged] scan failed: {exc}", flush=True)
         summary["errors"] += 1
         return summary
+    if full_sweep:
+        _mark_full_sweep()
+    if len(tasks) >= int(limit):
+        # Still truncated: say so HERE, where the window is known, rather than leaving
+        # it to a generic db-layer warning nobody attributes to this scan.
+        print(f"[done->merged] scan hit its {limit}-row cap over the last "
+              f"{within_hours or 'all'} hour(s); older DONE tasks were not examined "
+              f"this pass", flush=True)
 
     projects = {}
     try:

@@ -12,9 +12,14 @@
     "verbatimModuleSyntax": false,
     "allowImportingTsExtensions": true,
     "types": ["node"],
+    // test/spine-contracts.consumer.ts is a compile-time-only check that the
+    // spine's declaration-only contract surface stays consumable from here.
+    // @spine/contracts has no runtime and is never installed into
+    // node_modules, so the dependency is wired for the typechecker only.
     "baseUrl": ".",
     "paths": {
       "@spine/contracts": ["../spine/shared/contracts/index.ts"],
+      "@spine/contracts/contracts": ["../spine/shared/contracts/index.ts"],
       "@spine/contracts/types": ["../spine/shared/types/index.ts"]
     }
   },

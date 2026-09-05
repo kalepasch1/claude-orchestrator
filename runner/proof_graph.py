@@ -13,8 +13,73 @@ def _canonical_repo(repo: str) -> str:
     return os.path.realpath(os.path.abspath(repo or "."))
 
 
+#: Resolved worktree -> main-repo paths. Integration worktrees are created and
+#: destroyed constantly, so this is capped: runner.py lives for days.
+_MAIN_REPO_CACHE: dict = {}
+_MAIN_REPO_CACHE_MAX = 512
+
+
+def _main_repo(repo: str) -> str:
+    """The main checkout behind `repo`, or `repo` itself.
+
+    A LINKED WORKTREE IS THE SAME REPOSITORY. git marks one with a `.git` FILE
+    containing `gitdir: <main>/.git/worktrees/<name>`, so this is pure filesystem --
+    no subprocess on a path that runs for every proof written and read.
+
+    Why it matters, measured 2026-09-02 on this host. Proof identity included the
+    checkout's DIRECTORY NAME, and merge_train and release_train do their work in
+    .runtime/integration-worktrees/<sha1-of-path>. So a green production build of an
+    exact commit was filed under `f2949212f83b76aa831e` while production_push_guard,
+    running against the real checkout, looked for one under `Sustainable_Barks` --
+    and refused the push because it could not find a proof that existed:
+
+        rows in the proof graph                        13,894
+        filed under a worktree-hash name                5,700   (41%)
+        releases in the previous 3 days                   106
+        of those that succeeded                             0
+
+    sustainable-barks alone failed 45 releases with "failed to push some refs",
+    which is the pre-push hook refusing, not GitHub. Its dev tip had a green
+    `npm run build` proof the whole time.
+
+    Nothing is weakened by this. The commit sha and the dependency fingerprint are
+    unchanged and still discriminate; the fingerprint of the worktree and of the main
+    checkout were verified identical (f98fa7e299d3 in both). Two checkouts of one
+    repository at one commit with one lockfile set and one build command have the same
+    build result -- that is what "same repository" means.
+    """
+    canonical = _canonical_repo(repo)
+    cached = _MAIN_REPO_CACHE.get(canonical)
+    if cached:
+        return cached
+    resolved = canonical
+    try:
+        marker = os.path.join(canonical, ".git")
+        if os.path.isfile(marker):
+            with open(marker, encoding="utf-8", errors="replace") as fh:
+                line = fh.read(4096).strip()
+            if line.startswith("gitdir:"):
+                gitdir = line.split(":", 1)[1].strip()
+                if not os.path.isabs(gitdir):
+                    gitdir = os.path.join(canonical, gitdir)
+                gitdir = os.path.realpath(gitdir)
+                marker_dir = os.sep + "worktrees" + os.sep
+                if marker_dir in gitdir:
+                    common = gitdir.split(marker_dir)[0]        # <main>/.git
+                    if os.path.basename(common) == ".git":
+                        parent = os.path.dirname(common)
+                        if os.path.isdir(parent):
+                            resolved = parent
+    except OSError:
+        resolved = canonical
+    if len(_MAIN_REPO_CACHE) >= _MAIN_REPO_CACHE_MAX:
+        _MAIN_REPO_CACHE.clear()      # cheap and correct; the entries are re-derivable
+    _MAIN_REPO_CACHE[canonical] = resolved
+    return resolved
+
+
 def _repo_name(repo: str) -> str:
-    return os.path.basename(_canonical_repo(repo).rstrip(os.sep))
+    return os.path.basename(_main_repo(repo).rstrip(os.sep))
 
 def _home():
     return os.environ.get("CLAUDE_ORCH_HOME", os.path.join(os.path.dirname(__file__), "..", ".runtime"))

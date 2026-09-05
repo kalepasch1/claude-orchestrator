@@ -47,6 +47,21 @@ MODEL_CLAMP_THRASH_N = int(os.environ.get("MEDIC_MODEL_CLAMP_N", "4"))
 RESTART_STORM_N = int(os.environ.get("MEDIC_RESTART_STORM_N", "6"))
 AGENT_MAX_MIN = int(os.environ.get("MEDIC_AGENT_MAX_MIN", "150"))
 LOG_CAP_MB = int(os.environ.get("MEDIC_LOG_CAP_MB", "20"))
+#: Minutes an ORPHANED build/test process may outlive its spawner before the medic
+#: kills it. 30, not 150: the gates' own ceiling is MERGE_TRAIN_TEST_TIMEOUT (900s),
+#: so a build that has been parentless for half an hour is past any budget that could
+#: still have used its exit status. Set MEDIC_BUILD_ORPHAN_MAX_MIN=0 to disable.
+BUILD_ORPHAN_MAX_MIN = int(os.environ.get("MEDIC_BUILD_ORPHAN_MAX_MIN", "30"))
+#: The same clock, for orphans the ORCHESTRATOR itself unmistakably started: a build
+#: running out of .orch-scratch/build-overlay-*, an integration worktree, or a
+#: /private/tmp/claude-* checkout. 30 minutes is the right patience for a build that
+#: MIGHT be a person's, and far too much for one that cannot be. Measured 2026-09-02:
+#: 24 orphaned builds reaped in a single day, every one of them at age 30-33 min, and
+#: none of them holding a build slot -- so the fleet's limit of 2 was being enforced
+#: against 2 live gates while up to three unslotted orphans built alongside them. One
+#: carried 5.2 GB RSS on a machine whose swap was 87% used. Set to 0 to fall back to
+#: BUILD_ORPHAN_MAX_MIN for these too.
+BUILD_ORPHAN_GATE_MAX_MIN = int(os.environ.get("MEDIC_BUILD_ORPHAN_GATE_MAX_MIN", "3"))
 PRESSURE_WARN = int(os.environ.get("MEDIC_PRESSURE_WARN_PCT", "25"))   # free% below this = warn
 PRESSURE_CRIT = int(os.environ.get("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% below this = critical
 
@@ -196,15 +211,52 @@ def _unload_heaviest_model():
     return None
 
 
+def _etime_seconds(text):
+    """Parse ps `etime` — [[DD-]HH:]MM:SS — into seconds. None when unparseable.
+
+    NOT `etimes`. That keyword is procps (Linux) only; BSD ps, which is what macOS
+    ships, answers `ps: etimes: keyword not found` on stderr, returns 1, and then
+    prints the row anyway WITHOUT that column. So the caller gets well-formed output
+    with one field missing, every row fails its field-count check, and the loop
+    silently sees an empty process table. Nothing errors and nothing is ever reaped.
+    Measured 2026-09-02: `_agent_procs()` returned [] on a Mac with 771 processes.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    days = 0
+    if "-" in t:
+        d, _, t = t.partition("-")
+        try:
+            days = int(d)
+        except ValueError:
+            return None
+    bits = t.split(":")
+    try:
+        bits = [int(b) for b in bits]
+    except ValueError:
+        return None
+    if len(bits) == 2:
+        h, m, s = 0, bits[0], bits[1]
+    elif len(bits) == 3:
+        h, m, s = bits
+    else:
+        return None
+    return days * 86400 + h * 3600 + m * 60 + s
+
+
 def _agent_procs():
     """[(secs, pid, cmd)] of coding-agent processes (not the fleet's python/ollama server)."""
     res = []
     try:
-        for line in sh("ps", "-axo", "pid=,etimes=,command=", timeout=20).stdout.splitlines():
+        for line in sh("ps", "-axo", "pid=,etime=,command=", timeout=20).stdout.splitlines():
             parts = line.strip().split(None, 2)
             if len(parts) < 3:
                 continue
             pid, et, cmd = parts
+            et = _etime_seconds(et)
+            if et is None:
+                continue
             low = cmd.lower()
             if any(t in low for t in ("/gemini", "bin/gemini", "aider", "codex exec", "claude exec", " grok")) \
                and "runner.py" not in low and "sentinel.py" not in low \
@@ -217,6 +269,280 @@ def _agent_procs():
         pass
     res.sort(reverse=True)
     return res
+
+
+#: Command signatures of the build/test tools the gates spawn. Matched against the
+#: lowercased command line. Deliberately narrow: this list is the whole safety
+#: argument for killing by pattern, so it names tools, not the word "node".
+_BUILD_TOOL_MARKERS = (
+    "nuxt build", "nuxt dev", "nuxt.mjs build", "nuxt.mjs dev", "bin/nuxt",
+    "vite build", "vite dev", "next build", "next dev",
+    "vitest", "jest", "playwright test", "cypress run",
+    "npm run build", "npm run dev", "npm run test", "npm run lint", "npm test",
+    "pnpm run build", "pnpm run dev", "pnpm run test", "pnpm build", "pnpm test",
+    "yarn build", "yarn dev", "yarn test",
+    "-m pytest", "bin/pytest", "tsc --noemit", "tsc -p",
+)
+
+#: Never reap these, whatever else matches. The runner and its own periodic jobs are
+#: long-lived by design, and the medic must never kill the thing that runs the medic.
+_NEVER_REAP_MARKERS = (
+    "runner.py", "sentinel.py", "resource_medic", "keepalive.sh",
+    "merge_train.py", "release_train.py", "claudeRunner".lower(),
+)
+
+
+def _orphaned_build_procs():
+    """[(secs, pid, cmd)] of parentless build/test processes.
+
+    ppid == 1 is the whole point. A build the gates started has a live parent that is
+    waiting on its exit status; once that parent is gone the process has been reparented
+    to launchd and NOTHING can ever read its result. It is pure load. On 2026-09-01 this
+    machine was carrying twelve of them — a `nuxt run dev:full` at 12h53m and 415% CPU,
+    two `nuxt build`s inside _ARCHIVED-apparently-do-not-use, a `pnpm run build:vercel`
+    at 4h58m — and sat at a 1-minute load average of 59. Every test verdict the merge
+    train produced in that state is suspect, and production_push_guard's load cool-down
+    (threshold: cores x 0.5) could never settle, so every red suite it saw cost the full
+    180s wait before a re-run that was just as contended.
+    """
+    res = []
+    try:
+        # `etime`, NOT `etimes` — see _etime_seconds. The first version of this
+        # function asked for `etimes` and was therefore blind: BSD ps drops the
+        # unknown column, every row came back one field short, and the loop below
+        # skipped all 771 of them. It reported zero orphans on a machine that had
+        # twelve.
+        out = sh("ps", "-axo", "pid=,ppid=,etime=,command=", timeout=20).stdout
+    except Exception:
+        return res
+    for line in out.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, ppid, et, cmd = parts
+        et = _etime_seconds(et)
+        if et is None:
+            continue
+        if ppid != "1":
+            continue                      # still has a parent that can use the result
+        low = cmd.lower()
+        if any(m in low for m in _NEVER_REAP_MARKERS):
+            continue
+        if not any(m in low for m in _BUILD_TOOL_MARKERS):
+            continue
+        try:
+            secs = int(et)
+            if int(pid) <= 1 or int(pid) == os.getpid():
+                continue
+        except ValueError:
+            continue
+        res.append((secs, pid, cmd))
+    res.sort(reverse=True)
+    return res
+
+
+#: Path fragments that only the orchestrator produces. A process running out of one of
+#: these was started by a gate, never by a person at a shell, so once it is parentless
+#: there is nobody left who could read its exit status -- not in 30 minutes, not ever.
+_GATE_OWNED_PATHS = (
+    # Both spellings: the scratch root moved to `.orch-scratch.noindex` so macOS stops
+    # indexing it, and a process started before that change still has overlays under
+    # the old name. Matching only the new one would leave those orphans unreaped.
+    "/.orch-scratch/", "/.orch-scratch.noindex/", "build-overlay-",
+    "integration-worktrees/",
+    "/private/tmp/claude-", "clean-clone-",
+)
+
+
+def _proc_cwd(pid):
+    """Working directory of a pid, or "" when it cannot be read.
+
+    `npm run build` says nothing about WHERE it is building: three of today's orphans
+    were bare `npm run build` lines whose overlay only shows up in their child's argv
+    or in their own cwd. Called for a handful of already-matched candidates, never for
+    the whole process table.
+    """
+    try:
+        out = sh("/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn",
+                 timeout=10).stdout
+    except Exception:
+        return ""
+    for line in out.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return ""
+
+
+def _children_by_ppid():
+    """{ppid: [pid, ...]} for the whole process table. {} when ps fails."""
+    kids = {}
+    try:
+        out = sh("ps", "-axo", "pid=,ppid=", timeout=20).stdout
+    except Exception:
+        return kids
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        kids.setdefault(parts[1], []).append(parts[0])
+    return kids
+
+
+def _descendants(pid, kids):
+    """Every pid below `pid`, breadth-first. Bounded; never includes `pid` itself."""
+    out, queue, seen = [], list(kids.get(str(pid), [])), {str(pid)}
+    while queue and len(out) < 200:
+        cur = queue.pop(0)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        out.append(cur)
+        queue.extend(kids.get(cur, []))
+    return out
+
+
+def _orphan_is_gate_owned(pid, cmd):
+    """True when this parentless build can only have come from a gate."""
+    low = (cmd or "").lower()
+    if any(m in low for m in _GATE_OWNED_PATHS):
+        return True
+    cwd = _proc_cwd(pid).lower()
+    return bool(cwd) and any(m in cwd for m in _GATE_OWNED_PATHS)
+
+
+def reap_orphaned_builds():
+    """Kill parentless build/test processes and everything under them.
+
+    Two things changed here on 2026-09-02, both from the same day's measurements.
+
+    1. THE TREE, NOT THE PROCESS. `npm run build` spawns the real `nuxt build` as its
+       child. Killing only the wrapper left the 5 GB node process alive with a fresh
+       ppid of 1, so it waited out the FULL window a second time before its own turn
+       came. Today's journal shows exactly that shape: pid=74762 `npm run build` reaped
+       at 16:08, pid=80494 its overlay build reaped at 16:10 -- and pairs like it all
+       day. Reaping the descendants with the parent halves the waste per orphan and
+       removes the second window entirely.
+
+    2. A SHORTER CLOCK FOR BUILDS THE FLEET OWNS. See BUILD_ORPHAN_GATE_MAX_MIN.
+
+    Returns the number of process TREES reaped (not pids), so the count still means
+    "orphans dealt with".
+    """
+    if BUILD_ORPHAN_MAX_MIN <= 0:
+        return 0
+    killed = 0
+    kids = _children_by_ppid()
+    for secs, pid, cmd in _orphaned_build_procs():
+        gate_owned = _orphan_is_gate_owned(pid, cmd)
+        limit = BUILD_ORPHAN_MAX_MIN
+        if gate_owned and BUILD_ORPHAN_GATE_MAX_MIN > 0:
+            limit = min(limit, BUILD_ORPHAN_GATE_MAX_MIN)
+        if secs < limit * 60:
+            continue
+        tree = _descendants(pid, kids)
+        # Children first: killing the wrapper first can let a shell respawn or let the
+        # child reparent before we get to it.
+        for child in reversed(tree):
+            sh("kill", "-9", child)
+        sh("kill", "-9", pid)
+        journal("process_hygiene", "reaped-orphan-build",
+                f"pid={pid} age={secs // 60}min limit={limit}min "
+                f"{'gate-owned ' if gate_owned else ''}"
+                f"+{len(tree)} descendant(s) {cmd[:80]}")
+        killed += 1
+    return killed
+
+
+#: Search tools an agent shell reaches for when it does not know where a repo lives.
+_SCAN_TOOL_MARKERS = ("bfs ", "find ", "fd ", "mdfind ")
+
+#: A scan is only reapable if it is rooted somewhere broad enough that it can run for
+#: minutes. A scan of a project directory is nobody's problem and is left alone.
+_BROAD_SCAN_ROOTS = (os.path.expanduser("~"), "/Users/", "/Volumes/", " / ")
+
+#: Minutes a parentless home-directory scan may burn a core before it is reaped.
+SCAN_ORPHAN_MAX_MIN = float(os.environ.get("ORCH_SCAN_ORPHAN_MAX_MIN", "3"))
+
+
+def _orphaned_scan_procs():
+    """[(secs, pid, cmd)] of parentless filesystem scans rooted at a broad path.
+
+    MEASURED 2026-09-03. Load average 67 on this Mac, and merge_train's own CPU clamp
+    reacting to it exactly as designed:
+
+        merge_train: load/core 7.69 (soft 1.5 hard 3.0) — running 1 project worker(s)
+                     instead of 4
+
+    Two of the top four CPU consumers were these:
+
+        bfs -S dfs ... /Users/kpasch -type d -name sustainable-barks   11m58s, 82.6%
+        bfs -S dfs ... /Users/kpasch -type d -name *pareto*             4m42s, 68.1%
+
+    Both ppid 1, both descendants of `/bin/zsh -c source ~/.claude/shell-snapshots/...`
+    -- agent sessions that had already exited. An agent that does not know where a repo
+    lives searches the whole home directory for it; when the session ends the search is
+    reparented to launchd and NOTHING can ever read its output. Killing the first one
+    took the load average from 67 to 31 within a minute.
+
+    This is not a cosmetic tidy-up. Load is what the governor clamps merge workers on,
+    so a parentless scan nobody will ever read the result of directly throttles the
+    fleet's real throughput -- and it makes every test verdict produced in that state
+    suspect, which is the same argument reap_orphaned_builds already makes.
+
+    Deliberately narrow: ppid 1 AND a scan tool AND a broad root AND older than
+    SCAN_ORPHAN_MAX_MIN. A scan inside a project directory, or one whose parent is
+    still alive and waiting for it, is left entirely alone.
+    """
+    res = []
+    try:
+        out = sh("ps", "-axo", "pid=,ppid=,etime=,command=", timeout=20).stdout
+    except Exception:
+        return res
+    for line in out.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, ppid, et, cmd = parts
+        if ppid != "1":
+            continue
+        secs = _etime_seconds(et)
+        if secs is None:
+            continue
+        low = cmd.lower()
+        if any(m in low for m in _NEVER_REAP_MARKERS):
+            continue
+        if not any(m in low for m in _SCAN_TOOL_MARKERS):
+            continue
+        if not any(root.lower() in low for root in _BROAD_SCAN_ROOTS):
+            continue
+        try:
+            if int(pid) <= 1 or int(pid) == os.getpid():
+                continue
+        except ValueError:
+            continue
+        res.append((int(secs), pid, cmd))
+    res.sort(reverse=True)
+    return res
+
+
+def reap_orphaned_scans():
+    """Kill parentless home-directory scans and their trees. Returns trees reaped."""
+    if SCAN_ORPHAN_MAX_MIN <= 0:
+        return 0
+    killed = 0
+    kids = _children_by_ppid()
+    for secs, pid, cmd in _orphaned_scan_procs():
+        if secs < SCAN_ORPHAN_MAX_MIN * 60:
+            continue
+        tree = _descendants(pid, kids)
+        for child in reversed(tree):
+            sh("kill", "-9", child)
+        sh("kill", "-9", pid)
+        journal("process_hygiene", "reaped-orphan-scan",
+                f"pid={pid} age={secs // 60}min limit={SCAN_ORPHAN_MAX_MIN}min "
+                f"+{len(tree)} descendant(s) {cmd[:80]}")
+        killed += 1
+    return killed
 
 
 def _reap_oldest_agent():
@@ -349,6 +675,17 @@ def process_hygiene():
         if secs >= AGENT_MAX_MIN * 60:
             sh("kill", "-9", pid)
             journal("process_hygiene", "reaped-zombie-agent", f"pid={pid} age={secs // 60}min {cmd[:50]}")
+    # orphaned build/test processes (parentless, holding CPU — see _orphaned_build_procs)
+    try:
+        reap_orphaned_builds()
+    except Exception:
+        pass
+    # orphaned home-directory scans (parentless, a full core each — see
+    # _orphaned_scan_procs; two of them held this Mac at load 67 on 2026-09-03)
+    try:
+        reap_orphaned_scans()
+    except Exception:
+        pass
     # orphaned llama-servers (parentless, holding VRAM)
     try:
         for line in sh("pgrep", "-fl", "llama-server", timeout=15).stdout.splitlines():

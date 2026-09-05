@@ -75,11 +75,79 @@ _PATH_RX = re.compile(r"^(?:/[^/]|~[/\\]|\.{1,2}[/\\]|[A-Za-z]:\\)", )
 # Unexpected URLs in config values
 _URL_RX = re.compile(r"https?://|ftp://", re.I)
 
+# Credential material in fleet_config.
+#
+# This gate reviews every fleet_config push for "outsized blast radius" and, until now,
+# rated GITHUB_PAT=ghp_... as "routine change within safe operating envelope" — the one
+# class of change that has actually cost this fleet something. On 2026-08-02 plaintext
+# credentials sat in fleet_config until they were found and purged; a DB guard now rejects
+# those rows, but a guard that rejects is a wall you learn about by hitting it, and the
+# assessor in front of it was still waving the push through. A key with no numeric bound,
+# no shell metacharacter, no path and no URL fell straight to the "low" default. Nothing
+# here is clever: it is the check that should have existed before the incident.
+#
+# Two independent signals, either one gates:
+#   - the KEY names a credential (GITHUB_PAT, *_TOKEN, *_SECRET, *_PASSWORD, ...)
+#   - the VALUE carries a well-known credential shape, whatever the key is called
+# The second matters because the naming convention is the thing most likely to be skipped
+# by whoever is in a hurry.
+_SECRETISH_KEY_RX = re.compile(
+    r"(^|_)(PAT|TOKEN|SECRET|SECRETS|PASSWORD|PASSWD|PASS|CREDENTIAL|CREDENTIALS|"
+    r"APIKEY|API_KEY|ACCESS_KEY|SECRET_KEY|PRIVATE_KEY|SIGNING_KEY|CLIENT_SECRET|"
+    r"AUTH_TOKEN|BEARER|SESSION_KEY|COOKIE_SECRET)(_|$)"
+)
+_SECRET_VALUE_RX = re.compile(
+    r"(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}|"
+    r"sk-(?:ant-)?[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|"
+    r"AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|"
+    r"npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|dop_v1_[a-f0-9]{60,}|"
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----)"
+)
+# Storing a *reference* to a secret is the correct pattern and must stay frictionless;
+# only the material itself is gated. Empty/off values clear a key and are equally fine.
+_SECRET_INDIRECTION_RX = re.compile(
+    r"^(env:|\$\{[A-Z0-9_]+\}$|\$[A-Z0-9_]+$|keychain:|vault:|op://|aws-sm:|gcp-sm:)", re.I
+)
+_SECRET_EMPTYISH = {"", "-", "none", "null", "unset", "false", "0", "disabled", "redacted"}
+
+
+def _redacted(value: str) -> str:
+    """Describe a secret without repeating it.
+
+    _assess() embeds the offending value in its reason, and that reason is written to the
+    approvals table. Echoing a credential there would answer a plaintext credential in one
+    table with a plaintext credential in another — with a human reading it in a UI. The
+    digest is enough to tell two pushes apart and to match against a rotation record.
+    """
+    v = value or ""
+    digest = hashlib.sha1(v.encode()).hexdigest()[:8]
+    return f"<redacted {len(v)} chars, sha1:{digest}>"
+
+
+def _looks_secret(key: str, value: str) -> bool:
+    v = (value or "").strip()
+    if _SECRET_VALUE_RX.search(v):
+        return True
+    if not _SECRETISH_KEY_RX.search(key.strip().upper()):
+        return False
+    if v.lower() in _SECRET_EMPTYISH or _SECRET_INDIRECTION_RX.match(v):
+        return False
+    return True
+
 
 def _assess(key: str, value: str) -> tuple:
     """Return (risk, reason): risk is 'high' (gate) or 'low' (auto-approve)."""
     k = key.strip().upper()
     v = (value or "").strip()
+
+    # First, so that no later rule can echo credential material into the card's reason.
+    if _looks_secret(key, v):
+        return "high", (
+            f"{k} looks like credential material {_redacted(v)}; fleet_config is plaintext "
+            "and is not a secret store — keep the secret in the keychain/env and push a "
+            "reference (env:NAME) if the fleet needs to find it"
+        )
 
     if _INJECTION_RX.search(v):
         return "high", f"value contains shell metacharacter(s): {v[:80]!r}"

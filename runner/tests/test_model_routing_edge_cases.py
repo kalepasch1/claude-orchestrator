@@ -23,6 +23,34 @@ import app_triage
 import orchestrator_config
 
 
+def _route_via_policy(app, operation, task_class="qa"):
+    """app_triage.route() with the two database-backed short-circuits removed.
+
+    route() consults a learned per-operation route and the quality-per-dollar
+    bandit before it reaches model_policy, and both read the database. A test
+    about ROUTING POLICY that leaves them in place is really a test about
+    whatever telemetry happens to be in the table that day.
+
+    There are THREE such layers ahead of the round-robin ring, not one:
+
+        app_triage._learned_route   per-operation learned route (DB)
+        qpd_bandit.best             quality-per-dollar bandit (DB)
+        model_catalog.choose        model-level optimizer (DB)
+
+    Each returns a stable answer when telemetry is present, and any one of them
+    is enough to make a rotation test report no rotation. _learned_route is a
+    module attribute and is patched by the caller; the other two are imported
+    inside the functions that use them, so they are neutralised here through
+    sys.modules.
+    """
+    bandit = MagicMock()
+    bandit.best.return_value = (None, None, None)
+    catalog = MagicMock()
+    catalog.choose.return_value = None
+    with patch.dict(sys.modules, {"qpd_bandit": bandit, "model_catalog": catalog}):
+        return app_triage.route(app, operation, task_class=task_class)["provider"]
+
+
 class EdgeCaseInputHandlingTest(unittest.TestCase):
     """Test model routing robustness to malformed/extreme inputs."""
 
@@ -40,12 +68,27 @@ class EdgeCaseInputHandlingTest(unittest.TestCase):
         self.assertEqual(provider, "deepseek")
 
     def test_extreme_token_length_prompt(self):
-        """Very long prompt should not crash routing."""
+        """Very long prompt should not crash routing.
+
+        agentic=True routes through agentic_coders, not through mg.available, so
+        patching only the latter left this assertion at the mercy of whatever
+        coders happened to be configured — and of whatever an earlier test in
+        this file had left in os.environ. It passed alone and returned 'codex'
+        in file order, which is a test measuring the machine rather than the
+        code. Both seams are controlled now, so the answer is the routing
+        logic's own.
+        """
         extreme_prompt = "x" * 1000000  # 1M characters
-        # Routing should succeed regardless of prompt length
-        with patch.object(model_policy.mg, "available", return_value=["claude"]):
+        self.assertEqual(len(extreme_prompt), 1000000)
+
+        coder = MagicMock()
+        coder.route.return_value = {"provider": "claude", "model": "claude-haiku-4-5-20251001",
+                                    "coder": "claude", "cap": 10, "cost": 1}
+        with patch.dict(sys.modules, {"agentic_coders": coder}), \
+                patch.object(model_policy.mg, "available", return_value=["claude"]):
             provider, model, why = model_policy.choose("review", agentic=True)
         self.assertEqual(provider, "claude")
+        self.assertTrue(model, "routing must return a model, not an empty string")
 
     def test_malformed_diff_metadata_skip_llm_verify(self):
         """should_skip_llm_verify should handle missing fields gracefully."""
@@ -99,15 +142,61 @@ class IdempotencyTest(unittest.TestCase):
         self.assertEqual(route1["model"], route2["model"])
 
     def test_successive_routes_rotate_providers_by_design(self):
-        """The behaviour the test above must not be read as forbidding."""
+        """The behaviour the test above must not be read as forbidding.
+
+        Two reasons it failed on master, and neither was the rotation.
+
+        First, three database-backed layers sit ahead of the round-robin ring —
+        the learned per-operation route, the quality-per-dollar bandit, and the
+        model-level optimizer — and each returns a stable answer once telemetry
+        exists. Any one of them is enough to make a rotation test report no
+        rotation, so what the test actually measured was whatever was in the
+        tables that day. That is exactly the flaw the sibling test above
+        documents about itself ("it was green here and failed the moment the
+        telemetry behind it shifted"); that one pinned _rr_next and stopped
+        there, because it does not need the ring to run. This one does.
+
+        Second, rotation is opt-in (DIVERSIFY_DEFAULT is "false"), so the mode
+        under test has to be turned on. Otherwise routing is in cheapest-first
+        mode, where capable[0] comes back regardless of the round-robin counter.
+        """
         seen = []
-        with patch.object(model_policy.mg, "available", return_value=["deepseek", "google"]), \
+        with patch.dict(os.environ, {"ORCH_DIVERSIFY_MODELS": "true",
+                                     "ORCH_CONFIDENTIAL_MODE": "false"}), \
+             patch.object(app_triage, "_learned_route", return_value=None), \
+             patch.object(app_triage.mg, "available",
+                          return_value=["deepseek", "google"]), \
+             patch.object(model_policy.mg, "available",
+                          return_value=["deepseek", "google"]), \
              patch.object(model_policy, "_least_used", return_value=None):
             for i in (0, 1):
                 with patch.object(model_policy, "_rr_next", return_value=i):
-                    seen.append(app_triage.route(
-                        "test-app", "op1", task_class="qa")["provider"])
+                    seen.append(_route_via_policy("test-app", "op1"))
         self.assertEqual(len(set(seen)), 2, f"expected rotation, got {seen}")
+
+    def test_confidential_mode_overrides_the_diversify_flag(self):
+        """A confidentiality control an ordinary tuning knob can defeat is not one.
+
+        ORCH_CONFIDENTIAL_MODE used to supply only a DEFAULT for
+        ORCH_DIVERSIFY_MODELS, so a fleet that had set the flag — which is the
+        whole point of the flag — kept spreading confidential work across every
+        vendor in the stack while believing confidential mode had stopped it.
+        """
+        with patch.dict(os.environ, {"ORCH_DIVERSIFY_MODELS": "true",
+                                     "ORCH_CONFIDENTIAL_MODE": "true"}):
+            self.assertFalse(model_policy._diversify_enabled())
+
+        with patch.dict(os.environ, {"ORCH_DIVERSIFY_MODELS": "true",
+                                     "ORCH_CONFIDENTIAL_MODE": "false"}):
+            self.assertTrue(model_policy._diversify_enabled())
+
+    def test_rotation_is_off_unless_asked_for(self):
+        # Flipping a fleet-wide routing (and therefore spend) default is an
+        # operator's decision, not a bug fix's.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ORCH_DIVERSIFY_MODELS", "ORCH_CONFIDENTIAL_MODE")}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(model_policy._diversify_enabled())
 
     def test_db_insert_with_409_conflict_retries_as_upsert(self):
         """DB insert that returns 409 should retry with merge-duplicates."""

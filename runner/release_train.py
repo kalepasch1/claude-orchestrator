@@ -17,11 +17,14 @@ Flow per project:
      deploy_verify then confirms Vercel success or rolls back to last_good.
 """
 import concurrent.futures, os, sys, subprocess, datetime, json, tempfile, threading
+import contextlib
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(RUNNER_DIR)
 RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runtime"))
 RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
 sys.path.insert(0, RUNNER_DIR)
+import build_slots
+import gate_env          # node on PATH for every gate that shells out
 import db
 import commit_overlay
 import delivery_lease
@@ -30,6 +33,7 @@ import integration_runtime
 import paused_host_guard
 import release_manifest
 import stderr_digest
+import stdio_guard      # a lost log pipe must never be recorded as a failed suite
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -540,13 +544,28 @@ def _recent_failed_gate(project, staging_sha, gate):
     """True when this exact staging SHA already failed this gate recently."""
     if not staging_sha or RED_GATE_COOLDOWN_MIN <= 0:
         return False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # BOUND BY TIME, NOT BY ROW COUNT. This asked for the newest 50 failed rows and
+    # then discarded every one outside the cooldown window -- so the window was
+    # enforced client-side over a server-side cap that knows nothing about it. The
+    # fleet's own truncation detector had been saying so, from this exact line:
+    #
+    #   [db] TRUNCATED SCAN release_train.py:546 -> releases returned exactly its
+    #   limit (50) ordered by created_at.desc. Anything past the cap is invisible.
+    #
+    # A project that fails more than 50 times inside the cooldown then stops seeing
+    # its own earlier failure and re-runs the gate it is meant to be damping --
+    # which is the failure this cooldown exists to prevent. sustainable-barks alone
+    # carries 45 rows on one cause. Ask the server for the window the code actually
+    # means; the limit stays only as a ceiling on a pathological reply.
+    cutoff = now - datetime.timedelta(minutes=RED_GATE_COOLDOWN_MIN)
     try:
         rows = db.select("releases", {"select": "project,deploy_status,note,created_at,to_sha",
                                       "project": f"eq.{project}", "deploy_status": "eq.failed",
-                                      "order": "created_at.desc", "limit": "50"}) or []
+                                      "created_at": f"gte.{cutoff.isoformat()}",
+                                      "order": "created_at.desc", "limit": "500"}) or []
     except Exception:
         return False
-    now = datetime.datetime.now(datetime.timezone.utc)
     tag = f"[gate:{gate}]"
     for row in rows:
         if str(row.get("to_sha") or "") != str(staging_sha):
@@ -565,6 +584,43 @@ def _recent_failed_gate(project, staging_sha, gate):
         if created and (now - created).total_seconds() <= RED_GATE_COOLDOWN_MIN * 60:
             return True
     return False
+
+
+# Gates whose failures the train RECORDS with a cooldown but never HONOURED as one.
+# `copy`, `qa`, `build` and `refresh` each consult _recent_failed_gate before doing
+# their expensive work; the push family never did, so the cooldown damped only the
+# releases rows, not the retries behind them.
+#
+# MEASURED 2026-09-02, sustainable-barks, one staging batch (c1731589, 17 hours):
+#     [gate:push] rows written .................  5   (dedupe working as designed)
+#     untagged summary rows written ............ 38   (= full release passes actually run)
+# Every one of those 38 passes re-integrated, re-ran the suite, re-ran the production
+# build and re-attempted the identical push, holding one of only two build slots each
+# time. That is the source of the `waited 453s for a slot` and the 900s releasetrain
+# TIMEOUTs in .runtime/logs/releasetrain.log.
+_PUSH_FAMILY_GATES = ("push", "staging-publish", "proof", "test-proof")
+
+
+def _push_family_cooling(project, staging_sha):
+    """The gate name that recently failed for this exact staging tip, or None.
+
+    Keyed on the PRE-INTEGRATION staging tip, which is what the push family recorded in
+    every observed case (integration of an already-current prod is a fast-forward and
+    mints no new commit). When integration DOES mint a merge commit the recorded SHA
+    differs, this returns None, and the pass proceeds exactly as it does today — the
+    degradation is "no skip", never "skip something that would have succeeded".
+    """
+    if not staging_sha:
+        return None
+    for gate in _PUSH_FAMILY_GATES:
+        try:
+            if _recent_failed_gate(project, staging_sha, gate):
+                return gate
+        except Exception:
+            # FAIL-OPEN. A control-plane blip must cost one redundant pass, never a
+            # release that silently never happens.
+            return None
+    return None
 
 
 def _insert_release(row):
@@ -728,8 +784,10 @@ def _qa_ref(repo, ref, command, timeout=1800):
             prepared, prepare_log = _prepare_generated_types(worktree)
             if not prepared:
                 return False, "Nuxt type preparation failed:\n" + prepare_log
-            result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
-                                    text=True, timeout=timeout)
+            with build_slots.hold_if_build(command, "baseline-qa"):
+                result = subprocess.run(["bash", "-lc", command], cwd=worktree,
+                                        capture_output=True, text=True, timeout=timeout,
+                                        env=gate_env.gate_env())
             log = (
                 (result.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
                 + "\n"
@@ -802,6 +860,11 @@ def _refresh_staging_with_prod(repo, prod):
             repaired, repair_note = _repair_lockfile_only_merge(tmp)
             if repaired:
                 return True, repair_note
+            cached, cache_note = _repair_regenerable_only_merge(tmp)
+            if cached:
+                return True, cache_note
+            if cache_note:
+                repair_note = (repair_note + "; " + cache_note).strip("; ")
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
             log = ((r.stdout or "")[-1500:] + "\n" + (r.stderr or "")[-1500:]).strip()
             if repair_note:
@@ -873,6 +936,195 @@ def _repair_lockfile_only_merge(worktree):
     if committed.returncode != 0:
         return False, f"regenerated lockfile commit failed: {(committed.stderr or '')[-300:]}"
     return True, "staging refreshed; lockfile-only conflict regenerated deterministically"
+
+
+#: Append-only transcripts: every write adds lines, nothing rewrites them. They are NOT
+#: regenerable -- nothing can rebuild a record of what an agent did -- so they are
+#: deliberately absent from regenerable_artifacts. But an append-only file has a merge
+#: that loses nothing: keep BOTH sides.
+#:
+#: Found 2026-09-02, from the fix one layer down naming its own blocker. Once the tag
+#: cache stopped failing kalepasch-com's releases, the row said:
+#:
+#:   lockfile auto-repair: not a lockfile-only conflict;
+#:   conflict includes non-regenerable file(s): .aider.chat.history.md
+#:
+#: which conflicts on every refresh for the same reason the cache did -- two branches
+#: appended different lines.
+_APPEND_ONLY_FILES = (
+    ".aider.chat.history.md",
+    ".aider.input.history",
+)
+
+
+def _is_append_only(path):
+    # `lstrip("./")` would eat the leading dot of EVERY dotfile, so ".aider.chat.
+    # history.md" became "aider.chat.history.md" and matched nothing. My own tests
+    # caught it; regenerable_artifacts.is_regenerable() carries a comment warning
+    # about this exact mistake, which I then made one file over.
+    name = str(path or "").strip()
+    while name.startswith("./"):
+        name = name[2:]
+    return any(name == marker or name.endswith("/" + marker)
+               for marker in _APPEND_ONLY_FILES)
+
+
+def _union_merge_file(worktree, path):
+    """Resolve one conflicted append-only file by keeping BOTH sides. True on success.
+
+    Uses git's own union merge over the three index stages, so the result is what
+    `merge=union` in .gitattributes would have produced -- no bespoke concatenation
+    that could drop a side or reorder it.
+    """
+    import tempfile as _tf
+    stages = {}
+    try:
+        for stage, key in ((1, "base"), (2, "ours"), (3, "theirs")):
+            r = subprocess.run(["git", "show", ":%d:%s" % (stage, path)], cwd=worktree,
+                               capture_output=True, timeout=60)
+            # Stage 1 is absent for a file added on both sides; an empty base is the
+            # right answer there, and git merge-file accepts it.
+            stages[key] = r.stdout if r.returncode == 0 else b""
+        if not stages["ours"] and not stages["theirs"]:
+            return False
+        paths = {}
+        for key, blob in stages.items():
+            fh = _tf.NamedTemporaryFile(prefix="union-%s-" % key, delete=False)
+            fh.write(blob)
+            fh.close()
+            paths[key] = fh.name
+        merged = subprocess.run(
+            ["git", "merge-file", "--union", "-p",
+             paths["ours"], paths["base"], paths["theirs"]],
+            cwd=worktree, capture_output=True, timeout=60)
+        # merge-file exits with the number of conflicts; --union leaves none, but a
+        # non-zero exit with output is still a complete union result.
+        if not merged.stdout and merged.returncode != 0:
+            return False
+        with open(os.path.join(worktree, path), "wb") as out:
+            out.write(merged.stdout)
+        added = subprocess.run(["git", "add", "--", path], cwd=worktree,
+                               capture_output=True, text=True, timeout=30)
+        return added.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        for name in list(locals().get("paths", {}).values()):
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
+
+
+def _repair_regenerable_only_merge(worktree):
+    """Resolve a refresh conflict when EVERY conflicting file is machine output.
+
+    Source conflicts remain fail-closed, exactly as _repair_lockfile_only_merge above
+    keeps them. The difference is what "repair" means: a lockfile is regenerated from
+    the manifest because its contents decide what ships, while a cache has no correct
+    contents at all -- both sides are equally meaningless, so taking one and moving on
+    IS the resolution.
+
+    Why this exists. On 2026-09-02, 14 release failures across kalepasch-com,
+    santas-secret-workshop and beethoven were staging/prod refresh conflicts, and one
+    named its file outright:
+
+        [gate:refresh] staging/prod refresh failed — self-heal queued:
+        nflict in .aider.tags.cache.v4/cache.db-shm
+        Automatic merge failed; fix conflicts and t...
+
+    That is aider's symbol-tag database. Two of the fleet's repos track it with no
+    .gitignore entry while the other four ignore it, and every agent run rewrites it,
+    so it conflicts on every single refresh and each one costs a failed release plus a
+    queued relfix task.
+
+    Classification is regenerable_artifacts', not a list of its own: that module already
+    holds the fleet's answer to "would losing this destroy something nobody can get
+    back?", and it says loudly what it exempted. `--ours` keeps the staging side, which
+    the next agent run overwrites anyway.
+    """
+    unresolved = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    files = [name.strip() for name in (unresolved.stdout or "").splitlines() if name.strip()]
+    if unresolved.returncode != 0 or not files:
+        return False, ""
+    try:
+        import regenerable_artifacts
+    except ImportError as exc:
+        return False, f"regenerable-artifact classifier unavailable ({exc})"
+    append_only = [name for name in files if _is_append_only(name)]
+    regenerable = [name for name in files
+                   if name not in append_only
+                   and regenerable_artifacts.is_regenerable(name)]
+    real = [name for name in files
+            if name not in append_only and name not in regenerable]
+    if real:
+        # Say what was NOT exempt: an operator reading this needs to know the refusal
+        # was about source, not about the cache that happens to be in the same list.
+        return False, ("conflict includes non-regenerable file(s): "
+                       + ", ".join(real[:5]) + (" ..." if len(real) > 5 else ""))
+    for name in append_only:
+        # UNION, NOT "OURS". These are append-only transcripts of what agents did, and
+        # nothing can rebuild them -- which is exactly why they were kept out of the
+        # regenerable list. Taking one side would DELETE the other side's history.
+        # Concatenating both sides is the correct merge for an append-only log and
+        # loses nothing, which is the only reason this file class can be resolved at
+        # all.
+        if not _union_merge_file(worktree, name):
+            return False, ("could not union-merge append-only file %s" % name)
+    for name in regenerable:
+        taken = subprocess.run(["git", "checkout", "--ours", "--", name], cwd=worktree,
+                               capture_output=True, text=True, timeout=30)
+        if taken.returncode == 0:
+            staged = subprocess.run(["git", "add", "--", name], cwd=worktree,
+                                    capture_output=True, text=True, timeout=30)
+            if staged.returncode != 0:
+                return False, "could not stage resolved cache file %s" % name
+            continue
+        # MODIFY/DELETE. There is no "ours" stage when one side deleted the file, which
+        # is the NORMAL case here now that the cache is untracked on the integration
+        # branch: git reports "deleted in HEAD and modified in origin/main". Removing it
+        # is the same resolution -- the side that deleted it did so deliberately.
+        removed = subprocess.run(["git", "rm", "-q", "--ignore-unmatch", "--", name],
+                                 cwd=worktree, capture_output=True, text=True, timeout=30)
+        if removed.returncode != 0:
+            # stderr_digest, not a bare tail slice. git puts the cause on the FIRST
+            # line ("fatal: pathspec ... did not match any files") and the last 160
+            # characters are usually the hint that follows it -- which is precisely
+            # how "failed to push some refs" and "not a git repository" each sent a
+            # reader after the wrong cause earlier today. Pinned by
+            # test_no_tail_truncation_left_in_the_repaired_modules, which caught this
+            # line: I reintroduced the exact pattern that test exists to forbid.
+            return False, ("could not resolve modify/delete on %s: %s"
+                           % (name, stderr_digest.digest(removed.stderr, 160)))
+    # NO BLANKET `git add -A -- <every file>` HERE. Each path above is staged by the
+    # step that resolved it -- _union_merge_file() adds, `git rm` stages its own
+    # deletion -- and a pathspec that no longer exists makes `git add` fail outright:
+    #
+    #   fatal: pathspec '.aider.tags.cache.v4/cache.db' did not match any files
+    #
+    # which is exactly how this returned "could not stage resolved machine output" on
+    # the first real conflict it was pointed at, AFTER having resolved every file
+    # correctly. Verified against pasch's live dev/main conflict on 2026-09-02.
+    remaining = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"],
+                               cwd=worktree, capture_output=True, text=True, timeout=30)
+    if (remaining.stdout or "").strip():
+        return False, "unresolved files remain after machine-output resolution"
+    committed = subprocess.run(["git", "commit", "--no-edit"], cwd=worktree,
+                               capture_output=True, text=True, timeout=60)
+    if committed.returncode != 0:
+        return False, f"machine-output merge commit failed: {(committed.stderr or '')[-300:]}"
+    how = []
+    if regenerable:
+        how.append("took the staging side for %d cache file(s)" % len(regenerable))
+    if append_only:
+        how.append("kept BOTH sides of %d append-only transcript(s)" % len(append_only))
+    detail = "%s: %s" % (", ".join(files[:5]), "; ".join(how))
+    print("release_train: refresh conflict was machine output only — %s" % detail,
+          flush=True)
+    return True, "staging refreshed; conflict was machine output only — %s" % detail
 
 
 def _merge_into_staging(repo, branch):
@@ -989,7 +1241,7 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
                 prepared, prepare_log = _prepare_generated_types(tmp)
                 if not prepared:
                     return False, "qa", "Nuxt type preparation failed:\n" + prepare_log
-                qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp,
+                qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, env=gate_env.gate_env(),
                                     capture_output=True, text=True, timeout=1800)
                 if qa.returncode != 0:
                     return False, "qa", (
@@ -1007,6 +1259,90 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
     if not bok:
         return False, "build", blog or "post-integration build red"
     return True, "", ""
+
+
+#: `npm test` IS `npm run test`. npm defines `test` as a built-in alias for
+#: `run test`, and the same holds for yarn and pnpm, so these are two spellings of one
+#: command -- not two commands that happen to be similar.
+#:
+#: This matters because proof identity is an EXACT string match on the command.
+#: Measured across the fleet 2026-09-02, comparing each project's configured test_cmd
+#: with what production_push_guard.detect_test_cmd() asks for:
+#:
+#:     project                  configured          guard wants      same command?
+#:     pareto-2080              npm test            npm run test     yes, spelled differently
+#:     racefeed                 npm test            npm run test     yes
+#:     santas-secret-workshop   npm test            npm run test     yes
+#:     tomorrow                 npm test            npm run test     yes
+#:     smarter                  npx vue-tsc --noEmit npm run test    NO
+#:     apparently-law           npm run typecheck   npm run test     NO
+#:     sustainable-barks        true                npm run test     NO
+#:
+#: Four projects would have been refused for a spelling difference. The three below
+#: them are genuinely different commands and must stay refused.
+_TEST_ALIASES = {
+    "npm test": "npm run test",
+    "yarn test": "yarn run test",
+    "pnpm test": "pnpm run test",
+}
+
+
+def _canonical_test_cmd(command):
+    """One spelling for one command. Only the package managers' own aliases."""
+    text = " ".join(str(command or "").split())
+    return _TEST_ALIASES.get(text, text)
+
+
+def _persist_production_test_proof(repo, commit, ran_cmd):
+    """Persist the SUITE proof the production hook asks for, or say why it cannot.
+
+    The twin of _persist_production_build_proof below, and it exists for the same
+    reason one layer over. That function's own docstring records the original finding:
+    "The release train built the candidate successfully but recorded only a QA proof.
+    The production hook deliberately accepts only kind=build." The identical mismatch
+    was still live for the SUITE, and only became visible once the build proof and the
+    staging-containment check stopped failing first:
+
+        production_push_guard: INTEGRATED — promoting the tip of origin/orchestrator/dev
+        production_push_guard: CONTENT OK — 191 -> 253 files
+        production_push_guard: BUILD GREEN — reused green build proof for 11fad7ff6a31
+        production_push_guard: BLOCKED — production push without a green suite
+
+    The guard asks proof_graph for kind="test" under detect_test_cmd(repo). The release
+    train recorded kind="qa" under its own qa_cmd. Same commit, same tree, a name the
+    reader never asks for.
+
+    WHAT THIS DELIBERATELY WILL NOT DO. It records a proof only when the command that
+    ACTUALLY RAN is the command the guard will ask for. Measured on sustainable-barks:
+    the guard wants `npm run test`, and the release ran `true`, because that project's
+    configured test_cmd is literally `true`. Writing a kind="test" proof from that run
+    would certify that a no-op passed -- a fabricated green, which is the one thing a
+    proof must never be. It returns the mismatch instead, so the release fails with a
+    sentence naming both commands rather than with git's "failed to push some refs".
+
+    Same shape as the build twin: read the proof back before claiming it, because proof
+    persistence is part of the release gate, not best-effort telemetry.
+    """
+    try:
+        import production_push_guard
+        import proof_graph
+        guard_cmd = str(production_push_guard.detect_test_cmd(repo) or "").strip()
+        ran = str(ran_cmd or "").strip()
+        if not guard_cmd:
+            # The guard gates on nothing here, so there is nothing to certify.
+            return True, "no test script in package.json; nothing to gate on"
+        if _canonical_test_cmd(ran) != _canonical_test_cmd(guard_cmd):
+            return False, (f"release ran `{ran or '(nothing)'}` but the production guard "
+                           f"requires `{guard_cmd}`; refusing to certify a suite that did "
+                           f"not run")
+        # Recorded under the GUARD'S spelling, because that is the string it will look
+        # the proof up by.
+        proof_graph.record_verification(repo, commit, guard_cmd, "test", True)
+        if not proof_graph.reusable_verification(repo, commit, guard_cmd, "test"):
+            return False, "exact production test proof was not durably readable after write"
+        return True, guard_cmd
+    except Exception as exc:
+        return False, f"production test proof persistence failed: {type(exc).__name__}: {exc}"
 
 
 def _persist_production_build_proof(repo, commit, build_cmd):
@@ -1158,6 +1494,12 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             _insert_failed_release(project, "proof", ahead, release_base_sha, to_sha,
                                    proof_note[-500:])
             return False, to_sha, proof_note
+        # The suite proof the same guard asks for, recorded under the name it reads.
+        tproof_ok, tproof_note = _persist_production_test_proof(repo, to_sha, test_cmd)
+        if not tproof_ok:
+            _insert_failed_release(project, "test-proof", ahead, release_base_sha, to_sha,
+                                   tproof_note[-500:])
+            return False, to_sha, tproof_note
         # FENCE CHECK (2026-08-13): the last possible moment before production moves.
         # Everything above — integrate, re-gate, test, build proof — takes minutes, and
         # the lease can lapse or be taken over inside that window. Verifying here rather
@@ -1179,6 +1521,58 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
         if shadow_mode.refuse("promote-to-production", project=project,
                               subject=prod, detail=f"{STAGING} -> origin/{prod} ({to_sha[:12]})"):
             return False, to_sha, "shadow mode: promotion withheld, production was not moved"
+        # PUBLISH THE INTEGRATED TIP TO STAGING BEFORE PROMOTING IT.
+        #
+        # _integrate_prod_into_staging() above creates a NEW merge commit on the local
+        # STAGING branch. Pushing that straight to prod means promoting a commit that
+        # exists only on this machine's disk -- and production_push_guard refuses it,
+        # correctly and by design:
+        #
+        #   production_push_guard: BLOCKED — production push that never met staging
+        #   11fad7ff6a31 is not contained in origin/orchestrator/dev — 1 commit(s)
+        #   would reach production without ever being integrated on staging.
+        #
+        # sustainable-barks failed 45 releases on 2026-09-02 with nothing in the row but
+        # git's last line, "error: failed to push some refs". The refusal above it was
+        # the actual reason, and the guard's own remedy text is exactly this sequence:
+        #
+        #     git push origin HEAD:refs/heads/orchestrator/dev
+        #     git push origin <new-dev-sha>:refs/heads/main
+        #
+        # FAIL-CLOSED. If the integrated tip cannot reach the shared staging branch, the
+        # release does not happen: promoting it anyway is how a machine's local merge
+        # ends up in production without ever meeting the rest of the in-flight work,
+        # which is the entire failure this guard exists to prevent.
+        if _git(repo, "merge-base", "--is-ancestor", to_sha,
+                f"origin/{STAGING}").returncode != 0:
+            if shadow_mode.refuse("push-integration-branch", project=project,
+                                  subject=STAGING,
+                                  detail=f"{STAGING} -> origin/{STAGING} ({to_sha[:12]})"):
+                return False, to_sha, ("shadow mode: staging publish withheld, "
+                                       "production was not moved")
+            sp = _git(repo, "push", "origin", f"{STAGING}:{STAGING}", timeout=300)
+            if sp.returncode != 0:
+                slog = ((sp.stdout or "")[-1000:] + "\n" + (sp.stderr or "")[-1000:]).strip()
+                if _is_non_fast_forward(sp) and attempt < attempts:
+                    # origin/<staging> moved while we were integrating. Re-integrate on
+                    # top of it and try the whole sequence again.
+                    continue
+                # QUEUE THE FIX, don't just record the failure. 89906b82 put this
+                # publish AHEAD of the production push, which means an unreachable or
+                # rejecting origin now stops the release HERE and never reaches the
+                # push gate below -- and the push gate is where the self-heal was.
+                # So the step that replaced it inherited the recording and dropped the
+                # fixing: a failed publish left a red release and nothing working on it.
+                # Caught by test_non_conflict_push_failure_records_real_stderr, which
+                # asserts `self.healed` and had been failing since that commit.
+                _self_heal_release_conflict(p, project, repo, prod,
+                                            slog or "push staging to origin failed")
+                _insert_failed_release(
+                    project, "staging-publish", ahead, release_base_sha, to_sha,
+                    f"push {STAGING}->origin/{STAGING} failed: "
+                    f"{stderr_digest.digest(slog, 160)}")
+                return False, to_sha, slog or "push staging to origin failed"
+            _git(repo, "fetch", "origin", STAGING)
         pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
         if pr.returncode == 0:
             # Keep local prod fresh when possible, but do not fail a good remote release
@@ -1256,6 +1650,78 @@ def _release_window_open(project, repo, ahead):
 def _release_gate_slug(project, staging_sha):
     """Stable identity for one staging batch's operator review card."""
     return f"release:{project}:{(staging_sha or '')[:12]}"
+
+
+def _batch_slugs(manifest_tasks, candidates):
+    """Every task slug this release batch carries."""
+    slugs = set()
+    for src in (manifest_tasks or [], candidates or []):
+        for t in src:
+            try:
+                sl = str((t or {}).get("slug") or "").strip()
+            except AttributeError:
+                continue
+            if sl:
+                slugs.add(sl)
+    return sorted(slugs)
+
+
+def _release_value_gate(project, manifest, manifest_tasks, candidates):
+    """Hold a batch that carries an improvement already measured as a regression.
+
+    This is the only gate on the promotion path that asks whether a change HELPED
+    rather than whether it COMPILED. It reads improvement_verify's verdicts, which
+    are produced by re-running each proposal's own declared metric_query after its
+    measurement window closes -- a falsifiable prediction, not a model's opinion.
+
+    Returns None to proceed, or a hold dict (same contract as the operator gate:
+    the batch stays on staging, nothing is lost, a later attempt re-evaluates).
+    Set ORCH_RELEASE_VALUE_GATE=false to disable.
+    """
+    if not _truthy("ORCH_RELEASE_VALUE_GATE", True):
+        return None
+    slugs = _batch_slugs(manifest_tasks, candidates)
+    if not slugs:
+        return None
+    regressed = []
+    try:
+        # PostgREST `in.(...)` has a URL-length ceiling; chunk it.
+        for i in range(0, len(slugs), 40):
+            chunk = slugs[i:i + 40]
+            quoted = ",".join('"%s"' % c.replace('"', '') for c in chunk)
+            rows = db.select("improvement_proposals", {
+                "select": "task_slug,status,title,realized_multiplier,required_margin",
+                "status": "eq.regressed",
+                "task_slug": f"in.({quoted})",
+                "limit": "40"}) or []
+            regressed.extend(rows)
+    except Exception as exc:
+        # A gate that cannot read its evidence must not silently pass the batch,
+        # but it must not wedge the train either. Log loudly and proceed.
+        print(f"[value-gate] {project}: could not read improvement verdicts ({exc}); "
+              f"proceeding without the value check")
+        return None
+    if not regressed:
+        if manifest:
+            try:
+                release_manifest.record_gate(manifest["id"], "value", True,
+                                             command=f"{len(slugs)} slug(s); no measured regression")
+            except Exception:
+                pass
+        return None
+
+    names = ", ".join(str(r.get("task_slug")) for r in regressed[:5])
+    note = (f"value gate: {len(regressed)} improvement(s) in this batch were measured as "
+            f"REGRESSIONS against their own declared metric ({names}). Holding on staging. "
+            f"Revert or re-scope them, or set ORCH_RELEASE_VALUE_GATE=false to override.")
+    print(f"[value-gate] {project}: HOLD -- {note}")
+    if manifest:
+        try:
+            release_manifest.record_gate(manifest["id"], "value", False, command=note[:400])
+        except Exception:
+            pass
+    return {"project": project, "value": "RED", "regressed": [r.get("task_slug") for r in regressed],
+            "note": note}
 
 
 def _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha, ahead,
@@ -1377,7 +1843,7 @@ def _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha
             "note": f"release approval card created for {ahead} changes; awaiting operator"}
 
 
-def _run_for_unlocked(project, repo_override=None):
+def _run_for_unlocked(project, repo_override=None, lock_lease=None):
     p = (db.select("projects", {"select": "*", "name": f"eq.{project}"}) or [{}])[0]
     repo = repo_override or p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
@@ -1410,6 +1876,22 @@ def _run_for_unlocked(project, repo_override=None):
     release_base = _release_base_ref(repo, prod)
     release_base_sha = _git(repo, "rev-parse", release_base).stdout.strip()
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+
+    def _lock_paused():
+        """Put the repo lock down for a long gate, and refuse to go on if staging moved.
+
+        The suite and the production build run in commit_overlay scratch dirs; they
+        read the canonical repo and never write it. Holding the lock across them is
+        what starved the merge train (43 minutes on one pass, 607 repo-lock skips,
+        zero merges fleet-wide). What the lock WAS still buying is the invariant that
+        STAGING does not move between gating a SHA and pushing it -- so the pause
+        re-acquires and re-checks exactly that, and raises StagingMoved if it changed.
+        """
+        if lock_lease is None or not lock_lease:
+            return contextlib.nullcontext(False)
+        return lock_lease.paused(
+            verify=lambda: _git(repo, "rev-parse", STAGING).stdout.strip() == staging_sha)
+
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
     if _capacity_mode():
@@ -1459,6 +1941,7 @@ def _run_for_unlocked(project, repo_override=None):
     # manifest-less release rather than a stopped one.
     delivery_lease.require(delivery_lease.held(project, delivery_lease.ROLE_RELEASER),
                            f"create release manifest for {project}")
+    manifest_tasks = []
     try:
         import release_manifest
         manifest_tasks = release_manifest.discover_tasks(
@@ -1532,32 +2015,48 @@ def _run_for_unlocked(project, repo_override=None):
             return {"project": project, "qa": "HELD", "note": "unchanged staging SHA already failed QA recently"}
         import tempfile, shutil
         tmp = tempfile.mkdtemp(prefix="qa-")
-        try:
+        with _lock_paused():
             try:
-                import dependency_prewarm
-                warmed = dependency_prewarm.ensure_all(repo, reason="release_train_qa")
-                if not warmed.get("ok"):
-                    qlog = "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1600:]
-                    _self_heal_qa(p, project, repo, STAGING, qlog)
-                    _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
-                                           f"staging QA dependency prewarm failed — self-heal queued: "
-                                           f"{stderr_digest.digest(qlog, 160)}")
-                    return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
-            except Exception:
-                pass
-            with commit_overlay.checkout(repo, staging_sha, prefix="release-qa-overlay-") as overlay:
-                tmp = overlay["path"]
-                _link_shared_runtime(repo, tmp)
-                prepared, prepare_log = _prepare_generated_types(tmp)
-                if prepared:
-                    qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
-                    ok = qa.returncode == 0
-                else:
-                    qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
-                    ok = False
-        except Exception as exc:
-            qa = subprocess.CompletedProcess(qa_cmd, 1, "", f"QA overlay failed: {exc}")
-            ok = False
+                try:
+                    import dependency_prewarm
+                    warmed = dependency_prewarm.ensure_all(repo, reason="release_train_qa")
+                    if not warmed.get("ok"):
+                        qlog = "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1600:]
+                        _self_heal_qa(p, project, repo, STAGING, qlog)
+                        _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
+                                               f"staging QA dependency prewarm failed — self-heal queued: "
+                                               f"{stderr_digest.digest(qlog, 160)}")
+                        return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
+                except Exception:
+                    pass
+                with commit_overlay.checkout(repo, staging_sha, prefix="release-qa-overlay-") as overlay:
+                    tmp = overlay["path"]
+                    _link_shared_runtime(repo, tmp)
+                    prepared, prepare_log = _prepare_generated_types(tmp)
+                    if prepared:
+                        # A QA command that IS a production build takes a build slot; every
+                        # ordinary suite is untouched. kalepasch-com's test_cmd is
+                        # `npm run build`, so its release QA compiled the app in this overlay
+                        # with nothing bounding it. See build_slots.command_builds.
+                        with build_slots.hold_if_build(qa_cmd, "release-qa %s" % project):
+                            qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800, env=gate_env.gate_env())
+                        ok = qa.returncode == 0
+                    else:
+                        qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
+                        ok = False
+            except Exception as exc:
+                # `f"QA overlay failed: {exc}"` produced rows reading only
+                # "QA overlay failed: [Errno 32] Broken pipe" — no exception type, no
+                # frame, and stderr_digest keeps 160 characters of it. That is the
+                # third time this session a truncated note has sent a reader (human
+                # or agent) after the wrong cause. Name the type and keep the frames.
+                import traceback as _traceback
+                _frames = "".join(_traceback.format_exception(type(exc), exc,
+                                                              exc.__traceback__))[-2000:]
+                qa = subprocess.CompletedProcess(
+                    qa_cmd, 1, "",
+                    f"QA overlay failed: {type(exc).__name__}: {exc}\n{_frames}")
+                ok = False
         if not ok:
             qlog = (
                 (qa.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
@@ -1610,18 +2109,19 @@ def _run_for_unlocked(project, repo_override=None):
         return held
     if _recent_failed_gate(project, staging_sha, "build"):
         return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
-    try:
-        import build_gate
-        if not bcmd:
-            bcmd = build_gate.build_cmd_for(p, repo) or build_gate.detect_build_cmd(repo) or ""
-        if not bcmd:
-            raise RuntimeError(
-                "no production build command could be determined (set projects.build_cmd, a "
-                "package.json build script, vercel.json buildCommand, or DEFAULT_BUILD_CMD)")
-        bok, blog = build_gate.run_build(repo, STAGING, bcmd)
-    except Exception as exc:
-        bok = False
-        blog = f"release build gate error (fail-closed): {type(exc).__name__}: {exc}"
+    with _lock_paused():
+        try:
+            import build_gate
+            if not bcmd:
+                bcmd = build_gate.build_cmd_for(p, repo) or build_gate.detect_build_cmd(repo) or ""
+            if not bcmd:
+                raise RuntimeError(
+                    "no production build command could be determined (set projects.build_cmd, a "
+                    "package.json build script, vercel.json buildCommand, or DEFAULT_BUILD_CMD)")
+            bok, blog = build_gate.run_build(repo, STAGING, bcmd)
+        except Exception as exc:
+            bok = False
+            blog = f"release build gate error (fail-closed): {type(exc).__name__}: {exc}"
     if not bok:
         if manifest:
             try:
@@ -1631,9 +2131,11 @@ def _run_for_unlocked(project, repo_override=None):
                 pass
         _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
         _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
-                               f"staging BUILD red — self-heal queued: {(blog or '')[-120:]}")
+                               f"staging BUILD red — self-heal queued: "
+                               f"{stderr_digest.digest(blog, 160)}")
         return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
-    proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
+    with _lock_paused():
+        proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
     if not proof_ok:
         _insert_failed_release(project, "proof", ahead, release_base_sha, staging_sha,
                                proof_note[-500:])
@@ -1647,6 +2149,16 @@ def _run_for_unlocked(project, repo_override=None):
     # floors are met — file/consult the kind='release' approval card instead of
     # promoting automatically. Only an approved card (or ORCH_RELEASE_AUTOPROMOTE=true)
     # lets the promotion below run.
+    # VALUE GATE (2026-09-01): every gate above this line asks "is it correct?" -- conflict
+    # markers, IP, tests, build, build provenance. None of them asks "did it help?". Of 1003
+    # improvement proposals, 395 reached status='merged' (their code landed) and exactly ONE
+    # was ever 'validated'. improvement_verify already re-runs each proposal's own
+    # metric_query after its window and writes 'validated' or 'regressed'; nothing on the
+    # promotion path had ever read that verdict. Now a batch carrying a measured regression
+    # does not reach the branch that deploys to production.
+    valued = _release_value_gate(project, manifest, manifest_tasks, candidates)
+    if valued:
+        return valued
     gated = _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha,
                                    int(ahead), qa_note=str(qa_plan.get("reason") or ""))
     if gated:
@@ -1702,6 +2214,17 @@ def _run_for_unlocked(project, repo_override=None):
     pushed = None
     push_log = ""
     if push_on:
+        cooling = _push_family_cooling(project, to_sha)
+        if cooling:
+            # A silent hold is indistinguishable from an idle train (see _hold_for_open_fix);
+            # always say so, and return BEFORE the integrate/suite/build work rather than
+            # after, which is the whole point of the skip.
+            print(f"release_train {project}: staging {to_sha[:12]} already failed "
+                  f"gate={cooling} within {int(RED_GATE_COOLDOWN_MIN)}m — holding this pass "
+                  f"instead of re-running the suite and build to fail the same way")
+            return {"project": project, "prod": prod, "released": 0, "pushed": False,
+                    "push_cooldown_gate": cooling,
+                    "note": f"unchanged staging SHA already failed {cooling} recently"}
         pushed, to_sha, push_log = _integrate_regate_and_push(
             p, project, repo, prod, ahead, release_base_sha, staging_sha,
             test_cmd, require_tests, bcmd, manifest=manifest)
@@ -1758,8 +2281,14 @@ def _run_for_with_repo(project, repo):
     """
     import repo_lock
     timeout = float(os.environ.get("ORCH_RELEASE_LOCK_TIMEOUT_S", "1") or 1)
-    with repo_lock.hold(repo, timeout=timeout) as acquired:
-        if not acquired:
+    # hold_pausable, not hold: the pass puts this lock DOWN around the QA suite and the
+    # production build (both of which run in commit_overlay scratch, never in the
+    # canonical repo) so the merge train is not locked out for the length of a suite.
+    # The lock is taken back and STAGING re-verified before anything is pushed; see
+    # _lock_paused in _run_for_unlocked and repo_lock.Lease.
+    with repo_lock.hold_pausable(repo, timeout=timeout,
+                                 purpose=f"release_train {project}") as lock_lease:
+        if not lock_lease:
             return {"project": project, "note": "release busy; existing train owns repo"}
         lease = delivery_lease.acquire(project, delivery_lease.ROLE_RELEASER)
         if lease is None and delivery_lease.available():
@@ -1767,7 +2296,14 @@ def _run_for_with_repo(project, repo):
                     "note": "another host holds the releaser lease for this repository"}
         try:
             with integration_runtime.isolated_repo(repo, "release_train") as integration_repo:
-                return _run_for_unlocked(project, repo_override=integration_repo)
+                return _run_for_unlocked(project, repo_override=integration_repo,
+                                         lock_lease=lock_lease)
+        except repo_lock.StagingMoved as exc:
+            # Not a failure of this project's code: staging advanced while a long gate
+            # ran, so what was proved green is no longer what would ship. Retry next
+            # pass against the new tip rather than pushing an ungated commit. Kept out
+            # of the failed-release table for the same reason as LeaseLost below.
+            return {"project": project, "note": f"release deferred: {exc}"}
         except delivery_lease.LeaseLost as exc:
             # Not an error to retry here: another host owns this repository now and is
             # entitled to the work. Surfacing it as a note keeps the pass out of the
@@ -1817,6 +2353,27 @@ def run():
     # deploy_status='failed' rows that flipped projects RED and tripped release
     # back-pressure fleet-wide. Refused at the START of a pass only — a pass already in
     # flight is never interrupted.
+    # ORPHAN GUARD (2026-09-03): the cross-host election below is a function of
+    # HEARTBEATS PER HOST, so it cannot separate two release trains on the SAME
+    # machine -- and there were two. db_recovery_sprint launches release_train
+    # (600s) and autopilot (240s) with capture_output=True inside a sprint the
+    # scheduler reaps long before its 2280s of budget is spent; the in-flight
+    # child is reparented to PID 1 and keeps pipes whose readers died with the
+    # parent. Observed live: PID 53526 autopilot.py and PID 5373 merge_train.py,
+    # both PPID 1, both fd 1 -> a pipe with no reader, both still working.
+    # Its DB writes still succeed -- that is a socket -- so it goes on recording
+    # release rows and competing for leases and build slots with the live train.
+    # Stand down instead. stdio_guard.install() below keeps the two halves
+    # independent: a lost log pipe must not fail a gate even when this guard is
+    # switched off.
+    stdio_guard.install()
+    if (stdio_guard.orphaned()
+            and os.environ.get("ORCH_ALLOW_ORPHANED_RELEASE_TRAIN", "false").lower()
+            not in ("1", "true", "yes", "on")):
+        print("release_train: orphaned (parent reaped, log pipe has no reader) — "
+              "standing down rather than running a second train on this machine",
+              flush=True)
+        return {"skipped": "orphaned: parent reaped, not competing with the live train"}
     _ok, _why = paused_host_guard.refuse("release_train")
     if not _ok:
         return {"skipped": _why}
@@ -1843,7 +2400,22 @@ def run():
         return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                thread_name_prefix="release-project") as pool:
-        return list(pool.map(worker, projects))
+        results = list(pool.map(worker, projects))
+    # RELEASE CURRENCY (slice-4): record an inspectable pass/fail snapshot once
+    # per pass. blocked_triage.release_currency_check() already ALERTS when prod
+    # falls behind, but it is write-only, negative-only and self-limited to one
+    # scan per 6h — so "the train ran and the fleet was current" and "nobody
+    # looked" are the same artifact. This makes currency at ship time a positive,
+    # queryable record. Advisory only: it never blocks a release, and it never
+    # writes a release_currency_scan row, which would advance the alarm's gate
+    # and suppress its next real scan.
+    try:
+        import release_currency_report
+        release_currency_report.gate(source="release_train")
+    except Exception as _rcr_exc:
+        print(f"release_train: currency report skipped ({type(_rcr_exc).__name__})",
+              flush=True)
+    return results
 
 
 # ── dependency-aware release orchestration ────────────────────────────────────

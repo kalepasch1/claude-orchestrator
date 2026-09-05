@@ -205,17 +205,41 @@ QUIET_LOAD_PER_CPU = float(os.environ.get("ORCH_QUIET_LOAD_PER_CPU", "0.5"))
 QUIET_MAX_WAIT_S = int(os.environ.get("ORCH_QUIET_MAX_WAIT_S", "180"))
 
 
+def _quiet_setting(env_name, module_default, cast):
+    """Read a cool-down knob at CALL time, falling back to the import-time constant.
+
+    These two were read once, at import. That made the documented off switch a lie
+    in every case where it matters: a test that sets ORCH_QUIET_MAX_WAIT_S=0 with
+    monkeypatch or patch.dict does so long after this module was imported, so it
+    got the machine's value and blocked anyway; and an operator who set it in
+    fleet_config or runner/.env to stop a stalling gate saw no change until the
+    runner was restarted, which is the one thing you cannot do while a push is
+    hanging on it. Reading it here costs an os.environ lookup per call, on a path
+    that is about to sleep for up to three minutes.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None or str(raw).strip() == "":
+        return module_default
+    try:
+        return cast(str(raw).strip())
+    except (TypeError, ValueError):
+        return module_default  # a typo in the env must not break a push
+
+
 def _wait_for_quiet_machine(max_wait=None, per_cpu=None):
     """Block until the box is idle enough for a timing-sensitive suite, or give up."""
-    max_wait = QUIET_MAX_WAIT_S if max_wait is None else max_wait
-    per_cpu = QUIET_LOAD_PER_CPU if per_cpu is None else per_cpu
+    if max_wait is None:
+        max_wait = _quiet_setting("ORCH_QUIET_MAX_WAIT_S", QUIET_MAX_WAIT_S, int)
+    if per_cpu is None:
+        per_cpu = _quiet_setting("ORCH_QUIET_LOAD_PER_CPU", QUIET_LOAD_PER_CPU, float)
     # ORCH_QUIET_MAX_WAIT_S=0 turns the cool-down off. This exists because the
     # guard's own test suite deadlocked on it: test_red_suite_blocks_the_push
     # drives verify_tests through a genuinely red run, which reached the real
     # cool-down and sat there for the full budget on a machine that was busy —
     # running that very test suite. A wait that can block its own tests will be
     # deleted by whoever hits it at 3am, so it has an off switch and the tests
-    # use it.
+    # use it — see _the_quiet_cooldown_is_off_under_pytest in tests/conftest.py,
+    # which is what makes that last clause true. It was not, until 2026-09-01.
     if max_wait <= 0:
         return None
     try:

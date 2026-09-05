@@ -8,6 +8,7 @@ refuses to truncate a good prompt with a bad one.
 """
 import os
 import random
+import shutil
 import sys
 import tempfile
 import unittest
@@ -144,3 +145,80 @@ class WriteSafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AtomicPromptWriteTests(unittest.TestCase):
+    """The live prompt template must survive a failed write.
+
+    evolve()'s docstring promises a bad retrain "must leave the previous prompt in
+    place rather than truncate it". validate_prompt enforces that for content. The
+    write itself did not: open(path, "w") truncates on open, so an interruption
+    between the truncate and the write left a zero-byte live template — the blank
+    prompt the guard exists to prevent, by the one route it could not inspect.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "prompts", "bandit_evolved.txt")
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.previous = "# The prompt that is live right now\nDo the smallest useful thing.\n"
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(self.previous)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _read(self):
+        with open(self.path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_a_successful_write_replaces_the_file(self):
+        pbr._write_atomically(self.path, "# new\nsomething useful\n")
+        self.assertEqual(self._read(), "# new\nsomething useful\n")
+
+    def test_a_write_that_dies_mid_flight_leaves_the_previous_prompt_intact(self):
+        with mock.patch.object(pbr.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                pbr._write_atomically(self.path, "# half a prompt")
+        self.assertEqual(self._read(), self.previous,
+                         "the live prompt was truncated by a failed write")
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self):
+        with mock.patch.object(pbr.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                pbr._write_atomically(self.path, "# half a prompt")
+        leftovers = [n for n in os.listdir(os.path.dirname(self.path))
+                     if n.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_an_interrupt_does_not_truncate_the_live_prompt(self):
+        """KeyboardInterrupt is not an Exception. A bare `except Exception` here would
+        let a Ctrl-C leak the temp file and, before this change, a truncated target."""
+        with mock.patch.object(pbr.os, "replace", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                pbr._write_atomically(self.path, "# interrupted")
+        self.assertEqual(self._read(), self.previous)
+        self.assertEqual([n for n in os.listdir(os.path.dirname(self.path))
+                          if n.endswith(".tmp")], [])
+
+    def test_the_temp_file_is_a_sibling_so_the_rename_cannot_cross_filesystems(self):
+        seen = {}
+        real_mkstemp = pbr.tempfile.mkstemp
+
+        def spy(*args, **kwargs):
+            seen["dir"] = kwargs.get("dir")
+            return real_mkstemp(*args, **kwargs)
+
+        with mock.patch.object(pbr.tempfile, "mkstemp", side_effect=spy):
+            pbr._write_atomically(self.path, "# new prompt body\n")
+        self.assertEqual(seen["dir"], os.path.dirname(self.path))
+
+    def test_evolve_still_writes_through_the_atomic_path(self):
+        out = pbr.evolve(max_iter=2, out_path=self.path, rng=random.Random(0))
+        self.assertTrue(out["ok"], out.get("reason"))
+        self.assertTrue(self._read().strip())
+
+    def test_the_directory_is_created_when_missing(self):
+        nested = os.path.join(self.tmp, "a", "b", "prompt.txt")
+        pbr._write_atomically(nested, "# created\nwith parents\n")
+        self.assertTrue(os.path.isfile(nested))

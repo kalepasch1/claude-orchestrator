@@ -16,6 +16,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import base_branch as _base_branch
 import db
 import model_catalog
 import model_gateway
@@ -559,7 +560,12 @@ def seed_improvement_batches(apps=None):
             "state": "QUEUED",
             "prompt": prompt,
             "deps": [],
-            "base_branch": project.get("default_branch") or project.get("prod_branch") or "main",
+            # Was `project.get("default_branch") or project.get("prod_branch") or "main"`.
+            # The projects column is `default_base`, so neither key ever resolved and every
+            # queued task got the literal "main" — wrong for most repos in this fleet.
+            "base_branch": _base_branch.resolve(
+                project=project, repo=project.get("repo_path")
+            ),
             "priority": 1,
             "confidence": 0.82,
             "material": False,
@@ -617,3 +623,96 @@ def run():
 
 if __name__ == "__main__":
     print(json.dumps(run(), indent=2, default=str))
+
+
+# --- Role receipts (slice-1 of the mesh kernel) ----------------------------------------
+#
+# ROLE_SPECS already names the nine mesh roles and route_role() already picks a model for
+# each. What was missing is the RECEIPT: a record that a role actually acted on a given
+# task. Without it, "every coding task has explicit role receipts" is an intention rather
+# than a checkable property, and a task that silently skipped its verifier or red_team is
+# indistinguishable from one that passed both.
+#
+# This is the checkable half, kept pure so it can be asserted anywhere without a database
+# and without a parallel UI — the existing Now/Approve/dashboard surfaces render it.
+
+#: Roles whose absence means the task was not actually reviewed. Deliberately NOT all nine:
+#: treasurer and privacy_officer are situational (spend and sensitivity), and requiring
+#: them on every task would make the check permanently red, which is how a gate stops being
+#: read. ORCH_-prefixed override so the fleet can tighten it without a code change.
+REQUIRED_ROLES = tuple(
+    r.strip() for r in os.environ.get(
+        "ORCH_REQUIRED_ROLE_RECEIPTS",
+        "scout,planner,drafter,verifier,judge").split(",") if r.strip())
+
+
+def normalize_role(role):
+    """Canonical role name, or "" when it is not one of the mesh roles."""
+    name = str(role or "").strip().lower()
+    return name if name in ROLE_SPECS else ""
+
+
+def receipt(role, model="", provider="", outcome="", cost_usd=0.0, note=""):
+    """One role's record of having acted. Returns {} for an unknown role.
+
+    Rejecting an unknown role is deliberate: a receipt for "reviewer" or "qa" would look
+    like coverage while satisfying nothing, and a typo that silently counts is worse than
+    a missing receipt that is visible.
+    """
+    name = normalize_role(role)
+    if not name:
+        return {}
+    try:
+        cost = float(cost_usd or 0.0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    return {"role": name, "model": str(model or ""), "provider": str(provider or ""),
+            "outcome": str(outcome or ""), "cost_usd": cost, "note": str(note or "")[:300]}
+
+
+def receipts_by_role(receipts):
+    """{role: receipt} from a list. Later receipts win; unknown roles are dropped."""
+    out = {}
+    for r in receipts or []:
+        if not isinstance(r, dict):
+            continue
+        name = normalize_role(r.get("role"))
+        if name:
+            out[name] = r
+    return out
+
+
+def missing_roles(receipts, required=None):
+    """Required roles with no receipt, in the declared order."""
+    have = receipts_by_role(receipts)
+    return [r for r in (required or REQUIRED_ROLES) if r not in have]
+
+
+def verify_receipts(receipts, required=None):
+    """(complete, detail) — is this task's role coverage explicit?
+
+    Fail-CLOSED: no receipts at all is incomplete, not vacuously complete. An empty list
+    is the exact state this check exists to catch, and treating it as a pass would make the
+    gate agree with every task that never ran a role.
+    """
+    try:
+        gaps = missing_roles(receipts, required)
+        have = sorted(receipts_by_role(receipts))
+        if gaps:
+            return False, ("missing role receipt(s): " + ", ".join(gaps)
+                           + (f"; have {', '.join(have)}" if have else "; have none"))
+        return True, "all required roles have receipts: " + ", ".join(have)
+    except Exception as exc:
+        return False, f"receipt verification failed ({str(exc)[:120]}); treated as incomplete"
+
+
+def receipts_cost(receipts):
+    """Total spend across receipts. The treasurer's view; 0.0 on anything unusable."""
+    total = 0.0
+    for r in receipts or []:
+        if isinstance(r, dict):
+            try:
+                total += float(r.get("cost_usd") or 0.0)
+            except (TypeError, ValueError):
+                continue
+    return round(total, 6)

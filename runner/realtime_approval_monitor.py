@@ -18,8 +18,21 @@ import log as _log_mod
 _log = _log_mod.get("realtime_approval_monitor")
 import db
 
+def _env_int(name, default, minimum=1):
+    """Fail-soft int env read. A bare int() here runs at import, so one malformed
+    fleet push of the key raised ValueError and took down every importer."""
+    try:
+        raw = os.environ.get(name)
+        if raw is None or not str(raw).strip():
+            return default
+        value = int(str(raw).strip())
+        return value if value >= minimum else default
+    except Exception:
+        return default
+
+
 ENABLED = os.environ.get("ORCH_REALTIME_MONITOR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-POLL_INTERVAL = int(os.environ.get("ORCH_RTMON_POLL_INTERVAL", "300"))
+POLL_INTERVAL = _env_int("ORCH_RTMON_POLL_INTERVAL", 300)
 AUTO_RULES_ENABLED = os.environ.get("ORCH_RTMON_AUTO_RULES_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 NOTIFY_CHANNEL = os.environ.get("ORCH_RTMON_NOTIFY_CHANNEL", "approvals")
 
@@ -48,7 +61,20 @@ AUTO_APPROVE_RULES = [
 ALARM_PATTERNS = [
     "key leak", "secret leak", "credential compromis",
     "billing firewall", "spend circuit",
+    # Money movement and anything that reaches production or a customer. The rule above
+    # auto-approves every pending card that is not kind legal/secret, so without these
+    # a card titled "transfer $4,000" was auto-approved by a background thread.
+    "money movement", "wire transfer", "transfer $", "payment", "payout", "refund",
+    "charge card", "invoice", "purchase order",
+    "production release", "promote to prod", "deploy to production",
+    "delete", "drop table", "truncate", "revoke", "rotate credential",
+    "send email", "post to", "publish",
 ]
+
+#: Fields scanned for alarm patterns. The original scanned only title/why/value, so a
+#: card whose body said "wire $12,000" and whose title said "vendor step" looked clean.
+ALARM_SCAN_FIELDS = ("title", "why", "value", "body", "detail", "description",
+                     "payload", "action", "kind", "summary")
 
 
 def stats():
@@ -58,9 +84,29 @@ def stats():
 
 def _is_alarm(card):
     """Check if a card matches alarm patterns (should never be auto-approved)."""
-    text = " ".join(str(v) for v in [card.get("title", ""), card.get("why", ""), card.get("value", "")])
+    try:
+        text = " ".join(str(card.get(field, "") or "") for field in ALARM_SCAN_FIELDS)
+    except Exception:
+        # Fail CLOSED: an unreadable card is treated as alarming, never auto-approved.
+        return True
     text_lower = text.lower()
     return any(p in text_lower for p in ALARM_PATTERNS)
+
+
+def _requires_two_keys(card):
+    """True when the card is configured to need a second approver.
+
+    approval_merge honours approvals_required; this monitor did not, so a two-key card
+    could be single-key approved by a background thread — which defeats the point of
+    asking for two keys. Fails CLOSED on an unreadable value.
+    """
+    try:
+        required = card.get("approvals_required")
+        if required is None:
+            return False
+        return int(required) >= 2 and not card.get("second_approver")
+    except Exception:
+        return True
 
 
 def _check_auto_rules(card):
@@ -68,8 +114,12 @@ def _check_auto_rules(card):
     Returns ('auto_approve', reason) or ('manual', reason)."""
     if not AUTO_RULES_ENABLED:
         return "manual", "auto-rules disabled"
+    if not isinstance(card, dict):
+        return "manual", "unreadable card"
     if _is_alarm(card):
         return "manual", "alarm pattern detected"
+    if _requires_two_keys(card):
+        return "manual", "card requires a second approver"
     if card.get("kind") == "secret":
         return "manual", "secret cards require human review"
     if card.get("kind") == "legal" and card.get("legal_risk_level") == "novel":

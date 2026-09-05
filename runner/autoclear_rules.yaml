@@ -1,16 +1,25 @@
-rules:
-  - id: "r-operator-10"
-    project: "beethoven"
-    kind: "operator"
-    max_usd: 10.0
-    enabled: true
+# Rule-based auto-clearing for operator approval cards.
+# Fallback: used when operator_autoclear_rules DB table is empty or unavailable.
+#
+# Hard guards (code-enforced, regardless of rules):
+#   - Never auto-approve if AUTOCLEAR_ENABLED env var is not 'true'
+#   - Never auto-approve if approvals_required >= 2
+#   - Never auto-approve if kind == 'legal'
+#   - Never auto-approve if detail mentions 'prod' or 'production'
+#
+# Rule matching: project (null = any), kind, max_usd (if set, card amount must be <= this).
+# When a card matches a rule: status='approved', decided_by='auto-rule:<id>'
 
-  - id: "r-deploy-50"
-    kind: "deploy"
+rules:
+  # Example: auto-approve small staging deploys for beethoven project
+  - id: beethoven-staging-small
+    project: beethoven
+    kind: operator
     max_usd: 50.0
     enabled: true
 
-  - id: "r-secret-0"
-    kind: "secret"
-    max_usd: 0.0
+  # Example: auto-approve small secrets for any project (null project = match all)
+  - id: secrets-under-25
+    kind: secret
+    max_usd: 25.0
     enabled: true

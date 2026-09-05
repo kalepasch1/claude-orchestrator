@@ -17,9 +17,29 @@ def _is_remote_quarantine(row):
 
 
 def _host_aliases():
-    # a host pause may be written as "Mac-2" or "Mac-2.local"; match either form.
+    """Every name this machine is known by, so a pause written under any of them holds.
+
+    This used to cover a `.local` suffix and nothing else. macOS reassigns the mDNS
+    name -- this Mac appears in `releases.host` as Kales-MacBook-Pro.local, Mac-215.lan,
+    Mac-4.lan, Mac-39.lan, Mac-172.lan and Mac-213.lan across 30 hours -- so a pause
+    written against one of those stopped applying the moment the network renamed the
+    machine, and a host an operator had deliberately stopped came back under a new name
+    and resumed writing failed-release rows. That is the exact poisoning
+    paused_host_guard exists to prevent, arriving through the guard's own front door.
+
+    Widening a pause match is the safe direction: it can only ever stop more work.
+    """
+    # HOST first, and always. It is the name this process actually writes and
+    # answers to, and callers (including the pause tests) set it deliberately;
+    # host_identity ADDS the machine's other names, it does not replace this one.
     aliases = {HOST}
     aliases.add(HOST[:-6] if HOST.endswith(".local") else HOST + ".local")
+    try:
+        import host_identity
+        aliases.update(host_identity._variants(HOST))
+        aliases.update(host_identity.aliases())
+    except Exception:
+        pass
     return aliases
 
 

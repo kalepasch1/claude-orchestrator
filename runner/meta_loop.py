@@ -244,6 +244,16 @@ def _ask_improvement(project, loop_type):
 
 
 def run():
+    # Improvement window (default 01:00-05:00 local). autopilot calls this in-process
+    # every 180s and survives drain mode, lean mode and the kill switch, so the gate has
+    # to live here rather than only at the scheduler.
+    try:
+        import self_work_gate
+        if not self_work_gate.allow_improvement_now("meta_loop.run"):
+            return {"tuned": 0, "window_closed": True}
+    except ImportError:
+        pass
+
     loops = db.select("loops", {"select": "*"}) or []
     by_project = {}
     for l in loops:

@@ -24,7 +24,14 @@ class BlockerQuarantineTest(unittest.TestCase):
             "base_branch": "main",
         }
         fake_db = MagicMock()
-        fake_db.select.side_effect = [[], [], [task], []]
+        # run() calls repair_misclassified and dedupe_replacements before the
+        # candidate scan, and both now page through db.select_all rather than
+        # db.select. select is stubbed with a POSITIONAL side_effect list, so the
+        # two leading [] that used to absorb those scans have been dropped and
+        # select_all returns [] here -- otherwise the candidate scan consumed the
+        # wrong entry and the task under test was never seen.
+        fake_db.select_all.return_value = []
+        fake_db.select.side_effect = [[task], []]
 
         with patch.object(blocker_quarantine, "db", fake_db), \
              patch.dict(os.environ, {"ORCH_QUARANTINE_CODER": "ollama"}, clear=False):
@@ -57,7 +64,14 @@ class BlockerQuarantineTest(unittest.TestCase):
             "base_branch": "main",
         }
         fake_db = MagicMock()
-        fake_db.select.side_effect = [[], [], [task], []]
+        # run() calls repair_misclassified and dedupe_replacements before the
+        # candidate scan, and both now page through db.select_all rather than
+        # db.select. select is stubbed with a POSITIONAL side_effect list, so the
+        # two leading [] that used to absorb those scans have been dropped and
+        # select_all returns [] here -- otherwise the candidate scan consumed the
+        # wrong entry and the task under test was never seen.
+        fake_db.select_all.return_value = []
+        fake_db.select.side_effect = [[task], []]
 
         with patch.object(blocker_quarantine, "db", fake_db):
             out = blocker_quarantine.run(limit=1)
@@ -80,7 +94,14 @@ class BlockerQuarantineTest(unittest.TestCase):
             "base_branch": "main",
         }
         fake_db = MagicMock()
-        fake_db.select.side_effect = [[], [], [task], [{"id": "already", "state": "QUEUED"}]]
+        # run() calls repair_misclassified and dedupe_replacements before the
+        # candidate scan, and both now page through db.select_all rather than
+        # db.select. select is stubbed with a POSITIONAL side_effect list, so the
+        # two leading [] that used to absorb those scans have been dropped and
+        # select_all returns [] here -- otherwise the candidate scan consumed the
+        # wrong entry and the task under test was never seen.
+        fake_db.select_all.return_value = []
+        fake_db.select.side_effect = [[task], [{"id": "already", "state": "QUEUED"}]]
 
         with patch.object(blocker_quarantine, "db", fake_db):
             out = blocker_quarantine.run(limit=1)
@@ -132,7 +153,14 @@ class BlockerQuarantineTest(unittest.TestCase):
             "base_branch": "main",
         }
         fake_db = MagicMock()
-        fake_db.select.side_effect = [[], [], [task], []]
+        # run() calls repair_misclassified and dedupe_replacements before the
+        # candidate scan, and both now page through db.select_all rather than
+        # db.select. select is stubbed with a POSITIONAL side_effect list, so the
+        # two leading [] that used to absorb those scans have been dropped and
+        # select_all returns [] here -- otherwise the candidate scan consumed the
+        # wrong entry and the task under test was never seen.
+        fake_db.select_all.return_value = []
+        fake_db.select.side_effect = [[task], []]
 
         with patch.object(blocker_quarantine, "db", fake_db):
             out = blocker_quarantine.run(limit=1)
@@ -372,7 +400,14 @@ class BlockerQuarantineTest(unittest.TestCase):
             "note": "legal review required: tax/CPA workflow risk",
         }
         fake_db = MagicMock()
-        fake_db.select.side_effect = [[], [], [task], []]
+        # run() calls repair_misclassified and dedupe_replacements before the
+        # candidate scan, and both now page through db.select_all rather than
+        # db.select. select is stubbed with a POSITIONAL side_effect list, so the
+        # two leading [] that used to absorb those scans have been dropped and
+        # select_all returns [] here -- otherwise the candidate scan consumed the
+        # wrong entry and the task under test was never seen.
+        fake_db.select_all.return_value = []
+        fake_db.select.side_effect = [[task], []]
 
         with patch.object(blocker_quarantine, "db", fake_db), \
              patch.dict(os.environ, {"ORCH_QUARANTINE_MAX_REWORK_DEPTH": "2"}, clear=False):

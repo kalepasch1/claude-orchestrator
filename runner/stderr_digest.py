@@ -92,13 +92,49 @@ def digest(text, limit=DEFAULT_LIMIT):
         if remaining <= 0:
             return head[:limit]
 
-        tail = raw[-remaining:]
+        tail = _tail_at_a_boundary(raw, remaining)
         if head and tail.strip() and tail.strip() not in head:
             return f"{head}\n...\n{tail}"
-        return head or raw[-limit:]
+        return head or _tail_at_a_boundary(raw, limit)
     except Exception:
         # A diagnostic helper must never be the reason a caller fails.
         try:
             return str(text or "")[-DEFAULT_LIMIT:]
         except Exception:
             return ""
+
+
+def _tail_at_a_boundary(raw, budget):
+    """The last `budget` characters, starting at a line or word boundary.
+
+    THE HELPER THAT EXISTS TO STOP TAIL-TRUNCATION WAS TAIL-TRUNCATING. Every caller
+    in the fleet was migrated to digest() so that `stderr[-160:]` would stop cutting
+    the cause off the front -- and digest() ended with `raw[-remaining:]`, a bare
+    slice, so it cut mid-word anyway. Four live rows, all read by a human or by an
+    automated repair task:
+
+        [gate:build] ... self-heal queued: nthropic-ai/sdk' imported from ...
+        [gate:qa]    ... self-heal queued: e found in file /Users/.../check-patch-source.test.mjs
+        [gate:qa]    ... self-heal queued:  duration_ms 30315.778334 ...
+
+    The first is missing both "Cannot find package" and the "@a" of the package name.
+    The second is missing "No test suit". A reader cannot tell from any of them what
+    actually went wrong, which is the entire failure this module was written to end.
+
+    Prefer a newline, then a space. Only cut inside a token when a single token is
+    longer than the whole budget -- a 300-character minified stack frame, say -- and
+    mark it with a leading ellipsis so the reader knows the front is missing rather
+    than guessing at a word that starts "nthropic".
+    """
+    raw = str(raw or "")
+    budget = max(1, int(budget))
+    if len(raw) <= budget:
+        return raw
+    window = raw[-budget:]
+    newline = window.find("\n")
+    if 0 <= newline < budget - 1:
+        return window[newline + 1:].lstrip("\r")
+    space = window.find(" ")
+    if 0 <= space < budget - 1:
+        return window[space + 1:]
+    return "…" + window[1:]

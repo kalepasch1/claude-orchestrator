@@ -25,10 +25,59 @@ class OperatorOriginDetection(unittest.TestCase):
         self.assertTrue(db._is_operator_origin({"slug": "dropbox-apparently-treasury-tab"}))
 
     def test_submitted_by_is_operator(self):
+        """A real submitted_by is evidence. A label is a claim -- see below."""
         self.assertTrue(db._is_operator_origin(
             {"slug": "backlog-batch-x", "submitted_by": "kalepasch@gmail.com"}))
-        self.assertTrue(db._is_operator_origin(
+
+    def test_a_self_written_label_is_not_operator(self):
+        """CHANGED 2026-09-02. This file used to assert that submitted_by_label alone
+        conferred operator status. submitted_by is a field the database fills in for a
+        real submitter; submitted_by_label is free text the CALLER writes about itself,
+        and operator status bypasses the recovery-depth cap, release back-pressure and
+        producer admission.
+
+        Measured over 30 days: of 5,224 tasks, ONE carried a real submitted_by, 1,847
+        carried only a self-written label, and 1,642 of those put the word "operator" in
+        it. Forty-seven distinct labels were doing this.
+
+        The operator's OWN work is unaffected, and that is checkable rather than hoped
+        for -- every one of her intakes carries the drop-box slug prefix as well:
+
+            kale@smrter.us (operator) via Cowork strategy session   18 tasks, 18 dropbox
+            kalepasch@gmail.com (operator decision 2026-08-04)      15 tasks, 15 dropbox
+            operator-dropbox-p0                                     10 tasks, 10 dropbox
+
+        while the machine producers carry none:
+
+            ChatGPT local-build audit (operator-directed)         1,543 tasks,  0 dropbox
+            Codex operator-directed remediation                     14 tasks,  0 dropbox
+        """
+        self.assertFalse(db._is_operator_origin(
             {"slug": "backlog-batch-x", "submitted_by_label": "kalepasch@gmail.com"}))
+        self.assertFalse(db._is_operator_origin(
+            {"slug": "chatgpt-local-reconcile-x",
+             "submitted_by_label": "ChatGPT local-build audit (operator-directed)"}))
+
+    def test_the_operators_real_intake_path_is_untouched(self):
+        """Every genuine operator submission measured on this fleet also has this prefix."""
+        self.assertTrue(db._is_operator_origin(
+            {"slug": "dropbox-apparently-treasury-tab",
+             "submitted_by_label": "kale@smrter.us (operator) via Cowork strategy session"}))
+
+    def test_a_label_can_be_trusted_explicitly(self):
+        """The escape hatch: name one label, not all of them."""
+        prev = os.environ.get("ORCH_TRUSTED_SUBMITTER_LABELS")
+        os.environ["ORCH_TRUSTED_SUBMITTER_LABELS"] = "my batch intake"
+        try:
+            self.assertTrue(db._is_operator_origin(
+                {"slug": "backlog-batch-x", "submitted_by_label": "My Batch Intake"}))
+            self.assertFalse(db._is_operator_origin(
+                {"slug": "backlog-batch-x", "submitted_by_label": "some other vendor"}))
+        finally:
+            if prev is None:
+                os.environ.pop("ORCH_TRUSTED_SUBMITTER_LABELS", None)
+            else:
+                os.environ["ORCH_TRUSTED_SUBMITTER_LABELS"] = prev
 
     def test_machine_slugs_are_not_operator(self):
         for slug in ("improve-mesh-thing", "relfix-y", "canary-z", "recover-missing-branch-q",

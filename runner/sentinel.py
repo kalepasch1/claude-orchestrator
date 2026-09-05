@@ -423,6 +423,56 @@ def wip_stash_rescue(st=None):
         st["wip_rescued_total"] = int(st.get("wip_rescued_total", 0)) + rescued
 
 
+#: A branch file counts as stranded only when this share of the substantive lines it
+#: added is absent from the base's CURRENT content. Not 100%: a line reformatted or
+#: renamed on the way in should not resurrect a whole file as "lost".
+STRANDED_ABSENT_RATIO = float(os.environ.get("SENTINEL_STRANDED_ABSENT_RATIO", "0.5"))
+
+
+def _is_really_absent_from(base, mb, sha, path, ratio=None):
+    """Has this file's branch work actually failed to reach `base`, by CONTENT?
+
+    THE FALSE ALARM THIS ENDS. `preserve-ec580138-fleet-work` fired this alert every
+    ~6 minutes for over two weeks -- "holds 11 runner/web files not in master", naming
+    runner/merge_train.py, runner/db.py, runner/stderr_digest.py. Checked line by line
+    on 2026-09-04, ten of those eleven files were ALREADY on master in full:
+
+        runner/merge_train_report.py        162 added lines,   0 absent from master
+        runner/tools/reconcile_orch_rescue.py  186 added,      0 absent
+        runner/done_to_merged.py            172 added,         3 absent
+        runner/stderr_digest.py              67 added,         2 absent
+
+    The work landed by another route -- a rebuild, a redo, a different branch -- which
+    is the normal way this fleet lands anything. Comparing by PATH cannot tell that
+    apart from work that was lost, so a branch whose contents are fully merged looked
+    identical to a branch about to be forgotten.
+
+    That is worse than no alert. An alarm that has been wrong every six minutes for a
+    fortnight is one a reader learns to skip, and the next real stranding scrolls past
+    inside it. (The eleventh file, runner/test_contracts_smarter.py, is a genuinely
+    separate 979-line implementation of a test master solved differently in 1046 -- a
+    duplicate, not a loss.)
+
+    Cheap by construction: one `git diff -U0` and one `git show` per candidate file,
+    and only for branches that already passed the ancestor, age and path filters.
+    """
+    diff = git("diff", "-U0", mb, sha, "--", path).stdout or ""
+    added = [line[1:].strip() for line in diff.splitlines()
+             if line.startswith("+") and not line.startswith("+++")]
+    # Short lines are punctuation, imports and closing braces: they match by accident
+    # in any file and would make everything look landed.
+    added = [a for a in added if len(a) > 12]
+    if not added:
+        return False
+    current = git("show", f"{base}:{path}")
+    if current.returncode != 0:
+        return True          # base does not have the file at all -- genuinely absent
+    body = current.stdout or ""
+    absent = sum(1 for a in added if a not in body)
+    return (absent / len(added)) >= (STRANDED_ABSENT_RATIO if ratio is None else ratio)
+
+
+
 def stranded_commit_rescue(st=None):
     """MAKE THE BRANCH-STRANDING CLASS SELF-ANNOUNCING (operator directive 2026-07-31).
 
@@ -468,6 +518,7 @@ def stranded_commit_rescue(st=None):
         changed = git("diff", "--name-only", mb or base, sha).stdout or ""
         touched = [f for f in changed.splitlines()
                    if f.startswith("runner/") or f.startswith("web/")]
+        touched = [f for f in touched if _is_really_absent_from(base, mb or base, sha, f)]
         if not touched:
             continue
         found.append({"branch": name, "tip": sha[:10], "files": len(touched),
@@ -486,6 +537,148 @@ def stranded_commit_rescue(st=None):
         except Exception:
             pass
     st["stranded_branches"] = len(found)
+
+
+#: How far back in the base branch's reflog to look for commits it no longer contains.
+SENTINEL_DROPPED_REFLOG_DEPTH = int(os.environ.get("SENTINEL_DROPPED_REFLOG_DEPTH", "400"))
+
+#: A dropped commit must be more clearly gone than a stranded branch before it is
+#: reported. Branches are few and deliberate; the base branch's reflog is thousands of
+#: entries of ordinary rebasing, and a scan that cries wolf there is worse than none --
+#: which is the lesson stranded_commit_rescue had already learned the hard way.
+DROPPED_ABSENT_RATIO = float(os.environ.get("SENTINEL_DROPPED_ABSENT_RATIO", "0.9"))
+
+#: Alert only once per dropped sha; the reflog keeps it for ninety days.
+_DROPPED_SEEN = set()
+
+
+#: `Merge branch 'agent/xyz' (auto-resolved)` and `Merge branch 'agent/xyz'`.
+_MERGED_BRANCH = re.compile(r"^Merge branch '([^']+)'")
+
+
+def _source_branch_survives(sha):
+    """Was this merge UNDONE ON PURPOSE, with its work deliberately kept?
+
+    auto_conflict_resolver._reject_merge exists to roll back a merge whose anti-
+    regression gate found it would destroy code, and its contract is explicit:
+
+        The branch is deliberately NOT deleted: after a reset it is the only
+        remaining copy of the work, and deleting it is how code became
+        unrecoverable in the first place.
+
+    In master's reflog that reads as a strict alternation --
+
+        reset: moving to af2ea939...
+        commit (merge): Merge branch 'agent/canary-claude-27-slice-1' (auto-resolved)
+        reset: moving to af2ea939...
+        commit (merge): Merge branch 'agent/canary-codex-28-verify-behavior...'
+        reset: moving to af2ea939...
+
+    -- and every one of those merges is unreachable afterwards. They are not losses.
+    Checked 2026-09-04 on five of them, including the one whose content this scan
+    flagged most loudly (7c76bd291e, runner/vercel_config_guard.py, 53 of 58 added
+    lines absent from master): all five source branches were still there.
+
+    Without this check the scan alerts on every rejected merge -- which on this fleet
+    is a repeating cycle over the same branches -- and becomes the boy who cried wolf
+    that stranded_commit_rescue had just been fixed for being. The whole value of the
+    alert is that a human believes it.
+    """
+    subject = (git("log", "-1", "--format=%s", sha).stdout or "").strip()
+    m = _MERGED_BRANCH.match(subject)
+    if not m:
+        return False
+    branch = m.group(1)
+    for ref in (branch, f"origin/{branch}", f"refs/archive/{branch}"):
+        if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
+            return True
+    return False
+
+
+def dropped_commit_rescue(st=None):
+    """Commits that were ON the base branch and are no longer reachable from it.
+
+    THE BLIND SPOT THIS FILLS. stranded_commit_rescue scans local BRANCHES. On
+    2026-09-04 a commit was found that no branch could have announced:
+
+        2e8bb545  fix(repo-lock): one repo got two locks, because the key was a
+                  path spelling
+
+    It had been on master. It is reachable from nothing now -- it survives only as a
+    dangling merge with a stash entry beside it -- and the fix it carried
+    (realpath-canonicalised lock keys, so that ~/claude-orchestrator and
+    /Users/kpasch/Documents/beethoven/claude-orchestrator stop taking two different
+    locks on one repository) was simply absent from the working tree again. Nothing
+    announced that. It surfaced weeks-of-debugging later, as a test failing for no
+    reason anyone had caused.
+
+    A branch-only scan is structurally unable to see this: the commit is on no branch.
+    The reflog is, and it is cheap -- `git reflog show master` returns 5,633 entries in
+    under a second on this repository, and only the newest SENTINEL_DROPPED_REFLOG_DEPTH
+    are considered.
+
+    Content-aware for the same reason stranded_commit_rescue now is: a rebase rewrites
+    every sha it touches, so "not reachable" is the normal state of an ordinary day's
+    work and reporting it would be noise on a scale nobody reads. Only a commit whose
+    ADDED LINES are absent from the base's current content is a real loss.
+    """
+    st = {} if st is None else st
+    base = os.environ.get("ORCH_DEFAULT_BRANCH", "master")
+    r = git("reflog", "show", base, f"--max-count={SENTINEL_DROPPED_REFLOG_DEPTH}",
+            "--format=%H")
+    if r.returncode != 0:
+        return
+    found = []
+    for sha in dict.fromkeys((r.stdout or "").split()):
+        if sha in _DROPPED_SEEN:
+            continue
+        if git("merge-base", "--is-ancestor", sha, base).returncode == 0:
+            continue                      # still on the branch; nothing to say
+        # AGAINST ITS FIRST PARENT, NOT ITS MERGE BASE.
+        #
+        # merge-base..sha spans a whole branch's history, so for the auto-resolved
+        # merges this fleet produces it hands back every line that branch ever
+        # touched -- and any of those files that has been EDITED on base since will
+        # read as "absent" line by line. First measured run, depth 60: 13 alerts, and
+        # spot-checking the samples found runner/rca_engine.py, realtime_sync.py,
+        # config_approval_engine.py, vercel_config_guard.py and experiment_analyzer.py
+        # all present on master. Only two were real.
+        #
+        # sha^..sha is what this commit actually introduced. Narrower, far cheaper,
+        # and it is the question being asked: did what this commit brought in survive?
+        parent = git("rev-parse", "--verify", f"{sha}^").stdout.strip()
+        if not parent:
+            continue                      # a root commit; nothing to compare against
+        if _source_branch_survives(sha):
+            continue                      # rolled back ON PURPOSE; see the helper
+        changed = git("diff", "--name-only", parent, sha).stdout or ""
+        touched = [f for f in changed.splitlines()
+                   if f.startswith("runner/") or f.startswith("web/")]
+        touched = [f for f in touched
+                   if _is_really_absent_from(base, parent, sha, f,
+                                             ratio=DROPPED_ABSENT_RATIO)]
+        _DROPPED_SEEN.add(sha)
+        if not touched:
+            continue                      # rewritten, or landed under another sha
+        subject = (git("log", "-1", "--format=%s", sha).stdout or "").strip()
+        found.append({"sha": sha[:10], "files": len(touched),
+                      "sample": touched[:5], "subject": subject[:120]})
+    for f in found:
+        log(f"DROPPED-COMMIT ALERT: {f['sha']} was on {base} and is reachable from "
+            f"nothing now, and {f['files']} of its runner/web file(s) are absent from "
+            f"{base}'s current content — '{f['subject']}' — sample {f['sample']}")
+    if found:
+        try:
+            import db as _db, json as _json
+            _db.insert("coordination_tasks", {
+                "task_type": "dropped_commit_alert",
+                "payload": _json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                        "base": base, "commits": found[:20]})[:8000]},
+                       upsert=False)
+        except Exception:
+            pass
+    st["dropped_commits"] = len(found)
+
 
 
 # ── 2b. nested-worktree hygiene ───────────────────────────────────────────────
@@ -564,6 +757,81 @@ def silent_failure_guard(st=None):
     log("silent-failure",
         f"{len(offenders)} job(s) failing silently — errors growing, no productive output: {names}. "
         f"Check .runtime/logs/<job>.err")
+
+
+# ── 7b. queue stall alarm ─────────────────────────────────────────────────────
+#: Consecutive sentinel passes with queued work and nothing running before we alarm.
+#: Sentinel runs on a short interval, so three passes is minutes, not hours -- long
+#: enough that a normal gap between claims is not an alarm.
+QUEUE_STALL_PASSES = int(os.environ.get("SENTINEL_QUEUE_STALL_PASSES", "3"))
+#: Queued tasks below which an idle fleet is just an empty fleet.
+QUEUE_STALL_MIN_QUEUED = int(os.environ.get("SENTINEL_QUEUE_STALL_MIN_QUEUED", "5"))
+QUEUE_STALL_COOLDOWN_S = int(os.environ.get("SENTINEL_QUEUE_STALL_COOLDOWN_S", "1800"))
+
+
+def queue_stall_guard(st=None):
+    """Alert when work is queued and NOTHING is claiming it.
+
+    WHY THIS EXISTS (2026-09-02). The runner requested a self-deploy restart, began
+    draining lanes, and never converged: MAX_PARALLEL was 3 so the drain threshold
+    clamped to 3 // 4 = 0, three agent threads were stuck alive, and the drain freezes
+    new claims while it waits. The fleet claimed nothing for 39 minutes:
+
+        beethoven 112 QUEUED / 0 RUNNING     tomorrow 110 QUEUED / 0 RUNNING
+        smarter    21 QUEUED / 0 RUNNING     apparently-law 18 QUEUED / 0 RUNNING
+        ... 334 QUEUED across eleven projects, 0 RUNNING anywhere
+
+    Every existing signal looked healthy. The runner PROCESS was alive, its scheduler
+    ticked through every periodic job, the logs filled with ordinary lines, and
+    runner_guard saw a live pid. Nothing anywhere compared "work waiting" against "work
+    being done", which is the one comparison that would have caught it in a minute.
+
+    The runner-side deadline in runner.py stops that particular deadlock. This guard is
+    the general case: whatever the cause -- a stuck drain, an exhausted account pool, a
+    kill switch left on, a claim path that throws -- a fleet with a full queue and no
+    running work is broken, and it should say so rather than look busy.
+
+    Alert-only, like silent_failure_guard: the causes are too varied for a safe auto-
+    action, and restarting a runner that is legitimately paused would be worse than the
+    silence. A deliberate pause is not a stall, so the global kill switch suppresses it.
+    """
+    st = st if st is not None else {}
+    try:
+        import db
+        queued = db.select("tasks", {"select": "id", "state": "eq.QUEUED", "limit": "500"}) or []
+        running = db.select("tasks", {"select": "id", "state": "eq.RUNNING", "limit": "50"}) or []
+    except Exception as exc:
+        log("queue-stall-guard-error", f"could not read the queue: {exc}")
+        return
+    n_queued, n_running = len(queued), len(running)
+
+    if n_running > 0 or n_queued < QUEUE_STALL_MIN_QUEUED:
+        st["queue_stall_passes"] = 0
+        return
+
+    # A fleet the operator paused is idle on purpose, not stalled.
+    try:
+        import kill_switch
+        if kill_switch.is_paused(None):
+            st["queue_stall_passes"] = 0
+            return
+    except Exception:
+        pass    # a kill switch we cannot read is not a reason to stay quiet
+
+    passes = int(st.get("queue_stall_passes", 0)) + 1
+    st["queue_stall_passes"] = passes
+    if passes < QUEUE_STALL_PASSES:
+        return
+    last = float(st.get("queue_stall_alert_last", 0))
+    if (time.time() - last) < QUEUE_STALL_COOLDOWN_S:
+        return
+    st["queue_stall_alert_last"] = time.time()
+    emit("queue-stall", queued=n_queued, running=n_running, passes=passes)
+    log("queue-stall",
+        f"{n_queued} task(s) QUEUED and 0 RUNNING for {passes} consecutive sentinel passes. "
+        f"Nothing is claiming work. Check for a self-deploy drain that never converged "
+        f"(grep 'draining lanes' in the newest .runtime/logs/runner-start.*), a paused "
+        f"project, or an exhausted account pool.")
 
 
 def nested_worktree_guard():
@@ -1037,10 +1305,12 @@ def main():
     try:
         wip_stash_rescue(st)   # anonymous WIP-on-base stashes become branches: unloseable
         stranded_commit_rescue(st)  # side-branch commits not in base: self-announcing
+        dropped_commit_rescue(st)   # and commits that left the graph entirely
     except Exception as e:
         log("wip-stash-rescue-error", e)
     try:
         silent_failure_guard(st)   # catches the "runs but fails quietly" class (see docstring)
+        queue_stall_guard(st)      # catches the "looks alive but claims nothing" class
     except Exception as e:
         log("stash-drift-guard-error", e)
     try:

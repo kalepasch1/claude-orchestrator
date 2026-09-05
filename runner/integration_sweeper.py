@@ -399,15 +399,28 @@ def _existing_recovery(project_id, slug):
         return False
 
 
-def _active_recovery_index(limit=5000):
-    """Load active recovery/rework rows once so sweep does not do N DB reads."""
+def _active_recovery_index(limit=None):
+    """Load active recovery/rework rows once so sweep does not do N DB reads.
+
+    FULL SCAN, not SAMPLE: a slug missing from this index is not merely under-counted,
+    it is re-filed as a brand-new recovery task.  This used to read
+    `db.select(..., "limit": "5000")`, and PostgREST caps a single response at 1,000 rows
+    regardless of the requested limit (see db.PAGE_SIZE).  With 1,264 active
+    recover-missing-branch-* rows on 2026-08-25 the tail ~287 slugs — the most recently
+    quarantined ones — were invisible to the dedup check, so every sweep re-filed the
+    identical set, queue_bankruptcy quarantined them minutes later as "original task
+    <slug> is already DONE/MERGED", and they stayed invisible for the next sweep: a
+    closed ~80min recreate/quarantine loop that produced 14 rows across 2 identical
+    batches for canary-fleet-verify-20260824-a1..a7 alone.  db.select_all pages to
+    exhaustion, so the index is complete and the loop cannot re-form as the table grows.
+    """
     rows = []
     for pattern in (f"{RECOVERY_PREFIX}%", f"rework-%-{RECOVERY_PREFIX}%"):
         try:
-            rows.extend(db.select("tasks", {"select": "slug,state,project_id",
-                                            "slug": f"like.{pattern}",
-                                            "state": ACTIVE_STATES,
-                                            "limit": str(limit)}) or [])
+            rows.extend(db.select_all("tasks", {"select": "slug,state,project_id",
+                                                "slug": f"like.{pattern}",
+                                                "state": ACTIVE_STATES},
+                                      max_rows=limit) or [])
         except Exception:
             continue
     exact = set()
@@ -459,10 +472,42 @@ def _has_live_recovery(project_id, slug):
     return False
 
 
+def _original_already_integrated(task):
+    """True when the original task has since reached MERGED — nothing left to recover.
+
+    The sweep reads a batch of tasks and then processes them one at a time, so a task
+    that was DONE-with-missing-branch when the batch was read can be MERGED by the time
+    it is handled: the merge train landed it and branch_cleanup deleted the branch, which
+    is *why* the branch is missing.  Filing a recovery for it is guaranteed waste —
+    queue_bankruptcy quarantines such rows on sight with "original task <slug> is already
+    DONE/MERGED".
+
+    Deliberately scoped to MERGED, not DONE.  Recovering DONE-but-never-integrated work
+    is this module's entire purpose, so excluding DONE here would silently disable it.
+    (queue_bankruptcy currently quarantines DONE-original recoveries too; that policy
+    disagreement is real but is a separate decision from this loop fix.)
+    """
+    slug = task.get("slug")
+    project_id = task.get("project_id")
+    if not slug or not project_id:
+        return False
+    try:
+        rows = db.select("tasks", {"select": "id,state",
+                                   "project_id": f"eq.{project_id}",
+                                   "slug": f"eq.{slug}",
+                                   "state": "in.(MERGED)",
+                                   "limit": "1"}) or []
+        return bool(rows)
+    except Exception:
+        return False    # fail-open: a DB blip must never stall the sweep
+
+
 # Added function to handle missing agent branches
 def _handle_missing_branch(task, proj, recovery_index=None):
     slug = task.get("slug")
     if not slug or _existing_recovery_indexed(task.get("project_id"), slug, recovery_index):
+        return False
+    if _original_already_integrated(task):
         return False
     repo = proj.get("repo_path", "")
     base = _normalize_base(repo, proj, task.get("base_branch") or proj.get("default_base") or proj.get("prod_branch") or "main")
@@ -547,11 +592,28 @@ def _age_seconds(ts):
 
 
 def pressure(limit=1000):
+    """Per-project backlog pressure: how much passed work is waiting to integrate.
+
+    Reads EVERY matching row, not the first `limit` of them. This was a capped
+    `db.select(..., order=updated_at.asc, limit=200)`, and db's own truncated-scan
+    detector had been flagging it: "tasks returned exactly its limit (200) ordered
+    by updated_at.asc. Anything past the cap is invisible to this caller."
+
+    Ascending order made that worse than an undercount. The cap always fell on the
+    OLDEST rows, so once the backlog exceeded it the newest waiting work could not
+    appear in the pressure figure at all — no matter how long it waited, or how
+    much of it there was. Pressure is the signal for how starved a project is, so
+    a number that saturates and then stops responding is the one thing it must not
+    be.
+
+    `limit` is now the paging budget rather than a silent horizon: select_all pages
+    to exhaustion and says so out loud if it ever reaches the cap.
+    """
     projects = {p["id"]: p for p in (db.select("projects") or [])}
-    rows = db.select("tasks", {"select": "id,slug,project_id,state,note,updated_at",
-                               "state": "in.(DONE,BLOCKED,RUNNING)",
-                               "order": "updated_at.asc",
-                               "limit": str(limit)}) or []
+    rows = db.select_all("tasks", {"select": "id,slug,project_id,state,note,updated_at",
+                                   "state": "in.(DONE,BLOCKED,RUNNING)"},
+                         order="updated_at.asc",
+                         max_rows=max(int(limit or 0), 1000)) or []
     out = {}
     for t in rows:
         if not _looks_passed(t):

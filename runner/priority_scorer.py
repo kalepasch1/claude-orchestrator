@@ -68,6 +68,31 @@ def score_task(task_row):
         except Exception:
             pass
 
+    # High-ROI fix boost: fixes with high confidence and few prior attempts are
+    # cheap to land and unblock downstream work — route them to the front of the
+    # queue alongside the highest-EV tasks.
+    #
+    # Recovered from refs/orch-rescue/20260806T131026-improve-value-aware-test-
+    # routing-early-exit-r-slice-3-adapt-merged-patterns-d09561bf, the only hunk
+    # in 14,300 across the 13 CONFLICTED_NEEDS_FOCUSED_TASK refs that was
+    # genuinely missing from base. See
+    # docs/recovery-ledger/5dc36bf5e0be-focused-conflict-triage.md.
+    is_fix = kind in ("bugfix", "qafix", "relfix") or slug.startswith(
+        ("qafix-", "relfix-", "buildfix-", "deployfix-", "hotfix-"))
+    if is_fix:
+        try:
+            confidence = float(task_row.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        try:
+            attempt = int(task_row.get("attempt") or 0)
+        except (TypeError, ValueError):
+            attempt = 0
+        if confidence >= 0.7 and attempt <= 1:
+            base -= 8  # high ROI: strong success odds, no retry burn yet
+        elif confidence >= 0.5:
+            base -= 3
+
     # Age-based starvation prevention
     age_days = _age_days(created_at)
     if age_days > 7:

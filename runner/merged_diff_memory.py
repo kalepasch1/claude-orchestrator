@@ -14,7 +14,7 @@ import json
 import re
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 import hashlib
@@ -59,7 +59,18 @@ def _log_error(msg, context=""):
 
 
 def _get_merged_commits(repo=".", lookback_days=None):
-    """Return list of (commit_hash, commit_msg) tuples merged to master in the last N days."""
+    """(commit_hash, commit_msg) for merges worth learning from in the last N days.
+
+    Filtered, not raw. Every commit returned here goes on to
+    `_extract_patterns_from_commit()`, which spends three git subprocesses plus a
+    quality-gate pass on it — and a revert, a WIP merge, or a merge of a
+    non-agent branch cannot yield a reusable convention, so that work buys a
+    guaranteed rejection. The filter runs on the message alone, before any
+    subprocess is spawned for the commit.
+
+    Fail-soft: if the predicate module cannot be imported the scan still runs
+    unfiltered, because losing the whole window is worse than scanning noise.
+    """
     if lookback_days is None:
         lookback_days = LOOKBACK
     try:
@@ -72,10 +83,42 @@ def _get_merged_commits(repo=".", lookback_days=None):
                 parts = line.split(None, 1)
                 if len(parts) >= 2:
                     commits.append((parts[0], parts[1]))
-        return commits
+        try:
+            from merge_candidate import filter_merge_candidates
+        except ImportError as e:
+            _log_error(f"merge_candidate unavailable, scanning unfiltered: {e}", f"repo={repo}")
+            return commits
+        kept = filter_merge_candidates(commits)
+        if len(kept) != len(commits):
+            _log_error(
+                f"merged-diff scan: {len(commits) - len(kept)} of {len(commits)} merges "
+                f"skipped as non-candidates (reverts, WIP, non-agent branches)",
+                f"repo={repo}",
+            )
+        return kept
     except Exception as e:
         _log_error(f"Failed to get merged commits: {e}", f"repo={repo}")
         return []
+
+
+def _record_worth_keeping(pattern):
+    """True when an extracted record has at least one changed file worth learning from.
+
+    Mirrors `merge_candidate.is_merge_candidate_commit`'s path rule against the shape
+    `_extract_patterns_from_commit` returns (which carries `files` but no raw diff).
+    Fail-soft: an unimportable predicate keeps the record, because dropping real
+    signal is worse than keeping noise.
+    """
+    if not isinstance(pattern, dict):
+        return False
+    try:
+        from merge_candidate import is_ignored_path
+    except ImportError:
+        return True
+    files = pattern.get("files")
+    if not isinstance(files, (list, tuple)) or not files:
+        return False
+    return any(not is_ignored_path(f) for f in files)
 
 
 def _extract_patterns_from_commit(repo, commit_hash):
@@ -360,10 +403,24 @@ def run(repo=".", dry_run=False):
         result["merged_count"] = len(commits)
 
         patterns = []
+        skipped_ignored = 0
         for commit_hash, msg in commits:
             p = _extract_patterns_from_commit(repo, commit_hash)
-            if p:
-                patterns.append(p)
+            if not p:
+                continue
+            # Record-level gate. The message filter above cannot see the diff, so a
+            # merge whose every changed file is a lockfile, a vendored dependency or
+            # build output still reaches here — and carries nothing reusable.
+            if not _record_worth_keeping(p):
+                skipped_ignored += 1
+                continue
+            patterns.append(p)
+        if skipped_ignored:
+            _log_error(
+                f"merged-diff scan: {skipped_ignored} extracted commit(s) skipped — "
+                f"no changed file outside the ignored set",
+                f"repo={repo}",
+            )
 
         result["patterns_count"] = len(patterns)
 
@@ -531,6 +588,186 @@ def get_recent_merges(limit: int = 20) -> list[dict]:
         return []
     merges = _read_memory()
     return merges[-limit:]
+
+
+# ---------------------------------------------------------------------------
+# Diff parsing (spec §2) and keyword retrieval (spec §5).
+#
+# `capture_merge` above records `files_affected` and nothing about the SIZE or
+# the difficulty of a merge, so "what did this branch actually do" could not be
+# answered from memory without re-reading git. These add the missing fields —
+# insertions, deletions, conflict_resolutions — and cap the file list, because a
+# 900-file vendored-dependency merge otherwise crowds every other record out of
+# a 50-merge memory file.
+# ---------------------------------------------------------------------------
+
+# Beyond this the list stops being informative and starts being ballast.
+MAX_TRACKED_FILES = 50
+
+
+def _dedupe_and_cap(paths: list[str], limit: int = MAX_TRACKED_FILES) -> list[str]:
+    """Unique paths in first-seen order, capped, with a `+N more` marker.
+
+    Order is preserved rather than sorted: git lists the diff in tree order, and
+    the first files are the ones a reader recognises. `-m --first-parent` can
+    repeat a path across parents, hence the dedupe.
+    """
+    seen: dict[str, None] = {}
+    for path in paths:
+        cleaned = (path or "").strip()
+        if cleaned:
+            seen.setdefault(cleaned, None)
+
+    unique = list(seen)
+    if len(unique) <= limit:
+        return unique
+    return unique[:limit] + [f"+{len(unique) - limit} more"]
+
+
+def _parse_numstat(text: str) -> tuple[list[str], int, int]:
+    r"""Parse `git diff --numstat` output into (paths, insertions, deletions).
+
+    Binary files are reported by git as `-\t-\tpath`. They are counted as files
+    changed but contribute no line counts, because "0 lines" and "not a text
+    file" are different facts and summing them would understate a merge that
+    replaced an image.
+    """
+    paths: list[str] = []
+    insertions = deletions = 0
+
+    for line in (text or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added, removed, path = parts[0], parts[1], parts[-1]
+        paths.append(path)
+        if added.isdigit():
+            insertions += int(added)
+        if removed.isdigit():
+            deletions += int(removed)
+
+    return paths, insertions, deletions
+
+
+def _count_conflict_resolutions(patch: str) -> int:
+    """Count conflict blocks left in a patch.
+
+    Counts `<<<<<<<` opening markers only. `=======` is deliberately NOT counted
+    on its own: it is also how people underline headings in markdown and rst,
+    and this repo is full of both, so counting it would report conflicts in
+    every documentation merge. One opening marker is one conflict block, which
+    is the number a reader actually wants.
+    """
+    count = 0
+    for line in (patch or "").splitlines():
+        stripped = line.lstrip("+- ")
+        if stripped.startswith("<<<<<<<"):
+            count += 1
+    return count
+
+
+def _to_iso_utc(raw: str) -> str:
+    """Normalise a git author date to ISO-8601 UTC.
+
+    Two records that disagree about timezone cannot be ordered by string
+    comparison, and this file is read back as JSON and sorted as text. Falls
+    back to now() rather than returning an empty string: an undated record is
+    indistinguishable from a corrupt one.
+    """
+    value = (raw or "").strip()
+    if value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.isoformat() + "Z"
+            return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except Exception:
+            pass
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_merge_diff(commit_hash: str, branch_name: str, cwd: str = ".") -> dict:
+    """Extract the spec §2 record for one merged commit.
+
+    Returns, always:
+        files_changed        deduped, capped at MAX_TRACKED_FILES with `+N more`
+        insertions           int
+        deletions            int
+        conflict_resolutions int
+        branch_name          as supplied
+        merge_date           ISO-8601 UTC
+
+    Fail-soft by construction: every git read goes through `_safe_run`, which
+    returns "" on any failure, so a missing commit or an unavailable git yields
+    a well-formed record with zeroed counts rather than an exception. A caller
+    writing memory must not be wedged by a repo it cannot read.
+
+    `-m --first-parent` matches `capture_merge`: for a true merge commit a plain
+    diff prints nothing at all, which is how `files_affected` came back empty
+    for every merge before that flag was added.
+    """
+    numstat = _safe_run(
+        ["git", "diff-tree", "--no-commit-id", "--numstat", "-r", "-m", "--first-parent", commit_hash],
+        cwd=cwd,
+    )
+    paths, insertions, deletions = _parse_numstat(numstat)
+
+    patch = _safe_run(
+        ["git", "show", "--format=", "--unified=0", "-m", "--first-parent", commit_hash],
+        cwd=cwd,
+    )
+
+    return {
+        "files_changed": _dedupe_and_cap(paths),
+        "insertions": insertions,
+        "deletions": deletions,
+        "conflict_resolutions": _count_conflict_resolutions(patch),
+        "branch_name": branch_name,
+        "merge_date": _to_iso_utc(
+            _safe_run(["git", "log", "-1", "--format=%aI", commit_hash], cwd=cwd)
+        ),
+    }
+
+
+def find_merges(keyword: Optional[str] = None, limit: int = 20) -> list[dict]:
+    """Recorded merges, optionally filtered by `keyword`. Returns [] on error.
+
+    With no keyword this is `get_recent_merges`. With one, it matches
+    case-insensitively across branch, message and the file list — the three
+    things someone actually remembers about a merge they are trying to find.
+
+    A keyword that matches nothing returns [], never everything. Falling back to
+    the full list on a failed search is how a filter silently stops filtering.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    if limit <= 0:
+        return []
+
+    merges = _read_memory()
+
+    if keyword is None or not str(keyword).strip():
+        return merges[-limit:]
+
+    needle = str(keyword).strip().lower()
+
+    def matches(record: dict) -> bool:
+        try:
+            haystack = " ".join(
+                [
+                    str(record.get("branch") or record.get("branch_name") or ""),
+                    str(record.get("message") or ""),
+                    " ".join(str(p) for p in (record.get("files_affected") or record.get("files_changed") or [])),
+                ]
+            ).lower()
+            return needle in haystack
+        except Exception:
+            # A malformed record is not a match, and is not a crash either.
+            return False
+
+    return [m for m in merges if matches(m)][-limit:]
 
 
 def _tracking_stats() -> dict:
@@ -937,3 +1174,69 @@ def invalidate() -> bool:
         return _invalidate_tracking()
     except Exception:
         return False
+
+
+# ── Merge-candidate gate ────────────────────────────────────────────────────
+
+# Anchored merge subjects git itself writes. These are the strong signals.
+_MERGE_SUBJECT_RE = re.compile(
+    r"^\s*merge\s+(pull\s+request\b|(remote-tracking\s+)?branch\b|tag\b|commit\b|\S)",
+    re.IGNORECASE,
+)
+# GitHub's squash/merge subject can appear anywhere in a multi-line body.
+_MERGE_PHRASE_RE = re.compile(r"merge\s+pull\s+request\b", re.IGNORECASE)
+# Bare "merge"/"merged" as a STANDALONE word, per the spec's matcher list.
+_MERGE_WORD_RE = re.compile(r"(?<![\w-])merged?(?![\w-])", re.IGNORECASE)
+# A revert of a merge is not a merge — it is the opposite, and replaying its
+# diff into merged-diff memory would teach the fleet the inverse of the lesson.
+_REVERT_RE = re.compile(r"(?<![\w-])revert(s|ed|ing)?(?![\w-])", re.IGNORECASE)
+
+
+def is_merge_candidate(commit_message: str) -> bool:
+    """True when a commit message likely represents a merge from another branch.
+
+    This is the message-only gate for merged-diff memory: it decides whether a
+    commit is worth extracting exemplars from before any repository work happens.
+
+    Matching, in order:
+      1. Reverts lose outright. "Revert \"Merge pull request #123 ...\"" is a
+         revert, not a merge, even though it contains a perfect merge subject —
+         so the revert check runs FIRST and short-circuits.
+      2. Anchored git/GitHub merge subjects: "Merge branch '...'",
+         "Merge remote-tracking branch '...'", "Merge pull request #N from ...".
+      3. "merge pull request" anywhere in the body, because the merge train
+         writes multi-line messages whose merge header is not always line 1.
+      4. A standalone "merge"/"merged" word, per the spec's matcher list.
+
+    Empty, whitespace-only, None and non-str inputs are False — a message that
+    says nothing is not evidence of a merge.
+
+    KNOWN LIMIT, stated rather than hidden: rule 4 is deliberately loose, so
+    prose that merely mentions merging ("document the merge policy") matches.
+    Message text is a heuristic, never proof. Where the repository is available,
+    a commit's PARENT COUNT is authoritative and should be preferred — see
+    runner/tests/test_merged_diff_memory_merge_detection.py, which asserts that
+    against a real git repo. This function exists for the paths that only ever
+    see a string.
+
+    Args:
+        commit_message: commit subject or full body.
+
+    Returns:
+        True if the message looks like a merge, False otherwise.
+    """
+    if not isinstance(commit_message, str):
+        return False
+    msg = commit_message.strip()
+    if not msg:
+        return False
+
+    # Reverts first — a revert of a merge contains a merge subject verbatim.
+    if _REVERT_RE.search(msg):
+        return False
+
+    if _MERGE_SUBJECT_RE.match(msg):
+        return True
+    if _MERGE_PHRASE_RE.search(msg):
+        return True
+    return bool(_MERGE_WORD_RE.search(msg))

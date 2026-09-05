@@ -92,9 +92,22 @@ def check():
             if reage is not None and reage < RENOTIFY_HOURS:
                 return {"status": "already-alerted", "age_hours": round(age_h, 2)}
 
+        # Which kind of stall is this? On 2026-08-24 three fix tasks were aimed at
+        # merge_train's internals while the real condition was that no process was
+        # running it at all, so the alert must say which case it is before it names
+        # a suspect. Fail-soft: an unavailable probe degrades to a generic line.
+        try:
+            import merge_train_liveness
+            liveness = merge_train_liveness.summary_line(merges_recent=False)
+        except Exception as e:
+            print(f"[merge_stall_monitor] liveness probe unavailable (fail-soft): {e}")
+            liveness = "[merge-train liveness: UNKNOWN] probe unavailable"
+
         detail = (f"No task has reached MERGED in {age_h:.1f}h, but {backlog} task(s)/card(s) "
                   f"are approved or done and waiting to integrate. The fleet is producing work "
-                  f"it cannot ship -- check merge_train.py logs and repo_lock contention first "
+                  f"it cannot ship. {liveness} If liveness is NO_CONSUMER, load the launchd "
+                  f"agent -- do NOT open fix tasks against merge_train.py, its code is not "
+                  f"executing. Otherwise check merge_train.py logs and repo_lock contention "
                   f"(the 2026-07-08 incident's root cause), then transient_retries exhaustion "
                   f"on repeatedly-repaired tasks.")
         try:

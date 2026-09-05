@@ -429,10 +429,16 @@ def repair_misclassified(limit=300):
     """
     if os.environ.get("ORCH_QUARANTINE_REPAIR", "true").lower() not in ("1", "true", "yes", "on"):
         return {"checked": 0, "repaired": 0}
-    rows = db.select(
+    # Exhaustive for the same reason as dedupe_replacements below: this WRITES
+    # (it rewrites prompt/note/category on replacement rows), and a
+    # recency-ordered cap meant rows past it were never repaired while parking
+    # and repairing churned rows in and out of the window between passes. db's
+    # truncated-scan detector was reporting this call 3502 times.
+    rows = db.select_all(
         "tasks",
-        {"select": "id,slug,note,state,project_id,base_branch,kind",
-         "state": "eq.QUEUED", "order": "updated_at.desc", "limit": str(limit)},
+        {"select": "id,slug,note,state,project_id,base_branch,kind", "state": "eq.QUEUED"},
+        order="updated_at.desc",
+        max_rows=max(int(limit or 0), 10000),
     ) or []
     checked = repaired = 0
     for row in rows:
@@ -473,10 +479,29 @@ def repair_misclassified(limit=300):
 
 
 def dedupe_replacements(limit=1000):
-    rows = db.select(
+    """Collapse duplicate quarantine replacements, keeping the newest per slug.
+
+    Reads every QUEUED row rather than the newest `limit` of them. This was a
+    capped `select(..., order=updated_at.desc, limit=1000)` and db's truncated-scan
+    detector was reporting it 2619 times.
+
+    A partial window is particularly bad HERE because this function WRITES: it
+    parks duplicates as DECOMPOSED. Two failure modes followed from the cap. A slug
+    whose duplicates all sat past it was never deduped at all — silently, forever.
+    And because parking a row updates updated_at, rows churn in and out of a
+    recency-ordered window between runs, so which duplicates were even considered
+    varied pass to pass. A dedupe pass has to see the whole group to know which
+    member is the newest; seeing an arbitrary suffix of it is not a smaller version
+    of the same job.
+
+    The newest-first order is load-bearing below ("keep items[0]") and is
+    preserved.
+    """
+    rows = db.select_all(
         "tasks",
-        {"select": "id,slug,note,state,updated_at",
-         "state": "eq.QUEUED", "order": "updated_at.desc", "limit": str(limit)},
+        {"select": "id,slug,note,state,updated_at", "state": "eq.QUEUED"},
+        order="updated_at.desc",
+        max_rows=max(int(limit or 0), 10000),
     ) or []
     groups = collections.defaultdict(list)
     for row in rows:

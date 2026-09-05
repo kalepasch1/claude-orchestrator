@@ -99,9 +99,78 @@ def allow_self_target(app, detail=""):
     return False
 
 
+# ── Improvement window ──────────────────────────────────────────────────────
+# Improvement generators are confined to a nightly window (default 01:00-05:00 local).
+# Two reasons, both operator directives from 2026-09-01:
+#   1. Work generated in the window merges to the shared dev branch overnight, so the
+#      fleet is not racing a human editing the same repos during the day.
+#   2. Improvements then build on current dev rather than on live prod code.
+# Wrap-around windows (e.g. 22->6) are supported, same semantics as
+# nightly_cheap_sweep.is_off_peak.
+IMPROVE_WINDOW_START = int(os.environ.get("ORCH_IMPROVE_WINDOW_START", "1"))
+IMPROVE_WINDOW_END = int(os.environ.get("ORCH_IMPROVE_WINDOW_END", "5"))
+IMPROVE_WINDOW_TZ = os.environ.get("ORCH_IMPROVE_WINDOW_TZ", "America/New_York")
+
+
+def improvement_window_enforced():
+    """True unless the operator has explicitly turned the window off."""
+    return os.environ.get(
+        "ORCH_IMPROVE_WINDOW_ENABLED", "true").strip().lower() in _TRUTHY
+
+
+def _window_now():
+    """Current time in the window's timezone.
+
+    Every scheduler in this codebase uses naive datetime.now(), which silently shifts
+    the window by 4-5h if the runner is ever launched with TZ=UTC. Resolve explicitly.
+    """
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(IMPROVE_WINDOW_TZ))
+    except Exception:
+        return datetime.now()
+
+
+def in_improvement_window(now=None):
+    """True if `now` falls inside the improvement window."""
+    if not improvement_window_enforced():
+        return True
+    h = (now or _window_now()).hour
+    start, end = IMPROVE_WINDOW_START, IMPROVE_WINDOW_END
+    if start == end:
+        return True
+    if start > end:
+        return h >= start or h < end
+    return start <= h < end
+
+
+def allow_improvement_now(detail=""):
+    """True if improvement generators may run right now; logs once and returns False otherwise."""
+    if in_improvement_window():
+        return True
+    key = ("ORCH_IMPROVE_WINDOW_ENABLED", detail)
+    if key not in _logged:
+        _logged.add(key)
+        print(f"[self_work_gate] OUTSIDE IMPROVEMENT WINDOW: "
+              f"{detail or 'improvement generator'} skipped — window is "
+              f"{IMPROVE_WINDOW_START:02d}:00-{IMPROVE_WINDOW_END:02d}:00 {IMPROVE_WINDOW_TZ}, "
+              f"now {_window_now():%H:%M}. Set ORCH_IMPROVE_WINDOW_ENABLED=false to disable "
+              f"the window.", flush=True)
+    return False
+
+
 def status():
     """Snapshot of every gate — used by dashboards and the periodic selfcheck job."""
-    return {flag: enabled(flag) for flag in GATES}
+    snap = {flag: enabled(flag) for flag in GATES}
+    snap["improvement_window"] = {
+        "enforced": improvement_window_enforced(),
+        "start_hour": IMPROVE_WINDOW_START,
+        "end_hour": IMPROVE_WINDOW_END,
+        "tz": IMPROVE_WINDOW_TZ,
+        "open_now": in_improvement_window(),
+    }
+    return snap
 
 
 if __name__ == "__main__":

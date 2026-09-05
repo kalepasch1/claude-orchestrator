@@ -227,3 +227,40 @@ re-emit the same advice next pass.
   convention — *module-level singleton pattern*, where module functions delegate to one
   thread-safe instance. The real rule is that such a singleton must carry a docstring
   saying what it is and how it is initialised, not that it must be eliminated.
+
+## Never search the home directory for a repo
+
+`projects.repo_path` holds the exact absolute path of every repo in the fleet. Ask
+the control plane; it answers in milliseconds.
+
+```sql
+select name, repo_path from projects;
+```
+
+**Do not** run `find ~`, `bfs /Users/...`, `fd` or `mdfind` across the home
+directory to locate a project, a file or a branch. Measured on this Mac,
+2026-09-03:
+
+| process | age | CPU |
+|---|---|---|
+| `bfs /Users/kpasch -type d -name sustainable-barks` | 11m58s | 82.6% |
+| `bfs /Users/kpasch -type d -name *pareto*` | 4m42s | 68.1% |
+| `bfs /Users/kpasch -type f -name *agentledger*` | live | 86.5% |
+
+Three at once is roughly two and a half cores. It is not free, and it is not only
+your task's problem:
+
+- `resource_governor` clamps task lanes on load per core, and `merge_train`'s
+  project workers now follow the same curve. At load/core 7.69 the fleet ran
+  **one** merge worker instead of four and **one** task lane — so a home-directory
+  scan throttles everybody's throughput, including the merge of your own work.
+- A red suite produced on a box in that state is not a verdict about the code.
+- When your session ends, an in-flight scan is reparented to launchd and keeps
+  burning a core with nobody left to read its output. `resource_medic` now reaps
+  those (`reaped-orphan-scan`), but not until they have already cost minutes.
+
+Killing one of them took the 1-minute load average from 67 to 31.
+
+If you genuinely need to search, bound it to the repo you are working in — the
+worktree you were given, or a `repo_path` from the table. A search rooted at `.`
+inside a project is fine and nothing here objects to it.

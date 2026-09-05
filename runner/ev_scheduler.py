@@ -49,19 +49,10 @@ ZERO_EV = 0.01             # scores below this are "near-zero"
 #
 # Refusing is STRONGER than parking, so the bar is deliberately harder to trip:
 # LOW_EV_THRESHOLD < ZERO_EV, i.e. a task can be park-eligible and still be enqueued.
-LOW_EV_THRESHOLD = float(os.environ.get("ORCH_LOW_EV_THRESHOLD", "0.0"))
-LOW_EV_EARLY_EXIT = os.environ.get("ORCH_LOW_EV_EARLY_EXIT", "true").lower() == "true"
-
-#: Fields producers use for expected value, in precedence order.
-EV_FIELDS = ("ev", "expected_value", "score", "value")
-
-#: Lanes whose value is not EV-expressible. Recovery, evidence and repair work exists
-#: precisely because something is broken, so scoring it low and refusing it would make the
-#: fleet unable to repair itself — the one refusal that must never happen.
-EV_EXEMPT_PREFIXES = ("recovery", "recover-", "breach-remediation", "canary",
-                      "qafix", "relfix", "buildfix", "deployfix", "toolchain-repair",
-                      "rework")
-EV_EXEMPT_KINDS = ("recovery", "canary", "toolchain-repair")
+#: LOW_EV_THRESHOLD / LOW_EV_EARLY_EXIT / EV_FIELDS / the exempt lists are defined ONCE,
+#: below, under "TWO SPELLINGS, ONE KNOB". They used to be declared here as well and
+#: silently overwritten there, which is how the documented `ORCH_LOW_EV_*` knobs became
+#: dead config and how the two exemption call sites drifted apart.
 PARK_NOTE = "[ev-low-priority: near-zero expected value — keep queued, run when capacity allows]"
 BOOST_KINDS = ("build",)
 REVENUE_WORDS = ("revenue", "pricing", "growth", "conversion")
@@ -82,16 +73,62 @@ def _env_float_ev(name, default):
 #
 # The bar is intentionally STRICTLY LOWER than ZERO_EV: refusing is a stronger action
 # than parking, so it must be harder to trigger. Only genuinely negative EV is refused.
-LOW_EV_THRESHOLD = _env_float_ev("ORCH_EV_LOW_THRESHOLD", 0.0)
-LOW_EV_EARLY_EXIT = os.environ.get("ORCH_EV_LOW_EARLY_EXIT", "true").lower() in ("true", "1", "yes", "on")
+# TWO SPELLINGS, ONE KNOB. This block used to redefine LOW_EV_THRESHOLD /
+# LOW_EV_EARLY_EXIT under `ORCH_EV_LOW_*` while the block above read `ORCH_LOW_EV_*`.
+# The later definition silently won, so an operator raising `ORCH_LOW_EV_THRESHOLD` to
+# stop a job being shelved by the queue-velocity PID changed nothing at all — the
+# documented mitigation was dead config. Accept BOTH spellings, first one set wins, and
+# fail soft on an unparseable value rather than raising at import.
+_LOW_EV_THRESHOLD_VARS = ("ORCH_LOW_EV_THRESHOLD", "ORCH_EV_LOW_THRESHOLD")
+_LOW_EV_EARLY_EXIT_VARS = ("ORCH_LOW_EV_EARLY_EXIT", "ORCH_EV_LOW_EARLY_EXIT")
+_TRUEY = ("true", "1", "yes", "on")
+
+
+def _first_env(names, default=""):
+    for name in names:
+        value = os.environ.get(name)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _coerce_float(raw, default):
+    """float(raw), or `default` for anything unparseable/NaN/inf. Never raises."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return default if (math.isnan(value) or math.isinf(value)) else value
+
+
+def low_ev_threshold():
+    """Current enqueue bar, read live so a mid-run env change takes effect."""
+    return _coerce_float(_first_env(_LOW_EV_THRESHOLD_VARS), 0.0)
+
+
+def low_ev_early_exit():
+    """Whether the early-exit refusal is armed. Either env spelling works."""
+    return _first_env(_LOW_EV_EARLY_EXIT_VARS, "true").strip().lower() in _TRUEY
+
+
+LOW_EV_THRESHOLD = _coerce_float(_first_env(_LOW_EV_THRESHOLD_VARS), 0.0)
+LOW_EV_EARLY_EXIT = _first_env(_LOW_EV_EARLY_EXIT_VARS, "true").strip().lower() in _TRUEY
 LOW_EV_SKIP_NOTE = "[ev-low-skip: expected value below the enqueue bar — not scheduled, kept for audit]"
 # Field names producers have used for EV, in precedence order.
 EV_FIELDS = ("ev", "expected_value", "score", "value")
 # Lanes whose value is not EV-expressible: recovery, remediation and evidence work.
+# ONE list, shared by both exemption call sites. They previously read two different
+# tuples, so a qafix/relfix/buildfix task was exempt on one path and shelved on the
+# other — the same job passing or being shelved depending on which check ran.
 EXEMPT_KINDS = frozenset({"recovery", "canary", "toolchain-repair", "qafix", "relfix",
                           "buildfix", "deployfix", "rework", "remediation"})
-EXEMPT_SLUG_PREFIXES = ("recovery", "recover-", "breach-", "canary-", "qafix-", "relfix-",
-                        "buildfix-", "deployfix-", "toolchain-repair", "rework-")
+EXEMPT_SLUG_PREFIXES = ("recovery", "recover-", "breach-", "breach-remediation", "canary",
+                        "canary-", "qafix", "qafix-", "relfix", "relfix-", "buildfix",
+                        "buildfix-", "deployfix", "deployfix-", "toolchain-repair",
+                        "rework", "rework-")
+# Aliases kept so the older call site cannot drift from the shared definition again.
+EV_EXEMPT_KINDS = EXEMPT_KINDS
+EV_EXEMPT_PREFIXES = EXEMPT_SLUG_PREFIXES
 
 # Outcome weighting: when ORCH_EV_OUTCOME_WEIGHTING=true, task-family priority is
 # weighted by REALIZED outcomes (merged-and-stayed-green rate, retries, human-reject
@@ -270,15 +307,52 @@ def outcome_weight(task, ctx):
     return max(weight, 0.1)  # floor at 0.1 so nothing is fully zeroed
 
 
+#: ONE definition, in thermal_map, imported here. Not two.
+#:
+#: These floors were first added to this module alone. That accomplished nothing: the
+#: function the queue actually uses is thermal_map.expected_value — _scored_queue() feeds
+#: both park_zero_ev and claim_task's ordering and calls thermal_score(), never score().
+#: Measured on the live queue after that first fix: 0 of 296 tasks below ZERO_EV by
+#: score(), 185 of 296 by the thermal path, and 18 still stamped "near-zero expected
+#: value" per run. Two near-identical scoring functions with independent copies of the
+#: same constant is exactly how a fix lands on the twin nobody calls.
+NO_REVENUE_BASE = thermal_map.NO_REVENUE_BASE
+SUCCESS_RATE_FLOOR = thermal_map.SUCCESS_RATE_FLOOR
+
+
 def score(task, ctx):
     """Expected value per token for one task. Pure + deterministic."""
     project = task.get("project") or ""
-    mrr = float((ctx.get("revenue_by_project") or {}).get(project, 0) or 0)
+    revenue = ctx.get("revenue_by_project") or {}
+    mrr = float(revenue.get(project, 0) or 0)
     stats = (ctx.get("outcome_stats") or {}).get(project, {}) or {}
-    success_rate = float(stats.get("success_rate", 0.7))
+    success_rate = max(float(stats.get("success_rate", 0.7)), SUCCESS_RATE_FLOOR)
     avg_usd = float(stats.get("avg_usd", 0) or 0)
 
-    s = math.log10(1 + max(0.0, mrr)) * success_rate / (avg_usd + 0.5)
+    # EVERY MULTIPLIER BELOW IS MULTIPLIED BY THIS. If it is zero they are all zero.
+    #
+    # base = log10(1 + mrr), and app_revenue on this fleet is an EMPTY TABLE, so mrr was
+    # 0 for every task, so log10(1) = 0, so score() returned exactly 0.0 for every task
+    # in the queue -- and the kind-ROI weighting, the revenue-word boost, the approved
+    # -slug doubling, the flaky-work discount and outcome_weight() all multiplied that
+    # zero. The whole module was inert. Two visible consequences:
+    #
+    #   * park_zero_ev annotates anything under ZERO_EV (0.01), so it parked its
+    #     PARK_CAP of 20 tasks EVERY run, forever, in arbitrary order. On 2026-09-02 at
+    #     01:14:47 it stamped 19 tasks in four seconds with "near-zero expected value",
+    #     among them the merge candidates the train was working that minute.
+    #   * apply_ranking writes priority 1..50 from a total ordering of identical zeros,
+    #     and claim_task sorts on that column ascending. So the order the fleet claims
+    #     work in was a tie-break over noise, not a judgement about value.
+    #
+    # The fallback applies ONLY when no project anywhere reports revenue -- the
+    # degenerate case. The moment one does, the revenue-weighted behaviour is exactly
+    # what it was, because a fleet that HAS revenue data should be ranked by it.
+    base = math.log10(1 + max(0.0, mrr))
+    if base <= 0 and not any(float(v or 0) > 0 for v in revenue.values()):
+        base = NO_REVENUE_BASE
+
+    s = base * success_rate / (avg_usd + 0.5)
 
     kind = (task.get("kind") or "").lower()
     delta = (ctx.get("surface_returns") or {}).get(kind)
@@ -572,13 +646,39 @@ def apply_ranking(scored=None):
     return {"storage": "confidence", "count": n}
 
 
-def park_zero_ev(scored=None):
-    """Annotate near-zero-EV tasks without blocking them (cap PARK_CAP/run)."""
+def park_zero_ev(scored=None, ctx=None):
+    """Annotate near-zero-EV tasks without blocking them (cap PARK_CAP/run).
+
+    PARKS ON VALUE, ORDERS ON VALUE-PER-MINUTE. These are different questions and this
+    function was asking the wrong one.
+
+    `scored` carries thermal_map.score(), which is expected_value DIVIDED BY estimated
+    minutes — the right number for deciding what to claim first, because a cheap
+    high-value task should outrank an equally valuable one that takes an hour. It is the
+    wrong number for this. ZERO_EV is 0.01 and a task worth a perfectly ordinary 1.4,
+    estimated at 480 minutes, scores 0.0029 — so it gets stamped
+
+        [ev-low-priority: near-zero expected value — keep queued, run when capacity
+         allows]
+
+    which is not true of it. It is not near-zero value; it is near-zero value PER MINUTE,
+    because it is big. Measured on the live queue after the multiply-by-zero fix: 159 of
+    294 tasks still below ZERO_EV by rate, and the note misdescribed every one of them.
+    Parking systematically on size also means the largest work is the work that never
+    gets prioritised.
+
+    So the parking test now reads expected_value directly. Ordering is untouched.
+    """
     scored = scored if scored is not None else _scored_queue()
+    ctx = ctx if ctx is not None else load_ctx()
     parked = 0
-    for s, t in scored:
+    for _rate, t in scored:
         if parked >= PARK_CAP:
             break
+        try:
+            s = thermal_map.expected_value(t, ctx)
+        except Exception:
+            continue        # a task we cannot score is not evidence that it is worthless
         if s < ZERO_EV and int(t.get("attempt") or 0) >= 2:
             try:
                 db.update("tasks", {"id": t["id"]},
@@ -702,10 +802,14 @@ def shelve_low_ev(scored=None, threshold=None):
 
 def run():
     try:
-        scored = _scored_queue()
+        # One ctx for the whole run: the ordering and the parking decision must be made
+        # against the same revenue and outcome snapshot, and it saves a second set of
+        # DB reads. park_zero_ev recomputes it only when a caller does not supply one.
+        ctx = load_ctx()
+        scored = _scored_queue(ctx=ctx)
         coverage = scan_coverage(len(scored))
         applied = apply_ranking(scored)
-        parked = park_zero_ev(scored)
+        parked = park_zero_ev(scored, ctx=ctx)
         print(f"ev_scheduler: ranked {len(scored)} queued tasks "
               f"(of {coverage['queue_depth']} in queue, complete={coverage['complete']}, "
               f"storage={applied['storage']}, wrote {applied['count']}), parked {parked}")

@@ -21,6 +21,68 @@ SECRET_PATTERNS = [
 SCANNABLE_EXTENSIONS = {'.py', '.sh', '.yml', '.yaml', '.toml', '.json', '.md', '.txt', '.cfg'}
 
 
+# --- fixture discrimination -------------------------------------------------
+#
+# This scan was red on 12 lines, every one of them a TEST FIXTURE: the redaction
+# tests, the secret-risk-pool tests and the remote-url guard all have to contain
+# secret-SHAPED strings, because a string that does not look like a secret cannot
+# prove a redactor redacts one.
+#
+# The tempting fixes are both wrong. Deleting the fixtures removes the coverage
+# that makes redaction trustworthy. Skipping every test file blinds the scanner in
+# exactly the directory where a careless paste is most likely (a debugging session
+# that pins a real token into a test). So the discrimination is made on the VALUE:
+# a fixture is low-entropy by construction — a run of the alphabet, a repeated
+# character, a digit ramp, or a vendor's published documentation sample. A real
+# credential is none of those.
+#
+# Anything that looks random is still a violation, wherever it appears.
+
+#: Vendor documentation samples. Public, revoked, and impossible to derive from an
+#: entropy rule because they were generated to LOOK real.
+KNOWN_DOC_SAMPLES = {
+    'AKIAIOSFODNN7EXAMPLE',                       # AWS docs
+    'ghp_16C7e42F292c6912E7710c838347Ae178B4a',   # GitHub docs
+}
+
+#: This file's own negative-test fixtures — locally generated, never valid, and
+#: deliberately high-entropy so they PROVE the filter below still rejects something
+#: that looks real. They are allowlisted by exact value rather than by entropy,
+#: because being indistinguishable from a real secret is the entire point of them.
+SELF_TEST_SAMPLES = {
+    'sk-7Qv3Zx9Lm2Tk8Rb4Ny6Wd1Hs5Gj0Pf',
+    'ghp_9Kd2Wq7Lz4Vn8Bx3Mr6Ty1Hs5Gj0PfQz42Ab',
+    'xoxb-9427310586-Zq7Lm3Vn8Bx',
+    'AKIA7QVZXLMTKRBNY6WD',
+}
+
+_ASCENDING_RUN = 8
+
+
+def _has_ascending_run(body, length=_ASCENDING_RUN):
+    """True when *body* contains `length` consecutive ascending characters
+    ('abcdefgh', '12345678') — the signature of a hand-typed placeholder."""
+    run = 1
+    for prev, current in zip(body, body[1:]):
+        run = run + 1 if ord(current) - ord(prev) == 1 else 1
+        if run >= length:
+            return True
+    return False
+
+
+def is_obvious_fixture(secret):
+    """True when *secret* is plainly a placeholder rather than a credential."""
+    if not secret:
+        return True
+    if secret in KNOWN_DOC_SAMPLES or 'EXAMPLE' in secret.upper():
+        return True
+    # Strip the vendor prefix; the entropy question is about the body.
+    body = re.sub(r'^(sk-|ghp_|ghu_|xoxb-|AKIA)', '', secret)
+    if len(set(body)) <= max(2, len(body) // 4):   # 'AAAA…', 'abababab'
+        return True
+    return _has_ascending_run(body)
+
+
 class TestEnvSafety(unittest.TestCase):
     """Verify that committed files do not contain leaked secrets."""
 
@@ -45,11 +107,40 @@ class TestEnvSafety(unittest.TestCase):
                     with open(fpath, 'r', errors='replace') as f:
                         for lineno, line in enumerate(f, 1):
                             for pat in SECRET_PATTERNS:
-                                if pat.search(line):
+                                found = pat.search(line)
+                                if not found:
+                                    continue
+                                secret = found.group(0)
+                                if secret in SELF_TEST_SAMPLES:
+                                    continue  # this file's own negative fixtures
+                                if not is_obvious_fixture(secret):
                                     violations.append(f'{fpath}:{lineno}')
                 except (OSError, UnicodeDecodeError):
                     pass
         self.assertEqual(violations, [], f'Potential secrets found: {violations}')
+
+    def test_the_fixture_filter_still_catches_a_random_looking_secret(self):
+        """A filter nobody has seen reject something is not a filter.
+
+        These are locally generated, never-valid strings with fixture structure
+        deliberately removed: no ascending run, no repetition, no EXAMPLE.
+        """
+        for secret in sorted(SELF_TEST_SAMPLES):
+            self.assertFalse(is_obvious_fixture(secret),
+                             f'{secret!r} would have been waved through')
+            self.assertTrue(any(p.search(secret) for p in SECRET_PATTERNS),
+                            f'{secret!r} does not match any scanner pattern')
+
+    def test_the_fixture_filter_recognises_the_placeholders_in_this_repo(self):
+        for secret in (
+            'sk-abcdefghijklmnopqrstuvwxyz012345',
+            'ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+            'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            'xoxb-1234567890123-1234567890123',
+            'AKIAIOSFODNN7EXAMPLE',
+            'ghp_16C7e42F292c6912E7710c838347Ae178B4a',
+        ):
+            self.assertTrue(is_obvious_fixture(secret), secret)
 
     def test_env_file_not_committed(self):
         """Ensure .env is in .gitignore and not tracked."""
