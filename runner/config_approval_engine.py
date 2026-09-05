@@ -29,6 +29,53 @@ _STATE = {
 }
 
 
+RISK_CONFIG_PATH = os.environ.get(
+    "ORCH_RISK_CONFIG",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "risk_config.yaml"))
+
+
+def _low_risk_threshold():
+    """The auto-approve ceiling: risk_config.yaml if present, else the env default.
+
+    Precedence is file-over-env on purpose — the YAML is the reviewable, committed
+    artifact, while ORCH_AUTO_APPROVE_RISK stays as the fleet-pushable override for
+    machines that have no file. Fail-soft: a missing, unreadable, malformed or
+    out-of-range file silently falls back to AUTO_APPROVE_THRESHOLD, because an
+    unparseable config must never widen what auto-approves.
+    """
+    try:
+        import yaml
+        with open(RISK_CONFIG_PATH, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        value = (data.get("thresholds") or {}).get("low_risk", data.get("low_risk"))
+        value = float(value)
+        if 0.0 <= value <= 1.0:
+            return value
+    except Exception:
+        pass
+    return AUTO_APPROVE_THRESHOLD
+
+
+def should_auto_approve(risk_score):
+    """True when `risk_score` is within the low-risk band and may skip human review.
+
+    Boundary is INCLUSIVE (<=), preserving the behaviour this replaced — a score
+    exactly at the threshold has always auto-approved, and tightening it here
+    would silently start routing previously-approved changes to a human.
+
+    Fail-closed on bad input: a non-numeric or NaN score returns False. This gate
+    decides whether a config change reaches production without review, so
+    "unparseable" must mean "ask a human", never "allow".
+    """
+    try:
+        score = float(risk_score)
+    except (TypeError, ValueError):
+        return False
+    if score != score:          # NaN: every comparison is False, including <=
+        return False
+    return score <= _low_risk_threshold()
+
+
 def _risk_score(key, old_value, new_value):
     """
     Compute risk score (0.0 - 1.0) for a config change.
@@ -94,8 +141,8 @@ def evaluate_change(key, old_value, new_value, requester=None):
     if not new_str.strip():
         reasons.append("New value is empty")
 
-    approved = risk <= AUTO_APPROVE_THRESHOLD
-    requires_human = risk > AUTO_APPROVE_THRESHOLD
+    approved = should_auto_approve(risk)
+    requires_human = not approved
 
     result = {
         "key": key,

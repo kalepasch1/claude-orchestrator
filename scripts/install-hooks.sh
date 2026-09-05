@@ -31,6 +31,18 @@ if git diff --cached --quiet; then
     exit 0
 fi
 
+# Machine-local settings must never be committed. Runs BEFORE the Python-file filter
+# below: that filter exits 0 when nothing staged is a .py, so a staged
+# .claude/settings.local.json — a file that is only ever staged by `git add -f` and
+# carries absolute /Users paths — walked straight past this hook untouched.
+if [ -x scripts/check-settings-pollution.sh ]; then
+    if ! bash scripts/check-settings-pollution.sh; then
+        echo ""
+        echo "❌ .claude/settings.local.json pollution. Fix as printed above, or: git commit --no-verify"
+        exit 1
+    fi
+fi
+
 # Run convention linter on staged Python files
 echo "Running convention linter..."
 

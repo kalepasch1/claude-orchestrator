@@ -10,6 +10,16 @@ import log as _real_log
 import subscription_guard as _real_subscription_guard
 import provider_terms as _real_provider_terms
 import tdd_gate as _real_tdd_gate
+import agentic_coders as _real_agentic_coders
+import agentic_repair as _real_agentic_repair
+import blocked_triage as _real_blocked_triage
+import branch_lease as _real_branch_lease
+import capacity_pacer as _real_capacity_pacer
+import exec_telemetry as _real_exec_telemetry
+import notify as _real_notify
+import retry_policy as _real_retry_policy
+import router_stats as _real_router_stats
+import task_artifacts as _real_task_artifacts
 
 _PROVIDER_DEFAULTS = {
     name: dict(metadata) for name, metadata in _real_provider_terms.DEFAULTS.items()
@@ -311,6 +321,29 @@ _REAL_MODULES = {
     "log": _real_log,
     "subscription_guard": _real_subscription_guard,
     "provider_terms": _real_provider_terms,
+    "tdd_gate": _real_tdd_gate,
+    "agentic_coders": _real_agentic_coders,
+    "agentic_repair": _real_agentic_repair,
+    "blocked_triage": _real_blocked_triage,
+    "branch_lease": _real_branch_lease,
+    "capacity_pacer": _real_capacity_pacer,
+    "exec_telemetry": _real_exec_telemetry,
+    "notify": _real_notify,
+    "retry_policy": _real_retry_policy,
+    "router_stats": _real_router_stats,
+    "task_artifacts": _real_task_artifacts,
+}
+
+#: Test-invented module names with no real runner module behind them.
+#: Fakes for these are installed at import time but have nowhere to restore to,
+#: so they are cleared from sys.modules instead. Leaving them registered lets
+#: the fake outlive the test that created it, polluting later tests.
+_SYNTHETIC_ONLY_MODULES = {
+    "_test_hot_mod",
+    "_runner_module_for_timeout_tests",
+    "_runner_module_under_test",
+    "_repo_root_canary_for_validation",
+    "requests",
 }
 
 
@@ -382,6 +415,8 @@ def _restore_real_modules():
     _remember_real_modules()
     sys.modules.update(_REAL_MODULES)
     _evict_stub_shadows()
+    for name in _SYNTHETIC_ONLY_MODULES:
+        sys.modules.pop(name, None)
 
 
 #: The repository root, which must stay AHEAD of runner/ on sys.path.

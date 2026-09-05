@@ -19,8 +19,12 @@ whole repo rather than a single commit):
   ACTIVE_IN_ANOTHER_TASK
                       shares an origin with a registered project and its
                       unpushed work is on branches the merge train can see
-  RECOVERABLE_VALUE   holds unpushed commits and/or uncommitted changes that
+  RECOVERABLE_VALUE   holds unpushed commits and/or TRACKED modifications that
                       exist nowhere else
+  UNTRACKED_NEEDS_TRIAGE
+                      untracked files only: nothing is at risk of being
+                      overwritten, but somebody has to diff them against the
+                      base before calling them value
   CONFLICTED_NEEDS_FOCUSED_TASK
                       unreadable, no origin remote, or otherwise needs a human
                       call before anything is moved
@@ -69,6 +73,8 @@ class Item:
     origin: str = ""
     unpushed_branches: list = field(default_factory=list)
     dirty_paths: int = 0
+    tracked_dirty: int = 0
+    untracked_paths: int = 0
 
 
 def find_repos(roots: "list[str]", max_depth: int) -> "list[str]":
@@ -120,8 +126,26 @@ def classify(item: Item, path: str, registered_origins: "set[str]",
     created = git("log", "-1", "--pretty=%ct", cwd=path).strip()
     item.created_at = int(created) if created.isdigit() else 0
 
-    status = git("status", "--porcelain", cwd=path)
-    item.dirty_paths = len([ln for ln in status.splitlines() if ln.strip()])
+    # `-uall` because plain --porcelain collapses an untracked DIRECTORY into a
+    # single `?? dir/` entry, so the headline count understates what is there
+    # and two checkouts with wildly different contents can report the same
+    # number. Per-file is the only count worth acting on.
+    status = git("status", "--porcelain", "-uall", cwd=path)
+    lines = [ln for ln in status.splitlines() if ln.strip()]
+    item.dirty_paths = len(lines)
+    # Tracked modifications and untracked files are NOT the same risk, and
+    # collapsing them is how this scan reported /Users/kpasch/Documents/_Trojun_archived
+    # as "the single largest pocket of unreviewed local state" (223 paths).
+    # 222 of those were untracked: 169 were byte-identical copies of files
+    # already on origin/master at a shifted path (web/supabase/migrations/ vs
+    # supabase/migrations/), and the remainder belonged to a DIFFERENT product
+    # built in a clone of this repo. Nothing was at risk and nothing was
+    # landable. A tracked modification overwrites content the base already has,
+    # so it is genuinely unrecoverable if the checkout is lost; an untracked
+    # file may be anything at all, and has to be looked at before it is called
+    # value.
+    item.tracked_dirty = len([ln for ln in lines if not ln.startswith("??")])
+    item.untracked_paths = len([ln for ln in lines if ln.startswith("??")])
 
     # Branches with commits not present on any remote-tracking ref.
     unpushed: list[str] = []
@@ -131,14 +155,21 @@ def classify(item: Item, path: str, registered_origins: "set[str]",
         name = line.strip()
         if not name:
             continue
+        # Argument ORDER is load-bearing: `--not` negates everything that
+        # follows it, so `--count --not --remotes <name>` excluded the branch
+        # as well as the remotes and returned 0 for EVERY branch. Unpushed-work
+        # detection therefore never fired, and a checkout holding real unpushed
+        # commits on a clean tree was classified ALREADY_PRESENT — the silent
+        # loss this whole scan exists to prevent. The branch must come first.
         ahead = git(
-            "rev-list", "--count", "--not", "--remotes", name, cwd=path
+            "rev-list", "--count", name, "--not", "--remotes", cwd=path
         ).strip()
         if ahead.isdigit() and int(ahead) > 0:
             unpushed.append(f"{name}(+{ahead})")
     item.unpushed_branches = unpushed
     item.files = [f"{len(unpushed)} unpushed branch(es)",
-                  f"{item.dirty_paths} dirty path(s)"]
+                  f"{item.tracked_dirty} tracked modification(s)",
+                  f"{item.untracked_paths} untracked path(s)"]
 
     if not origin:
         item.classification = "CONFLICTED_NEEDS_FOCUSED_TASK"
@@ -172,12 +203,32 @@ def classify(item: Item, path: str, registered_origins: "set[str]",
         item.evidence = ",".join(unpushed[:5])
         return
 
+    # Untracked-only state is a triage job, not a recovery job. It routinely
+    # turns out to be a stale duplicate of the base at a shifted path, build
+    # output, or a different product living in a clone of this repo — none of
+    # which anyone should queue an agent branch for sight unseen. Say what it
+    # is and ask for the look, rather than asserting value nobody has checked.
+    if not unpushed and not item.tracked_dirty and item.untracked_paths:
+        item.classification = "UNTRACKED_NEEDS_TRIAGE"
+        item.disposition = (
+            f"unregistered checkout with {item.untracked_paths} UNTRACKED path(s) "
+            "and no tracked modifications or unpushed commits. Nothing here is "
+            "at risk of being overwritten, and untracked files are as often a "
+            "stale copy of the base, build output, or a different project in a "
+            "shared clone as they are lost work. Diff them against the base "
+            "before queueing any recovery. Source repo is READ-ONLY."
+        )
+        item.evidence = f"{item.untracked_paths} untracked, 0 tracked-dirty"
+        return
+
     item.classification = "RECOVERABLE_VALUE"
     bits = []
     if unpushed:
         bits.append(f"{len(unpushed)} unpushed branch(es)")
-    if item.dirty_paths:
-        bits.append(f"{item.dirty_paths} uncommitted path(s)")
+    if item.tracked_dirty:
+        bits.append(f"{item.tracked_dirty} tracked modification(s)")
+    if item.untracked_paths:
+        bits.append(f"{item.untracked_paths} untracked path(s)")
     item.disposition = (
         "unregistered checkout holding " + " and ".join(bits) + ". "
         + ("Origin is not a registered project, so no executor or merge train "
@@ -185,7 +236,8 @@ def classify(item: Item, path: str, registered_origins: "set[str]",
         + "Register the project or recover the work through an agent branch. "
           "Source repo is READ-ONLY — do not delete, reset or move it."
     )
-    item.evidence = ",".join(unpushed[:5]) or f"{item.dirty_paths} dirty"
+    item.evidence = (",".join(unpushed[:5])
+                     or f"{item.tracked_dirty} tracked-dirty")
 
 
 def main() -> int:

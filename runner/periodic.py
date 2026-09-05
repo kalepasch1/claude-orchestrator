@@ -1655,3 +1655,13 @@ def _require_job_handlers(names, namespace=None) -> list[str]:
         )
     return missing
 
+def run_rtconfig():
+    """Realtime fleet_config sync: one poll+apply cycle (canonical module).
+
+    runner/ holds five rival real-time sync modules; only realtime_approval_monitor
+    (approvals) and realtime_config_sync (config) are wired. The other three are
+    deprecated shells with zero importers.
+    """
+    import realtime_config_sync
+    print(f"rtconfig: {realtime_config_sync.run()}")
+

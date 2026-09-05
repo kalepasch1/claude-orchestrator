@@ -22,6 +22,12 @@ STATE_FILE = os.path.join(HOME, "toolchain_state.json")
 CHECK_INTERVAL = 1800  # 30 minutes between checks per project
 RECOVERY_COOLDOWN = 3600  # don't re-queue recovery within 1 hour
 
+# Seconds a single version probe may take before it is recorded as a failure.
+# Named and env-backed (ORCH_ prefix => fleet-pushable via fleet_control.py) rather
+# than a bare literal, because the value is the whole difference between "the tool is
+# broken" and "npx was downloading a package over a slow link".
+PROBE_TIMEOUT_S = int(os.environ.get("ORCH_TOOLCHAIN_PROBE_TIMEOUT_S", "30") or 30)
+
 # Build commands to probe per project type
 PROBES = [
     {"files": ["package.json"], "cmd": ["npm", "--version"], "name": "npm"},
@@ -78,6 +84,41 @@ def _probe_target(repo_path, probe):
     return None
 
 
+def resolve_probe_cmd(cmd, cwd):
+    """Rewrite an `npx <tool> ...` probe so it can never turn into a package download.
+
+    The reported failure was `tsc: timeout (>30s)`, which read as "TypeScript is
+    broken". It was not. `npx tsc --version` resolves the local binary in ~0.3s when
+    node_modules is warm, but when it is *not* warm npx silently falls back to
+    fetching typescript from the registry — and on a cold cache or a slow link that
+    fetch blows past the probe timeout. The gate then reported a red toolchain, held
+    every task for the project, and queued a recovery task to fix a tool that was
+    fine.
+
+    Two changes close that hole:
+      1. If `<cwd>/node_modules/.bin/<tool>` exists, invoke it directly. No npx, no
+         resolution, no network, regardless of cache state.
+      2. Otherwise pass `--no-install`, so a genuinely missing package fails in under
+         a second with a real error instead of timing out mid-download.
+
+    (`--no-install` and not the newer `--no`: on npm 10 `npx --no tsc --version`
+    swallows the arguments and prints npm's own version, which would make every
+    probe pass by accident.)
+
+    Non-npx commands are returned unchanged. Never raises.
+    """
+    try:
+        if not cmd or cmd[0] != "npx" or len(cmd) < 2:
+            return list(cmd)
+        tool = cmd[1]
+        local = os.path.join(cwd or "", "node_modules", ".bin", tool)
+        if cwd and os.path.isfile(local) and os.access(local, os.X_OK):
+            return [local] + list(cmd[2:])
+        return ["npx", "--no-install"] + list(cmd[1:])
+    except Exception:
+        return list(cmd)
+
+
 def _load_state():
     try:
         with open(STATE_FILE) as f:
@@ -117,8 +158,9 @@ def check_project(project_id, repo_path):
         # the nearest node_modules, so probing web/tsconfig.json from the repo root asks
         # the wrong directory and reports a missing tool that is installed.
         cwd = config_dir if config_dir != repo_path else probe_path
+        cmd = resolve_probe_cmd(probe["cmd"], cwd)
         try:
-            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=cwd)
+            r = subprocess.run(cmd, capture_output=True, timeout=PROBE_TIMEOUT_S, cwd=cwd)
             if r.returncode != 0:
                 failures.append({"tool": probe["name"], "declared_by": config_file,
                                  "root": os.path.relpath(config_dir, repo_path),
@@ -126,11 +168,15 @@ def check_project(project_id, repo_path):
         except FileNotFoundError:
             failures.append({"tool": probe["name"], "declared_by": config_file,
                              "root": os.path.relpath(config_dir, repo_path),
-                             "error": f"{probe['cmd'][0]} not found in PATH"})
+                             "error": f"{cmd[0]} not found in PATH"})
         except subprocess.TimeoutExpired:
+            # Name the command and where it ran. "tsc: timeout (>30s)" sent a human
+            # looking for a broken TypeScript install; the actual cause was which
+            # directory the probe ran in and whether it had to resolve over the network.
             failures.append({"tool": probe["name"], "declared_by": config_file,
                              "root": os.path.relpath(config_dir, repo_path),
-                             "error": "timeout (>30s)"})
+                             "error": "timeout (>{}s) running `{}` in {}".format(
+                                 PROBE_TIMEOUT_S, " ".join(cmd), os.path.relpath(cwd, repo_path))})
         except Exception as e:
             failures.append({"tool": probe["name"], "declared_by": config_file,
                              "root": os.path.relpath(config_dir, repo_path),
