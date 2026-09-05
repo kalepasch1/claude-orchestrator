@@ -3212,6 +3212,12 @@ _SCHEDULE = [
                                                                   # periodic.py's JOBS dict but never added here — 2026-07-29 fix)
     ("priorityscore-600","priority_scorer",   "interval", 600),  # score QUEUED tasks with default priority=1000 so claim order reflects
                                                                   # urgency (same class of bug: registered, documented, never scheduled)
+    ("rtmon-300",     "rtmon",              "interval", 300),   # approval-monitor polling fallback. periodic.run_rtmon() has existed since
+                                                                  # the monitor landed but was in NEITHER the JOBS dict NOR this table, so the
+                                                                  # documented "polling fallback" never once ran. Third instance of this bug.
+    ("rtconfig-300",  "rtconfig",           "interval", 300),   # canonical fleet_config real-time sync (realtime_config_sync.run()). This is
+                                                                  # the runner half of "integrate real-time sync into the Mac runner"; the
+                                                                  # Vercel half lives in a different repo and is not reachable from here.
     # NOTE: "remotegc" (workflow_guardrails.gc_remote_branches, deletes origin/agent/* branches
     # >7d old) has the same never-scheduled gap but is intentionally left OUT here: with
     # ORCH_REMOTE_BRANCH_GC_DRY_RUN=false in .env it does real, irreversible `git push --delete`

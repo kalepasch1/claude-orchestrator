@@ -2,6 +2,12 @@
 """
 realtime_sync.py - real-time database synchronization for the orchestrator.
 
+DEPRECATED — zero importers anywhere in the repo. Canonical real-time sync is
+`realtime_config_sync.py` (fleet_config) and `realtime_approval_monitor.py`
+(approval cards); both are scheduled from runner.py. Do not extend this module
+and do not wire it in: five rival implementations of this one idea is the reason
+"implement real-time sync" tasks kept failing on which-module ambiguity.
+
 Slice-3: replaces manual/delayed sync with near-real-time state propagation:
   - Polls task/config tables at high frequency (configurable, default 2s)
   - Detects changes via updated_at comparison (no DB triggers needed)
