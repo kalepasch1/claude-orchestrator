@@ -9,6 +9,29 @@ on:
   # that hole: any promotion can be verified on demand against the exact master tip.
   workflow_dispatch:
 
+# SUPERSEDED PR RUNS ARE CANCELLED; MASTER RUNS ARE NOT.
+#
+# Every push to a PR branch queued a fresh full run — darwin-kernel tests + typecheck,
+# the runner guards, compileall over every module — while the previous run for the same
+# PR kept going to completion against a commit nobody will merge. On a branch pushed five
+# times in an hour that is five full runs to learn about one tip, and they queue behind
+# each other, so the answer for the commit you actually care about arrives last.
+#
+# The `github.ref` key scopes the group per branch, so two different PRs never cancel each
+# other.
+#
+# The nuance that makes this safe: cancel-in-progress is FALSE on master. The comment on
+# `workflow_dispatch` above records why — auto-sync promotes dev -> master with
+# GITHUB_TOKEN, whose pushes never trigger workflows, so master can already change with no
+# CI run to show for it. Cancelling a master run would widen exactly that hole: a
+# promotion could land, start its verification, be cancelled by the next promotion, and
+# leave two commits on master with no completed run between them. Wasted minutes on a
+# superseded PR are cheap; an unverified master tip is the thing this pipeline exists to
+# prevent.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   darwin-kernel:
     name: darwin-kernel — test + typecheck
@@ -28,6 +51,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # `npm ci` DELETES node_modules and reinstalls from the lockfile on every run, so
+      # this job refetched every dependency from the registry each time — the single
+      # slowest step in the pipeline, repeated on every push and every PR update, for a
+      # tree that only changes when package-lock.json does.
+      #
+      # Keyed on the lockfile hash: a dependency change misses the cache and installs
+      # fresh, which is correct — `npm ci` must still be the thing that decides what is
+      # installed. The cache only removes the download, never the resolution.
+      #
+      # Restored into npm's own cache dir rather than node_modules, because `npm ci`
+      # wipes node_modules before it starts; a node_modules cache would be deleted by the
+      # very command it was meant to speed up.
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-darwin-kernel-${{ hashFiles('packages/darwin-kernel/package-lock.json') }}
+          restore-keys: npm-darwin-kernel-
 
       - name: Install dependencies
         run: npm ci
@@ -59,6 +101,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          # pytest is the only dependency this job installs, and it was refetched from
+          # PyPI on every single run. Caching it turns a network install into a restore.
+          cache: pip
 
       - name: Install pytest
         run: pip install --quiet pytest
