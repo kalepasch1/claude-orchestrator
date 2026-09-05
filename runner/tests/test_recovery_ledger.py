@@ -225,6 +225,107 @@ class GitBackedProvenanceTest(unittest.TestCase):
         self.assertEqual(ledger["unknown"], 0)
 
 
+class RescueRefEvidenceTest(unittest.TestCase):
+    """Rescue refs live at refs/orch-rescue/<name>, not refs/heads or refs/remotes."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = os.path.join(self.tmp, "work")
+        subprocess.run(["git", "init", "-q", self.repo], check=True, timeout=30)
+        for k, v in (("user.name", "t"), ("user.email", "t@t"), ("commit.gpgsign", "false")):
+            subprocess.run(["git", "config", k, v], cwd=self.repo, check=True, timeout=30)
+        open(os.path.join(self.repo, "f.txt"), "w").write("base\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "branch", "-M", "master"], cwd=self.repo, check=True, timeout=30)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _rescue(self, name, content):
+        subprocess.run(["git", "checkout", "-q", "-b", "tmpwork", "master"],
+                       cwd=self.repo, timeout=30)
+        open(os.path.join(self.repo, f"{name}.txt"), "w").write(content)
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "commit", "-qm", f"rescue {name}"], cwd=self.repo,
+                       check=True, timeout=30)
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo,
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+        subprocess.run(["git", "update-ref", f"refs/orch-rescue/{name}", sha],
+                       cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "checkout", "-q", "master"], cwd=self.repo, timeout=30)
+        subprocess.run(["git", "branch", "-qD", "tmpwork"], cwd=self.repo, timeout=30)
+        return sha
+
+    def test_a_rescue_ref_is_reachable_even_though_it_is_not_a_branch(self):
+        # The bug this pins: a heads/remotes-only probe reported EVERY rescue ref as
+        # unreachable, which fails provenance on records whose objects are right there.
+        # A false "not reachable" is the dangerous direction — it discards recoverable work.
+        self._rescue("20260803T000716-example", "x")
+        self.assertTrue(recovery_ledger.branch_exists(self.repo,
+                                                      "orch-rescue/20260803T000716-example"))
+        self.assertFalse(recovery_ledger.branch_exists(self.repo, "orch-rescue/never-swept"))
+
+    def test_rescue_refs_are_enumerated_and_agent_branches_are_not(self):
+        self._rescue("sweep-a", "a")
+        self._rescue("sweep-b", "b")
+        subprocess.run(["git", "checkout", "-qb", "agent/unrelated"], cwd=self.repo, timeout=30)
+        manifest, ledger = recovery_ledger.build(
+            self.repo, "fp", "master", live_slugs=set(), ledger_dir="none",
+            evidence_kind="orchestrator_rescue_ref")
+        sources = {i["source"] for i in manifest["items"]}
+        self.assertEqual(sources, {"orch-rescue/sweep-a", "orch-rescue/sweep-b"})
+        self.assertEqual(ledger["evidence_kind"], "orchestrator_rescue_ref")
+        self.assertTrue(all(r["kind"] == "orchestrator_rescue_ref" for r in ledger["items"]))
+
+    def test_two_sweeps_of_one_branch_stay_two_records(self):
+        # Rescue refs must NOT be name-normalised the way agent branches are: each is a
+        # distinct timestamped snapshot of a checkout, so two sweeps are two different
+        # trees. Collapsing them would silently drop one of the items the contract
+        # ("one record per evidence item") requires to be classified.
+        self._rescue("20260803T000716-merged-diff-memory", "first")
+        self._rescue("20260803T000751-merged-diff-memory", "second")
+        manifest, _ledger = recovery_ledger.build(
+            self.repo, "fp", "master", live_slugs=set(), ledger_dir="none",
+            evidence_kind="orchestrator_rescue_ref")
+        self.assertEqual(len(manifest["items"]), 2)
+
+    def test_a_recoverable_rescue_ref_is_routed_to_a_new_branch_not_the_ref_itself(self):
+        # The evidence source is read-only by contract, so the disposition must not tell a
+        # reader to deliver "via the agent branch" — there is no agent branch here.
+        sha = self._rescue("sweep-c", "c")
+        cls, disp = recovery_ledger.classify_branch(
+            self.repo, "orch-rescue/sweep-c", sha, "master")
+        self.assertEqual(cls, "RECOVERABLE_VALUE")
+        self.assertIn("read-only", disp)
+
+    def test_a_built_rescue_ledger_validates(self):
+        self._rescue("sweep-d", "d")
+        manifest, ledger = recovery_ledger.build(
+            self.repo, "fp", "master", live_slugs=set(), ledger_dir="none",
+            evidence_kind="orchestrator_rescue_ref")
+        mpath = os.path.join(self.tmp, "evidence_manifest-fp.json")
+        lpath = os.path.join(self.tmp, "recovery-ledger-fp.json")
+        _write(mpath, manifest)
+        _write(lpath, ledger)
+        result = recovery_ledger.validate(lpath, self.repo, mpath)
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_agent_branch_enumeration_is_unchanged_by_the_new_kind(self):
+        # The sibling task's ledger must keep validating; adding a kind must not move the
+        # default behaviour.
+        self._rescue("sweep-e", "e")
+        subprocess.run(["git", "checkout", "-qb", "agent/real-work"], cwd=self.repo, timeout=30)
+        open(os.path.join(self.repo, "w.txt"), "w").write("w")
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True, timeout=30)
+        subprocess.run(["git", "commit", "-qm", "agent: real-work"], cwd=self.repo,
+                       check=True, timeout=30)
+        manifest, _l = recovery_ledger.build(self.repo, "fp", "master", live_slugs=set(),
+                                             ledger_dir="none")
+        sources = {i["source"] for i in manifest["items"]}
+        self.assertEqual(sources, {"agent/real-work"})
+
+
 class KnownDispositionsTest(unittest.TestCase):
     """The anti-duplication primitive: read what predecessors already decided."""
 

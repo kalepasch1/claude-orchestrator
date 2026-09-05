@@ -147,15 +147,21 @@ def commit_reachable(repo, sha):
 
 
 def branch_exists(repo, branch):
-    """True when *branch* exists locally OR on any remote.
+    """True when *branch* names a ref that exists in *repo*, under any namespace.
 
-    Both namespaces count: a local ref proves the commits exist here, a remote ref proves
-    they reached anyone else, and provenance is satisfied by either.
+    Local, remote-tracking, and non-branch namespaces all count: a local ref proves the
+    commits exist here, a remote ref proves they reached anyone else, and provenance is
+    satisfied by either. `refs/{branch}` is checked explicitly because rescue-ref evidence
+    lives at refs/orch-rescue/<name> — a heads/remotes-only probe reports every rescue ref
+    as unreachable, which would fail the provenance check on 402 records that are in fact
+    right there in the object store. A false "not reachable" is the dangerous direction:
+    it discards recoverable work.
     """
     if not branch or not isinstance(branch, str):
         return False
     branch = branch.strip()
-    for pattern in (f"refs/heads/{branch}", f"refs/remotes/*/{branch}", branch):
+    for pattern in (f"refs/heads/{branch}", f"refs/remotes/*/{branch}",
+                    f"refs/{branch}", branch):
         out, ok = _git(repo, "for-each-ref", "--format=%(refname)", pattern)
         if ok and out.strip():
             return True
@@ -323,12 +329,24 @@ def classify_branch(repo, ref, sha, base, live_slugs=(), known=None, merged=None
         return prior, f"disposition carried forward from a prior ledger ({prior})"
 
     files = [f for f in diff.split("\n") if f.strip()]
-    return "RECOVERABLE_VALUE", (
-        f"{len(files)} file(s) not in {base}; deliver via the agent branch and merge train")
+    route = ("deliver via the agent branch and merge train" if ref.startswith("agent/")
+             else "recover into a NEW agent branch; the rescue ref itself is read-only")
+    return "RECOVERABLE_VALUE", f"{len(files)} file(s) not in {base}; {route}"
 
 
-def build(repo=".", fingerprint="", base="origin/master", live_slugs=(), ledger_dir=LEDGER_DIR):
-    """Enumerate agent branches as evidence and classify each. Returns (manifest, ledger).
+#: The ref namespaces a reconciliation pass can be pointed at. Agent branches are work
+#: someone deliberately pushed; rescue refs are sentinel.py's periodic sweep of whatever
+#: was sitting in a checkout, so the same classifier applies but the evidence kind — and
+#: therefore what a RECOVERABLE_VALUE record MEANS — differs and is recorded per item.
+EVIDENCE_KINDS = {
+    "agent_branch": ("refs/heads/agent/", "refs/remotes/"),
+    "orchestrator_rescue_ref": ("refs/orch-rescue/",),
+}
+
+
+def build(repo=".", fingerprint="", base="origin/master", live_slugs=(), ledger_dir=LEDGER_DIR,
+          evidence_kind="agent_branch"):
+    """Enumerate evidence of *evidence_kind* and classify each item. Returns (manifest, ledger).
 
     The live source is enumerated rather than the prompt's sample being trusted, because a
     sample plus a digest cannot be classified item-by-item and the contract requires one
@@ -336,8 +354,9 @@ def build(repo=".", fingerprint="", base="origin/master", live_slugs=(), ledger_
     """
     known = known_dispositions(repo, ledger_dir)
     merged = merged_refs(repo, base)
+    namespaces = EVIDENCE_KINDS.get(evidence_kind) or EVIDENCE_KINDS["agent_branch"]
     out, ok = _git(repo, "for-each-ref", "--format=%(refname:short)%09%(objectname)",
-                   "refs/heads/agent/", "refs/remotes/")
+                   *namespaces)
     items, records = [], []
     if ok:
         seen = set()
@@ -346,19 +365,28 @@ def build(repo=".", fingerprint="", base="origin/master", live_slugs=(), ledger_
                 continue
             ref, sha = line.split("\t", 1)
             ref = ref.strip()
-            if "agent/" not in ref:
-                continue
-            # Normalise origin/agent/x and agent/x to one item: the same work reached by
-            # two ref namespaces is one piece of evidence, and counting it twice is the
-            # re-classification inflation this module exists to stop.
-            norm = "agent/" + ref.split("agent/", 1)[-1] if "agent/" in ref else ref
+            if evidence_kind == "agent_branch":
+                if "agent/" not in ref:
+                    continue
+                # Normalise origin/agent/x and agent/x to one item: the same work reached
+                # by two ref namespaces is one piece of evidence, and counting it twice is
+                # the re-classification inflation this module exists to stop.
+                norm = "agent/" + ref.split("agent/", 1)[-1]
+            else:
+                # Rescue refs are NOT normalised. Each is a distinct timestamped snapshot
+                # of a checkout — two sweeps of the same branch are two different trees,
+                # and collapsing them by name would silently drop whichever the contract
+                # ("one record per evidence item") requires to be classified.
+                if not ref.startswith("orch-rescue/") and "orch-rescue/" not in ref:
+                    continue
+                norm = ref
             if norm in seen:
                 continue
             seen.add(norm)
             cls, disp = classify_branch(repo, norm, sha.strip(), base, live_slugs,
                                         known, merged)
-            items.append({"source": norm, "sha": sha.strip(), "kind": "agent_branch"})
-            rec = {"source": norm, "kind": "agent_branch", "classification": cls,
+            items.append({"source": norm, "sha": sha.strip(), "kind": evidence_kind})
+            rec = {"source": norm, "kind": evidence_kind, "classification": cls,
                    "disposition": disp}
             if cls == NEEDS_PROVENANCE:
                 rec["branch"] = norm
@@ -368,9 +396,9 @@ def build(repo=".", fingerprint="", base="origin/master", live_slugs=(), ledger_
     summary = {}
     for rec in records:
         summary[rec["classification"]] = summary.get(rec["classification"], 0) + 1
-    manifest = {"audit_fingerprint": fingerprint, "base": base, "evidence_kind": "agent_branch",
+    manifest = {"audit_fingerprint": fingerprint, "base": base, "evidence_kind": evidence_kind,
                 "total": len(items), "unknown": 0, "items": items}
-    ledger = {"audit_fingerprint": fingerprint, "base": base, "evidence_kind": "agent_branch",
+    ledger = {"audit_fingerprint": fingerprint, "base": base, "evidence_kind": evidence_kind,
               "total": len(records), "unknown": 0, "summary": summary,
               "prior_ledgers_consulted": len(load_ledgers(repo, ledger_dir)),
               "prior_dispositions_known": len(known), "items": records}
@@ -412,7 +440,12 @@ def _main(argv):
                   "--project-id or --live-slugs")
             return 1
         print(f"recovery_ledger: {len(live)} live slug(s) hold their branch")
-        manifest, ledger = build(repo, fp, base, live_slugs=live)
+        kind = args.get("--evidence-kind", "agent_branch")
+        if kind not in EVIDENCE_KINDS:
+            print(f"recovery_ledger: unknown evidence kind {kind!r}; "
+                  f"expected one of {', '.join(sorted(EVIDENCE_KINDS))}")
+            return 2
+        manifest, ledger = build(repo, fp, base, live_slugs=live, evidence_kind=kind)
         os.makedirs(os.path.join(repo, LEDGER_DIR), exist_ok=True)
         mpath = os.path.join(repo, LEDGER_DIR, f"evidence_manifest-{short}.json")
         lpath = os.path.join(repo, LEDGER_DIR, f"recovery-ledger-{short}.json")
