@@ -6,9 +6,43 @@ set -euo pipefail
 
 SETTINGS_FILE=".claude/settings.local.json"
 
+# ── Guard 0: the file must not be COMMITTED, whatever it contains ──────────────
+#
+# The content whitelist below only ever inspected the working copy. The failure that
+# actually blocks merges is different and simpler: the file gets `git add -f`-ed and
+# arrives in a PR carrying /Users/kpasch and /Users/mandypasch paths. It is in
+# .gitignore, so this only happens by force — and a reviewer catching it by eye is what
+# shelved rework-secret-merge-train-serializer seven times over.
+#
+# Checked first because it is unconditional: a tracked or staged settings.local.json is
+# wrong even if every permission entry in it is pristine.
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # STAGED is checked first because `git ls-files` also reports a staged-but-never-
+  # committed file as tracked, and "git restore --staged" is the instruction that fits
+  # the case an author is actually in when the hook stops them.
+  if git diff --cached --name-only 2>/dev/null | grep -qx "$SETTINGS_FILE"; then
+    echo "ERROR: $SETTINGS_FILE is STAGED. It is machine-local and must not be committed."
+    echo "Fix with:  git restore --staged $SETTINGS_FILE"
+    exit 1
+  fi
+  if git ls-files --error-unmatch "$SETTINGS_FILE" >/dev/null 2>&1; then
+    echo "ERROR: $SETTINGS_FILE is TRACKED by git. It is machine-local and .gitignored."
+    echo "Fix with:  git rm --cached $SETTINGS_FILE"
+    exit 1
+  fi
+fi
+
 if [[ ! -f "$SETTINGS_FILE" ]]; then
   echo "OK: $SETTINGS_FILE does not exist (clean)"
   exit 0
+fi
+
+# jq drives the content checks below. Without it every `jq` call returns empty and the
+# script reports OK on a polluted file — a checker that passes because its dependency is
+# missing is worse than no checker.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "ERROR: jq is required to inspect $SETTINGS_FILE (install: brew install jq)"
+  exit 1
 fi
 
 # Whitelist of allowed permission entries
