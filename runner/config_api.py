@@ -7,9 +7,14 @@ body. It binds to no web framework and opens no socket, exactly as `orchestratio
 owns the task data contract while runner.py keeps owning execution. A later slice mounts
 these handlers on a real server; nothing here changes when it does.
 
+SLICE 2 (this patch) adds opt-in `?limit=&offset=` pagination to the collection read
+and threads a query mapping through `dispatch`. The HTTP transport that mounts these
+handlers is `config_api_wsgi.py`, added alongside; it owns authn on the mutating verbs,
+body-size limits and error containment, and this module still opens no socket.
+
 Later slices, deliberately NOT in this patch, so they stay discoverable:
-  * HTTP transport (WSGI/ASGI mount) + authn/authz on the mutating verbs;
-  * PATCH/DELETE, list pagination and ETag/If-Match optimistic concurrency;
+  * PATCH/DELETE (both need a store-level delete that does not exist yet);
+  * ETag/If-Match optimistic concurrency;
   * approval routing for guarded keys via config_approval_engine.
 
 WHY THE GUARD RUNS ON READS TOO
@@ -24,12 +29,18 @@ through this layer is re-classified and redacted. The response still reports tha
 exists — hiding it would make a legacy secret look like a missing key and send an operator
 hunting for it — but the material never crosses the boundary.
 """
+import urllib.parse
 from typing import Any, Dict, Optional, Tuple
 
 import config_store
 import fleet_config_guard
 
 REDACTED = "[REDACTED: credential — read from the host env, not fleet_config]"
+
+# Pagination bounds. Named rather than inlined so they are tunable without a code
+# read, and so a caller cannot ask for an unbounded page by passing a huge integer.
+MAX_LIST_LIMIT = 500
+MAX_LIST_OFFSET = 1_000_000
 
 # Response bodies are always dicts so a transport can json.dumps() unconditionally.
 Response = Tuple[int, Dict[str, Any]]
@@ -65,20 +76,69 @@ def get_config(key: str, store=None) -> Response:
     return 200, {"config": _redact(row)}
 
 
-def list_config(store=None) -> Response:
-    """GET /config -> 200 with every row, each independently redacted.
+def _coerce_bound(raw, name: str, minimum: int, maximum: int):
+    """Parse one pagination bound. Returns (value, error_response_or_None).
 
-    Unpaginated by design in this slice: the table is small and fleet-wide, and a
-    half-designed cursor is worse than none. Pagination lands with the transport.
+    Rejects rather than clamps a malformed bound: silently serving page 0 for
+    `?limit=abc` hides a broken client until it ships.
     """
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return None, (400, {"error": f"{name} must be an integer", name: raw})
+    if val < minimum:
+        return None, (400, {"error": f"{name} must be >= {minimum}", name: val})
+    if val > maximum:
+        return None, (400, {"error": f"{name} must be <= {maximum}", name: val})
+    return val, None
+
+
+def list_config(store=None, query: Optional[Dict[str, Any]] = None) -> Response:
+    """GET /config[?limit=&offset=] -> 200 with rows, each independently redacted.
+
+    Pagination is opt-in: with no `limit` the whole table is returned, which is what
+    every existing caller expects and is safe while the table is small and fleet-wide.
+    Supplying `limit` switches on a stable offset window and adds a `page` block so a
+    client can tell "that was everything" from "that was the first hundred" — the
+    distinction an unpaginated list cannot express, and the reason a fleet-wide GET
+    could previously return an unbounded body.
+
+    Offset paging, not a cursor: rows are keyed by a stable primary key and the table
+    does not churn under a reader. A cursor here would be ceremony without a payer.
+    """
+    query = query or {}
     store = store or config_store.get_store()
     rows = store.get_all() or []
+    total = len(rows)
+
+    limit = None
+    offset = 0
+    if query.get("offset") is not None:
+        offset, err = _coerce_bound(query.get("offset"), "offset", 0, MAX_LIST_OFFSET)
+        if err:
+            return err
+    if query.get("limit") is not None:
+        limit, err = _coerce_bound(query.get("limit"), "limit", 1, MAX_LIST_LIMIT)
+        if err:
+            return err
+        rows = rows[offset:offset + limit]
+    elif offset:
+        rows = rows[offset:]
+
     redacted = [_redact(r) for r in rows]
-    return 200, {
+    body = {
         "config": redacted,
         "count": len(redacted),
         "redacted_count": sum(1 for r in redacted if isinstance(r, dict) and r.get("redacted")),
     }
+    if limit is not None or offset:
+        body["page"] = {
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "has_more": offset + len(redacted) < total,
+        }
+    return 200, body
 
 
 def put_config(key: str, body: Optional[Dict[str, Any]], store=None) -> Response:
@@ -124,14 +184,23 @@ ROUTES = {
 
 
 def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None,
-             store=None) -> Response:
+             store=None, query: Optional[Dict[str, Any]] = None) -> Response:
     """Route one request. 404 for an unknown path, 405 for a known path/wrong verb.
 
     The 405-vs-404 split is deliberate: collapsing them makes a typo'd verb read as a
     missing endpoint, which is the harder of the two to debug from a client.
+
+    `query` is optional and only reaches the collection handler; `path` may carry its
+    own query string, which is parsed here so a transport that hands over a raw
+    REQUEST_URI behaves the same as one that pre-parses.
     """
     method = (method or "").upper()
-    raw = (path or "").rstrip("/") or "/config"
+    raw = (path or "")
+    if "?" in raw:
+        raw, _, qs = raw.partition("?")
+        if query is None:
+            query = {k: v[-1] for k, v in urllib.parse.parse_qs(qs).items()}
+    raw = raw.rstrip("/") or "/config"
 
     if raw == "/config":
         template, key = "/config", None
@@ -150,4 +219,4 @@ def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None,
         if handler is put_config:
             return handler(key, body, store=store)
         return handler(key, store=store)
-    return handler(store=store)
+    return handler(store=store, query=query)
