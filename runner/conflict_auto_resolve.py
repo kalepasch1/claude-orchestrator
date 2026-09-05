@@ -69,6 +69,115 @@ def _score_strategy(strategy_name, file_overlap_ratio):
     return max(0.0, min(1.0, base - penalty))
 
 
+#: Paths that are regenerated, machine-written or pure scratch. A conflict confined to
+#: these is never a disagreement about the work — it is two agents' noise colliding.
+#: Matched on the basename and on the full path, case-insensitively.
+DISPOSABLE_PATTERNS = (
+    ".aider", ".ds_store", ".orig", ".rej", ".pyc", ".log",
+    "__pycache__/", "node_modules/", ".nuxt/", ".next/", "dist/", "build/",
+    ".pytest_cache/", ".coverage",
+)
+
+#: Generated but meaningful: regenerating beats hand-merging, yet dropping a side is not
+#: safe, so these downgrade the strategy without being treated as pure noise.
+REGENERABLE_PATTERNS = (
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock",
+    "requirements.lock", "database.types.ts",
+)
+
+
+def classify_conflict_files(files):
+    """Split conflicting paths into disposable / regenerable / source.
+
+    Returns ``{"disposable": [...], "regenerable": [...], "source": [...]}``.
+    Never raises: unparseable input yields three empty lists.
+    """
+    result = {"disposable": [], "regenerable": [], "source": []}
+    try:
+        if isinstance(files, str):
+            candidates = files.replace(",", "\n").split("\n")
+        else:
+            candidates = list(files or [])
+    except Exception:
+        return result
+
+    for item in candidates:
+        try:
+            path = str(item).strip()
+        except Exception:
+            continue
+        if not path:
+            continue
+        lowered = path.lower()
+        base = lowered.rsplit("/", 1)[-1]
+        if any(p in lowered or base.startswith(p) or base.endswith(p)
+               for p in DISPOSABLE_PATTERNS):
+            result["disposable"].append(path)
+        elif any(base == p for p in REGENERABLE_PATTERNS):
+            result["regenerable"].append(path)
+        else:
+            result["source"].append(path)
+    return result
+
+
+def triage_conflict_files(files):
+    """Recommend a strategy from the *kind* of files in conflict, or None.
+
+    A rebase-and-rebuild redo is the fleet's default answer to any conflict, and for a
+    conflict that is entirely scratch or entirely lockfile it is the wrong one: the redo
+    reproduces exactly the same collision, so the cap burns through and the branch ends
+    up parked with "needs manual rebase". The operator note behind this task records four
+    redos spent on conflicts that came from tracked .aider.* scratch files.
+
+    Returns a resolution dict (same shape as recommend_resolution) or None when the
+    conflict involves real source and the scored strategies should decide.
+    """
+    classified = classify_conflict_files(files)
+    if not any(classified.values()):
+        return None
+    if classified["source"]:
+        return None
+
+    if classified["disposable"] and not classified["regenerable"]:
+        names = ", ".join(classified["disposable"][:5])
+        return {
+            "strategy": "rebase_fresh",
+            "confidence": 0.95,
+            "auto_approve": True,
+            "reason": (f"conflict is only in disposable/scratch paths ({names}); "
+                       "untrack or gitignore them — a redo reproduces the same collision"),
+            "file_classes": classified,
+            "alternatives": [],
+        }
+
+    names = ", ".join(classified["regenerable"][:5])
+    return {
+        "strategy": "rebase_fresh",
+        "confidence": 0.8,
+        "auto_approve": False,
+        "reason": (f"conflict is only in regenerable artifacts ({names}); take the base "
+                   "version and regenerate rather than hand-merging"),
+        "file_classes": classified,
+        "alternatives": [],
+    }
+
+
+def _conflict_files(conflict_info):
+    """Best-effort union of file paths named by a conflict_predictor payload."""
+    files = []
+    try:
+        for conflict in conflict_info.get("conflicts") or []:
+            for key in ("files", "overlapping_files", "paths"):
+                value = conflict.get(key)
+                if isinstance(value, str):
+                    files.append(value)
+                elif value:
+                    files.extend(str(v) for v in value)
+    except Exception:
+        return []
+    return files
+
+
 def recommend_resolution(conflict_info):
     """Given conflict_predictor output, recommend a resolution strategy.
 
@@ -82,10 +191,29 @@ def recommend_resolution(conflict_info):
         return {"strategy": "none", "confidence": 1.0, "auto_approve": True,
                 "reason": "no conflict detected"}
 
-    conflicts = conflict_info.get("conflicts", [])
+    # Drop malformed rows rather than letting one None entry raise AttributeError out of
+    # the overlap calculation below — this is called on the merge path, where a crash
+    # turns a recoverable conflict into a wedged card.
+    conflicts = [c for c in (conflict_info.get("conflicts") or []) if isinstance(c, dict)]
     if not conflicts:
         return {"strategy": "none", "confidence": 1.0, "auto_approve": True,
                 "reason": "empty conflict list"}
+
+    # File-class triage first. Historical scores are learned across ALL conflicts, so a
+    # conflict confined to scratch or lockfiles gets the fleet's average answer — a redo,
+    # which reproduces the identical collision. When the file classes settle the question,
+    # they beat the average; rate limiting below still applies to the auto-approval.
+    triaged = triage_conflict_files(_conflict_files(conflict_info))
+    if triaged:
+        if triaged.get("auto_approve"):
+            with _lock:
+                cutoff = time.time() - 3600
+                _resolution_log[:] = [t for t in _resolution_log if t > cutoff]
+                if len(_resolution_log) >= MAX_AUTO_RESOLVES_PER_HOUR:
+                    triaged["auto_approve"] = False
+                else:
+                    _resolution_log.append(time.time())
+        return triaged
 
     # Calculate file overlap ratio
     overlap = max(c.get("overlap", 0) for c in conflicts) if conflicts else 0
