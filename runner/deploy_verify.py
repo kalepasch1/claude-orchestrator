@@ -15,6 +15,7 @@ release attempt.
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -36,6 +37,57 @@ def _ignored_build_cancel(deployment):
     message = " ".join(str(deployment.get(key) or "")
                        for key in ("errorCode", "errorMessage"))
     return state == "CANCELED" and "ignored build step" in message.lower()
+
+
+#: Phrases Vercel returns on a CANCELED deployment that NEVER STARTED A BUILD because the
+#: project config disabled deploys for that ref. web/vercel.json here is exactly that
+#: shape — {"*": false, "master": true} — so every release verified against a non-master
+#: ref comes back CANCELED with no build events at all.
+_NO_BUILD_CANCEL_PHRASES = (
+    "deployments are disabled",
+    "deployment is disabled",
+    "deploymentenabled",
+    "git deployments are disabled",
+    "deployments for this branch",
+    "branch is not enabled",
+    "skipped",
+)
+
+
+def _no_build_cancel(deployment):
+    """True when CANCELED means "no build was ever attempted", not "the build failed".
+
+    WHY THIS MATTERS. TERMINAL_BAD treats every CANCELED as a failed deploy, which does
+    two harmful things at once: it queues a deployfix ("fix the smallest build/deploy
+    issue") whose Vercel log tail is EMPTY — because no build ran, so there are no events
+    — and it force-rolls-back the production branch to last_good over a deploy that never
+    touched production. Two such tasks (deployfix-beethoven-07152141 and -07160115, both
+    "Release status: CANCELED", both with an empty log tail, neither with a single touched
+    file) were retried to their budget cap against a build that was never broken.
+
+    This is the same shape as _ignored_build_cancel, which already exempts the Ignored
+    Build Step decision. A config-disabled ref is the other way Vercel reports "I chose
+    not to build this", and it deserves the same answer.
+
+    Deliberately narrow: it requires state CANCELED **and** an explicit provider message.
+    A CANCELED deployment with a real error message still counts as bad, because an
+    operator aborting a genuinely broken build should not be silently written off.
+    """
+    deployment = deployment or {}
+    state = deployment.get("state") or deployment.get("readyState")
+    if state != "CANCELED":
+        return False
+    raw = " ".join(str(deployment.get(key) or "")
+                   for key in ("errorCode", "errorMessage", "errorLink")).lower()
+    # errorCode arrives SCREAMING_SNAKE (DEPLOYMENTS_ARE_DISABLED) while errorMessage is
+    # prose, so normalise every non-alphanumeric run to a single space and match once.
+    message = re.sub(r"[^a-z0-9]+", " ", raw)
+    return any(phrase in message for phrase in _NO_BUILD_CANCEL_PHRASES)
+
+
+def _cancel_without_build(deployment):
+    """Either flavour of "the provider declined to build this", as one predicate."""
+    return _ignored_build_cancel(deployment) or _no_build_cancel(deployment)
 
 
 class VercelAuthError(RuntimeError):
@@ -303,9 +355,11 @@ def run():
         state = (dep or {}).get("state") or (dep or {}).get("readyState")
         url = (dep or {}).get("url")
 
-        ignored_build = _ignored_build_cancel(dep)
+        ignored_build = _cancel_without_build(dep)
         if state in TERMINAL_GOOD or ignored_build:
-            note = ("provider ignored build: release contains no deployable-root changes"
+            note = (("provider declined to build: deploys disabled for this ref"
+                     if _no_build_cancel(dep)
+                     else "provider ignored build: release contains no deployable-root changes")
                     if ignored_build else release.get("note") or "")
             # POST-DEPLOY JOURNEY: the deployment being READY is when the journey becomes
             # meaningful, so it runs here, against the live release SHA. A failed required
