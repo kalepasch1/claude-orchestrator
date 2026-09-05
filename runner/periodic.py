@@ -946,6 +946,11 @@ def run_selfcheck():
     import startup_selfcheck; startup_selfcheck.run("periodic")
 
 
+def run_periodic_evaluator():
+    """Replay historical task execution records with current models to detect policy divergences."""
+    import periodic_evaluator; return periodic_evaluator.run()
+
+
 def run_improve():
     """Measured self-improvement: detect a real bottleneck, propose against a baseline+target."""
     import improvement_miner; improvement_miner.run()
@@ -1554,6 +1559,7 @@ JOBS = {
     "compliancescorecard": run_compliancescorecard,
     "complianceanomaly": run_complianceanomaly,
     "compliancehealth": run_compliancehealth,
+    "periodic_evaluator": run_periodic_evaluator,
 }
 
 if __name__ == "__main__":

@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 """Shared interfaces/types for the hisanta family domain — the ONE definition.
+=======
+"""Shared family contracts for hisanta modules.
+>>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-3
 
 Interfaces and types only: no engine, no I/O, no policy beyond the constitution
 table itself.
@@ -29,16 +33,125 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+<<<<<<< HEAD
 
 
 # ── Mastery ──────────────────────────────────────────────────────────────────
 
+=======
+from typing import List, Optional
+import time
+
+
+class ApprovalStatus(Enum):
+    APPROVED = "approved"
+    DENIED = "denied"
+    PENDING = "pending"
+
+
+>>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-3
 class QuestKind(Enum):
     READING = "READING"
     MATH = "MATH"
     KINDNESS = "KINDNESS"
 
 
+<<<<<<< HEAD
+=======
+class GiftLane(Enum):
+    AD_HOC = "AD_HOC"
+    ADVENT = "ADVENT"
+    EARNED_REWARD = "EARNED_REWARD"
+
+
+class ConstitutionVerdict(Enum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+    ESCALATE = "ESCALATE"
+
+
+# The gifting protocol (hisanta/hisanta/gifting/protocol.py) and its tests refer to
+# this name. It is an ALIAS, not a second enum, so `ConstitutionAction.ESCALATE is
+# ConstitutionVerdict.ESCALATE` and a single constitution_check can serve both.
+ConstitutionAction = ConstitutionVerdict
+
+
+# Actions that must never proceed.
+DENY_ACTIONS = frozenset({"charge_child", "open_ended_child_chat"})
+
+# F1 escalation: anything that spends money or speaks to a child goes to an adult.
+# Union of the two prior escalate sets — dropping either would silently allow an
+# action that one half of the codebase expects to be gated.
+ESCALATE_ACTIONS = frozenset({
+    "loot", "gift", "ai_message",
+    "purchase", "advent_gift", "earned_reward", "match_jar",
+})
+
+
+def constitution_check(action_type: str) -> ConstitutionVerdict:
+    """Gate an action. Fail-closed on the deny list, adult-gated on the escalate list."""
+    if action_type in DENY_ACTIONS:
+        return ConstitutionVerdict.DENY
+    if action_type in ESCALATE_ACTIONS:
+        return ConstitutionVerdict.ESCALATE
+    return ConstitutionVerdict.ALLOW
+
+
+@dataclass
+class ParentVerificationReceipt:
+    """Receipt from a parent verifying a child's real-world kindness act."""
+    parent_id: str = ""
+    child_id: str = ""
+    quest_id: str = ""
+    description: str = ""
+    timestamp: float = field(default_factory=time.time)
+    verified: bool = True
+    signature: str = ""
+
+
+@dataclass
+class ParentApproval:
+    """Parent approval gate for purchase/gift actions.
+
+    Every field defaults so `ParentApproval()` is valid, while the positional
+    parent_id/child_id/action_id call sites in the gifting protocol still work.
+    """
+    parent_id: str = ""
+    child_id: str = ""
+    action_id: str = ""
+    status: ApprovalStatus = ApprovalStatus.APPROVED
+    approved: bool = False
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class CoppaConsent:
+    """COPPA consent record for a child in a school context."""
+    child_id: str = ""
+    parent_id: str = ""
+    school_id: str = ""
+    granted: bool = True
+    consented: bool = False
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class RewardCoins:
+    """Reward coins minted for completing kindness quests (kindness mint)."""
+    amount: int = 0
+    child_id: str = ""
+    quest_id: str = ""
+    source: str = "kindness_mint"
+
+
+@dataclass
+class RewardCoin:
+    """A single coin, optionally backed by a parent verification receipt."""
+    amount: int = 1
+    receipt: Optional[ParentVerificationReceipt] = None
+
+
+>>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-3
 @dataclass
 class Quest:
     kind: QuestKind
@@ -207,6 +320,7 @@ class SchoolQuest:
 @dataclass
 class ClassroomCohort:
     name: str
+<<<<<<< HEAD
     members: list = field(default_factory=list)
 
 
@@ -249,3 +363,6 @@ __all__ = [
     "SchoolQuest",
     "constitution_check",
 ]
+=======
+    members: List = field(default_factory=list)
+>>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-3

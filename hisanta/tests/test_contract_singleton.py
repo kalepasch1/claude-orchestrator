@@ -18,6 +18,7 @@ import pytest
 import hisanta.contracts.family as family
 
 
+<<<<<<< HEAD
 def test_the_shim_points_at_the_canonical_file():
     """The nested module must re-export, never re-declare.
 
@@ -43,6 +44,40 @@ def test_every_public_name_is_the_canonical_object():
     assert shim.__all__ == family.__all__
     for name in family.__all__:
         assert getattr(shim, name) is getattr(family, name), (
+=======
+# WHICH FILE IS CANONICAL — reconciled 2026-08-23.
+#
+# Two branches answered this in opposite directions and both shipped tests. One
+# made hisanta/contracts/family.py a loader-shim over the nested copy; the other
+# made it the canonical union with the nested copy as the shim. The two test
+# files below and in test_family_contract_single_source.py therefore could not
+# both pass, which is the conflict this slice existed to resolve.
+#
+# Retained: hisanta/contracts/family.py is CANONICAL; the nested
+# hisanta/hisanta/contracts/family.py re-exports it. That direction wins because
+# `hisanta.contracts.family` is the path every consumer imports absolutely, and
+# a public import path that resolves by loading a relative file at runtime
+# breaks the moment the legacy nested layout moves. The nested tree exists only
+# because __init__.py bridges it; the public path should not depend on it.
+#
+# The two tests below assert that direction. Everything else in this file is
+# unchanged — it tests the property that actually mattered (one set of objects
+# across both spellings), which holds either way.
+
+
+def test_the_nested_module_is_the_shim_not_this_one():
+    """hisanta/contracts/family.py declares; the nested copy re-exports."""
+    nested = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert nested.__all__, "the shim must export something"
+    # Canonical file owns the definitions.
+    assert family.QuestKind.__module__ == family.__name__
+
+
+def test_every_public_name_is_the_canonical_object():
+    nested = importlib.import_module("hisanta.hisanta.contracts.family")
+    for name in nested.__all__:
+        assert getattr(nested, name) is getattr(family, name), (
+>>>>>>> agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-3
             f"{name} is a SECOND definition, not the canonical one"
         )
 
