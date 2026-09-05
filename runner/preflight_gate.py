@@ -9,7 +9,7 @@ moving instead of surfacing "blocked_task" interruptions.
 Enhanced with scope definition and ambiguity flagging to reduce unnecessary remediation
 and improve routing efficiency per operator feedback.
 """
-import os, sys, json, re
+import os, sys, json, re, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import pipeline_contract
@@ -20,6 +20,61 @@ except Exception:
 
 BATCH = int(os.environ.get("PREFLIGHT_BATCH", "15"))
 PROTECT = ("canary-", "sec-rls-", "fix-", "verify-", "rollback-", "rls-", "auto-approve", "deploy")
+
+# --- wedge protection --------------------------------------------------------
+# 2026-08-24: 'preflight' was WEDGED — it held its periodic singleton lock for
+# 2930s and three consecutive invocations were skipped, each exiting 0, so
+# nothing downstream noticed. run() below iterates BATCH tasks and makes one
+# app_triage LLM call per task. That call has no wall-clock bound of its own and
+# litellm retries with exponential backoff on provider errors (the observed 403
+# credit-exhaustion loop retried at 4s, 8s, ...), so BATCH x unbounded-retry has
+# no upper bound at all.
+#
+# periodic.py DOES wrap jobs in _time_limit(), but that cap is SIGALRM-based and
+# by design degrades to running WITHOUT a cap off the main thread. So the job
+# must bound itself rather than rely on the caller. Two independent bounds:
+#   * per-call: one triage call may not exceed _CALL_TIMEOUT_S
+#   * whole-run: the batch loop stops once _DEADLINE_S of wall clock is spent
+# Both are ORCH_-prefixed so they are fleet-pushable via fleet_control.py.
+_CALL_TIMEOUT_S = int(os.environ.get("ORCH_PREFLIGHT_CALL_TIMEOUT", "90"))
+_DEADLINE_S = int(os.environ.get("ORCH_PREFLIGHT_DEADLINE", "600"))
+
+
+class PreflightCallTimeout(Exception):
+    """One app_triage call exceeded its per-call wall-clock budget."""
+
+
+def _call_with_timeout(fn, seconds, *args, **kwargs):
+    """Run ``fn`` on a daemon thread and abandon it after ``seconds``.
+
+    A daemon thread is deliberate: a triage call stuck inside a provider retry
+    loop cannot be cancelled from outside, but it also must not keep the process
+    (and therefore the periodic singleton lock) alive. Abandoning it bounds the
+    caller, which is the property that was missing. Non-positive ``seconds``
+    means "no cap" and runs inline, matching the fail-soft convention in
+    periodic._time_limit.
+    """
+    if not seconds or seconds <= 0:
+        return fn(*args, **kwargs)
+
+    box = {}
+
+    def _target():
+        try:
+            box["value"] = fn(*args, **kwargs)
+        except BaseException as exc:  # logged by the caller; must not kill the thread silently
+            box["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True,
+                              name="preflight-triage")
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise PreflightCallTimeout(
+            f"app_triage call exceeded its {seconds}s budget and was abandoned")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _protected(slug):
@@ -229,9 +284,21 @@ def run():
         projects = {}
     sharpened = 0
     verdicts = []
+    deadline = (time.monotonic() + _DEADLINE_S) if _DEADLINE_S > 0 else None
+    screened = 0
+    abandoned = 0
     for t in rows:
+        if deadline is not None and time.monotonic() >= deadline:
+            # Stop cleanly rather than wedge. Untriaged rows stay QUEUED and are
+            # picked up next cycle — the select is ordered updated_at.asc, so no
+            # task can be starved by repeatedly running out of budget here.
+            print(f"preflight: DEADLINE — {_DEADLINE_S}s budget spent after "
+                  f"{screened}/{len(rows)} rows; returning so the singleton lock "
+                  f"is released. Raise ORCH_PREFLIGHT_DEADLINE if this is too tight.")
+            break
         if _protected(t.get("slug", "")):
             continue
+        screened += 1
         prompt = pipeline_contract.original_request(t.get("prompt") or "")[:1500]
         ask = ("You are a build-task triager. Analyze this task and respond with:\n\n"
                "1. First line: YES or NO (will this produce an actual committable code/file change?)\n"
@@ -239,9 +306,20 @@ def run():
                "3. AMBIGUITIES/CONCERNS: List any vagueness, missing context, or potential issues.\n\n"
                "Vague, duplicate, already-done, discussion-only, or under-specified tasks => NO.\n\n"
                "TASK:\n" + prompt)
+        # Never call the provider without a wall-clock cap: an unbounded retry
+        # loop here is exactly what held the singleton lock for 2930s.
+        budget = _CALL_TIMEOUT_S
+        if deadline is not None:
+            budget = max(1, min(budget, int(deadline - time.monotonic())))
         try:
-            r = app_triage.run("orchestrator", "preflight_triage", ask, task_class="rating")
+            r = _call_with_timeout(app_triage.run, budget,
+                                   "orchestrator", "preflight_triage", ask,
+                                   task_class="rating")
             response_text = (r or {}).get("text", "").strip()
+        except PreflightCallTimeout as e:
+            abandoned += 1
+            print(f"preflight {t['slug']}: TIMEOUT — {e}")
+            continue
         except Exception as e:
             print(f"preflight {t['slug']}: {e}"); continue
 
@@ -291,8 +369,12 @@ def run():
         })
     alarm, liveness_detail = record_verdicts(verdicts)
     print(f"preflight: screened {len(rows)} queued, sharpened {sharpened} non-actionable predictions")
+    if abandoned:
+        print(f"preflight: {abandoned} triage call(s) abandoned on the "
+              f"{_CALL_TIMEOUT_S}s per-call cap")
     print(f"preflight: {liveness_detail}")
-    return {"screened": len(rows), "sharpened": sharpened, "liveness_alarm": alarm}
+    return {"screened": len(rows), "sharpened": sharpened, "liveness_alarm": alarm,
+            "abandoned": abandoned}
 
 
 if __name__ == "__main__":
