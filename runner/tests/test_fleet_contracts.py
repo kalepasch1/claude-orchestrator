@@ -153,3 +153,60 @@ def test_fleet_control_delegates_to_this_contract():
         assert fleet_control._safe_key(key) is False
     assert fleet_control._safe_key("ORCH_GIT_PAT") is False, \
         "delegation must carry the explicit exclusion, not just the prefix rule"
+
+
+# ── model-selection keys (SAFE_SUFFIXES, 2026-08-24) ─────────────────────────
+# The fleet could store GEMINI_MODEL and never deliver it, so when the default
+# agentic coder was pinned to a model Google had retired, the one row that would
+# have re-pointed every machine was the row the loader dropped.
+
+def test_model_selection_keys_are_fleet_wide():
+    """These are the exact keys fleet_control listed as stored-but-ignored."""
+    for key in ("GEMINI_MODEL", "GEMINI_CHEAP_MODEL", "GEMINI_STRONG_MODEL",
+                "OPENAI_STRONG_MODEL", "OPENAI_FAST_MODEL", "OPENAI_CHEAP_MODEL",
+                "CLAUDE_MODEL", "XAI_MODEL", "DEEPSEEK_CHEAP_MODEL"):
+        assert is_safe_config_key(key) is True, key
+
+
+def test_the_agentic_coder_pin_is_reachable_from_config():
+    """runner/agentic_coders.py reads these two to choose the aider model. If they
+    are not fleet-wide, a retired model can only be fixed machine by machine."""
+    assert is_safe_config_key("GEMINI_AGENTIC_MODEL") is True
+    assert is_safe_config_key("GEMINI_MODEL") is True
+
+
+def test_plural_model_lists_are_fleet_wide_too():
+    assert is_safe_config_key("ORCH_QA_MODELS") is True
+    assert is_safe_config_key("REDTEAM_MODELS") is True
+
+
+def test_a_credential_cannot_ride_in_on_the_model_suffix():
+    """Deny markers are evaluated before the suffix rule, so a key that merely ends
+    in _MODEL is still refused when it names a secret."""
+    for key in ("GEMINI_API_KEY_MODEL", "OPENAI_TOKEN_MODEL", "SOME_SECRET_MODEL",
+                "PRIVATE_MODEL", "AUTH_HEADER_MODEL", "MODELS_PASSWORD"):
+        assert is_safe_config_key(key) is False, key
+
+
+def test_the_suffix_rule_does_not_admit_arbitrary_keys():
+    """It widens the allowlist for one family, not for everything. The other keys
+    fleet_control lists as ignored are a policy question and stay refused."""
+    for key in ("PROMOTION_STATE", "PREWARM_N", "CONFIDENCE_GATE",
+                "AUTOPILOT_SWEEP_LIMIT", "MODEL_POOL_WARM_INTERVAL",
+                "MODELLING", "REMODEL"):
+        assert is_safe_config_key(key) is False, key
+
+
+def test_the_suffix_family_is_declared_in_the_schema():
+    """The contract is the literal; a policy change must be visible there."""
+    assert FLEET_CONFIG_SCHEMA["safe_suffixes"] == fleet_contracts.SAFE_SUFFIXES
+    assert "_MODEL" in FLEET_CONFIG_SCHEMA["safe_suffixes"]
+
+
+def test_fleet_control_fallback_agrees_about_model_keys():
+    """The local fail-closed copy must not disagree with the contract it mirrors."""
+    import fleet_control
+
+    assert fleet_control._safe_key("GEMINI_MODEL") is True
+    assert fleet_control._safe_key("GEMINI_API_KEY_MODEL") is False
+    assert "_MODEL" in fleet_control._SAFE_SUFFIXES

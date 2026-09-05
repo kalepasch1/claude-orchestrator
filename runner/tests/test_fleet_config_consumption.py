@@ -116,20 +116,45 @@ class ConfigConsumptionTest(unittest.TestCase):
                          {"ORCH_MAX_PARALLEL": fleet_control.IGNORE_EMPTY})
 
     def test_applied_and_ignored_are_reported_together(self):
-        self._load([("ORCH_MAX_PARALLEL", "12"), ("GEMINI_MODEL", "gemini-2.5-flash")])
+        self._load([("ORCH_MAX_PARALLEL", "12"), ("PROMOTION_STATE", "green")])
         report = fleet_control.config_consumption()
         self.assertEqual(report["applied"], {"ORCH_MAX_PARALLEL": "12"})
         self.assertEqual(report["ignored"],
-                         {"GEMINI_MODEL": fleet_control.IGNORE_UNSAFE_KEY})
+                         {"PROMOTION_STATE": fleet_control.IGNORE_UNSAFE_KEY})
+
+    def test_model_selection_keys_are_now_consumed(self):
+        """2026-08-24: the *_MODEL family moved from ignored to applied.
+
+        It was inert, and that had a cost — the default agentic coder was pinned to a
+        model Google had retired, agentic_coders.py reads that pin from GEMINI_MODEL,
+        and the one row that would have re-pointed the whole fleet was the row this
+        loader dropped. See fleet_contracts.SAFE_SUFFIXES.
+        """
+        self._load([("GEMINI_MODEL", "gemini-3.5-flash"),
+                    ("OPENAI_STRONG_MODEL", "gpt-5.4")])
+        report = fleet_control.config_consumption()
+        self.assertEqual(report["applied"], {"GEMINI_MODEL": "gemini-3.5-flash",
+                                             "OPENAI_STRONG_MODEL": "gpt-5.4"})
+        self.assertEqual(report["ignored"], {})
+        self.assertEqual(os.environ["GEMINI_MODEL"], "gemini-3.5-flash")
+
+    def test_a_credential_named_like_a_model_is_still_refused(self):
+        """The suffix rule widens the allowlist; it must never override a deny."""
+        self._load([("GEMINI_API_KEY_MODEL", "sk-live-xxxx")])
+        self.assertEqual(fleet_control.config_consumption()["ignored"],
+                         {"GEMINI_API_KEY_MODEL": fleet_control.IGNORE_CREDENTIAL})
+        self.assertNotIn("GEMINI_API_KEY_MODEL", os.environ)
 
     def test_the_live_offenders_are_classified_as_ignored(self):
         # Real rows sitting in fleet_config on 2026-08-06, every one inert.
+        # The five *_MODEL keys that were on this list were resolved on 2026-08-24 and
+        # moved to test_model_selection_keys_are_now_consumed; the rest still stand,
+        # because which of them is safe is a policy question for the owner.
         offenders = ["AUTOPILOT_BLOCKER_INTERVAL", "AUTOPILOT_RANK_INTERVAL",
                      "AUTOPILOT_RECOVERY_INTERVAL", "AUTOPILOT_RELEASE_BLOCKER_INTERVAL",
                      "AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE", "AUTOPILOT_SWEEP_LIMIT",
-                     "CONFIDENCE_GATE", "CONFIDENCE_THRESHOLD", "GEMINI_MODEL",
-                     "GEMINI_CHEAP_MODEL", "OPENAI_STRONG_MODEL", "OPENAI_FAST_MODEL",
-                     "OPENAI_CHEAP_MODEL", "PROMOTION_STATE", "PREWARM_N",
+                     "CONFIDENCE_GATE", "CONFIDENCE_THRESHOLD",
+                     "PROMOTION_STATE", "PREWARM_N",
                      "PREVIEW_FEATURE_X"]
         self._load([(k, "x") for k in offenders])
         ignored = fleet_control.config_consumption()["ignored"]
