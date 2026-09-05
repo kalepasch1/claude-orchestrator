@@ -40,6 +40,11 @@ RUNNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if RUNNER not in sys.path:
     sys.path.insert(0, RUNNER)
 
+#: Routing code is scoped to the runner; test suites are not. This fleet has
+#: them in `tests/`, `runner/tests/`, `beethoven/tests/` and `test/`, so
+#: `stale_test_pins` reads from here while the dead-id audit stays in RUNNER.
+REPO_ROOT = os.path.dirname(RUNNER)
+
 TIMEOUT = float(os.environ.get("ORCH_MODEL_AUDIT_TIMEOUT", "20") or 20)
 
 #: Files whose model IDs are routing decisions rather than history. Test files,
@@ -60,8 +65,17 @@ SKIP_DIRS = (".runtime", "_to_delete", "node_modules", "__pycache__",
 #: attaches one model's measured results to a different model. Learned the hard
 #: way on 2026-08-24, by a repin that broke four of its tests.
 SKIP_FILES = ("cost_intelligence.py",)
+#: Test files. Split out of the old single SKIP_FILE_RE because the two halves
+#: were never the same rule: this file itself must be skipped ALWAYS, while test
+#: files are skipped by the dead-id audit but are exactly what `stale_test_pins`
+#: needs to read.
+TEST_FILE_RE = re.compile(r"(^|/)(test_|conftest)|_test\.py$")
+
 #: ...and this file itself, which necessarily contains every vendor prefix it
 #: searches for. Without this it reports its own regex source as a dead model id.
+MODEL_ID_AUDIT_RE = re.compile(r"(^|/)model_id_audit\.py$")
+
+#: Retained for callers outside this module: the union the two halves used to be.
 SKIP_FILE_RE = re.compile(
     r"(^|/)(test_|conftest)|_test\.py$|(^|/)model_id_audit\.py$")
 
@@ -295,12 +309,16 @@ def _docstring_nodes(tree):
     return out
 
 
-def scan(root=None):
+def scan(root=None, tests=False):
     """{model_id: {"path:line", ...}} for every pinned ID under `root`.
 
     Reads string literals through the AST rather than by regex over lines, so
     comments and docstrings are excluded by construction instead of by a
     heuristic. Falls back to a line scan only for a file that will not parse.
+
+    `tests=True` inverts the file filter and scans ONLY the test files the
+    normal path skips. That result is never repinned — see `stale_test_pins`
+    for the one question it is used to answer.
     """
     import ast
     root = root or RUNNER
@@ -327,14 +345,20 @@ def scan(root=None):
             return
         record(mid, rel, lineno)
 
+    skip_dirs = SKIP_DIRS
+    if tests:
+        skip_dirs = tuple(d for d in SKIP_DIRS if d != "tests")
+
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
         for name in filenames:
             if not name.endswith(".py"):
                 continue
             path = os.path.join(dirpath, name)
             rel = os.path.relpath(path, root)
-            if SKIP_FILE_RE.search(rel) or name in SKIP_FILES:
+            if name in SKIP_FILES or MODEL_ID_AUDIT_RE.search(rel):
+                continue
+            if bool(TEST_FILE_RE.search(rel)) != tests:
                 continue
             try:
                 with open(path, encoding="utf-8", errors="replace") as fh:
@@ -360,6 +384,71 @@ def scan(root=None):
                     continue
                 consider(node.value, rel, getattr(node, "lineno", 0))
     return found
+
+
+def stale_test_pins(root=None):
+    """{model_id: {"path:line", ...}} for ids pinned ONLY by tests.
+
+    A different question from the rest of this file, and an offline one. The
+    audit above asks the vendor "do you still serve this?". This asks the tree
+    "does any routing code still name this?" — and the answer is the tell for a
+    test whose expectation went stale when source got repinned underneath it.
+
+    The failure it exists to catch, concretely: 45afe205 repinned twelve dead
+    ids and deliberately left tests alone, on the sound reasoning that a test
+    naming a dead model usually pins it on purpose. True for
+    test_provider_banner_exhaustion.py, which pins verbatim 404 text as
+    evidence. Not true for tests/test_routing.py, which hardcoded the DEFAULT
+    VALUE of PREFLIGHT_ESCALATED_MODEL in eight assertions and went red the
+    moment the constant moved 2.0-flash -> 2.5-flash. Nothing caught it,
+    because the audit does not read tests and the vendor catalogue has no
+    opinion about what a test expects.
+
+    Narrowed to ids with a SIBLING still in source — same family, different
+    version — because that is the fingerprint of a repin and the unnarrowed
+    answer is useless. Scanning every test-only id reports 31 on this tree,
+    almost all obvious fixtures: `claude-9912`, `claude using author model
+    claude-sonnet-4-6`, synthetic names invented by a test. This file already
+    knows what that costs — "a checker that cries wolf gets ignored, and then
+    it protects nothing" — so the family rule is the same kind of exclusion by
+    rule, not by hand-listed exception. A test naming `gemini-2.0-flash` while
+    source routes to `gemini-2.5-flash` is a question worth asking; a test
+    naming an id no source id even rhymes with is a fixture.
+
+    Reporting only. These are never repinned automatically: whether a lone id
+    is a stale expectation or a deliberately-pinned relic is a judgement about
+    what the test is FOR, and this tool cannot make it. It can only put the
+    short list of candidates in front of someone who can — which beats
+    discovering them one red suite at a time.
+
+    Source is read from the runner, tests from the whole repo, and the two
+    roots are deliberately different. Routing lives in `runner/`, which is why
+    the audit above scopes there — but tests do not: this fleet has suites in
+    `tests/`, `runner/tests/`, `beethoven/tests/` and `test/`, and the file
+    that actually went stale (`tests/test_routing.py`) is at the repo root.
+    Scoping both sides to the runner would have missed it, which is the whole
+    point of the function.
+    """
+    source_root = root or RUNNER
+    test_root = root or REPO_ROOT
+    source_ids = set(scan(source_root))
+    source_families = {_family(mid) for mid in source_ids}
+    source_families.discard("")
+    return {mid: sites for mid, sites in scan(test_root, tests=True).items()
+            if mid not in source_ids and _family(mid) in source_families}
+
+
+def _family(model_id):
+    """`gemini-2.0-flash` and `gemini-2.5-flash` -> `gemini-flash`.
+
+    Version-bearing tokens are dropped, which is what makes two ids siblings.
+    Splitting on '-' only (not '.') keeps `claude-haiku-4.5` and
+    `claude-haiku-4-5-20251001` in the same family, which they are: the fleet
+    writes the same model both ways.
+    """
+    kept = [tok for tok in str(model_id).split("-")
+            if tok and not any(ch.isdigit() for ch in tok)]
+    return "-".join(kept)
 
 
 def audit(root=None):
@@ -412,8 +501,36 @@ def audit(root=None):
     return dead, live, unverifiable, errors
 
 
+def _report_stale_test_pins(argv):
+    """`--stale-test-pins`: offline, no catalogue, no network."""
+    stale = stale_test_pins()
+    if "--json" in argv:
+        print(json.dumps({"stale_test_pins": {k: sorted(v)
+                                              for k, v in stale.items()}},
+                         indent=2, sort_keys=True))
+        return 0
+    if not stale:
+        print("model_id_audit: no test pins a model id that source has dropped.")
+        return 0
+    print(f"model_id_audit: {len(stale)} model id(s) pinned only by tests.\n")
+    print("  Each is named by a test and by no routing code. That is either a")
+    print("  deliberate relic (a 404 fixture, a historical banner) or a stale")
+    print("  expectation left behind by a repin. Read the test and decide —")
+    print("  this tool does not repin them.\n")
+    for mid in sorted(stale):
+        sites = sorted(stale[mid])
+        print(f"    {mid}")
+        for site in sites[:6]:
+            print(f"        {site}")
+        if len(sites) > 6:
+            print(f"        … and {len(sites) - 6} more")
+    return 0
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--stale-test-pins" in argv:
+        return _report_stale_test_pins(argv)
     _load_env()
     dead, live, unverifiable, errors = audit()
 
