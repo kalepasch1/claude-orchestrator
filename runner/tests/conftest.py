@@ -299,52 +299,64 @@ def _reset_tdd_gate_cache():
 
 # Control-plane modules a test replaced via sys.modules[...] = ModuleType(...).
 #
-# This used to be a hand-written list with the instruction "keep in sync with
-# grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py". It was not in sync,
-# and a list maintained by grep never will be: the five names below were registered
-# and twelve more were not. test_monthly_audit.py alone installs empty stubs for
-# model_policy, model_gateway, claude_cli, queue_counters and prompt_assembler at
-# IMPORT time and never removes them, so every test module collected after it saw a
-# `model_policy` with nothing in it — which is why ~35 files passed alone and failed
-# in-suite with errors like "cannot import name revenue_keywords".
-#
-# So the registry learns instead. Any module that lives under runner/ and is real
-# (has a __file__) gets remembered the first time we see it; if a later test swaps it
-# for a stub, the real one goes back before the next module is imported. Nothing has
-# to be listed by hand, and a new polluting test cannot silently widen the blast
-# radius.
+# Historically this was a hand-written list with the instruction "keep in sync with
+# grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py". It drifted, causing
+# synthetic modules (test-invented fakes) to leak into later test collections.
+# Now the registry is DERIVED: built at conftest init time from actual imports and
+# test inspection, not maintained by hand.
 _RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-_REAL_MODULES = {
-    "db": _real_db,
-    "kill_switch": _real_kill_switch,
-    "log": _real_log,
-    "subscription_guard": _real_subscription_guard,
-    "provider_terms": _real_provider_terms,
-    "tdd_gate": _real_tdd_gate,
-    "agentic_coders": _real_agentic_coders,
-    "agentic_repair": _real_agentic_repair,
-    "blocked_triage": _real_blocked_triage,
-    "branch_lease": _real_branch_lease,
-    "capacity_pacer": _real_capacity_pacer,
-    "exec_telemetry": _real_exec_telemetry,
-    "notify": _real_notify,
-    "retry_policy": _real_retry_policy,
-    "router_stats": _real_router_stats,
-    "task_artifacts": _real_task_artifacts,
-}
 
-#: Test-invented module names with no real runner module behind them.
-#: Fakes for these are installed at import time but have nowhere to restore to,
-#: so they are cleared from sys.modules instead. Leaving them registered lets
-#: the fake outlive the test that created it, polluting later tests.
-_SYNTHETIC_ONLY_MODULES = {
-    "_test_hot_mod",
-    "_runner_module_for_timeout_tests",
-    "_runner_module_under_test",
-    "_repo_root_canary_for_validation",
-    "requests",
-}
+def _derive_module_lists():
+    r"""Build _REAL_MODULES and _SYNTHETIC_ONLY_MODULES from test inspection.
+
+    Source of truth is the grep output finding all sys.modules assignments in test files:
+    grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py
+
+    Parses test files to find all sys.modules assignments, then classifies each name as
+    real (has runner/<name>.py) or synthetic (test-only). Returns (real_dict, synthetic_set).
+    """
+    import re
+    import importlib.util
+
+    fake_re = re.compile(r'sys\.modules\["([a-z_]+)"\]\s*=')
+    faked_names = set()
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    for fname in os.listdir(tests_dir):
+        if not fname.startswith("test_") or not fname.endswith(".py"):
+            continue
+        fpath = os.path.join(tests_dir, fname)
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                faked_names.update(fake_re.findall(f.read()))
+        except Exception:
+            pass
+
+    real_dict = {}
+    synthetic_set = set()
+
+    for name in sorted(faked_names):
+        imported_as = f"_real_{name}"
+        if imported_as in globals():
+            real_dict[name] = globals()[imported_as]
+        elif os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py")):
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    name, os.path.join(_RUNNER_DIR, f"{name}.py")
+                )
+                if spec and spec.loader:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    real_dict[name] = mod
+            except Exception:
+                synthetic_set.add(name)
+        else:
+            synthetic_set.add(name)
+
+    return real_dict, synthetic_set
+
+
+_REAL_MODULES, _SYNTHETIC_ONLY_MODULES = _derive_module_lists()
 
 
 def _is_real_runner_module(module):
