@@ -30,6 +30,10 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import {
+  partitionEvidence,
+  summariseExclusions,
+} from './lib/orchestration-artifacts.mjs'
 
 // ─── The read-only guarantee ─────────────────────────────────────────────────
 
@@ -845,11 +849,54 @@ function main() {
   ].filter((p, i, a) => a.indexOf(p) === i)
   const codexOutputs = collectFlag(args, '--codex-output')
 
-  const items = collapseDuplicateTrees([
-    ...branches.map((b) => ({ kind: 'branch', ...classifyRef(b, ctx) })),
-    ...rescueRefs.map((r) => ({ kind: 'rescue_ref', ...classifyRef(r, ctx) })),
-    ...stashes.map((s) => ({ kind: 'stash', ...classifyStash(s, ctx) })),
+  // When did THIS run begin? Refs the periodic sweeper creates while we are
+  // classifying are the run's own scaffolding, not evidence anyone produced.
+  const runStartedAt = new Date().toISOString()
+
+  /**
+   * The paths a sweep carries.
+   *
+   * `diff-tree` on the ref's own commit, NOT a three-dot diff against the default
+   * branch: a sweep is one commit of swept files, so its own tree is exactly the
+   * question being asked, and a three-dot diff would compute a merge base per ref
+   * — hundreds of them on this repo, which took the run from seconds to many
+   * minutes without answering anything the cheap form does not.
+   *
+   * Returns [] on any failure, and an empty path set is never treated as
+   * bookkeeping, so an unreadable ref stays in the universe.
+   */
+  const pathsFor = (ref) => {
+    const out = runGit(['diff-tree', '--no-commit-id', '--name-only', '-r', ref], { allowFail: true })
+    return (out ?? '').split('\n').map((x) => x.trim()).filter(Boolean)
+  }
+  const refCreatedAt = (ref) =>
+    runGit(['log', '-1', '--format=%cI', ref], { allowFail: true }) || null
+
+  // Exclusion runs BEFORE classification: an orchestration artifact must never
+  // reach a verdict at all, because a verdict is what makes it look like work.
+  // Content-based exclusion is applied to SWEEPS ONLY. Every self-feeding case
+  // observed was a sweep or rescue ref — a sibling's artifact picked up by the
+  // periodic sweeper. An `agent/*` branch is somebody's deliberate work by
+  // construction, so judging one by its file list risks excluding real evidence
+  // to tidy a loop, which is the trade this must never make.
+  const universe = [
+    ...branches.map((ref) => ({ kind: 'branch', ref, paths: [], createdAt: null })),
+    ...rescueRefs.map((ref) => ({
+      kind: 'rescue_ref', ref, paths: pathsFor(ref), createdAt: refCreatedAt(ref),
+    })),
     ...worktrees.map((w) => ({
+      kind: 'worktree', ref: w.path, branch: w.branch, paths: [], createdAt: null,
+    })),
+  ]
+
+  const { kept, excluded } = partitionEvidence(universe, { runStartedAt })
+  const keptRefs = new Set(kept.map((e) => e.ref))
+
+  const items = collapseDuplicateTrees([
+    ...branches.filter((b) => keptRefs.has(b)).map((b) => ({ kind: 'branch', ...classifyRef(b, ctx) })),
+    ...rescueRefs.filter((r) => keptRefs.has(r)).map((r) => ({ kind: 'rescue_ref', ...classifyRef(r, ctx) })),
+    ...stashes.map((s) => ({ kind: 'stash', ...classifyStash(s, ctx) })),
+    ...worktrees.filter((w) => keptRefs.has(w.path)).map((w) => ({
       kind: 'worktree',
       ref: w.path,
       branch: w.branch,
@@ -886,6 +933,17 @@ function main() {
     itemCount: items.length,
     counts,
     unknown,
+    // Named, counted and enumerated. Everything kept out of the universe is
+    // accounted for here — a silent drop is the bug class the coverage doctrine
+    // exists to prevent, so exclusions are reported, never merely omitted.
+    excludedOrchestrationArtifacts: excluded.map((e) => ({
+      kind: e.kind,
+      ref: e.ref,
+      reason: e.exclusionReason,
+      detail: e.exclusionDetail,
+      pathCount: (e.paths || []).length,
+    })),
+    excludedCounts: summariseExclusions(excluded),
     items,
   }
 
@@ -895,6 +953,11 @@ function main() {
   console.log(`  items:       ${items.length}`)
   for (const c of CLASSIFICATIONS) console.log(`    ${c.padEnd(30)} ${counts[c]}`)
   console.log(`  UNKNOWN:     ${unknown}${unknown === 0 ? '  ✓' : '  ✗ completion bar not met'}`)
+  const exSummary = summariseExclusions(excluded)
+  if (exSummary.total > 0) {
+    const by = Object.entries(exSummary.byReason).map(([r, n]) => `${r}=${n}`).join(' ')
+    console.log(`  excluded:    ${exSummary.total} orchestration artifact(s) never classified (${by})`)
+  }
 
   const onlyCopies = items.filter(
     (i) => i.classification === 'RECOVERABLE_VALUE' && i.remotePreserved === false,
