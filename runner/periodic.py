@@ -1618,3 +1618,40 @@ if __name__ == "__main__":
               f"({outcome.detail})", file=sys.stderr, flush=True)
         sys.exit(_EX_TIMEOUT)
     sys.exit(_EX_OK)
+
+def _declared_job_handler_names(path: str | None = None) -> list[str]:
+    """Handler function names referenced by the JOBS literal, read from this file's source.
+
+    Read via ast so the guard stays correct when jobs are added/removed — nobody has to
+    remember to update a hand-maintained list. Fail-soft: any parse problem yields [] so
+    the guard degrades to today's behavior rather than blocking startup.
+    """
+    try:
+        import ast
+        src = open(path or os.path.abspath(__file__), "r", encoding="utf-8", errors="replace").read()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "JOBS" for t in node.targets
+            ) and isinstance(node.value, ast.Dict):
+                return [v.id for v in node.value.values if isinstance(v, ast.Name)]
+    except Exception:
+        pass
+    return []
+
+def _require_job_handlers(names, namespace=None) -> list[str]:
+    """Fail loudly, and by name, when a JOBS entry has no handler function.
+
+    Without this the JOBS dict literal raises a bare `NameError: name 'run_x' is not
+    defined` at module scope — which every caller sees as an unexplained import crash
+    (the decisionbriefs crashloop). Returns the missing names; raises if any.
+    """
+    ns = globals() if namespace is None else namespace
+    missing = sorted({n for n in names if not callable(ns.get(n))})
+    if missing:
+        raise RuntimeError(
+            "periodic.py: job dispatch table references handler function(s) that are not "
+            "defined: " + ", ".join(missing) + ". Define them, or remove their JOBS entry, "
+            "before startup."
+        )
+    return missing
+
