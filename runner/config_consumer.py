@@ -329,3 +329,81 @@ def invalidate_cache(key: Optional[str] = None) -> None:
 if __name__ == "__main__":
     print("config_consumer module loaded successfully")
     print(f"All ORCH_* keys: {load_all()}")
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """Boolean env knob.
+
+    Unlike get_bool, an unrecognised word returns ``default`` rather than False —
+    at module scope a knob is often a kill switch, and silently flipping a
+    default-on switch off because someone typed "maybe" is worse than ignoring them.
+    """
+    raw = env_str(name, "").lower()
+    if not raw:
+        return default
+    if raw in ("true", "1", "yes", "on"):
+        return True
+    if raw in ("false", "0", "no", "off"):
+        return False
+    print(f"[config_consumer] {name}={raw!r} is not a bool; using {default}", flush=True)
+    return default
+
+def env_int(name: str, default: int = 0, minimum: Optional[int] = None) -> int:
+    """Integer env knob. Returns ``default`` on anything unparseable or below minimum."""
+    raw = env_str(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (ValueError, TypeError):
+        print(f"[config_consumer] {name}={raw!r} is not an int; using {default}", flush=True)
+        return default
+    except Exception:
+        return default
+    if minimum is not None and value < minimum:
+        print(f"[config_consumer] {name}={value} below minimum {minimum}; using {default}",
+              flush=True)
+        return default
+    return value
+
+def env_str(name: str, default: str = "") -> str:
+    """Read an environment variable by its FULL name, fail-soft.
+
+    The get/get_int/... family reads ORCH_-prefixed keys. These four read the literal
+    name instead, because ~1000 module-scope constants across runner/ are spelled
+    `int(os.environ.get("ORCH_X", "8"))` — a bare cast that runs at *import* time.
+    A single malformed fleet push of any one of those keys raises ValueError while the
+    module is being imported, which takes down every importer, not just the caller of
+    that constant. That is the exact failure this configuration layer exists to prevent,
+    and it cannot be fixed by the ORCH_-prefixed getters because the call sites are not
+    prefixed uniformly and are evaluated before any consumer object exists.
+
+    Use these at module scope: `MAX = config_consumer.env_int("ORCH_MAX", 8)`.
+    Never raises.
+    """
+    try:
+        if not name or not isinstance(name, str):
+            return default
+        value = os.environ.get(name, "")
+        value = value.strip() if isinstance(value, str) else ""
+        return value if value else default
+    except Exception:
+        return default
+
+def env_float(name: str, default: float = 0.0, minimum: Optional[float] = None) -> float:
+    """Float env knob. Returns ``default`` on anything unparseable or below minimum."""
+    raw = env_str(name, "")
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        print(f"[config_consumer] {name}={raw!r} is not a float; using {default}", flush=True)
+        return default
+    except Exception:
+        return default
+    if minimum is not None and value < minimum:
+        print(f"[config_consumer] {name}={value} below minimum {minimum}; using {default}",
+              flush=True)
+        return default
+    return value
+
