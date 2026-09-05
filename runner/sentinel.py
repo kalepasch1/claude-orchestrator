@@ -1272,17 +1272,80 @@ def stale_code_guard():
 
 # ── 6. merge-train recency (DB up only) ──────────────────────────────────────
 
+def _train_pressure_db_age():
+    """Age in seconds of the authoritative merge-train pressure row, or None.
+
+    Fail-soft: any DB/import problem returns None, which the caller treats as
+    "no opinion" and falls back to the file marker — i.e. exactly today's
+    behaviour. A monitor must never become the outage it watches for.
+    """
+    try:
+        import db
+        import merge_train
+        key = getattr(merge_train, "PRESSURE_KEY", "merge_train_pressure")
+        rows = db.select("controls",
+                         {"select": "updated_at", "key": f"eq.{key}", "limit": "1"}) or []
+        raw = (rows[0] if rows else {}).get("updated_at")
+        if not raw:
+            return None
+        text = str(raw).replace("Z", "+00:00")
+        stamp = datetime.datetime.fromisoformat(text)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+        return max(0.0, (datetime.datetime.now(datetime.timezone.utc) - stamp).total_seconds())
+    except Exception:
+        return None
+
+
 def train_guard():
+    """Fire merge_train only when the train is ACTUALLY stale.
+
+    2026-08-02 incident item #5: this guard read only the file marker while the
+    merge train writes its pressure to the DB (controls.merge_train_pressure).
+    A missing file scored age=1e9, so every sentinel tick logged "train-stale"
+    and spawned another merge_train.py — a false alarm that ran for DAYS and
+    buried real signal. pipeline_selftest.check_pressure_consistency already
+    NAMES this consumer as the one that lies ("fix_consumer"); this is that fix.
+
+    The DB is authoritative. The file marker is only consulted when the DB has
+    no opinion, so a DB outage degrades to the previous behaviour rather than
+    silencing the guard altogether.
+    """
     marker = os.path.join(RUNTIME, "merge_train_pressure.json")
     try:
-        age = time.time() - os.path.getmtime(marker)
+        file_age = time.time() - os.path.getmtime(marker)
     except OSError:
-        age = 1e9
-    if age > TRAIN_STALE_S:
-        log("train-stale", f"{int(age)}s since last train pressure write — firing train_run")
-        subprocess.Popen([sys.executable, os.path.join(HERE, "merge_train.py")],
-                         stdout=open(os.path.join(RUNTIME, "sentinel_train.out"), "a"),
-                         stderr=subprocess.STDOUT, cwd=HERE)
+        file_age = None
+
+    db_age = _train_pressure_db_age()
+
+    if db_age is not None and db_age <= TRAIN_STALE_S:
+        # Train is demonstrably running. If the file disagrees, that is the
+        # consistency defect — flag it loudly, but do NOT fire the train.
+        if file_age is None or file_age > TRAIN_STALE_S:
+            log("train-pressure-inconsistent",
+                f"DB pressure fresh ({int(db_age)}s) but file marker "
+                f"{'absent' if file_age is None else str(int(file_age)) + 's stale'} — "
+                "file consumer would have raised a FALSE train-stale; suppressed")
+        return
+
+    if db_age is None and file_age is not None and file_age <= TRAIN_STALE_S:
+        return  # DB unreachable, file says fresh — nothing to do.
+
+    age = db_age if db_age is not None else (file_age if file_age is not None else 1e9)
+    source = "db" if db_age is not None else "file"
+    log("train-stale",
+        f"{int(age)}s since last train pressure write (source={source}) — firing train_run")
+    # RUNTIME may not exist yet (fresh clone / fresh worktree). Without this the
+    # open() below raises FileNotFoundError and the train is never fired at all —
+    # a silent failure in the code path whose whole job is to break a silence.
+    try:
+        os.makedirs(RUNTIME, exist_ok=True)
+    except Exception:
+        pass
+    subprocess.Popen([sys.executable, os.path.join(HERE, "merge_train.py")],
+                     stdout=open(os.path.join(RUNTIME, "sentinel_train.out"), "a"),
+                     stderr=subprocess.STDOUT, cwd=HERE)
 
 
 def main():
