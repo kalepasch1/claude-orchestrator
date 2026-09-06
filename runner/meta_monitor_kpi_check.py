@@ -157,9 +157,16 @@ def load_baseline_row(fetch=None):
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import db  # noqa: PLC0415 — optional dependency, import kept local
 
-        rows = db.query(
-            "SELECT key, value FROM controls WHERE key = %s", (BASELINE_KEY,)
-        )
+        # Was `db.query("SELECT key, value FROM controls WHERE key = %s", ...)`.
+        # db is a PostgREST client and has never had a raw-SQL channel, so this
+        # raised AttributeError and the handler below returned None — meaning the
+        # baseline row was read as "unreachable" on every call, and the KPI check
+        # has never once compared against a stored baseline.
+        rows = db.select("controls", {
+            "select": "key,value",
+            "key": f"eq.{BASELINE_KEY}",
+            "limit": "1",
+        })
         return rows[0] if rows else None
     except Exception:
         return None

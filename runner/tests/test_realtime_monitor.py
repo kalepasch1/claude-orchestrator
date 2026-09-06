@@ -29,15 +29,30 @@ import realtime_monitor as rm  # noqa: E402
 
 
 class _DB:
-    """A db seam with no database."""
+    """A db seam with no database.
 
-    def __init__(self, count=None, sql_rows=None, rows=None, boom=False):
+    IT USED TO OFFER sql(). The real db is a PostgREST client and has never had a
+    raw-SQL channel, so every `db.sql(...)` in production raised AttributeError
+    and returned None through a fail-soft handler. This double answered those
+    calls happily, which is exactly why the bug survived: realtime_monitor's
+    _project_summary had NEVER returned a summary on a real machine, and the
+    tests were green the whole time because the fake implemented a method the
+    client does not have.
+
+    A double that is more capable than the thing it stands in for does not test
+    the code; it certifies the mistake. sql() is gone, and select_all() is here
+    because that is what the real client offers and what the fixed code calls.
+    """
+
+    def __init__(self, count=None, rows=None, boom=False, embed_rows=None):
         self._count = count
-        self._sql_rows = sql_rows if sql_rows is not None else []
         self._rows = rows if rows is not None else []
+        # Rows shaped as PostgREST returns an embed: {"state": ..., "projects": {"name": ...}}
+        self._embed_rows = embed_rows if embed_rows is not None else []
         self.boom = boom
         self.count_calls = []
         self.select_calls = []
+        self.select_all_calls = []
 
     def count(self, table, params=None):
         if self.boom:
@@ -45,10 +60,11 @@ class _DB:
         self.count_calls.append((table, params))
         return self._count
 
-    def sql(self, query):
+    def select_all(self, table, params=None):
         if self.boom:
             raise RuntimeError("control plane down")
-        return self._sql_rows
+        self.select_all_calls.append((table, params))
+        return self._embed_rows
 
     def select(self, table, params=None):
         if self.boom:
@@ -127,7 +143,7 @@ class TestCollectorsReportUnknown(unittest.TestCase):
             self.assertIsNone(rm._queue_depths())
 
     def test_queue_depths_empty_when_genuinely_empty(self):
-        with _with_db(_DB(sql_rows=[])):
+        with _with_db(_DB(embed_rows=[])):
             self.assertEqual(rm._queue_depths(), {})
 
     def test_pending_approvals_unknown_on_outage(self):
@@ -149,7 +165,11 @@ class TestSnapshot(unittest.TestCase):
 
     def _healthy(self):
         return _DB(count=12,
-                   sql_rows=[{"state": "QUEUED", "cnt": 3}, {"state": "DONE", "cnt": 2}],
+                   embed_rows=[{"state": "QUEUED", "projects": {"name": "beethoven"}},
+                              {"state": "QUEUED", "projects": {"name": "beethoven"}},
+                              {"state": "QUEUED", "projects": {"name": "beethoven"}},
+                              {"state": "DONE", "projects": {"name": "beethoven"}},
+                              {"state": "DONE", "projects": {"name": "beethoven"}}],
                    rows=[{"slug": "s1", "kind": "build", "project_id": "p",
                           "note": "x", "updated_at": "2026-08-24T00:00:00Z"}])
 
@@ -185,7 +205,7 @@ class TestSnapshot(unittest.TestCase):
 
     def test_an_empty_but_reachable_fleet_is_ok_and_totals_zero(self):
         """The distinction the whole change exists to make."""
-        with _with_db(_DB(count=0, sql_rows=[], rows=[])):
+        with _with_db(_DB(count=0, embed_rows=[], rows=[])):
             snap = rm.snapshot()
         self.assertTrue(snap["ok"], snap["degraded"])
         self.assertEqual(snap["total_tasks"], 0)
@@ -217,7 +237,7 @@ class TestRun(unittest.TestCase):
         _reset_cache()
 
     def test_run_returns_the_snapshot(self):
-        db = _DB(count=1, sql_rows=[{"state": "DONE", "cnt": 1}], rows=[])
+        db = _DB(count=1, embed_rows=[{"state": "DONE", "projects": {"name": "beethoven"}}], rows=[])
         with _with_db(db):
             snap = rm.run()
         self.assertIn("snapshot_at", snap)
@@ -230,7 +250,7 @@ class TestRun(unittest.TestCase):
                 written.update(row)
                 return row
 
-        db = _Rec(boom=False, count=None, sql_rows=None, rows=None)
+        db = _Rec(boom=False, count=None, rows=None)
         db._count = None
         with _with_db(db):
             snap = rm.snapshot()

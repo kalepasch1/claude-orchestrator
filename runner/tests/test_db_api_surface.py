@@ -82,7 +82,9 @@ KNOWN_BROKEN = {
     ("runner/investor_metrics_dashboard.py", 23),
     ("runner/metric_history.py", 211),
     ("runner/orchestration_api.py", 125),
-    ("runner/realtime_monitor.py", 30),
+    # realtime_monitor._queue_depths is FIXED — PostgREST select_all, grouped here.
+    # With _project_summary and _pending_approvals also fixed, snapshot() now
+    # reports degraded=[] for the first time.
     # realtime_monitor._project_summary is FIXED — PostgREST embed, grouped here.
     # db.execute — raw SQL against a preview/prod promotion path.  Worth naming
     # separately: promote_preview_to_prod() and promote_or_rollback() have never

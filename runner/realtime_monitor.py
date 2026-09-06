@@ -31,10 +31,22 @@ def _queue_depths():
     """Current task counts by state."""
     try:
         import db
-        rows = db.sql(
-            "SELECT state, count(*)::int AS cnt FROM tasks GROUP BY state"
-        ) or []
-        return {r["state"]: r["cnt"] for r in rows}
+        # Was `db.sql("SELECT state, count(*) ... GROUP BY state")`. db is a
+        # PostgREST client and has never had a raw-SQL channel, so this raised
+        # AttributeError on every call and the handler below returned None — the
+        # monitor's queue depths have been UNKNOWN on every machine, for the whole
+        # life of this function, and the dashboard has rendered that as unknown
+        # rather than as a number nobody noticed was missing.
+        #
+        # This is the second function in this module with that defect;
+        # _project_summary had it too. Same fix: ask PostgREST for the rows and
+        # group them here.
+        rows = db.select_all("tasks", {"select": "state"}) or []
+        depths = {}
+        for r in rows:
+            state = r.get("state") or "?"
+            depths[state] = depths.get(state, 0) + 1
+        return depths
     except Exception:
         # None, not {}. An empty queue and an unreachable control plane are opposite
         # facts; a monitor that renders them identically is worse than no monitor.
@@ -68,22 +80,36 @@ def _throughput(window_hours=1):
 
 
 def _pending_approvals():
-    """Tasks waiting for human approval."""
+    """Approvals waiting on a human.
+
+    This asked the TASKS table for rows in state PENDING_REVIEW or NEEDS_APPROVAL.
+    Neither is a value of the task_state enum, so PostgREST answered
+
+        400: invalid input value for enum task_state: "PENDING_REVIEW"
+
+    on every call, and the handler below returned None. The monitor has reported
+    pending approvals as UNKNOWN for the whole life of this function, and
+    snapshot() has been permanently degraded because of it.
+
+    Approvals are their own table with their own lowercase status enum — the same
+    mistake, and the same correction, as alert_rules_engine's pending_approvals
+    metric. The returned shape is unchanged so no caller has to move.
+    """
     try:
         import db
-        rows = db.select("tasks", {
-            "select": "slug,kind,project_id,note,updated_at",
-            "or": ",".join(f"(state.eq.{s})" for s in APPROVAL_STATES),
-            "order": "updated_at.asc",
+        rows = db.select("approvals", {
+            "select": "slug,kind,project,title,detail,created_at",
+            "status": "eq.pending",
+            "order": "created_at.asc",
             "limit": "50",
         }) or []
         return [
             {
                 "slug": r.get("slug"),
                 "kind": r.get("kind"),
-                "project_id": r.get("project_id"),
-                "waiting_since": r.get("updated_at"),
-                "note_preview": (r.get("note") or "")[:100],
+                "project_id": r.get("project"),
+                "waiting_since": r.get("created_at"),
+                "note_preview": (r.get("detail") or r.get("title") or "")[:100],
             }
             for r in rows
         ]
