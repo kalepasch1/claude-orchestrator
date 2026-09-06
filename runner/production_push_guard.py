@@ -380,6 +380,119 @@ def _failing_tests(output):
     return names
 
 
+# A KILLED SESSION IS NOT A RED RUN EITHER, AND IT IS NOT RE-RUN.
+#
+# pytest.ini sets `timeout = 60` with `timeout_method = thread`. Under that method
+# pytest-timeout cannot interrupt the test: a background timer thread dumps every
+# thread's stack and calls os._exit(1). os._exit skips the terminal reporter, so the
+# run produces NO summary -- no FAILED line, no "short test summary info", no
+# "N failed in Xs" -- and exits 1, which at the returncode is indistinguishable from
+# an ordinary red suite.
+#
+# Measured 2026-09-06. A promotion was blocked and this guard's entire output was
+# "suite red -- re-running once", then a second full clock, then nothing. NO TEST HAD
+# FAILED. Two tests were merely slower than 60s:
+# test_branch_manager.py::test_branch_health_report_structure (~80s: find_stale_branches
+# spawned one git merge-base AND one control-plane round trip per stale branch, 215 of
+# them) and test_transient_db_crashloop.py (~95s x2: it set HTTP_RETRIES, which is the
+# name of db.py's CONSTANT rather than the env var db.py reads, so a "control plane is
+# down" simulation paid the full 1+2+4s retry backoff per request). Both are fixed.
+#
+# The guard's failure was separate from theirs and outlives them: the id of the
+# responsible test was sitting in output this guard had already captured and threw
+# away. The MainThread stack names it explicitly. So detect the kill, name the test,
+# and STOP -- same class as _SuiteTimedOut. No verdict was produced, so there is
+# nothing for a second attempt to separate, and the re-run costs another full suite
+# to reach the identical os._exit.
+
+#: `terminal.sep("+", title="Timeout")` -- the width follows the terminal writer, so
+#: never match a fixed number of '+'.
+_TIMEOUT_BANNER_RE = re.compile(r"^\++ Timeout \++$", re.M)
+
+#: `terminal.sep("~", title="Stack of %s (%s)")`, one section per live thread.
+_STACK_OF_RE = re.compile(r"^~+ Stack of (\S+) \(\d+\) ~+$", re.M)
+
+#: THE DISCRIMINATOR, and it is not the banner. Under `timeout_method = signal`
+#: pytest-timeout prints the SAME banner and the SAME stack sections whenever more
+#: than one thread is alive -- and then the session SURVIVES and reports normally
+#: ("1 failed in 3.04s"). Verified both ways 2026-09-06. Matching on the banner alone
+#: would misread that as a kill and skip the flake re-run a genuine red deserves.
+#: A session that printed a summary was not killed.
+_SESSION_FINISHED_RE = re.compile(
+    r"^(?:=+ .*(?:passed|failed|error|no tests ran|deselected).*=+"
+    r"|\d+ (?:passed|failed|error)\b.*)$", re.M | re.I)
+
+_STACK_FRAME_RE = re.compile(r'^  File "([^"]+)", line \d+, in (\w+)$', re.M)
+
+
+def _session_was_killed(output):
+    """True when pytest-timeout killed the whole session instead of failing a test."""
+    text = str(output or "")
+    if not _TIMEOUT_BANNER_RE.search(text) or not _STACK_OF_RE.search(text):
+        return False
+    return not _SESSION_FINISHED_RE.search(text)
+
+
+def _killed_session_test(output):
+    """The test the MainThread was running when the session was killed, or "".
+
+    Returns "path::function". The CLASS is not recoverable -- stack frames carry code
+    objects, not the class -- so a unittest method reads as path::test_name. That is
+    still enough to re-run it with -k, which is what the verdict tells the operator.
+
+    MainThread is located BY NAME, never by position: pytest-timeout's dump_stacks
+    iterates sys._current_frames(), and in the worker-thread reproduction on
+    2026-09-06 the order was worker-2, worker-1, worker-0, MainThread. Taking the
+    first section would have named a worker thread's helper instead of the test.
+    """
+    text = str(output or "")
+    sections = list(_STACK_OF_RE.finditer(text))
+    main = next((m for m in sections if m.group(1) == "MainThread"), None)
+    if main is None:
+        return ""
+    end = len(text)
+    for other in sections:
+        if other.start() > main.start():
+            end = other.start()
+            break
+    closing = _TIMEOUT_BANNER_RE.search(text, main.end())
+    if closing and closing.start() < end:
+        end = closing.start()
+    # Innermost frame first, so a test that hangs inside a helper further down its own
+    # file still resolves to the test function rather than to the helper's caller.
+    for path, func in reversed(_STACK_FRAME_RE.findall(text[main.end():end])):
+        if func.startswith("test") or os.path.basename(path).startswith("test_"):
+            return "%s::%s" % (path, func)
+    return ""
+
+
+def _killed_session_verdict(command, output):
+    """What an operator needs to read when pytest-timeout killed the session."""
+    named = _killed_session_test(output)
+    who = named or "(the MainThread stack is in the output above but names no test frame)"
+    where = named.split("::")[0] if named else "<file>"
+    which = named.split("::")[-1] if named else "<test>"
+    return (
+        f"`{command}` was KILLED by pytest-timeout, so this guard has NO verdict on "
+        "the suite. NO TEST FAILED -- nothing here says the code is broken.\n"
+        f"  test that ran long: {who}\n"
+        "\n"
+        "pytest.ini sets `timeout = 60` with `timeout_method = thread`. That method "
+        "cannot interrupt a running test; it dumps every thread's stack and calls "
+        "os._exit(1). The run therefore exits 1 with no summary and no FAILED line, "
+        "which is why this used to read as a red suite. Every test after this one "
+        "never ran, so the suite is not merely unverified here -- it is unverified "
+        "from this point on.\n"
+        "\n"
+        "Either that test is genuinely wedged, or it is simply slower than 60s on a "
+        "loaded box. Find out which:\n"
+        f"    python3 -m pytest {where} -k {which} -q --timeout=300\n"
+        "Then fix the test, or raise `timeout` in pytest.ini if 60s is too tight for "
+        "the load this guard already tolerates.\n"
+        "Blocking the push: a killed suite is not a green one."
+    )
+
+
 def _flake_report(first_output):
     """What flaked on the first attempt, for a run the re-run then passed.
 
@@ -446,6 +559,16 @@ def verify_tests(repo, commit):
     if proc.returncode is None:
         return False, _timed_out_verdict(command, proc.seconds)
 
+    # NEITHER IS THE INNER TIMEOUT -- pytest-timeout killing the session.
+    #
+    # This must sit ABOVE the flake re-run below, not inside it. A killed session
+    # exits 1 with no failing test, so the re-run branch would take it, wait out the
+    # cool-down, and spend a second full suite reaching the identical os._exit. That
+    # is exactly what happened on 2026-09-06, and it is what cost the hours: two dead
+    # runs and an output that named nothing.
+    if _session_was_killed(proc.stdout + proc.stderr):
+        return False, _killed_session_verdict(command, proc.stdout + proc.stderr)
+
     # A RED FIRST RUN IS NOT YET A VERDICT.
     #
     # This gate runs inside a pre-push hook, on whatever the machine happens to be
@@ -466,6 +589,10 @@ def verify_tests(repo, commit):
         second = _run_suite(repo, command)
         if second.returncode is None:
             return False, _timed_out_verdict(command, second.seconds)
+        # Same rule on the re-run: an ordinary red first attempt can be followed by a
+        # kill on the second, and that second result is not a failure either.
+        if _session_was_killed(second.stdout + second.stderr):
+            return False, _killed_session_verdict(command, second.stdout + second.stderr)
         if second.returncode == 0:
             if not _tracked_content_still_matches(repo, commit):
                 return False, _tree_drifted_verdict(commit)

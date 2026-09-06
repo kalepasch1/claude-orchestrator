@@ -128,7 +128,20 @@ class TestJobsExitZeroWhenSupabaseIsDown(unittest.TestCase):
             "SUPABASE_URL": "https://127.0.0.1:1",  # nothing listens here
             "SUPABASE_SERVICE_KEY": "test-key-not-real",
             "ORCH_SUPABASE_TIMEOUT": "1",
-            "HTTP_RETRIES": "0",
+            # ORCH_SUPABASE_RETRIES, not HTTP_RETRIES. HTTP_RETRIES is the name of
+            # db.py's module-level CONSTANT (db.py:328); the environment variable it
+            # reads is ORCH_SUPABASE_RETRIES. Setting the constant's name set nothing:
+            # the retry budget stayed at its default of 3, so every request paid
+            # db.py:955's 1 + 2 + 4 = 7s of backoff against an endpoint that refuses
+            # the connection in under 3ms. Measured 2026-09-06: 62.5s of the 62.7s
+            # spent in resource_governor was time.sleep, and each of these two tests
+            # took ~94s against pytest.ini's 60s per-test bound. They did not fail --
+            # timeout_method = thread cannot interrupt, so they killed the whole
+            # session with exit 1 and no summary, which production_push_guard read as
+            # an anonymous "suite red" and used to block a production promotion.
+            # A test that injects "the control plane is down" wants zero backoff: the
+            # connection refusal IS the signal, and waiting does not sharpen it.
+            "ORCH_SUPABASE_RETRIES": "0",
             # ...and NOTHING ELSE listens either. db.py's transport failover
             # (added 2026-08-05) tries ORCH_SUPABASE_FALLBACK_URLS when the
             # primary refuses a connection, and db.py's .env loader
