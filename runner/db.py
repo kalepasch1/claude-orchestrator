@@ -991,13 +991,39 @@ def select_all(table, params=None, page_size=PAGE_SIZE, max_rows=None, order=Non
     return rows[:cap]
 
 
+def _total_from_content_range(header):
+    """Parse the total out of `Content-Range: 0-0/1234`. None when absent/unknown."""
+    text = str(header or "")
+    if "/" not in text:
+        return None
+    total = text.rsplit("/", 1)[1].strip()
+    if not total or total == "*":
+        return None
+    try:
+        return int(total)
+    except (TypeError, ValueError):
+        return None
+
+
 def count(table, params=None):
-    """Exact PostgREST row count without downloading the matching rows."""
+    """Exact PostgREST row count without downloading the matching rows.
+
+    Goes through the SAME endpoint failover, bounded retry and control-plane circuit
+    breaker as every other read. It used to hand-roll a single bare urlopen against
+    `URL`, which meant counts alone: paid the full timeout budget while the breaker was
+    open (the wedge the breaker exists to prevent), never failed over to a healthy
+    endpoint, and raised on a transient 503 that `select()` would have retried. Callers
+    like queue_monitor wrap counts in `except: 0`, so each of those turned into a
+    silent, plausible-looking ZERO on a dashboard.
+    """
     if not URL or not KEY:
         raise RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY")
     q = dict(params or {})
+    # A count needs no column data. Projecting the narrowest possible column keeps the
+    # response body empty instead of shipping ids that are immediately discarded.
     q.setdefault("select", "id")
     qs = "?" + urllib.parse.urlencode(q)
+    path = f"/rest/v1/{table}"
     h = {
         "apikey": KEY,
         "Authorization": f"Bearer {KEY}",
@@ -1006,25 +1032,54 @@ def count(table, params=None):
         "Range-Unit": "items",
         "Range": "0-0",
     }
-    req = urllib.request.Request(URL + f"/rest/v1/{table}" + qs, method="GET", headers=h)
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-            content_range = r.headers.get("Content-Range", "")
-            if "/" in content_range:
-                total = content_range.rsplit("/", 1)[1]
-                if total and total != "*":
-                    return int(total)
-            raw = r.read().decode()
-            return len(json.loads(raw) if raw else [])
-    except urllib.error.HTTPError as e:
-        if e.code == 416:
-            content_range = e.headers.get("Content-Range", "")
-            if "/" in content_range:
-                total = content_range.rsplit("/", 1)[1]
-                if total and total != "*":
-                    return int(total)
-            return 0
-        raise
+    if _breaker_blocks():
+        raise ControlPlaneDown(
+            f"control plane circuit breaker open ({_BREAKER['consecutive']} consecutive "
+            f"unreachable) — skipping count({table}) instead of paying the timeout")
+
+    last_exc = None
+    bases = _base_urls()
+    for i, base in enumerate(bases):
+        probe_only = i < len(bases) - 1
+        attempts = 1 if probe_only else HTTP_RETRIES + 1
+        for attempt in range(attempts):
+            req = urllib.request.Request(base + path + qs, method="GET", headers=h)
+            try:
+                timeout = min(HTTP_TIMEOUT, PROBE_TIMEOUT) if probe_only else HTTP_TIMEOUT
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    _pin(base)
+                    _breaker_record_answer()
+                    total = _total_from_content_range(r.headers.get("Content-Range"))
+                    if total is not None:
+                        return total
+                    raw = r.read().decode()
+                    return len(json.loads(raw) if raw else [])
+            except urllib.error.HTTPError as e:
+                if e.code not in GATEWAY_STATUSES:
+                    _pin(base)
+                    _breaker_record_answer()
+                if e.code == 416:
+                    # "Range not satisfiable" is how PostgREST answers a count over an
+                    # empty result set — an ANSWER, not an error.
+                    total = _total_from_content_range(e.headers.get("Content-Range"))
+                    return total if total is not None else 0
+                if e.code in GATEWAY_STATUSES:
+                    last_exc = e
+                    if _ACTIVE_BASE.get("url") == base:
+                        _ACTIVE_BASE["url"] = None
+                    break                       # unreachable origin — try the next base
+                if e.code in HTTP_RETRY_STATUSES and attempt < attempts - 1:
+                    time.sleep(min(2 ** attempt, 8))
+                    continue
+                raise
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+                last_exc = e
+                if attempt < attempts - 1:
+                    time.sleep(min(2 ** attempt, 8))
+                    continue
+                break                           # exhausted this endpoint — fail over
+    _breaker_record_unreachable()
+    raise TransientDBError(f"count({table}) unreachable on all endpoints: {last_exc}")
 
 
 # ── Queue admission control ──────────────────────────────────────────────────────────────────
