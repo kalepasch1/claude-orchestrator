@@ -46,12 +46,13 @@ _ALLOWED_SUFFIXES = (".md",)
 # They are NOT silently exempt: test_the_known_broken_set_is_still_exactly_this
 # fails if the list drifts in either direction, so fixing one forces the list to
 # shrink and a new conflict anywhere else fails the repo-wide check immediately.
-_KNOWN_BROKEN = {
-    "hisanta/__init__.py",
-    "hisanta/contracts/family.py",
-    "hisanta/hisanta/contracts/family.py",
-    "hisanta/hisanta/mastery/engine.py",
-}
+#: EMPTY, and the sibling test below keeps it that way. The four hisanta files
+#: that used to sit here have had their conflict markers resolved — verified
+#: file by file, each still tracked and each now carrying zero markers — so they
+#: come out rather than being left to rot, per the same rule the db-API and
+#: convention inventories follow: a list of known breakage is an inventory of
+#: remaining work, not a tolerance budget.
+_KNOWN_BROKEN = set()
 
 
 def _tracked_text_files():

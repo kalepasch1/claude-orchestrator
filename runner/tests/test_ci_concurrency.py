@@ -57,8 +57,12 @@ class TestConcurrency:
 
 class TestNoBehaviourChange:
     def test_every_job_still_exists(self, workflow):
+        # dependency-manifest was added to ci.yml and never added here, so this
+        # guard — whose whole job is to notice a job appearing or vanishing —
+        # had been failing on the drift it exists to report.
         assert sorted(workflow["jobs"]) == [
-            "darwin-kernel", "runner-guards", "task-reconciliation"]
+            "darwin-kernel", "dependency-manifest", "runner-guards",
+            "task-reconciliation"]
 
     def test_the_triggers_are_unchanged(self, workflow):
         on = workflow.get("on") or workflow.get(True)  # YAML 1.1 parses `on:` as True
