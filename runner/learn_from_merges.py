@@ -49,6 +49,55 @@ _FAILURE_PATTERNS = list(provider_banner.PATTERNS) + [
 
 _BULLET_RX = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S", re.M)
 
+#: A distillation is CIRCULAR when the same phrase carries most of its bullets —
+#: "Use a consistent naming convention for branches", "…for test files",
+#: "…for commits", "…for authors". Every line is shaped like a rule and none of
+#: them says anything: the reader learns that conventions should be consistent.
+#:
+#: This is not hypothetical. CLAUDE.md had accumulated FIVE auto-appended
+#: sections before this check existed, and the newest was exactly that. The file
+#: is the cached context prefix every task pays for, so vacuous guidance is not
+#: merely useless — it is rented space that crowds out the real conventions, and
+#: it teaches agents that this section is safe to skim.
+#:
+#: The threshold is measured, not guessed. Across the five sections already in
+#: CLAUDE.md, the share of bullets containing the single most common three-word
+#: phrase was:
+#:
+#:     section 1 (fleet_config, real mechanisms)   0.25
+#:     section 2 (module-level singletons)         0.12
+#:     section 3 (HIVEMIND_APPS, spacing)          0.25
+#:     section 4 (decision-doc conventions)        0.12
+#:     section 5 ("naming convention for" x6)      0.60   <- the vacuous one
+#:
+#: 0.4 sits in the gap with room on both sides. Sections 1-4 pass unchanged.
+_CIRCULARITY_LIMIT = float(os.environ.get("MERGE_LEARN_CIRCULARITY_LIMIT", "0.4"))
+_WORD_RX = re.compile(r"[a-z]+")
+
+
+def _circularity(text):
+    """Share of bullets carrying the single most common three-word phrase.
+
+    Returns 0.0 when there is too little to judge, so this can only ever reject
+    something that genuinely repeats itself.
+    """
+    lines = [ln.strip(" \t-*•").strip() for ln in (text or "").splitlines()]
+    bullets = [ln for ln in lines if len(ln) > 10]
+    if len(bullets) < 4:
+        return 0.0
+    counts = {}
+    for b in bullets:
+        words = _WORD_RX.findall(b.lower())
+        seen = set()
+        for i in range(len(words) - 2):
+            g = " ".join(words[i:i + 3])
+            if g not in seen:
+                seen.add(g)
+                counts[g] = counts.get(g, 0) + 1
+    if not counts:
+        return 0.0
+    return max(counts.values()) / len(bullets)
+
 
 def quality_gate(text, source=""):
     """Return (accepted: bool, reason: str). Never raises — an error during grading is treated as
@@ -68,6 +117,10 @@ def quality_gate(text, source=""):
     bullets = _BULLET_RX.findall(t)
     if len(bullets) < 2:
         return False, "does not look like a bulleted convention/do-avoid list (fewer than 2 bullet lines)"
+    circ = _circularity(t)
+    if circ > _CIRCULARITY_LIMIT:
+        return False, (f"circular: {circ:.0%} of bullets repeat the same phrase — this restates "
+                       f"that conventions should be consistent without naming one")
     graded = _grade_with_cheap_model(t)
     if graded is False:
         return False, "cheap-model grader said this is not a reusable engineering learning"
