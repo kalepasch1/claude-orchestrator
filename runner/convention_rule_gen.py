@@ -145,6 +145,95 @@ def compile_rule(bullet):
     }
 
 
+# --- Structural rules ---------------------------------------------------------------------
+# Not every convention is a forbidden token. "PascalCase for types/classes/components" appears
+# verbatim in the fleet's CLAUDE.md files, but it states the shape a name must HAVE rather than a
+# string it must not contain, so compile_rule() can only file it as advisory — recorded, never
+# checked. Class naming is worth checking because it is unambiguous, cheap to detect from a
+# declaration line, and the exact "works but wrong-style" reject this module exists to prevent.
+CLASS_NAMING_RULE_ID = "class_names_capwords"
+
+# One capture group per language, anchored at the declaration so a `class` inside a string or a
+# comment about classes is not matched.
+_CLASS_DECL = {
+    "*.py": re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)"),
+    "*.ts": re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:declare\s+)?(?:abstract\s+)?"
+                       r"class\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+}
+_CLASS_DECL["*.tsx"] = _CLASS_DECL["*.ts"]
+_CLASS_DECL["*.js"] = _CLASS_DECL["*.ts"]
+_CLASS_DECL["*.jsx"] = _CLASS_DECL["*.ts"]
+
+_CLASS_NAMING_GLOBS = tuple(_CLASS_DECL)
+
+
+def is_capwords(name):
+    """True when *name* is CapWords/PascalCase: leading capital, no underscores.
+
+    Acronym runs are fine (HTTPServer, PMIClient) — PEP 8 explicitly allows them. A single
+    trailing underscore is tolerated because it is the standard escape for a name that would
+    otherwise collide with a keyword or builtin.
+    """
+    candidate = (name or "").rstrip("_")
+    if not candidate:
+        return False
+    return candidate[0].isupper() and "_" not in candidate
+
+
+def class_naming_rule():
+    """The built-in CapWords class-name rule.
+
+    Ships at severity "warn" like every generated rule: this module's contract is that adding or
+    regenerating a rule can never newly hard-block the merge train. Promotion to "error" stays an
+    explicit human edit of the ruleset's `enforce` list.
+    """
+    return {
+        "id": CLASS_NAMING_RULE_ID,
+        "kind": "naming_convention",
+        "target": "class",
+        "style": "CapWords",
+        "globs": list(_CLASS_NAMING_GLOBS),
+        "severity": "warn",
+        "source": "PascalCase for types/classes/components",
+        "message": "class names must be CapWords/PascalCase",
+    }
+
+
+def _check_naming(repo, rules, enforce):
+    """Apply naming_convention rules. Returns a list of violation dicts."""
+    active = [r for r in rules if r.get("kind") == "naming_convention"
+              and r.get("target") == "class"]
+    if not active:
+        return []
+    globs = sorted({g for r in active for g in r.get("globs", _CLASS_NAMING_GLOBS)})
+    violations = []
+    for path in _iter_source_files(repo, globs):
+        base = os.path.basename(path)
+        pattern = next((rx for g, rx in _CLASS_DECL.items() if fnmatch.fnmatch(base, g)), None)
+        if pattern is None:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except Exception:
+            continue           # unreadable file is skipped, never fatal
+        for rule in active:
+            if not any(fnmatch.fnmatch(base, g) for g in rule.get("globs", _CLASS_NAMING_GLOBS)):
+                continue
+            for i, line in enumerate(lines, start=1):
+                m = pattern.match(line)
+                if m and not is_capwords(m.group(1)):
+                    violations.append({
+                        "file": os.path.relpath(path, repo or "."),
+                        "line": i,
+                        "rule": rule["id"],
+                        "message": f"class `{m.group(1)}` is not CapWords/PascalCase",
+                        "severity": ("error" if rule["id"] in enforce
+                                     else rule.get("severity", "warn")),
+                    })
+    return violations
+
+
 def generate(repo="."):
     """Build the ruleset for a repo from its CLAUDE.md. Always returns a valid ruleset dict."""
     bullets = prohibition_bullets(read_claude_md(repo))
@@ -155,7 +244,12 @@ def generate(repo="."):
             continue
         seen.add(rule["id"])
         rules.append(rule)
-    enforced = [r["id"] for r in rules if r["kind"] == "forbidden_pattern"]
+    # Built-in structural rules are appended after the CLAUDE.md-derived ones so a repo that
+    # spells the same convention out in prose does not lose its own wording.
+    if CLASS_NAMING_RULE_ID not in seen:
+        rules.append(class_naming_rule())
+    enforced = [r["id"] for r in rules
+                if r["kind"] in ("forbidden_pattern", "naming_convention")]
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_from": "CLAUDE.md",
@@ -209,9 +303,11 @@ def check(repo=".", ruleset=None):
     """Apply the enforceable rules to the repo's source. Returns a list of violation dicts."""
     ruleset = ruleset if ruleset is not None else load_ruleset(repo)
     enforce = set(ruleset.get("enforce") or [])
-    rules = [r for r in ruleset.get("rules", []) if r.get("kind") == "forbidden_pattern"]
+    all_rules = ruleset.get("rules", [])
+    naming_violations = _check_naming(repo, all_rules, enforce)
+    rules = [r for r in all_rules if r.get("kind") == "forbidden_pattern"]
     if not rules:
-        return []
+        return naming_violations
     compiled = []
     for r in rules:
         try:
@@ -239,7 +335,7 @@ def check(repo=".", ruleset=None):
                         "message": rule.get("message", ""),
                         "severity": "error" if rule["id"] in enforce else rule.get("severity", "warn"),
                     })
-    return violations
+    return violations + naming_violations
 
 
 def regenerate_for(repo="."):
