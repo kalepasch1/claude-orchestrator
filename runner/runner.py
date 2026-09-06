@@ -1521,6 +1521,14 @@ def run_task(t):
             env = dict(os.environ)
             if acct:
                 env.update(POOL.env_for(acct))
+            # Resolve CLAUDE_BIN to absolute path so subprocess finds it with explicit env
+            # (subprocess.run with env parameter doesn't search PATH the same way)
+            _claude_bin = env.get("CLAUDE_BIN", "claude")
+            if not os.path.sep in _claude_bin:
+                import shutil
+                _resolved = shutil.which(_claude_bin)
+                if _resolved:
+                    env["CLAUDE_BIN"] = _resolved
             # inject this project's external-provider secrets (values never logged)
             try:
                 env.update(secrets_manager.inject_env(name))
