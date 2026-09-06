@@ -101,8 +101,25 @@ SECRET_ASSIGNMENTS = [
 
 #: Values that are obviously not live credentials. Without this the gate cannot tell a real
 #: leak from the documentation of one.
+#:
+#: `<...>` accepts a COMPOSED template, not just a single placeholder. It used to be a lone
+#: `<[^>]*>` between `^` and `$`, which matched `<session_id>` but not
+#: `"<session_id>:<generation>"` -- two placeholders joined by a separator. On 2026-09-06
+#: that read this docstring
+#:
+#:     def fencing_token(session_id, generation) -> str:
+#:         """Deterministic lease fencing token: "<session_id>:<generation>"."""
+#:
+#: as a hardcoded credential in runner/development_session_contract.py:237, and it is the
+#: single failure that blocked a production promotion -- a gate stopping a good push,
+#: which is the failure mode that gets gates switched off.
+#:
+#: The widened form is still tight: it accepts only a value made ENTIRELY of `<...>` groups
+#: and short non-alphanumeric separators between them. A live credential cannot take that
+#: shape, because `<` and `>` are not characters that appear in one. Documenting a format
+#: stays legal; pasting a secret does not.
 PLACEHOLDER_VALUE = re.compile(
-    r"(?i)^(?:x{3,}|\.{3}|-+|<[^>]*>|\$\{[^}]*\}|%s|\{[^}]*\}|"
+    r"(?i)^(?:x{3,}|\.{3}|-+|(?:<[^>]*>[^A-Za-z0-9<>]{0,3})+|\$\{[^}]*\}|%s|\{[^}]*\}|"
     r".*(?:example|placeholder|redacted|dummy|fake|changeme|your[_-]?|sample|"
     r"secret123|password123|none|null|todo|xxx).*)$"
 )
@@ -850,3 +867,56 @@ class TestCanaryImprovement:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))
+
+
+class TestPlaceholderValueRule:
+    """A documented format is not a leaked credential -- and a real one is still caught.
+
+    On 2026-09-06 `PLACEHOLDER_VALUE` matched a lone `<name>` but not a template built from
+    more than one, so this docstring in runner/development_session_contract.py:237
+
+        \"\"\"Deterministic lease fencing token: "<session_id>:<generation>".\"\"\"
+
+    was reported as a hardcoded credential. It was the ONE failure in 3,770 that blocked a
+    production promotion. A gate that stops good pushes is the failure mode that gets gates
+    switched off, so the rule was widened -- but only to values made entirely of `<...>`
+    groups and short separators, a shape no live credential can take.
+
+    The second half of this class is the half that matters: widening a secret detector is
+    only safe if you pin what it must still refuse.
+    """
+
+    TEMPLATES = [
+        "<session_id>:<generation>",
+        "<session_id>",
+        "<a>-<b>",
+        "<host>:<port>/<db>",
+    ]
+
+    #: Must NEVER be treated as placeholders. The last one is the adversarial case: a real
+    #: secret with a placeholder glued to the front must not inherit its exemption.
+    REAL = [
+        "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+        "sk-abcdefghijklmnopqrstuvwxyz012345",
+        "hunter2hunter2hunter2",
+        "<a>REALSECRETVALUE9999",
+    ]
+
+    def test_composed_templates_are_placeholders(self):
+        for value in self.TEMPLATES:
+            assert PLACEHOLDER_VALUE.match(value), f"{value!r} should read as a placeholder"
+
+    def test_real_credentials_are_never_placeholders(self):
+        for value in self.REAL:
+            assert not PLACEHOLDER_VALUE.match(value), \
+                f"{value!r} must NOT be exempted as a placeholder"
+
+    def test_a_documented_format_does_not_trip_the_secret_scan(self):
+        doc = '''def fencing_token(session_id, generation):
+    """Deterministic lease fencing token: "<session_id>:<generation>"."""
+'''
+        assert find_secret_assignments(doc) == []
+
+    def test_an_actual_hardcoded_token_still_trips_it(self):
+        leak = 'token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"\n'
+        assert find_secret_assignments(leak), "a real hardcoded token must still be found"
