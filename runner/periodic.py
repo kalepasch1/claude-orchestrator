@@ -1446,6 +1446,11 @@ def run_compliancehealth():
 
 
 JOBS = {
+    # rtmon and rtconfig were DEFINED but never registered — run_rtconfig's own
+    # docstring claimed "only realtime_approval_monitor (approvals) and
+    # realtime_config_sync (config) are wired", and neither was. A job function
+    # with no JOBS entry and no interval row is dead code that reads as live.
+    "rtmon": run_rtmon,
     "deployterminal": run_deployterminal,
     "shipped": run_shipped,
     "spec": run_spec,
@@ -1588,6 +1593,10 @@ if __name__ == "__main__":
         "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "remotegc",
         "priority_scorer", "quarantine_gc", "markersentinel",
+        # Polling fallback for approvals, and fleet_config sync. Neither spends
+        # tokens, and a paused fleet is exactly when an approval must still be
+        # seen and a config change must still land.
+        "rtmon", "rtconfig",
         "relationshipcrm",
         # Observation must not stop when the fleet pauses: a paused fleet is exactly when
         # an undrained evidence outbox goes unnoticed. None of these spend tokens.
@@ -1664,4 +1673,10 @@ def run_rtconfig():
     """
     import realtime_config_sync
     print(f"rtconfig: {realtime_config_sync.run()}")
+
+
+# Registered here rather than in the JOBS literal above because this function is
+# defined below it. Moving the definition would be a larger diff for no gain; what
+# matters is that the name is in JOBS before anything reads it.
+JOBS["rtconfig"] = run_rtconfig
 

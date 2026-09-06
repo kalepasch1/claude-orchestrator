@@ -3196,6 +3196,11 @@ def cost_ledger_row(project, slug, model, out):
 # job: if ends in .py → python3 runner/<job>; else → python3 periodic.py <job>
 # schedule_type: 'interval' (seconds) | 'daily' (H,M) | 'weekly' (weekday,H,M)
 _SCHEDULE = [
+    # rtmon/rtconfig were in neither table: defined in periodic.py, registered
+    # nowhere, scheduled by nothing. Both are cheap polls and both are
+    # _SAFE_WHEN_PAUSED, so they keep observing while the fleet is paused.
+    ("rtmon-300",     "rtmon",              "interval", 300),
+    ("rtconfig-300",  "rtconfig",           "interval", 300),
     ("txn-300",       "txn",                "interval", 300),
     ("policy-45",     "approval_policy.py", "interval", 45),    # owner policy: auto-approve all but narrow legal
     ("janitor-300",   "queue_janitor.py",   "interval", 300),   # auto-clear blockers: wedged runs, empty diffs, stranded cards, stale locks
