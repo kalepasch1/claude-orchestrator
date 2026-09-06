@@ -123,7 +123,19 @@ class RunDeadlineTests(unittest.TestCase):
         result = preflight_gate.run()
         elapsed = time.monotonic() - t0
 
-        self.assertLess(elapsed, 8, f"run() did not honour its deadline ({elapsed:.1f}s)")
+        # The REAL assertion is the structural one below: run() stopped before it
+        # had processed the batch, which is what honouring a deadline means and
+        # what no amount of machine load can fake.
+        #
+        # The wall-clock bound is a wedge detector, not a performance budget, and
+        # it is derived from the fixture rather than picked: wedging here means
+        # 10 rows x the 5s call timeout = 50s. 30s is comfortably below that and
+        # comfortably above anything a contended box adds to a ~1s deadline. It
+        # used to be 8, which is only 2x the 4s this test's own fake spends
+        # sleeping, so it failed at 8.8s on a machine at load 60 — reporting a
+        # busy CPU as a broken deadline, which is the kind of red that teaches
+        # people to re-run the suite instead of reading it.
+        self.assertLess(elapsed, 30, f"run() appears WEDGED ({elapsed:.1f}s)")
         self.assertLess(len(updates), len(rows),
                         "deadline never fired; the whole batch was processed")
         self.assertIsInstance(result, dict)

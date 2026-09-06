@@ -35,7 +35,7 @@ The matrix uses four states, defined so a row cannot be read optimistically:
 | App id | Repo | Adoption | Evidence | Gap to the contract |
 | --- | --- | --- | --- | --- |
 | `orchestrator` | `beethoven/claude-orchestrator` | **native** | `runner/runner.py` intake hook + `hivemind-v15-300` tick; kernel re-export | none for adoption; carries every defect in slice 1 |
-| `galop` | `galop/racefeed` | **seam** | `lib/v15Adapter.ts` — explicit adapter documenting flags-off parity | no shared state with the runtime; parity is by hand-written mirror, unenforced across repos |
+| `galop` | `galop/racefeed` | **none** | `lib/v15Adapter.ts` was written but NEVER LANDED — it exists only in a `WIP on master` stash and in `racefeed-wt/` worktrees, on no branch of the repo | the seam this row used to claim does not exist in any commit; re-assess if the adapter is ever merged |
 | `hisanta` | `hisanta` (santas-secret-workshop) | **planned** | `DARWIN_KERNEL_ADOPTION.md` describes a `git subtree` vendor of the kernel | kernel adoption is documented, V15 specifically is not wired; plan not executed |
 | `trojun` | `trojun` (and legacy `illuminati`) | **none** | `types/index.ts:165` `hivemind_consensus` is an unrelated field | no adapter, no import; app id exists in `HIVEMIND_APPS` with nothing behind it |
 | `smarter` | `smarter` | **none** | `/api/hivemind/*` routes in `generated/capability-contracts.json` are a different subsystem | same-word collision only |
@@ -47,7 +47,8 @@ The matrix uses four states, defined so a row cannot be read optimistically:
 
 Nine of the ten ids in `HIVEMIND_APPS` therefore have **no** live consumer. This confirms
 and extends slice 1's finding ("No fleet application outside beethoven imports either
-implementation today") with the one exception it did not have: galop's seam adapter.
+implementation today") with the one exception it did not have: galop's seam adapter —
+which, re-checked on 2026-09-05, was never merged. See the galop row.
 
 ## The blocking gap: there is no fleet contract to conform to yet
 

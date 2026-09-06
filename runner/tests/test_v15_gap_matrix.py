@@ -25,7 +25,12 @@ _TS = os.path.join(_REPO, "packages", "darwin-kernel", "src", "hivemindV15", "in
 
 #: Sibling checkouts, and the file each matrix row cites as its evidence.
 _SIBLINGS = {
-    "galop": ("/Users/kpasch/Documents/galop/racefeed", "lib/v15Adapter.ts", "seam"),
+    # galop's evidence is an ABSENCE, and the None marks it as such. The adapter
+    # lib/v15Adapter.ts was written and never landed: it exists in a `WIP on master`
+    # stash and under racefeed-wt/, on no branch of racefeed. The row is `none`, the
+    # doc says why, and test_galop_has_no_landed_seam asserts the absence directly —
+    # so this table must not also demand the file exist.
+    "galop": ("/Users/kpasch/Documents/galop/racefeed", None, "none"),
     "hisanta": ("/Users/kpasch/Documents/hisanta", "DARWIN_KERNEL_ADOPTION.md", "planned"),
     "trojun": ("/Users/kpasch/Documents/trojun", "types/index.ts", "none"),
 }
@@ -110,6 +115,11 @@ class SiblingRepoEvidenceTest(unittest.TestCase):
         for app, (root, evidence, state) in _SIBLINGS.items():
             if not os.path.isdir(root):
                 continue                      # not checked out: no claim to verify
+            if evidence is None:
+                # The row's evidence IS the absence of a file — see the galop entry.
+                # A dedicated test asserts that absence; demanding a path here would
+                # require inventing one.
+                continue
             checked += 1
             path = os.path.join(root, evidence)
             self.assertTrue(os.path.isfile(path),
@@ -118,14 +128,29 @@ class SiblingRepoEvidenceTest(unittest.TestCase):
         if not checked:
             self.skipTest("no sibling repositories present on this machine")
 
-    def test_galop_seam_still_documents_flags_off_parity(self):
+    def test_galop_has_no_landed_seam(self):
+        """The row says `none`, and this is why.
+
+        It used to assert that lib/v15Adapter.ts documents flags-off parity — the
+        evidence for a `seam` row. Re-checked on 2026-09-05, that file is in no
+        commit of racefeed: it exists in a `WIP on master` stash and under
+        racefeed-wt/, and on no branch. The audit's own opening line warns that
+        "an audit written only as prose ages into fiction"; this is that, caught
+        by the test written to catch it.
+
+        Asserting the absence keeps the claim machine-checked in the direction it
+        is now true, so the row cannot quietly go back to claiming a seam without
+        someone landing the adapter first.
+        """
         root = _SIBLINGS["galop"][0]
         if not os.path.isdir(root):
             self.skipTest("galop/racefeed not present")
-        with open(os.path.join(root, "lib", "v15Adapter.ts"), encoding="utf-8") as fh:
-            src = fh.read()
-        self.assertIn("parity", src.lower(),
-                      "the seam row rests on this adapter guaranteeing flags-off parity")
+        self.assertFalse(
+            os.path.isfile(os.path.join(root, "lib", "v15Adapter.ts")),
+            "lib/v15Adapter.ts now EXISTS in racefeed — the adapter landed. Restore "
+            "the galop row to **seam**, re-point _SIBLINGS at it, and assert parity "
+            "again.",
+        )
 
 
 if __name__ == "__main__":
