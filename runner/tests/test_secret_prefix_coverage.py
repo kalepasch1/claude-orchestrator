@@ -12,6 +12,7 @@ documented compliant shapes (env indirection, empty placeholder) must still pass
 a linter that cries wolf gets disabled.
 """
 import ast
+import importlib.util
 import os
 import sys
 
@@ -19,10 +20,27 @@ import pytest
 
 RUNNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(RUNNER, "tools")
-if TOOLS not in sys.path:
-    sys.path.insert(0, TOOLS)
 
-import lint_conventions as lc  # noqa: E402
+# TWO FILES, ONE NAME. There is a lint_conventions.py at tools/ (the ratchet's,
+# which has no _SECRET_VALUE_PREFIXES) and another at runner/tools/ (this one,
+# which owns the secret rule). Whichever is imported FIRST in a session wins the
+# bare name `lint_conventions` for every later importer, so `sys.path.insert`
+# plus a plain import decided nothing: run alone this file passed, and run in the
+# full suite it failed 20 times with
+#
+#     AttributeError: module 'lint_conventions' has no attribute '_SECRET_VALUE_PREFIXES'
+#
+# because a test collected earlier had already bound the name to the ratchet's
+# module. Loading the file we actually mean BY PATH is order-independent, and
+# registering it under a private name means this file neither depends on nor
+# contributes to the collision. Same fix, same reasoning, as
+# runner/tests/test_validation.py and test_canary_gemini_response_parse.py.
+_spec = importlib.util.spec_from_file_location(
+    "_runner_tools_lint_conventions_for_secret_coverage",
+    os.path.join(TOOLS, "lint_conventions.py"))
+lc = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = lc
+_spec.loader.exec_module(lc)
 
 VENDOR_LITERALS = {
     "openai": "sk-proj-abcdefghijklmnopqrstuvwxyz",
