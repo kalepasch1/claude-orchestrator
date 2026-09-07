@@ -568,9 +568,30 @@ def prune():
             continue
         subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
         try:
-            merged = subprocess.check_output(["git", "branch", "--merged", "main"], cwd=repo, text=True)
+            merged = subprocess.check_output(["git", "branch", "--merged", "main"],
+                                             cwd=repo, text=True, timeout=30)
         except Exception:
             merged = ""
+        #: The SAME listing the loop below iterates, as a set. _is_branch_unmerged(b, repo)
+        #: re-ran `git branch --merged main` IN FULL for every branch -- inside a loop fed
+        #: by that exact command's output -- so the work was quadratic in a listing already
+        #: in hand. Measured 2026-09-07: 0.25-1.26s per call per repo; `smarter` has 113
+        #: merged agent branches, which is ~142s inside a job runner.py schedules every 60
+        #: SECONDS and that is in _SAFE_WHEN_PAUSED, i.e. it runs even while the fleet is
+        #: paused.
+        #:
+        #: Re-querying was never a real double-check either. The bug that comment guards
+        #: against was a SUBSTRING match mis-classifying a branch as merged; that was fixed
+        #: by matching names exactly, and running the identical command against the same
+        #: repo microseconds later cannot discover anything the first run missed. Reading
+        #: the snapshot the loop is already walking is also strictly more consistent: the
+        #: iteration and the safety check now come from one observation instead of two that
+        #: can disagree.
+        #:
+        #: _is_branch_unmerged is left in place -- runner/tests/test_safety.py tests it
+        #: directly, and it is the right helper for a caller that does not already hold a
+        #: listing.
+        merged_names = {l.strip().lstrip("* ").strip() for l in merged.splitlines()}
         wt_root = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt")
         for b in [l.strip().lstrip("* ").strip() for l in merged.splitlines()]:
             if b.startswith("agent/"):
@@ -580,8 +601,11 @@ def prune():
                     if _has_uncommitted_changes(wt, repo):
                         freed_notes.append(f"SKIPPED (dirty) {b}")
                         continue
-                    # SAFETY: double-check branch is truly merged
-                    if _is_branch_unmerged(b, repo):
+                    # SAFETY: branch must be merged. Same exact-name test
+                    # _is_branch_unmerged applies, against the listing already fetched
+                    # above; an empty listing (the fetch failed) means the loop never
+                    # runs at all, so the fail-safe direction is unchanged.
+                    if b not in merged_names:
                         freed_notes.append(f"SKIPPED (unmerged) {b}")
                         continue
                     # SAFETY: a branch whose tip == main's tip looks 'merged' but is really a

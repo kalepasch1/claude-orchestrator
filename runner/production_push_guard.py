@@ -272,7 +272,24 @@ def _wait_for_quiet_machine(max_wait=None, per_cpu=None):
 #: Seconds a full suite gets before the gate gives up on it. The old inline default
 #: was 1800, which is SHORTER than this repo's own suite (~2330s for 14,352 tests),
 #: so the gate could not finish the run it exists to perform.
-TEST_GATE_TIMEOUT_DEFAULT = 3600
+#:
+#: 3600 -> 7200 on 2026-09-07, for the same reason one iteration later. The suite is now
+#: 19,007 tests and 3,571s, and the promotion that day finished with FOUR MINUTES to
+#: spare on the 3600s clock. That margin is not a bound, it is a coin toss: this machine
+#: carried load averages between 15 and 95 over the same session.
+#:
+#: The number also has to survive the gate's own success. `npm run test` is
+#: `pytest -x`, so every earlier run stopped at the first failure and took 13-20
+#: minutes; the suite only pays its full cost once it is GREEN, which is exactly the run
+#: that must not be cut off. A bound that fits a red run and not a green one gates
+#: nothing.
+#:
+#: The right long-term answer is a cheaper suite, not a longer clock, and that work is
+#: happening alongside this: three tests costing ~400s together were fixed the same day
+#: (find_stale_branches 80.3s, test_coverage_auditor 199.9s, transient_db_crashloop
+#: 190s). This raise buys the headroom to keep doing that without every promotion racing
+#: its own timer.
+TEST_GATE_TIMEOUT_DEFAULT = 7200
 
 
 def _gate_timeout():

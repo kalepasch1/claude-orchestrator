@@ -300,17 +300,48 @@ def _merged_branch_evidence(repo, branch):
     """
     if not repo or not os.path.isdir(repo) or not branch:
         return None
+    # HOISTED: the upstream refs do not depend on `candidate`, and they are expensive.
+    #
+    # This call sat inside the candidate loop below, so it ran once per candidate, per
+    # task, for the whole sweep. It resolves to _upstream_refs(repo), which spawns EIGHT
+    # `git rev-parse` processes and is memoized nowhere: measured 2026-09-07 at 465ms a
+    # call, i.e. 930ms per task spent recomputing an answer that cannot vary between the
+    # two candidates for the same repo.
+    #
+    # Measured on one real branch, this function cost 5,825ms for a SINGLE task. The
+    # sweeper is scheduled by runner.py every 90 SECONDS and pages its task list to
+    # exhaustion, so a job that overruns its own interval is not a tail risk -- it is the
+    # steady state. ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S defaulting to 7200 on a
+    # 90-second job is the scar tissue from precisely this.
+    #
+    # LAZY, not merely hoisted -- measured, because the first version of this fix was
+    # wrong. Computing it eagerly here made the MISSING-branch case worse: a slug whose
+    # branch resolves to nothing went from 2 git spawns to 10, paying for upstream refs
+    # it never consults. That case is not rare; it is the entire reason this function
+    # exists, since the sweeper's whole missing-branch path runs on branches that are
+    # gone. Counting spawns rather than timing it is what exposed that -- wall clock on
+    # this box is dominated by load.
+    #
+    # Deferring to first use gets both: an unresolvable branch pays nothing, and a
+    # resolvable one computes the refs once instead of once per candidate.
+    #
+    #   agent/approval-digest-batching   26 -> 18 spawns   (the 8 rev-parses of one
+    #                                                       redundant _upstream_refs)
+    #   a branch that does not exist      2 ->  2 spawns   (unchanged)
+    targets = None
     for candidate in (branch, f"refs/remotes/origin/{branch}"):
         rev = subprocess.run(["git", "rev-parse", "--verify", "--quiet", candidate],
-                             cwd=repo, capture_output=True, text=True)
+                             cwd=repo, capture_output=True, text=True, timeout=30)
         if rev.returncode != 0:
             continue
         sha = (rev.stdout or "").strip()
         if not sha:
             continue
-        for ref in _integration_targets(repo):
+        if targets is None:
+            targets = _integration_targets(repo)
+        for ref in targets:
             merged = subprocess.run(["git", "merge-base", "--is-ancestor", sha, ref],
-                                    cwd=repo, capture_output=True)
+                                    cwd=repo, capture_output=True, timeout=30)
             if merged.returncode == 0:
                 return sha, ref
     return None
@@ -806,7 +837,14 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         # upstream ref, the whole branch is upstream.
         # Resolve once against every legitimate branch-name form for this slug (see the
         # TRUNCATION FIX block above) so an over-80-char slug is not mistaken for lost work.
-        _agent_branch = _resolve_agent_branch(repo, slug) or f"agent/{slug}"
+        # Resolved ONCE and reused below. _agent_branch_exists(repo, slug) is literally
+        # `_resolve_agent_branch(repo, slug) is not None`, and the branch-gone check further
+        # down called it again for the same repo and slug -- re-spawning the same git
+        # lookups to re-derive a value already in hand. Keeping the raw result (rather than
+        # only the `or f"agent/{slug}"` fallback) is what lets that check read it, because
+        # the fallback cannot distinguish "resolved" from "not found".
+        _resolved_branch = _resolve_agent_branch(repo, slug)
+        _agent_branch = _resolved_branch or f"agent/{slug}"
 
         _merged = _merged_branch_evidence(repo, _agent_branch)
         if _merged:
@@ -823,7 +861,7 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
             skipped += 1
             continue
 
-        if not _agent_branch_exists(repo, slug):
+        if _resolved_branch is None:
             # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
             # kills the phantom missing_branch recount + endless recovery churn on merged work.
             evidence = _integration_evidence(repo, slug)
