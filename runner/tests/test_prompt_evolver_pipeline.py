@@ -24,6 +24,25 @@ def runner_module():
     `import runner` is ambiguous now that runner/ is also a package: under
     full-suite collection it resolves to runner/__init__.py, while an isolated
     invocation may resolve to runner/runner.py.
+
+    THE ENVIRONMENT MUST BE PUT BACK, AND THIS FIXTURE IS WHY.
+
+    runner.py is an ENTRY POINT: line 65 assigns CLAUDE_ORCH_HOME unconditionally,
+    because a process it owns should land in the canonical .runtime. Executing its
+    module body here runs that assignment inside the pytest process.
+
+    A function-scoped fixture would be harmless -- conftest's
+    _restore_environment_after_test snapshots os.environ at test start and restores it
+    at test end. This fixture is MODULE-scoped, and pytest sets higher-scoped fixtures
+    up FIRST. So the pin landed before that snapshot was taken, the snapshot recorded
+    the polluted value as the baseline, and every test for the rest of the session
+    inherited CLAUDE_ORCH_HOME = <repo>/.runtime.
+
+    That is the exact thing test_runtime_dir_is_sandboxed.py exists to prevent -- 94
+    modules resolve their state and log paths from that variable, so the whole suite
+    was one fixture away from writing into the operator's live logs again. Measured
+    2026-09-07: this file plus test_runtime_dir_is_sandboxed.py reproduces both of its
+    failures in 2.14s; with the save/restore below, 11 passed.
     """
     module_name = "runner_entrypoint_prompt_evolver_pipeline"
     runner_path = os.path.join(
@@ -31,7 +50,14 @@ def runner_module():
     spec = importlib.util.spec_from_file_location(module_name, runner_path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    saved_home = os.environ.get("CLAUDE_ORCH_HOME")
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if saved_home is None:
+            os.environ.pop("CLAUDE_ORCH_HOME", None)
+        else:
+            os.environ["CLAUDE_ORCH_HOME"] = saved_home
     yield module
     sys.modules.pop(module_name, None)
 

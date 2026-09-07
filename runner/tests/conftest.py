@@ -36,6 +36,11 @@ _GATE_KILL_SWITCHES = (
 )
 
 
+#: The session sandbox path, so the per-test env fixture can re-assert it. Set by the
+#: session fixture below; empty until then, which is the only window nothing can protect.
+_SESSION_SANDBOX = {}
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _tests_never_write_to_the_live_runtime_dir(tmp_path_factory):
     """Point every runtime writer at a temp dir for the whole session.
@@ -57,6 +62,7 @@ def _tests_never_write_to_the_live_runtime_dir(tmp_path_factory):
     sandbox = tmp_path_factory.mktemp("orch-runtime")
     os.environ["CLAUDE_ORCH_HOME"] = str(sandbox)
     os.environ.setdefault("ORCH_SCOREBOARD_DIR", str(sandbox))
+    _SESSION_SANDBOX["home"] = str(sandbox)
     yield sandbox
 
 
@@ -168,6 +174,26 @@ def _runner_stays_a_package():
 @pytest.fixture(autouse=True)
 def _restore_environment_after_test():
     """A test's routing/config overrides must never affect later tests."""
+    # RE-ASSERT THE SANDBOX BEFORE SNAPSHOTTING, NOT AFTER.
+    #
+    # This fixture makes os.environ at test start the value restored at test end, so
+    # whatever it snapshots becomes the baseline for the rest of the session. Anything
+    # that pins CLAUDE_ORCH_HOME in a WIDER-scoped fixture runs BEFORE this one --
+    # pytest sets higher scopes up first -- so the pin was already in place when the
+    # snapshot was taken, and the snapshot made it permanent.
+    #
+    # That is not hypothetical: runner.py:65 assigns CLAUDE_ORCH_HOME unconditionally
+    # (correctly -- it is an entry point), and test_prompt_evolver_pipeline.py execs it
+    # from a MODULE-scoped fixture. From that module onward the whole session ran with
+    # CLAUDE_ORCH_HOME = <repo>/.runtime, which is exactly what
+    # test_runtime_dir_is_sandboxed.py exists to catch, and it caught it.
+    #
+    # Re-asserting here costs one dict write per test and makes the whole class
+    # impossible: no matter who pins the variable, or from which fixture scope, every
+    # test starts inside the sandbox. A test that deliberately changes it for itself
+    # still works -- that happens after this snapshot and is restored at test end.
+    if _SESSION_SANDBOX.get("home"):
+        os.environ["CLAUDE_ORCH_HOME"] = _SESSION_SANDBOX["home"]
     before = dict(os.environ)
     _real_provider_terms.DEFAULTS.clear()
     _real_provider_terms.DEFAULTS.update(
