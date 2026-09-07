@@ -110,8 +110,8 @@ class TestTheRealGate(unittest.TestCase):
             [sys.executable, os.path.join(REPO, "tools", "lint_conventions.py"), *args],
             capture_output=True, text=True, cwd=REPO, timeout=900)
 
-    def _export_head(self, tmp):
-        """Extract the committed content of the linted dirs into `tmp`; return targets.
+    def _export_head(self, export_dir):
+        """Extract the committed content of the linted dirs into `export_dir`; return targets.
 
         Every assertion in this class is about what the COMMITTED baseline describes, so
         every one of them has to look at committed content. Linting the live checkout
@@ -124,14 +124,14 @@ class TestTheRealGate(unittest.TestCase):
         The CLI still runs with cwd=REPO so it reads the committed baseline file; only
         the TARGETS move.
         """
-        tar_path = os.path.join(tmp, "head.tar")
+        tar_path = os.path.join(export_dir, "head.tar")
         subprocess.run(["git", "archive", "-o", tar_path, "HEAD",
                         "runner", "tools", "scripts"],
                        cwd=REPO, check=True, capture_output=True, timeout=300)
-        subprocess.run(["tar", "-xf", tar_path, "-C", tmp],
+        subprocess.run(["tar", "-xf", tar_path, "-C", export_dir],
                        check=True, capture_output=True, timeout=300)
-        targets = [os.path.join(tmp, d) for d in ("runner", "tools", "scripts")
-                   if os.path.isdir(os.path.join(tmp, d))]
+        targets = [os.path.join(export_dir, d) for d in ("runner", "tools", "scripts")
+                   if os.path.isdir(os.path.join(export_dir, d))]
         self.assertTrue(targets, "git archive produced none of the linted directories")
         return targets
 
@@ -154,8 +154,8 @@ class TestTheRealGate(unittest.TestCase):
         working tree -- that is the gate's real job, and this export is only about which
         tree this particular assertion is entitled to make a claim about.
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            result = self._run(*self._export_head(tmp))
+        with tempfile.TemporaryDirectory() as export_dir:
+            result = self._run(*self._export_head(export_dir))
         self.assertEqual(result.returncode, 0,
                          f"the gate must be green on the tree it was baselined against:\n"
                          f"{result.stderr[-2000:]}")
@@ -165,9 +165,9 @@ class TestTheRealGate(unittest.TestCase):
 
         A fresh silent swallow in a new file pushes FAIL_SOFT_ERROR above its baseline.
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            targets = self._export_head(tmp)
-            with open(os.path.join(tmp, "runner", "_ratchet_probe_tmp.py"),
+        with tempfile.TemporaryDirectory() as export_dir:
+            targets = self._export_head(export_dir)
+            with open(os.path.join(export_dir, "runner", "_ratchet_probe_tmp.py"),
                       "w", encoding="utf-8") as fh:
                 fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
             result = self._run(*targets)
@@ -178,9 +178,9 @@ class TestTheRealGate(unittest.TestCase):
     def test_failure_output_names_only_the_offending_rule(self):
         # A dump of every grandfathered violation buries the handful of lines the
         # author must actually fix.
-        with tempfile.TemporaryDirectory() as tmp:
-            targets = self._export_head(tmp)
-            with open(os.path.join(tmp, "runner", "_ratchet_probe_tmp2.py"),
+        with tempfile.TemporaryDirectory() as export_dir:
+            targets = self._export_head(export_dir)
+            with open(os.path.join(export_dir, "runner", "_ratchet_probe_tmp2.py"),
                       "w", encoding="utf-8") as fh:
                 fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
             result = self._run(*targets)

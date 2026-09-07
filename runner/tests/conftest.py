@@ -419,8 +419,33 @@ def _is_real_runner_module(module):
 
 
 def _remember_real_modules():
+    """Learn real runner modules as they are imported -- but never a SYNTHETIC name.
+
+    A name can otherwise end up in BOTH registries, and then _restore_real_modules
+    installs it from _REAL_MODULES and pops it again as synthetic two lines later,
+    leaving _REAL_MODULES advertising a key that is not in sys.modules.
+
+    The path is not hypothetical. test_sched_no_duplicate_jobs.py does
+
+        sys.modules["_runner_module_under_test"] = <runner/runner.py loaded by path>
+
+    at module scope. `_runner_module_under_test` is test-only -- there is no
+    runner/_runner_module_under_test.py -- so _derive_module_lists correctly puts it in
+    _SYNTHETIC_ONLY_MODULES. But the OBJECT it aliases really is runner/runner.py, so
+    _is_real_runner_module says yes and this function promoted the alias to "real".
+    pytest executes every module body during COLLECTION, so that happens before the run
+    phase regardless of alphabetical order.
+
+    The result was test_conftest_module_isolation.py:94 KeyError
+    '_runner_module_under_test' -- the restore helper accused of not reinstalling a
+    module that the same call had just been told to delete. Reproduced 2026-09-07 with
+    those two files alone in 11.7s; green with this guard.
+
+    A file-backed object is not evidence about the NAME: an alias is exactly the case
+    where the two disagree, and the derivation already decided which names are aliases.
+    """
     for name, module in list(sys.modules.items()):
-        if "." in name or name in _REAL_MODULES:
+        if "." in name or name in _REAL_MODULES or name in _SYNTHETIC_ONLY_MODULES:
             continue
         if _is_real_runner_module(module):
             _REAL_MODULES[name] = module
