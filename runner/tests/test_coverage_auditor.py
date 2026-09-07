@@ -45,6 +45,12 @@ def _tiny_repo(tmp_path):
 
 import contextlib  # noqa: E402
 
+#: The tiny fixture tree defines exactly these two public functions, one covered by a
+#: test and one not -- which is what makes the assertions in test_audit_coverage exact.
+_TINY_REPO_PUBLIC_FUNCS = 2
+_NO_COVERAGE = 0
+_FULL_COVERAGE_PCT = 100
+
 
 @contextlib.contextmanager
 def _clean_tmp_repo():
@@ -93,9 +99,11 @@ def test_audit_coverage():
     assert "coverage_pct" in result
     assert result["total"] >= 0
     # Stronger than the old version, and only possible because the tree is known:
-    # one public function is called by a test and one is not.
-    assert result["total"] == 2, result
-    assert 0 < result["coverage_pct"] < 100, result
+    # one public function is called by a test and one is not. Named constants because
+    # tools/lint_conventions.py counts a bare literal as MAGIC_NUMBERS and the ratchet
+    # is a count -- a fix that raises the baseline is not a fix.
+    assert result["total"] == _TINY_REPO_PUBLIC_FUNCS, result
+    assert _NO_COVERAGE < result["coverage_pct"] < _FULL_COVERAGE_PCT, result
 
 def test_audit_nonexistent():
     result = audit_coverage("/nonexistent/path")
