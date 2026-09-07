@@ -11,9 +11,29 @@ than a duplicate row.
 import json
 import os
 import tempfile
+import sys
 import unittest
 
-import publish_recovery_ledger as p
+# MOVED HERE FROM tools/ ON 2026-09-07, AND THAT IS WHY THIS PATH BLOCK EXISTS.
+#
+# runner/write_guard.py refuses a test file written outside runner/tests, tests or
+# runner, and runner/tests/test_write_guard_tree_clean.py asserts no COMMITTED test
+# file would be refused. Four were -- this one among them -- so that assertion failed
+# on the committed tree and blocked a production promotion.
+#
+# Moving rather than grandfathering also fixes a second, quieter problem: pytest.ini
+# sets `testpaths = runner`, so nothing under tools/ was ever collected. These tests
+# passed when run by hand and ran nowhere otherwise. They are live coverage now.
+#
+# The module under test still lives in tools/, so tools/ has to be importable from
+# here; pytest used to supply that implicitly by inserting the test file's own
+# directory.
+_TOOLS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+import publish_recovery_ledger as p  # noqa: E402
 
 
 class Args:

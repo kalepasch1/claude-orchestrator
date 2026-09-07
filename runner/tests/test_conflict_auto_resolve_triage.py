@@ -22,14 +22,40 @@ RUNNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if RUNNER not in sys.path:
     sys.path.insert(0, RUNNER)
 
-if "db" not in sys.modules:  # pragma: no cover - depends on test ordering
-    _stub = types.ModuleType("db")
-    _stub.select = lambda *a, **k: []
-    _stub.update = lambda *a, **k: None
-    _stub.insert = lambda *a, **k: None
-    sys.modules["db"] = _stub
+from env_during_import import import_with_stubs  # noqa: E402
 
-import conflict_auto_resolve as car  # noqa: E402
+# THE STUB IS SCOPED TO THIS IMPORT, NOT INSTALLED IN THE PROCESS.
+#
+# This used to be:
+#
+#     if "db" not in sys.modules:  # pragma: no cover - depends on test ordering
+#         sys.modules["db"] = _stub
+#
+# conflict_auto_resolve does `import db` at module scope and binds what it gets, so
+# the stub genuinely has to exist BEFORE it is imported. Assigning sys.modules["db"]
+# at file scope achieves that -- and then leaks. pytest imports every test module
+# during COLLECTION, so from that moment the whole process sees a `db` whose select()
+# returns [] and whose update()/insert() do nothing, and nothing puts the real one
+# back. The `if not in sys.modules` guard does not contain it; it only makes WHICH
+# runs are poisoned depend on collection order, which is why the failures moved.
+#
+# Measured 2026-09-07: this one file was the entire cause of 5 failures in 3 other
+# files -- test_conftest_module_isolation (KeyError '_runner_module_under_test'),
+# test_ploeh_s2s_pricing_main x2 ("module 'requests' has no attribute 'exceptions'"),
+# and test_runtime_dir_is_sandboxed x2 -- every one of which PASSES on its own. It
+# also tripped the repo's own detector, test_sys_modules_shadowing, whose message
+# names this file. Seven failures, one line.
+#
+# env_during_import.import_with_stubs is the fix the detector's own message points at,
+# and its docstring records the previous occurrence: test_emit_task_log.py did the
+# same thing and caused 20 failures across two other files that went green with no
+# change of their own.
+_db_stub = types.ModuleType("db")
+_db_stub.select = lambda *a, **k: []
+_db_stub.update = lambda *a, **k: None
+_db_stub.insert = lambda *a, **k: None
+
+car = import_with_stubs("conflict_auto_resolve", db=_db_stub)
 
 
 def _info(*files):

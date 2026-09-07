@@ -307,6 +307,50 @@ def _reset_tdd_gate_cache():
 _RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _real_installed_module(name):
+    """The real, INSTALLED module behind `name`, or None if the name is test-only.
+
+    "No runner/<name>.py" did not mean "test-only", and treating it that way evicted a
+    real library. `requests` is faked by one test file (only when it is genuinely not
+    installed), so it lands in the derived name list; it has no runner/requests.py, so
+    it was classified SYNTHETIC, and _restore_real_modules() pops every synthetic name
+    unconditionally. Every collectstart therefore DELETED the real, installed `requests`
+    from sys.modules.
+
+    That is worse than it sounds, because `requests` is a PACKAGE. Popping it while
+    leaving `requests.exceptions` in sys.modules means the next `import requests` builds
+    a fresh module object and then SKIPS the already-cached submodule import that would
+    have set the `.exceptions` attribute on it. The caller gets a `requests` that is real
+    but missing its submodule attributes.
+
+    Measured 2026-09-07: that is exactly the shape of
+        test_ploeh_s2s_pricing_main.py:126  AttributeError: module 'requests' has no
+                                            attribute 'exceptions'
+    which passed in isolation (45 passed) and failed in the suite, for two tests.
+
+    Only a module whose spec points at a real file OUTSIDE this tests directory counts:
+    a module living among the tests is a fixture, and is genuinely test-only.
+    """
+    import importlib
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, AttributeError, ValueError):
+        # ValueError is what find_spec raises for a name already in sys.modules whose
+        # __spec__ is None -- i.e. a bare ModuleType fake. Fake means not installed.
+        return None
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not origin or not os.path.isfile(origin):
+        return None
+    if os.path.abspath(origin).startswith(os.path.dirname(os.path.abspath(__file__))):
+        return None
+    try:
+        return importlib.import_module(name)
+    except Exception:
+        return None
+
+
 def _derive_module_lists():
     r"""Build _REAL_MODULES and _SYNTHETIC_ONLY_MODULES from test inspection.
 
@@ -351,7 +395,11 @@ def _derive_module_lists():
             except Exception:
                 synthetic_set.add(name)
         else:
-            synthetic_set.add(name)
+            real = _real_installed_module(name)
+            if real is not None:
+                real_dict[name] = real
+            else:
+                synthetic_set.add(name)
 
     return real_dict, synthetic_set
 
@@ -428,7 +476,23 @@ def _restore_real_modules():
     sys.modules.update(_REAL_MODULES)
     _evict_stub_shadows()
     for name in _SYNTHETIC_ONLY_MODULES:
-        sys.modules.pop(name, None)
+        if sys.modules.pop(name, None) is None:
+            continue
+        # DROP THE SUBMODULES WITH THE PACKAGE, ALWAYS.
+        #
+        # Popping a package but keeping `pkg.sub` in sys.modules is not a smaller
+        # version of removing it -- it is a broken state. The next `import pkg` creates
+        # a fresh module object, and the cached `pkg.sub` entry makes the import system
+        # SKIP the submodule import that would have bound `pkg.sub` as an attribute on
+        # it, so callers get a package missing its own submodules.
+        #
+        # _real_installed_module now keeps real libraries out of this set, so nothing
+        # here should be a real package any more. This stays because the cost is one
+        # prefix scan and the failure it prevents presents as an AttributeError in a
+        # completely unrelated test file, which is expensive to trace back.
+        prefix = name + "."
+        for cached in [m for m in sys.modules if m.startswith(prefix)]:
+            sys.modules.pop(cached, None)
 
 
 #: The repository root, which must stay AHEAD of runner/ on sys.path.

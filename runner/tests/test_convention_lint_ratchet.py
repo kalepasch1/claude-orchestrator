@@ -110,8 +110,52 @@ class TestTheRealGate(unittest.TestCase):
             [sys.executable, os.path.join(REPO, "tools", "lint_conventions.py"), *args],
             capture_output=True, text=True, cwd=REPO, timeout=900)
 
+    def _export_head(self, tmp):
+        """Extract the committed content of the linted dirs into `tmp`; return targets.
+
+        Every assertion in this class is about what the COMMITTED baseline describes, so
+        every one of them has to look at committed content. Linting the live checkout
+        instead made all three depend on whatever else was in the working directory --
+        and on this machine that is other agents' in-flight files. Measured 2026-09-07:
+        two staged-but-uncommitted scratch files (+32 MAGIC_NUMBERS, +2 FAIL_SOFT_ERROR)
+        turned this class red inside production_push_guard's suite and blocked a
+        production promotion, while the committed tree was exactly on baseline.
+
+        The CLI still runs with cwd=REPO so it reads the committed baseline file; only
+        the TARGETS move.
+        """
+        tar_path = os.path.join(tmp, "head.tar")
+        subprocess.run(["git", "archive", "-o", tar_path, "HEAD",
+                        "runner", "tools", "scripts"],
+                       cwd=REPO, check=True, capture_output=True, timeout=300)
+        subprocess.run(["tar", "-xf", tar_path, "-C", tmp],
+                       check=True, capture_output=True, timeout=300)
+        targets = [os.path.join(tmp, d) for d in ("runner", "tools", "scripts")
+                   if os.path.isdir(os.path.join(tmp, d))]
+        self.assertTrue(targets, "git archive produced none of the linted directories")
+        return targets
+
     def test_the_committed_tree_passes(self):
-        result = self._run("runner", "tools", "scripts")
+        """Lint an export of HEAD -- not whatever happens to be lying in the checkout.
+
+        The name always said "committed tree"; the implementation linted the WORKING
+        tree, and the difference is not academic on a machine where several agents write
+        at once. Measured 2026-09-07: another agent had two scratch test files staged but
+        not committed, worth +32 MAGIC_NUMBERS and +2 FAIL_SOFT_ERROR, and this assertion
+        went red -- inside production_push_guard's suite, which blocks the promotion. The
+        committed tree had not regressed at all: a clean worktree at 7aeae1ff reproduced
+        the baseline exactly (3146 / 3503 / 893). Someone else's uncommitted work was
+        blocking a production push, and the baseline it was measured against could not
+        have accounted for it, because the file is not in the repo.
+
+        `git archive HEAD` is the whole fix: it is exactly the content the committed
+        baseline describes. The two probe tests below deliberately drop an UNTRACKED file
+        into the checkout and require the gate to catch it, so they keep linting the
+        working tree -- that is the gate's real job, and this export is only about which
+        tree this particular assertion is entitled to make a claim about.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(*self._export_head(tmp))
         self.assertEqual(result.returncode, 0,
                          f"the gate must be green on the tree it was baselined against:\n"
                          f"{result.stderr[-2000:]}")
@@ -121,11 +165,12 @@ class TestTheRealGate(unittest.TestCase):
 
         A fresh silent swallow in a new file pushes FAIL_SOFT_ERROR above its baseline.
         """
-        path = os.path.join(REPO, "runner", "_ratchet_probe_tmp.py")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
-        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
-        result = self._run("runner", "tools", "scripts")
+        with tempfile.TemporaryDirectory() as tmp:
+            targets = self._export_head(tmp)
+            with open(os.path.join(tmp, "runner", "_ratchet_probe_tmp.py"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
+            result = self._run(*targets)
         self.assertEqual(result.returncode, 1, "a NEW violation must fail the gate")
         self.assertIn("FAIL_SOFT_ERROR", result.stderr)
         self.assertIn("rose to", result.stderr)
@@ -133,11 +178,12 @@ class TestTheRealGate(unittest.TestCase):
     def test_failure_output_names_only_the_offending_rule(self):
         # A dump of every grandfathered violation buries the handful of lines the
         # author must actually fix.
-        path = os.path.join(REPO, "runner", "_ratchet_probe_tmp2.py")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
-        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
-        result = self._run("runner", "tools", "scripts")
+        with tempfile.TemporaryDirectory() as tmp:
+            targets = self._export_head(tmp)
+            with open(os.path.join(tmp, "runner", "_ratchet_probe_tmp2.py"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
+            result = self._run(*targets)
         printed = [ln for ln in result.stdout.splitlines() if ": " in ln]
         self.assertTrue(printed)
         self.assertTrue(all("FAIL_SOFT_ERROR" in ln for ln in printed),

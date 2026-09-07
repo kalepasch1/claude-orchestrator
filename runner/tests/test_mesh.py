@@ -12,8 +12,16 @@ import pytest
 
 # '2080' is not a valid Python identifier — same sys.path convention as
 # pareto/2080/contracts/test_contracts_smoke.py and household_legal.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "contracts"))
+# MOVED HERE FROM pareto/2080/mesh/ ON 2026-09-07 -- see the block in
+# runner/tests/test_publish_recovery_ledger.py for why. These two inserts used to be
+# relative to THIS file because it sat beside the modules it imports; it no longer
+# does, so they are anchored at the repo root instead. '2080' is not a valid Python
+# identifier, which is why these are sys.path inserts rather than package imports.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_MESH_DIR = os.path.join(_REPO_ROOT, "pareto", "2080", "mesh")
+_CONTRACTS_DIR = os.path.join(_REPO_ROOT, "pareto", "2080", "contracts")
+sys.path.insert(0, _MESH_DIR)
+sys.path.insert(0, _CONTRACTS_DIR)
 
 import autonomy  # noqa: E402
 import child_lanes as cl  # noqa: E402
