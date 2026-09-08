@@ -310,16 +310,28 @@ class TestRepoRootCanaryEntryPoint(unittest.TestCase):
 
 
 class TestGateBudget(unittest.TestCase):
-    """The four anti-loss gates are the fleet's overwrite protection AND were where every train
+    """The anti-loss gates are the fleet's overwrite protection AND were where every train
     pass was dying: zero merges in 24h while the watchdog fired 56 times at the 900s cap, every
-    dump inside _verify_merge. One slow branch consumed the whole cycle."""
+    dump inside _verify_merge. One slow branch consumed the whole cycle.
+
+    THIS LIST MUST NAME EVERY GATE _verify_merge RUNS. These tests ask what happens when the
+    gates are clean, and the only way to hold them clean is to stub each one; a gate missing
+    from the list below runs for real against the fake repo "/tmp" at the fake sha "abc",
+    fails closed on a git error, and the "clean gates" test fails for a reason that has
+    nothing to do with what it is testing.
+
+    That is not hypothetical -- it is exactly what happened on 2026-09-07 when _shape_verdict
+    was added as a fifth gate and this list still named four. The failure read as "clean gates
+    do not permit the merge", which would have been alarming and was simply a stale roster.
+    """
 
     def setUp(self):
         os.environ["ORCH_MERGE_GATE_TIMEOUT_S"] = "2"
         import auto_conflict_resolver
         self.acr = auto_conflict_resolver
         self._saved = {n: getattr(auto_conflict_resolver, n) for n in
-                       ("_regression_check", "_divergent_check", "_stub_check", "_discard_check")}
+                       ("_regression_check", "_divergent_check", "_stub_check", "_discard_check",
+                        "_shape_verdict")}
         for n in self._saved:
             setattr(auto_conflict_resolver, n, lambda *a, **k: "")
 

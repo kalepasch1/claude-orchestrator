@@ -36,10 +36,44 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # RELEASE_TRAIN_PAT, FALLING BACK TO GITHUB_TOKEN, AND THE FALLBACK IS THE POINT.
+      #
+      # The token here is the one release_train_sync.sh pushes with, and which token that
+      # is decides whether the promotion is ever verified.
+      #
+      # GITHUB_TOKEN pushes do not trigger workflows -- GitHub's recursion guard. ci.yml
+      # runs `on: push: branches: [master]`, so a promote made with GITHUB_TOKEN moves
+      # master and fires nothing: the tests never run against the commit that just became
+      # production. ci.yml's own header already records this ("master could change with no
+      # CI run to show for it") and offers workflow_dispatch as the manual escape hatch,
+      # which only helps someone who thinks to press it.
+      #
+      # Found on 2026-09-07 while tracing how a commit reached master: a push to
+      # orchestrator/dev fast-forwarded master 27 seconds later with no test run of any
+      # kind. production_push_guard did not cover it either -- that is a local pre-push
+      # hook, so it only sees a direct push to master from someone's checkout, and the
+      # routine path does not go through it. The promotion path had no automated gate at
+      # either end.
+      #
+      # A PAT is an ordinary user credential, so its pushes DO trigger workflows: with
+      # RELEASE_TRAIN_PAT set, every promote starts a ci.yml run against the new master.
+      #
+      # Be clear about what this buys. It is DETECTION, not prevention: the code is on
+      # master before CI starts, and a red run tells you production is broken rather than
+      # stopping it from breaking. Prevention means gating the promote step on the suite
+      # (`needs:` a job that runs it), which costs a full suite per promotion and blocks
+      # the fleet's dev pushes when they are red. This is the cheaper half, chosen
+      # deliberately.
+      #
+      # The `||` fallback keeps the train running when the secret does not exist. Without
+      # it, adding this line would break every promotion until someone created the secret
+      # -- and a release train that fails closed on a missing credential is a worse
+      # outage than the gap it was added to close. Until RELEASE_TRAIN_PAT is created in
+      # the repository's secrets, behaviour is exactly as before.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_TRAIN_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Configure git
         run: |
