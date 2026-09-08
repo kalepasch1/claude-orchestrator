@@ -276,6 +276,22 @@ def _agent_procs():
 #: argument for killing by pattern, so it names tools, not the word "node".
 _BUILD_TOOL_MARKERS = (
     "nuxt build", "nuxt dev", "nuxt.mjs build", "nuxt.mjs dev", "bin/nuxt",
+    # NUXI IS NUXT'S CLI BINARY, AND ITS ABSENCE HERE COST FIVE AND A HALF DAYS.
+    #
+    # Nuxt 3 ships its command line as `nuxi`, so a gate that runs `nuxi prepare`
+    # produces `node .../node_modules/.bin/nuxi prepare` -- which matches "bin/nuxt"
+    # nowhere, because the binary is not called nuxt. Audited 2026-09-08: this machine
+    # was carrying 30 build processes the medic could not see, the oldest at 131.8
+    # hours, EVERY one of them started by the orchestrator itself under
+    # .orch-scratch/release-qa-overlay-*. Seventeen were `nuxi prepare`.
+    "bin/nuxi", "nuxi prepare", "nuxi build", "nuxi dev",
+    # `prepare` for the nuxt spelling too. The list covered build and dev and stopped
+    # there, but prepare is a gate step like any other and hangs like any other.
+    "nuxt prepare",
+    # esbuild's persistent service. It is spawned as a long-lived child of a bundler
+    # and exits when its parent does -- so when the parent is an unreapable orphan, the
+    # service outlives it too. Six of the thirty were these, at up to 130.2 hours.
+    "esbuild --service", "bin/esbuild",
     "vite build", "vite dev", "next build", "next dev",
     "vitest", "jest", "playwright test", "cypress run",
     "npm run build", "npm run dev", "npm run test", "npm run lint", "npm test",
@@ -326,6 +342,7 @@ def _orphaned_build_procs():
         if ppid != "1":
             continue                      # still has a parent that can use the result
         low = cmd.lower()
+
         if any(m in low for m in _NEVER_REAP_MARKERS):
             continue
         if not any(m in low for m in _BUILD_TOOL_MARKERS):
