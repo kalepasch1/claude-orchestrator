@@ -234,6 +234,17 @@ def _try_take(path):
 _BUILD_COMMANDS = (
     "npm run build", "pnpm run build", "pnpm build", "yarn build", "yarn run build",
     "npm run build:", "nuxt build", "nuxi build", "next build", "vite build",
+    # A TYPECHECK IS A BUILD, FOR THE ONLY REASON THIS LIST EXISTS: MEMORY.
+    #
+    # Audited across all 16 rows of the projects table on 2026-09-08. Two projects run a
+    # typecheck AS their test command -- apparently-archived `npm run typecheck`,
+    # illuminati-archived `npx nuxi typecheck` -- and neither took a slot, because the
+    # list only knew about bundlers. These are not cheap: apparently-archived's own
+    # build_cmd carries NODE_OPTIONS=--max-old-space-size=7168, so its toolchain is
+    # documented as needing 7 GB, and a live `tsc --noEmit` on this host was measured at
+    # 5.25 GB resident, the second-largest consumer on the machine.
+    "tsc --noemit", "tsc -p ", "run typecheck", "nuxi typecheck", "nuxt typecheck",
+    "vue-tsc",
 )
 
 
@@ -250,6 +261,21 @@ def command_builds(command):
     builds were observed against a limit of two, minutes after that project was
     unpaused. The limiter bounded the build GATES; nothing bounded a suite that is a
     build wearing a suite's name.
+
+    WHAT THIS CAN AND CANNOT SEE, stated plainly so nobody trusts it too far.
+
+    It matches the command STRING, so it catches a suite whose command IS a build or a
+    typecheck. It cannot catch a suite whose command is `npm test` and whose package
+    script happens to shell out to tsc -- and that case is real: the 5.25 GB `tsc
+    --noEmit` measured on this host on 2026-09-08 was running under `tomorrow`, whose
+    test_cmd is plain `npm test`. No string matcher will ever classify that.
+
+    It does not need to. max_concurrent() gates on FREE MEMORY, not on a count of
+    slot-holders, so a heavy process that never took a slot still depresses free memory
+    and still narrows the ceiling for everyone else. That is the whole reason the limit
+    was moved off a constant: an unslotted 5 GB typecheck is invisible to a counter and
+    unmissable to a measurement. Adding markers here tightens the accounting; it is not
+    what makes the cap safe.
     """
     text = (command or "").lower()
     return any(marker in text for marker in _BUILD_COMMANDS)
