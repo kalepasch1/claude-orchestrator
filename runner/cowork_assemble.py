@@ -325,6 +325,29 @@ def main():
     result["preopt_available"] = preopt_available
     result["context_pack_summary"] = context_pack_summary
 
+    # 8. Merged-diff memory enrichment — append prior merge learnings to prompt.
+    # scan_project returns parsed memos with 'rules' lists; format top-5 most
+    # recent rules as a block and append. Fail-soft on all errors.
+    try:
+        from merged_diff_scan import scan_project
+        memos = scan_project(args.project_id)
+        all_rules = []
+        for memo in memos:
+            for rule in memo.get("rules", []):
+                if rule and rule not in all_rules:
+                    all_rules.append(rule)
+                    if len(all_rules) >= 5:
+                        break
+            if len(all_rules) >= 5:
+                break
+        if all_rules:
+            block = "\n\n## Prior merge learnings\n" + "\n".join(f"- {r}" for r in all_rules)
+            result["enriched_prompt"] = result["enriched_prompt"] + block
+            layers_used.append("merged_diff_memory")
+            result["layers_used"] = layers_used
+    except Exception as e:
+        _log.debug("merged-diff scan enrichment skipped: %s", e)
+
     elapsed = time.monotonic() - t0
     _log.info("assembly complete in %.2fs, layers=%s model=%s", elapsed, layers_used, model)
 
