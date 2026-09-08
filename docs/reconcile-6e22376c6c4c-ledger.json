@@ -1,0 +1,79 @@
+{
+  "audit_fingerprint": "6e22376c6c4c7adc62b0061f6655e45e571beb00950ffd5f25613540acc48253",
+  "task_slug": "chatgpt-local-reconcile-beethoven-6e22376c6c4c",
+  "generated_at": "2026-09-08T21:15:39.235040Z",
+  "summary": {
+    "rescue_refs": {
+      "ALREADY_PRESENT": 270,
+      "SUPERSEDED_BY_NEWER": 16,
+      "ACTIVE_IN_ANOTHER_TASK": 15,
+      "RECOVERABLE_VALUE": 339
+    },
+    "local_branch_tips": {
+      "ACTIVE_IN_ANOTHER_TASK": 279,
+      "ALREADY_PRESENT": 521,
+      "RECOVERABLE_VALUE": 53
+    },
+    "stashes": {
+      "SUPERSEDED_BY_NEWER": 11,
+      "ACTIVE_IN_ANOTHER_TASK": 2,
+      "RECOVERABLE_VALUE": 0
+    },
+    "bridge_artifacts": "6 ALREADY_PRESENT",
+    "codex_artifacts": "1 ALREADY_PRESENT, 2 SUPERSEDED worktrees",
+    "other": "1 SUPERSEDED (Trojun misclone)"
+  },
+  "additional_evidence": [
+    {
+      "source": "bridge PR #20 (queue-bridge-20260811)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Applied via bridge, branch on origin"
+    },
+    {
+      "source": "bridge PR #21 (intake-receipt-safety-20260811)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Applied via bridge, branch on origin"
+    },
+    {
+      "source": "bridge PR #23 (operator-output-truth-session-fabric-20260812)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Applied via bridge, branch on origin"
+    },
+    {
+      "source": "bridge PR #25 (promotion-and-funnel-fixes-20260817)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Applied via bridge, branch on origin"
+    },
+    {
+      "source": "bridge PR #27 (promotion-funnel-and-prod-urls-20260817)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Applied via bridge, branch on origin"
+    },
+    {
+      "source": "bridge PR #29 (promotion-funnel-prod-urls-and-review-fixes)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Applied via bridge, branch on origin"
+    },
+    {
+      "source": "Codex output artifact (operator-output-truth)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Same sha256 as bridge PR #23"
+    },
+    {
+      "source": "Codex worktree orchestrator-visibility-remediation",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Dirty worktree from 2026-08-06; content shipped via bridge PR #23"
+    },
+    {
+      "source": "Codex worktree orchestrator-session-fabric-current",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Dirty worktree from 2026-08-07; content shipped via bridge PR #23"
+    },
+    {
+      "source": "Trojun misclone worktree (3 changes on master)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Stale misclone from 2026-08-09; prompt files already consumed by intake"
+    }
+  ],
+  "conclusion": "All evidence classified. Rescue refs: 640 total. Local branch tips: 853 total. Stashes: 13 total. Bridge artifacts: 6 (all ALREADY_PRESENT). Codex: 1 output (ALREADY_PRESENT) + 2 worktrees (SUPERSEDED). Trojun misclone: SUPERSEDED. Zero UNKNOWN items."
+}
