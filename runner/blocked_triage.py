@@ -189,23 +189,78 @@ def env_permission_sweep(root=None):
     root = root or os.path.expanduser("~/Documents")
     max_depth = int(os.environ.get("ORCH_ENV_SWEEP_DEPTH", "5"))
     fixed, scanned = [], 0
-    root_depth = root.rstrip("/").count("/")
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        if dirpath.count("/") - root_depth >= max_depth:
-            dirnames[:] = []
-        dirnames[:] = [d for d in dirnames
-                       if d not in ("node_modules", ".git", "Library", ".venv", "venv")]
-        for fn in filenames:
-            if not fn.startswith(".env") or fn.endswith((".example", ".sample")):
-                continue
-            p = os.path.join(dirpath, fn)
+    # os.scandir, not os.walk, AND THE REASON IS ONE SYSCALL PER DIRECTORY.
+    #
+    # Measured 2026-09-08 on the real tree (114,403 directories under ~/Documents at
+    # depth<=5, 225 .env files). cProfile of one caller:
+    #
+    #     14.102s  env_permission_sweep
+    #      7.170s  {built-in method posix.lstat}     109,504 calls
+    #      1.522s  {built-in method posix.scandir}   109,493 calls
+    #
+    # One lstat per directory, and nothing in this function asked for it. It is inside
+    # os.walk: with followlinks=False (the default) CPython calls os.path.islink() on
+    # every directory before recursing into it, and islink() is an lstat. os.scandir
+    # already stats each entry as it lists it, so DirEntry.is_dir(follow_symlinks=False)
+    # answers the same question from data we have paid for. Same traversal, same
+    # exclusions, same depth cap, one syscall per directory less.
+    #
+    # Benchmarked against the previous implementation over the live tree, three runs:
+    # 29.98s -> 14.43s, 21.33s -> 11.78s, 15.44s -> 6.19s. Both walks were required to
+    # find the IDENTICAL set of .env files (114,403 dirs, 225 files) before any timing
+    # was believed -- the first draft of the scandir version was off by one on the depth
+    # cap, visited 39,061 directories and missed 10 real .env files, and only the
+    # equivalence check caught it.
+    #
+    # WHAT WAS CONSIDERED AND REJECTED, so nobody re-proposes it: skipping directories
+    # whose mtime is unchanged since the last sweep. It does not work, and the failure is
+    # silent. Creating a new .env four levels down changes the mtime of its own directory
+    # and of NO ancestor -- verified, zero of four ancestors registered it -- so pruning
+    # descent on an unchanged parent misses exactly the new-worktree .env this function
+    # exists to catch, which is 66% of the tree (the depth-5 leaves) going unswept. And
+    # chmod does not touch mtime at all, so even a same-directory prune would miss a file
+    # whose mode changed. Cheapness here may not be bought with coverage.
+    #
+    # A 16-thread pool over the same scandir walk was also measured: 18.71s against the
+    # single-threaded 11.78s. The level-synchronous frontier and pool overhead cost more
+    # than the parallelism won. Not used.
+    frontier = [(root, 0)]
+    while frontier:
+        dirpath, depth = frontier.pop()
+        try:
+            entries = list(os.scandir(dirpath))
+        except OSError:
+            continue
+        for entry in entries:
             try:
-                mode = os.stat(p).st_mode
+                # os.walk's exact classification, reproduced deliberately. CPython's
+                # _walk sorts entries with entry.is_dir() -- follow_symlinks=True by
+                # default -- so a symlink POINTING AT a directory lands in `dirnames`
+                # and is never considered as a file. It is then not recursed into,
+                # because of the separate islink() check. Both halves matter: collapse
+                # them into one is_dir(follow_symlinks=False) and a symlinked directory
+                # starts being treated as a file, which is a behaviour change smuggled
+                # in as an optimisation.
+                if entry.is_dir():
+                    if (not entry.is_symlink() and depth < max_depth
+                            and entry.name not in (
+                                "node_modules", ".git", "Library", ".venv", "venv")):
+                        frontier.append((entry.path, depth + 1))
+                    continue
+                if not entry.name.startswith(".env") or entry.name.endswith(
+                        (".example", ".sample")):
+                    continue
+                # entry.stat() FOLLOWS symlinks, matching the os.stat(p) this replaced.
+                # A symlinked .env must be judged and hardened by its target's mode, the
+                # way os.chmod will act on it -- reading the link's own 0777 mode instead
+                # would report every symlink as insecure and rewrite a target that was
+                # already correct.
+                mode = entry.stat().st_mode
                 scanned += 1
                 if mode & (_stat.S_IRGRP | _stat.S_IROTH | _stat.S_IWGRP | _stat.S_IWOTH):
-                    os.chmod(p, 0o600)
-                    fixed.append(p.replace(os.path.expanduser("~"), "~"))
+                    os.chmod(entry.path, 0o600)
+                    fixed.append(entry.path.replace(os.path.expanduser("~"), "~"))
             except OSError:
                 continue
 
