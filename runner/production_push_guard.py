@@ -18,6 +18,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -327,6 +328,91 @@ class _SuiteTimedOut:
         self.stderr = ""
 
 
+#: How often the load watch samples while a suite runs. The suite takes tens of minutes;
+#: a sample every 15s is ~150-300 points over a run, which is plenty to characterise it
+#: and costs nothing measurable.
+LOAD_SAMPLE_INTERVAL_S = float(os.environ.get("ORCH_LOAD_SAMPLE_INTERVAL_S", "15"))
+#: A run is called "loaded" when this share of its samples sat above the quiet threshold.
+LOAD_SUSPECT_SHARE = float(os.environ.get("ORCH_LOAD_SUSPECT_SHARE", "0.25"))
+
+
+class _LoadWatch:
+    """Samples the 1-minute load average for the life of a suite run.
+
+    WHY A VERDICT NEEDS THIS. _wait_for_quiet_machine checks the load ONCE, before the
+    run starts, and this repo's suite then runs for tens of minutes. A box that is quiet
+    at t=0 and saturated at t=20min produces a red result that describes the machine, and
+    nothing in the output says so.
+
+    That is not hypothetical. Measured 2026-09-08: a full-suite run reported 5 failures
+    and 4,565 seconds. Re-run on a quiet box, four of those five passed, and the timings
+    were not close -- test_exact_match_still_passes went from 601.38s to 0.33s, a factor
+    of 1,800; test_python39_compat from 114.11s to 1.56s; test_vendor_portfolio_inclusion
+    from 126.07s to under 0.26s. The suite's own header already records the pattern from
+    an earlier day: "Every green full-suite run that day was at load ~8; every red one at
+    16-26."
+
+    This does not decide anything. It attaches what the machine was doing to the verdict,
+    so a red run under sustained load is reported as what it is instead of being read as
+    a statement about the code.
+    """
+
+    def __init__(self, threshold):
+        self.threshold = threshold
+        self.samples = []
+        self._stop = threading.Event()
+        self._thread = None
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._sample, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=LOAD_SAMPLE_INTERVAL_S)
+        return False
+
+    def _sample(self):
+        while not self._stop.is_set():
+            try:
+                self.samples.append(os.getloadavg()[0])
+            except (OSError, AttributeError):
+                return          # not available here; a watch that cannot see is silent
+            self._stop.wait(LOAD_SAMPLE_INTERVAL_S)
+
+    @property
+    def loaded_share(self):
+        if not self.samples:
+            return 0.0
+        return sum(1 for load in self.samples if load > self.threshold) / len(self.samples)
+
+    @property
+    def suspect(self):
+        """True when enough of the run happened above the quiet threshold to matter."""
+        return bool(self.samples) and self.loaded_share >= LOAD_SUSPECT_SHARE
+
+    def summary(self):
+        """One line for the verdict, or empty when nothing was observed."""
+        if not self.samples:
+            return ""
+        peak = max(self.samples)
+        mean = sum(self.samples) / len(self.samples)
+        return (f"machine load during this run: mean {mean:.1f}, peak {peak:.1f}, "
+                f"{self.loaded_share * 100:.0f}% of {len(self.samples)} samples above the "
+                f"quiet threshold of {self.threshold:.1f}")
+
+
+def _load_watch():
+    """A _LoadWatch bound to the same threshold the cool-down waits for."""
+    try:
+        per_cpu = _quiet_setting("ORCH_QUIET_LOAD_PER_CPU", QUIET_LOAD_PER_CPU, float)
+        return _LoadWatch((os.cpu_count() or 1) * per_cpu)
+    except Exception:
+        return _LoadWatch(float("inf"))   # a watch must never be what breaks a push
+
+
 def _run_suite(repo, command):
     """Run COMMAND in REPO. Returns a CompletedProcess, or _SuiteTimedOut.
 
@@ -565,7 +651,24 @@ def verify_tests(repo, commit):
         )
 
     print(f"production_push_guard: no test proof for {commit[:12]} — running `{command}`", file=sys.stderr)
-    proc = _run_suite(repo, command)
+
+    # WAIT BEFORE THE FIRST RUN TOO, NOT ONLY BEFORE THE RE-RUN.
+    #
+    # This cool-down existed on the re-run alone, and the comment on the red-run branch
+    # below states the reason it was also needed here without acting on it: "This gate
+    # runs inside a pre-push hook, on whatever the machine happens to be doing at that
+    # moment." The re-run was the compensator -- but the compensator costs a SECOND full
+    # suite, which on this repo is tens of minutes, to recover from a first run that
+    # should not have started.
+    #
+    # The wait is bounded at 180s and is off under pytest, so the worst case is three
+    # minutes against a re-run that costs an order of magnitude more. Measured 2026-09-08:
+    # a loaded full-suite run took 4,565s and reported 5 failures, 4 of which passed on a
+    # quiet box -- that is a wasted 76 minutes plus a wasted re-run, to reach a wrong
+    # answer, for want of a three-minute wait.
+    _wait_for_quiet_machine()
+    with _load_watch() as first_watch:
+        proc = _run_suite(repo, command)
 
     # A TIMEOUT IS NOT A RED RUN, AND IT IS NOT RE-RUN.
     #
@@ -599,11 +702,16 @@ def verify_tests(repo, commit):
     # So a red run is re-run once. Flake does not survive a second attempt; a real
     # failure does. Both runs are reported, and a push allowed on the strength of a
     # second attempt says so rather than printing an unqualified GREEN.
+    second_watch = None
     if proc.returncode != 0:
         print("production_push_guard: suite red — re-running once to separate flake from failure",
               file=sys.stderr)
+        if first_watch.suspect:
+            print(f"production_push_guard: {first_watch.summary()} — a red result here may "
+                  "describe the machine rather than the code", file=sys.stderr)
         _wait_for_quiet_machine()
-        second = _run_suite(repo, command)
+        with _load_watch() as second_watch:
+            second = _run_suite(repo, command)
         if second.returncode is None:
             return False, _timed_out_verdict(command, second.seconds)
         # Same rule on the re-run: an ordinary red first attempt can be followed by a
@@ -653,10 +761,24 @@ def verify_tests(repo, commit):
     if passed:
         return True, f"full suite green for {commit[:12]}"
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-40:]
+    # What the machine was doing is part of the finding, not a footnote. A red run that
+    # spent most of its life above the quiet threshold has told you less than it appears
+    # to, and the operator reading this at 3am is the person who needs to know that
+    # before they start bisecting code that may be fine.
+    load_lines = [watch.summary() for watch in (first_watch, second_watch)
+                  if watch is not None and watch.summary()]
+    load_note = ""
+    if load_lines:
+        load_note = "\n\n" + "\n".join(load_lines)
+        if first_watch.suspect or (second_watch is not None and second_watch.suspect):
+            load_note += ("\nBoth attempts ran on a loaded machine. Measured on this repo: "
+                          "the same tests took 601.38s loaded and 0.33s quiet, and four of "
+                          "five 'failures' from a loaded run passed on a quiet one. Re-run "
+                          "on an idle box before treating this as a statement about the code.")
     return False, (
         f"FULL SUITE RED for {commit[:12]} using `{command}`, twice.\n"
         "A green build only proves the tree compiles. These tests say it does not work.\n\n"
-        + "\n".join(tail)
+        + "\n".join(tail) + load_note
     )
 
 
