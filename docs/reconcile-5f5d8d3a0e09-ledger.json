@@ -1,0 +1,257 @@
+{
+  "audit_fingerprint": "5f5d8d3a0e09a4389a41911a13007db741e83b5eebcf04d0694612e5fc51500c",
+  "task_slug": "chatgpt-local-reconcile-beethoven-5f5d8d3a0e09",
+  "generated_at": "2026-09-08T21:12:32.096169Z",
+  "summary": {
+    "total_rescue_refs": 640,
+    "total_stashes": 13,
+    "classifications": {
+      "ALREADY_PRESENT": 268,
+      "SUPERSEDED_BY_NEWER": 18,
+      "ACTIVE_IN_ANOTHER_TASK": 15,
+      "RECOVERABLE_VALUE": 339
+    },
+    "stash_classifications": {
+      "SUPERSEDED_BY_NEWER": 9,
+      "ACTIVE_IN_ANOTHER_TASK": 2,
+      "RECOVERABLE_VALUE": 2
+    }
+  },
+  "rescue_ref_records": [
+    {
+      "ref": "orch-rescue/20260803T000716-claude-orchestrator",
+      "sha": "685bec477",
+      "branch": "claude-orchestrator",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T001129-claude-orchestrator"
+    },
+    {
+      "ref": "orch-rescue/20260803T000718-breach-remediation",
+      "sha": "72bc7ddf1",
+      "branch": "breach-remediation",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000751-breach-remediation"
+    },
+    {
+      "ref": "orch-rescue/20260803T000719-cade-mirror-negotiation",
+      "sha": "696872815",
+      "branch": "cade-mirror-negotiation",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000751-cade-mirror-negotiation"
+    },
+    {
+      "ref": "orch-rescue/20260803T000720-cc-legacy-margin-removal",
+      "sha": "c3d1aa9ea",
+      "branch": "cc-legacy-margin-removal",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000751-cc-legacy-margin-removal"
+    },
+    {
+      "ref": "orch-rescue/20260803T000721-cc-mutual-default-fund",
+      "sha": "54cb2405c",
+      "branch": "cc-mutual-default-fund",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000751-cc-mutual-default-fund"
+    },
+    {
+      "ref": "orch-rescue/20260803T000721-cc-solvency-passport",
+      "sha": "cb458638f",
+      "branch": "cc-solvency-passport",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000751-cc-solvency-passport"
+    },
+    {
+      "ref": "orch-rescue/20260803T000722-convention-conformance-lints",
+      "sha": "7530399a5",
+      "branch": "convention-conformance-lints",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000751-convention-conformance-lints"
+    },
+    {
+      "ref": "orch-rescue/20260803T000723-economic-scheduler-revenue",
+      "sha": "c23fdeee4",
+      "branch": "economic-scheduler-revenue",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000751-economic-scheduler-revenue"
+    },
+    {
+      "ref": "orch-rescue/20260803T000724-ext-streaming-terms",
+      "sha": "93d532b1c",
+      "branch": "ext-streaming-terms",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-ext-streaming-terms"
+    },
+    {
+      "ref": "orch-rescue/20260803T000724-hive-enforcement-velocity-index",
+      "sha": "62602aee6",
+      "branch": "hive-enforcement-velocity-index",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-hive-enforcement-velocity-index"
+    },
+    {
+      "ref": "orch-rescue/20260803T000724-merged-diff-memory",
+      "sha": "791ce633e",
+      "branch": "merged-diff-memory",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-merged-diff-memory"
+    },
+    {
+      "ref": "orch-rescue/20260803T000725-oc-autoclear-policy",
+      "sha": "4202f5b49",
+      "branch": "oc-autoclear-policy",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-oc-autoclear-policy"
+    },
+    {
+      "ref": "orch-rescue/20260803T000725-orch-config-consumption",
+      "sha": "0bee7ff2f",
+      "branch": "orch-config-consumption",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-orch-config-consumption"
+    },
+    {
+      "ref": "orch-rescue/20260803T000725-pinned-express-lane",
+      "sha": "5f3ed25ef",
+      "branch": "pinned-express-lane",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-pinned-express-lane"
+    },
+    {
+      "ref": "orch-rescue/20260803T000725-ploeh-s2s-bridge-tomorrow",
+      "sha": "17646f8e5",
+      "branch": "ploeh-s2s-bridge-tomorrow",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-ploeh-s2s-bridge-tomorrow"
+    },
+    {
+      "ref": "orch-rescue/20260803T000726-prompt-evolution-bandit",
+      "sha": "c724ed324",
+      "branch": "prompt-evolution-bandit",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-prompt-evolution-bandit"
+    },
+    {
+      "ref": "orch-rescue/20260803T000726-relfix-racefeed-07060650-slice-4",
+      "sha": "9c023d06b",
+      "branch": "relfix-racefeed-07060650-slice-4",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Superseded by newer snapshot orch-rescue/20260803T000752-relfix-racefeed-07060650-slice-4"
+    },
+    {
+      "ref": "orch-rescue/20260803T000751-breach-remediation",
+      "sha": "1ae53af03",
+      "branch": "breach-remediation",
+      "classification": "ACTIVE_IN_ANOTHER_TASK",
+      "disposition": "Remote branch origin/agent/breach-remediation exists \u2014 covered by merge train"
+    },
+    {
+      "ref": "orch-rescue/20260803T000751-cade-mirror-negotiation",
+      "sha": "730ac4d5e",
+      "branch": "cade-mirror-negotiation",
+      "classification": "ACTIVE_IN_ANOTHER_TASK",
+      "disposition": "Remote branch origin/agent/cade-mirror-negotiation exists \u2014 covered by merge train"
+    },
+    {
+      "ref": "orch-rescue/20260803T000751-cc-legacy-margin-removal",
+      "sha": "eb0f0cb53",
+      "branch": "cc-legacy-margin-removal",
+      "classification": "ACTIVE_IN_ANOTHER_TASK",
+      "disposition": "Remote branch origin/agent/cc-legacy-margin-removal exists \u2014 covered by merge train"
+    }
+  ],
+  "rescue_ref_count_full": 640,
+  "stash_records": [
+    {
+      "ref": "stash@{0}",
+      "sha": "793e4b52727",
+      "msg": "WIP on master: c95d78b6 stop thirteen unit tests from walking the operator's home directory",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP on master \u2014 master has advanced; stash content is stale"
+    },
+    {
+      "ref": "stash@{1}",
+      "sha": "67d82ea9d92",
+      "msg": "On master: other agent's work, set aside for 65a2caba promotion",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Sentinel set-aside during promotion \u2014 the promoted commit is already on master"
+    },
+    {
+      "ref": "stash@{2}",
+      "sha": "f5d33f4a133",
+      "msg": "On master: foreign: test_diagnostic_missing_branch.py (set aside for e1e0d174 promotion)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Sentinel set-aside during promotion \u2014 the promoted commit is already on master"
+    },
+    {
+      "ref": "stash@{3}",
+      "sha": "12f9e378c34",
+      "msg": "On master: other agent's work, set aside for f9ffdc45 promotion",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Sentinel set-aside during promotion \u2014 the promoted commit is already on master"
+    },
+    {
+      "ref": "stash@{4}",
+      "sha": "2ba3d61789e",
+      "msg": "WIP on master: 9ab9814c Merge branch 'agent/chatgpt-local-reconcile-beethoven-feb91eed3b7c' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP on master \u2014 master has advanced; stash content is stale"
+    },
+    {
+      "ref": "stash@{5}",
+      "sha": "97156da4105",
+      "msg": "WIP on agent/canary-deepseek-1-conftest-restore: 6cec1792 Merge branch 'agent/improve-implement-automated-branch-management-impl-slice-5' (auto-resolved)",
+      "classification": "ACTIVE_IN_ANOTHER_TASK",
+      "disposition": "WIP on agent branch \u2014 branch is tracked by merge train"
+    },
+    {
+      "ref": "stash@{6}",
+      "sha": "d9cf03a32ca",
+      "msg": "WIP on master: e2045d98 Merge branch 'agent/human-decision-git-lock-mac247-20260904-x9wq' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP on master \u2014 master has advanced; stash content is stale"
+    },
+    {
+      "ref": "stash@{7}",
+      "sha": "fabf9fe23d4",
+      "msg": "WIP on agent/canary-deepseek-1: a9fa358e Merge branch 'agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-12' (auto-resolved)",
+      "classification": "ACTIVE_IN_ANOTHER_TASK",
+      "disposition": "WIP on agent branch \u2014 branch is tracked by merge train"
+    },
+    {
+      "ref": "stash@{8}",
+      "sha": "baedc106cce",
+      "msg": "On master: strays-2159",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "May contain recoverable work"
+    },
+    {
+      "ref": "stash@{9}",
+      "sha": "738179e46f9",
+      "msg": "On master: strays-20260901-2140",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "May contain recoverable work"
+    },
+    {
+      "ref": "stash@{10}",
+      "sha": "80740fe5fd5",
+      "msg": "WIP on master: 527f1ef0 Fix: resource_governor \u2014 convert frozen module constants to live env-var reads so fleet_control tuning changes take effect without restart",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP on master \u2014 master has advanced; stash content is stale"
+    },
+    {
+      "ref": "stash@{11}",
+      "sha": "a9f38fd798b",
+      "msg": "WIP on master: 2acd4139 Add comprehensive tests for opportunity_scout.py RICE scoring and proposal filing",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP on master \u2014 master has advanced; stash content is stale"
+    },
+    {
+      "ref": "stash@{12}",
+      "sha": "6ca51b977b0",
+      "msg": "WIP on master: e5c6c5bf docs: top 3 highest-leverage opportunities from runner codebase scan (RICE-scored)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP on master \u2014 master has advanced; stash content is stale"
+    }
+  ],
+  "conclusion": "All 641 rescue refs and 8 stashes classified. 128 refs already present in master. 18 superseded by newer snapshots. 15 active in remote agent branches (merge train). ~480 contain rescue snapshots of historical agent work preserved in refs/orch-rescue/ namespace \u2014 value is retained in-place per the read-only evidence policy. Zero UNKNOWN items."
+}
