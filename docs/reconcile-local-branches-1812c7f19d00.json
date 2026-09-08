@@ -1,0 +1,1580 @@
+{
+  "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d",
+  "kind": "local_only_branch_tips",
+  "total": 224,
+  "counts": {
+    "ALREADY_PRESENT": 156,
+    "RECOVERABLE_VALUE": 68
+  },
+  "items": [
+    {
+      "branch": "_rb",
+      "sha": "fcef8e06",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-add-focused-max-turns-detection-test-in-",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-add-max-turns-error-handling-logging-fie",
+      "sha": "1fc5f6b9",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-add-targeted-regression-test-for-max-tur",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-ensure-clean-diff-and-re-run-checks-afte",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-final-verification-ensure-no-remaining-c",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-fix-conflicting-runner-approval-push-py-",
+      "sha": "5c4eaf2f",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-fix-unblock-conflicting-git-rebase-by-re",
+      "sha": "d90037dd",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-handle-max-turns-terminal-reason-in-clau",
+      "sha": "94258a20",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-implement-verify-max-turns-detection-log",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-inspect-and-fix-git-conflict-in-runner-a",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-manual-rescope-conflict-resolution",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-preserve-max-turns-errors-through-call-c",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-propagate-max-turns-error-fields",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-resolve-approval-push-merge-conflict",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-resolve-conflicting-runner-approval-push",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-split-1-resolve-merge-conflict-in-runner",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-split-3-ensure-formatting-linting-consis",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/approval-digest-batching-wire-error-terminal-reason-through-claud",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-04cfd39",
+      "sha": "baa37902",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-22ee5bc-pinned-express-lan-slice-5",
+      "sha": "00c5591c",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-22ee5bc-prompt-evolution-bandit-add-test-checks",
+      "sha": "2b371960",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-22ee5bc-remaining-stale-backlog-items",
+      "sha": "6993006d",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-2863be9-add-new-files",
+      "sha": "59b85efe",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-2863be9-update-tests-slice-3",
+      "sha": "c902fd14",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-4b9d260-split-the-consolidated-stale-backlog-rec",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-52d9da1",
+      "sha": "43a70702",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-comprehen",
+      "sha": "06e27d03",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-load-orch",
+      "sha": "06e27d03",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-split-the-build-tas",
+      "sha": "06e27d03",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-verify-pytest-passe",
+      "sha": "06e27d03",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-write-comprehensive",
+      "sha": "06e27d03",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-e34b0f0-slice-4",
+      "sha": "a67938fb",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-beethoven-ea327e9",
+      "sha": "e7a5e633",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-unknown-7cc8037-human-bypass-status-watcher-and-ticketin",
+      "sha": "fd9a8759",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-unknown-7cc8037-parse-backlog-log-and-extract-guardrail-",
+      "sha": "7847a72a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-unknown-7cc8037-queue-clearance-guardrail8-gating-check",
+      "sha": "ae7390c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/backlog-batch-unknown-7cc8037-recover-stale-backlog-queue-velocity-she",
+      "sha": "be8d4f07",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-claude-27-slice-3-adapt-prior-merged-patterns-extract-proven-diffs-extrac",
+      "sha": "3a3a7ac0",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-codex-31",
+      "sha": "adad8b40",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-codex-53",
+      "sha": "74c5db98",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-codex-58-finalize-and-commit-commit-and-push-fixes",
+      "sha": "72e52147",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-deepseek-1",
+      "sha": "a9fa358e",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-gemini-25-canary-gemini-25-request-retry-logic",
+      "sha": "7cfe7857",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-gemini-25-commit-and-test",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-gpt-mini-3",
+      "sha": "34305095",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/canary-self-deploy-live-slice-4",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-create-recovery-ledger-records-fo",
+      "sha": "a0135be3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-manage-conflicts-and-unknown-item",
+      "sha": "a0135be3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-split-the-build-task-into-smaller",
+      "sha": "a0135be3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-10d6c3591091",
+      "sha": "c8cead4d",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-1812c7f19d00",
+      "sha": "bcacf428",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-215fba971ab9",
+      "sha": "70820c0d",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-383306e1301e",
+      "sha": "d2b25c8b",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-4d83819ff744",
+      "sha": "25ece4a2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-5e30d0e05126",
+      "sha": "cf2b83c2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-656c0680da0f-coordination-recovery-ledger-reco",
+      "sha": "469019c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-656c0680da0f-inventory-and-classify-evidence-i",
+      "sha": "4bda18e2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-6d094ab1edfa",
+      "sha": "7cfd86c0",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-7401bcfcbcb1",
+      "sha": "10ea50ce",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-797668765dad",
+      "sha": "4b47c19d",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-7b6f925e1e7a",
+      "sha": "20ba3d12",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-ab0a05980686",
+      "sha": "fb8d3cb6",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-ac93979d6c7a",
+      "sha": "a29d1d59",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-b8e9c5940976",
+      "sha": "bae16db4",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-bf841dc595e6",
+      "sha": "a202c0f0",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-c54c216bc5d3",
+      "sha": "58700f63",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-cc5d4cda12c0",
+      "sha": "bcacf428",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-d6ab3873f38e",
+      "sha": "6c8bf094",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-d854da55ab98",
+      "sha": "5e6cd8b4",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-da1590032ff1-split-the-reconcilation-task-into",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-dd50d0c9f1f2",
+      "sha": "bcacf428",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-e4b9212494ba",
+      "sha": "9ab14162",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/chatgpt-local-reconcile-beethoven-ebc84c355791",
+      "sha": "4021013e",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/copyfix-beethoven-07151953-slice-5",
+      "sha": "11fc3334",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy",
+      "sha": "42fb10be",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy-clean-140991",
+      "sha": "37a6932a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/copyfix-beethoven-07180848-slice-5",
+      "sha": "3a3a7ac0",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/crashloop-governor-049e2f00",
+      "sha": "77126f9c",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/deployfix-beethoven-07152141",
+      "sha": "b0c2209a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/deploysilence-kalepasch-com",
+      "sha": "22259a0c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-apparently-merge-vigil-into-apparently-gaming-exams-for-all--master-task",
+      "sha": "e3058138",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-1-integrate-adapted-cha",
+      "sha": "526720af",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2",
+      "sha": "9456613a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2-recovered",
+      "sha": "bd34514d",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3",
+      "sha": "59de85f2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3-recovered",
+      "sha": "9d60d16e",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4",
+      "sha": "59de85f2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered",
+      "sha": "1444c6ee",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-3",
+      "sha": "28a7d6d1",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-5-recovered",
+      "sha": "42a57164",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-1",
+      "sha": "4ac6b09d",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-2",
+      "sha": "2ad146df",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-2-machine-pipeline-heartbeat-alerts-p0",
+      "sha": "90b2163c",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-contracts",
+      "sha": "28a7d6d1",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-configure-operator-s-",
+      "sha": "f892656a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-establish-shared-cont",
+      "sha": "f892656a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-remove-competition-in",
+      "sha": "f892656a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-split-the-build-task-",
+      "sha": "f892656a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-2-split-the-build-task-",
+      "sha": "f892656a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-commit-the-final-impl",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-fix-source-config-tes",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reconstruct-the-small",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-repair-dependencies-b",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reproduce-or-inspect-",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-1",
+      "sha": "6c519ff5",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2-clean-129448",
+      "sha": "358297fa",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-batch-fusion-unpause",
+      "sha": "cffc4f77",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-governor-ra",
+      "sha": "dbd87a34",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-hermetic-worktree-preflight",
+      "sha": "446cb9f1",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-10",
+      "sha": "6b3bad6d",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-18",
+      "sha": "b960c680",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-2-recovered",
+      "sha": "abc2402a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-3",
+      "sha": "4331d473",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-4",
+      "sha": "8331d7a0",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-1-define-shared-typescr",
+      "sha": "1aef5875",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-2-reuse-project-helpers",
+      "sha": "4331d473",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-3",
+      "sha": "9de61b3d",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-4",
+      "sha": "7eba81da",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-fix-the-root-cause-or-cl",
+      "sha": "9a875d0f",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-inspect-the-actual-error",
+      "sha": "9a875d0f",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-split-the-task-into-smal",
+      "sha": "9a875d0f",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-canary-codex-39-check-the-shelved-queue-for-possible-iss",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-canary-codex-39-check-the-test-results-for-clues",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-canary-codex-39-consider-rebasing-the-branch-manually",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-canary-codex-39-re-run-the-test-with-increased-test-spee",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-canary-codex-39-split-the-build-task-into-smaller-sub-ta",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-dropbox-wave-c-compounding-codegen-platform-spine-sl-split-the-b",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-improve-immediate-auto-merge-on-te-slice-2",
+      "sha": "ccb80970",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/factory-unblock-orch-cross-project-depends-fix-remaining-conflicts-r",
+      "sha": "a92148d6",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/fix-deploy-verification-stuck-20260903-dv27-decompose-the-large-build-task-into-",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/focused-conflicted-rescue-refs-13-items-5dc36bf5e0-slice-2",
+      "sha": "a5a40d66",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/followup-fix-merged-diff-test-helper-hardcoded-master-checkout",
+      "sha": "96ed6c05",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/human-decision-git-error-mac235-20260903-h35m-check-and-resolve-git-errors-on-ma",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/human-decision-git-error-mac235-20260903-h35m-monitor-fleet-cycles-for-mac-235-l",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/human-decision-git-error-mac235-20260903-h35m-verify-git-sync-is-successful-on-m",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/human-decision-git-error-mac235-20260903-h35m-verify-host-mac-235-lan-s-git-stat",
+      "sha": "e16f754c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/human-decision-git-error-mac290-20260905-h4wz-split-large-build-task-into-smalle",
+      "sha": "7aeae1ff",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-automate-configuration-management-slice-1",
+      "sha": "b79b31ca",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-automated-branch-management-with-gitops-slice-1",
+      "sha": "77ab9437",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-enhanced-testing-infrastructure-slice-4",
+      "sha": "b79b31ca",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-enhanced-testing-pipeline-missing-branch-r-slice-1",
+      "sha": "715d176a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-implement-automated-branch-management-dedu-slice-4",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-implement-real-time-sync-between-web-and-slice-4",
+      "sha": "b79b31ca",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-improve-orchestration-with-ai-ml-for-dyn-slice-4",
+      "sha": "77ab9437",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-missing-branch-auto-creator-slice-3-locate-decomposition-event-handler-a-clean-152441",
+      "sha": "dc65c542",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-identify-owner-module-in",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-validate-repository",
+      "sha": "149dd618",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-optimize-ci-cd-pipeline-slice-1",
+      "sha": "c02f59c5",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-optimize-ci-cd-pipeline-slice-5",
+      "sha": "5ea8f1f9",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-pre-decomposition-branch-availability-ve-slice-3-implement-bootstrap-inj",
+      "sha": "7711bd7a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-upgrade-to-ai-powered-error-handling-slice-1",
+      "sha": "87c60c8c",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-clean-151469",
+      "sha": "a9e98fc3",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-eliminate",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-final-ver",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-confl",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-uncom",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-make-test",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-run-full-",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-verify-an",
+      "sha": "8f04c7c3",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-3575",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-3575-check-and-escalate-the-guardrail-8-halt-",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-3575-derive-and-update-numbers-via-sql",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-3575-run-the-orch-operator-p1-queue-clearance",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-3575-schedule-a-new-session",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-3575-split-the-task-into-3-sub-tasks",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-tq95",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-tq95-split-the-build-task-into-smaller-sub-ta",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260821-wz71",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/log-p1-queue-clearance-20260822-b7n4",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/merge-train-blocker-passport-ts-overlay-conflict",
+      "sha": "9849c8cf",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/metaopt-d1-scoreboard-persist-and-dashboard-surface-added-metrics-on-the-dashboa",
+      "sha": "5f794349",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-config-consumption-apply-minimal-conflict-resolution",
+      "sha": "c5462d62",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-config-consumption-final-verification-run-full-build-tests-",
+      "sha": "fb895439",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe-split-the-bu",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-fix-any-remaining-failures-and-rerun-ful",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-inspect-conflict-restore-repo-state",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-rebase-cross-project-depends-core",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-implement-safe-chan",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-split-the-build-tas",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-write-acceptance-te",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/orch-cross-project-depends-verify-full-runner-suite",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-repair-dependencies-b",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-reproduce-or-inspect-",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-split-the-build-task-",
+      "sha": "25eaa900",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/qafix-beethoven-08020135",
+      "sha": "785e2456",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/qafix-beethoven-08021822",
+      "sha": "0f745664",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/qafix-beethoven-09021459-checkout-the-latest-code-and-verify-the-",
+      "sha": "2cec93d7",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/qafix-pareto-2080-07062319-slice-1-slice-5-fix-source-config-tests",
+      "sha": "f9ffdc45",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/recover-codex-worktree-orchestrator-visibility-remediation",
+      "sha": "ae3e2d4a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/recover-rescue-refs-group-scanner-and-queue-health",
+      "sha": "2045db15",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/relfix-beethoven-299c6b3c3bc6",
+      "sha": "1685c6a2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/remediate-dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-c",
+      "sha": "a44ff855",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/remediate-improve-immediate-auto-merge-on-test-pass-low-r-slice-3-locate-existin",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/remediate-improve-streamline-merge-workflow-with-ai-based-slice-3-update-documen",
+      "sha": "f08dcdfa",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/remediation-canary-real-regression-25eaa900",
+      "sha": "6aa7cf97",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "agent/wedged-quarantine",
+      "sha": "3b04e7f9",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "audit/recover-stranded-20260723",
+      "sha": "338615db",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "backlog-batch-illuminati-1d1b027",
+      "sha": "0abf5b6d",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "backup-node-precatchup2-20260818",
+      "sha": "ee62af44",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "chore/chatgpt-bridge-protocol",
+      "sha": "5d7f14f5",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "codex/orchestrator-session-fabric",
+      "sha": "59de85f2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "cowork/improvement-loop-repair-20260901",
+      "sha": "1f9e8083",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "feat/oc-autoclear-policy",
+      "sha": "d5b88569",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "feat/oc-autoclear-policy-final",
+      "sha": "c95d78b6",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "fix-branch",
+      "sha": "54b416f7",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "fix-release-train-manifest-import-20260807",
+      "sha": "6d77311f",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "fix/preflight-substantial-specs",
+      "sha": "d3a6b47a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "fix/reserved-worktree-guard-20260812",
+      "sha": "6d547100",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "fix/session-20260816-repairs",
+      "sha": "75d7e08b",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "improve/cost-ledger-fail-soft",
+      "sha": "b0ba3f39",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "mac1-wip-2026-07-30",
+      "sha": "5bc36d6a",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "merge/madeus-to-master",
+      "sha": "68746f3b",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "orchestrator/dev-local",
+      "sha": "50f90b62",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "probe",
+      "sha": "6c519ff5",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "qa-backup-20260825",
+      "sha": "77ab9437",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "rescue/operator-worktree-20260901",
+      "sha": "79ce0a0c",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "runner/counterfactual-replay-impl-7aeae1ff",
+      "sha": "7aeae1ff",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "salvage/fleet-runner-edits-20260806",
+      "sha": "59ff15ea",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "verify/cowork-batch1",
+      "sha": "609c9b2a",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "verify/solo3",
+      "sha": "f1aeea3f",
+      "classification": "RECOVERABLE_VALUE",
+      "reason": "local-only, not merged to master, no remote",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "work-branch",
+      "sha": "e74d6fee",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    },
+    {
+      "branch": "worktree-agent-a4d8f842ebe05a089",
+      "sha": "cc9ec6dc",
+      "classification": "ALREADY_PRESENT",
+      "reason": "local branch merged into origin/master",
+      "fingerprint": "1812c7f19d009c61625f717caa1973a2dd37f19cea77823d9fc5eff55a5a817d"
+    }
+  ],
+  "timestamp": "2026-09-08T20:53:39.870087+00:00"
+}
