@@ -598,16 +598,34 @@ PACK_REFS_MIN_LOOSE = int(os.environ.get("WORKTREE_GC_PACK_REFS_MIN", "500"))
 
 
 def _loose_ref_count(repo, cap=20000):
-    """How many loose refs this repo has, counted cheaply and bounded."""
+    """How many loose refs this repo has, counted cheaply and bounded.
+
+    LOCKFILES ARE NOT REFS, AND COUNTING THEM MADE THIS FUNCTION SELF-DEFEATING.
+
+    Until 2026-09-08 this counted every file under .git/refs, `*.lock` included. A killed
+    `git fetch --prune` left 2,642 abandoned lockfiles there on 2026-09-02, and
+    `git pack-refs --all` cannot pack a lockfile -- it is not a ref. So the count never
+    fell below PACK_REFS_MIN_LOOSE, pack_refs re-ran on every single sweep, and the log
+    records the result 299 times over five days:
+
+        worktree_gc: beethoven packed refs 2656 -> 2655 loose
+
+    One ref packed per sweep, 2,655 "loose refs" that were not refs at all. A healthy repo
+    in the same log reads `tomorrow packed refs 858 -> 3 loose`. Once the lockfiles were
+    removed this repo had 15 loose refs -- 2655 minus 15 is the lockfiles, exactly.
+
+    Git itself forbids a refname ending in `.lock` (git-check-ref-format), so excluding
+    that suffix can never skip a real ref.
+    """
     root = os.path.join(repo, ".git", "refs")
     if not os.path.isdir(root):
         return 0          # a worktree or a bare/odd layout; not our business
-    n = 0
+    loose = 0
     for _dirpath, _dirnames, filenames in os.walk(root):
-        n += len(filenames)
-        if n >= cap:
-            return n
-    return n
+        loose += sum(1 for name in filenames if not name.endswith(".lock"))
+        if loose >= cap:
+            return loose
+    return loose
 
 
 def pack_refs(repo, dry_run=False):
