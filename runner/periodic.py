@@ -702,6 +702,23 @@ def run_mergedmemory():
     else:
         # Not an error: a day with no merged commits legitimately writes nothing.
         print("periodic: merged-diff memory unchanged (nothing written)", flush=True)
+
+    # Fleet sync: share diff digest with other machines after local capture.
+    # Fail-soft — a broken sync never blocks the runner or local capture.
+    try:
+        import diff_fleet_sync
+        sync_result = diff_fleet_sync.sync(repo=repo)
+        if sync_result.get("published"):
+            novel = sync_result.get("novel_branches", [])
+            if novel:
+                print(f"periodic: diff-fleet-sync published, {len(novel)} novel remote branch(es)", flush=True)
+            else:
+                print("periodic: diff-fleet-sync published (no novel branches)", flush=True)
+        elif sync_result.get("error"):
+            print(f"periodic: diff-fleet-sync error: {sync_result['error']}", flush=True)
+    except Exception as e:
+        print(f"periodic: diff-fleet-sync unavailable: {e}", flush=True)
+
     return written
 
 
