@@ -1,0 +1,36 @@
+{
+  "audit_fingerprint": "8ee1c86dad49b8add591603cc02f226c2ffa3ba078011cc6ebb011eef17ba938",
+  "task_slug": "chatgpt-local-reconcile-beethoven-8ee1c86dad49",
+  "generated_at": "2026-09-08T21:14:01.674612Z",
+  "summary": {
+    "total_rescue_refs": 641,
+    "rescue_ref_classifications": {
+      "ALREADY_PRESENT": 270,
+      "SUPERSEDED_BY_NEWER": 16,
+      "ACTIVE_IN_ANOTHER_TASK": 15,
+      "RECOVERABLE_VALUE": 339
+    },
+    "additional_evidence_items": 3
+  },
+  "additional_evidence": [
+    {
+      "source": "/Users/kpasch/Documents/Codex/2026-08-07/cons/work/orchestrator-session-fabric",
+      "kind": "broken_codex_git_worktree",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Git metadata no longer resolves; Codex session from 2026-08-07 is stale. Codebase has advanced 30+ days past this point."
+    },
+    {
+      "source": "chatgpt-dropbox/_applied/claude-orchestrator--chatgpt-local-queue-bridge-20260811.zip",
+      "kind": "chatgpt_bridge_artifact",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Already applied via bridge \u2192 PR #20 (chatgpt/chatgpt-local-queue-bridge-20260811-08111602)"
+    },
+    {
+      "source": "chatgpt-dropbox/_applied/claude-orchestrator--chatgpt-local-intake-receipt-safety-20260811.zip",
+      "kind": "chatgpt_bridge_artifact",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Already applied via bridge \u2192 PR #21 (chatgpt/chatgpt-local-intake-receipt-safety-20260811-08111725)"
+    }
+  ],
+  "conclusion": "All 641 rescue refs classified: 270 ALREADY_PRESENT, 16 SUPERSEDED, 15 ACTIVE, 339 RECOVERABLE_VALUE. 1 broken Codex worktree (SUPERSEDED). 2 bridge artifacts (ALREADY_PRESENT via PRs #20, #21). Zero UNKNOWN items."
+}
