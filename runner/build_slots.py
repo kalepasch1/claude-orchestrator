@@ -92,19 +92,73 @@ DEFAULT_MAX_CONCURRENT = 2
 DEFAULT_WAIT_BUDGET_S = 900.0
 #: Used only when resource_governor cannot be read; deliberately conservative.
 FALLBACK_MIN_FREE_GB = 4.0
+#: What one production build needs to run without paging. Measured 2026-09-08 on this
+#: fleet: `node .../node_modules/.bin/nuxt build` at 4.52 GB resident, the largest single
+#: consumer on the machine. Rounded down rather than up -- this number gates whether a
+#: build starts at all, so erring high would stall the fleet on a machine that could
+#: actually have coped.
+DEFAULT_BUILD_MEMORY_BUDGET_GB = 4.0
 #: How long to sleep between attempts to take a slot.
 POLL_INTERVAL_S = 5.0
 #: A wait shorter than one poll is not worth a log line.
 LOG_WAIT_THRESHOLD_S = 5.0
 
 
-def max_concurrent():
-    """How many production builds may run at once. Read at call time."""
+def configured_max_concurrent():
+    """The operator's ceiling, before memory is taken into account."""
     try:
         return max(1, int(os.environ.get("ORCH_MAX_CONCURRENT_BUILDS",
                                         str(DEFAULT_MAX_CONCURRENT))))
     except (TypeError, ValueError):
         return DEFAULT_MAX_CONCURRENT
+
+
+def max_concurrent():
+    """How many production builds may run at once, given what the machine has left.
+
+    THE LIMIT WAS A COUNT, AND THE RESOURCE IS MEMORY.
+
+    Two slots is the right ceiling on a machine with room for two builds. It is the
+    wrong ceiling on one without, and this fleet spent 2026-09-08 on the wrong side of
+    that. Measured on the host that day: swap 44.67 GB used of 46 GB, 18,006,808
+    swapouts, 12,808,554 swapins, a 1-minute load average of 55 with only 14 of 772
+    processes runnable -- a box not computing but paging. A single `nuxt build` held
+    4.52 GB resident while it ran.
+
+    The memory floor in hold() below already detects this correctly (measured: free 3.7
+    GB against a 4.0 GB floor, and it does refuse the slot). What it could not do is
+    stop the SECOND build, because the count never moved: the floor makes a build wait,
+    and after wait_budget_s() every caller proceeds anyway on purpose, since a slow
+    build beats a false BUILDFAIL. That reasoning is right for slot contention and wrong
+    for memory -- starting a 4.5 GB build with 3.7 GB free does not produce a slow
+    build, it produces the thrashing that makes every concurrent test verdict
+    meaningless. The same day, the same tests ran 601.38s under that load and 0.33s on a
+    quiet box, and four of five "failures" from a loaded full-suite run passed on a
+    quiet one.
+
+    So the ceiling is now whichever is smaller: the operator's count, or what free
+    memory can actually afford. It never returns 0 -- a fleet that will not build at all
+    is a worse outage than a slow one, and one build at a time is the floor.
+
+    Shrinking while a slot is held is safe by construction: _slot_paths() simply stops
+    OFFERING the higher-numbered slots, and whoever holds one keeps it until it
+    finishes and releases. The cap applies to the next build, never to a running one.
+    """
+    configured = configured_max_concurrent()
+    available = free_gb()
+    if available is None:
+        return configured          # cannot measure: do not invent a restriction
+    affordable = int(available // build_memory_budget_gb())
+    return max(1, min(configured, affordable))
+
+
+def build_memory_budget_gb():
+    """How much free memory one build is assumed to need. Read at call time."""
+    try:
+        return max(0.1, float(os.environ.get("ORCH_BUILD_MEMORY_BUDGET_GB",
+                                             str(DEFAULT_BUILD_MEMORY_BUDGET_GB))))
+    except (TypeError, ValueError):
+        return DEFAULT_BUILD_MEMORY_BUDGET_GB
 
 
 def wait_budget_s():
@@ -250,8 +304,17 @@ def hold(label="build", log=print):
         time.sleep(POLL_INTERVAL_S)
         waited = wait_budget_s() - max(0.0, deadline - time.monotonic())
     if handle and waited >= LOG_WAIT_THRESHOLD_S:
-        log("[build-slots] %s: waited %.0fs for a slot (limit %d)"
-            % (label, waited, max_concurrent()))
+        # Say WHY the limit is what it is. A cap that quietly halves the fleet's build
+        # throughput, with a log line that only prints the number, is a support ticket
+        # nobody can answer.
+        configured = configured_max_concurrent()
+        effective = max_concurrent()
+        narrowed = ("" if effective >= configured else
+                    " (narrowed from %d by free memory %s GB)"
+                    % (configured,
+                       "unknown" if free_gb() is None else "%.1f" % free_gb()))
+        log("[build-slots] %s: waited %.0fs for a slot (limit %d)%s"
+            % (label, waited, effective, narrowed))
     try:
         yield handle is not None
     finally:
