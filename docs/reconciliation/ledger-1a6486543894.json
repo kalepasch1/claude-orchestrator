@@ -1,0 +1,141 @@
+{
+  "audit_fingerprint": "1a6486543894f5843764b99d86daecf3a457f43254dc383ff0163569c7226ef6",
+  "task_slug": "chatgpt-local-reconcile-illuminati-1a6486543894",
+  "evidence_kind": "orchestrator_rescue_refs + unmerged_chatgpt_codex_branches + unregistered_local_repos",
+  "repo": "/Users/kpasch/Documents/beethoven/claude-orchestrator",
+  "source_repos": [
+    "/Users/kpasch/Documents/Trojun",
+    "/Users/kpasch/Documents/_Trojun_archived"
+  ],
+  "reconciled_at": "2026-09-08T22:48:00.624541+00:00",
+  "summary": {
+    "total_items": 15,
+    "classifications": {
+      "SUPERSEDED_BY_NEWER": 15
+    },
+    "unknown_items": 0,
+    "note": "illuminati/Trojun project absorbed into apparently per operator directive 2026-08-07. Project is paused. All refs and repos are historical artifacts with no active value."
+  },
+  "items": [
+    {
+      "ref": "refs/orch-rescue/20260813T103338-Trojun-7281d4c3",
+      "sha": "7281d4c",
+      "subject": "On codex/trojun-canonical-rename: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260815T122131-cade-mirror-negotiation-45ce0983",
+      "sha": "45ce098",
+      "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260815T224107-Trojun-376c7479",
+      "sha": "376c747",
+      "subject": "On codex/trojun-canonical-rename: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260817T051038-rework-noop-reroute-model-keys-mock-darwin-live-model-env-gate-e9f7544-510fe323",
+      "sha": "510fe32",
+      "subject": "On agent/rework-noop-reroute-model-keys-mock-darwin-live-model-env-gate-e9f7544: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260817T082758-relfix-racefeed-07060650-fix-typescript-and-build--slice-4-fix-missing-branch-658e087a",
+      "sha": "658e087",
+      "subject": "On agent/relfix-racefeed-07060650-fix-typescript-and-build--slice-4-fix-missing-branch: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260817T082759-rework-buildfail-qafix-pareto-2080-07062319-slice-4-a7288db-e8507caa",
+      "sha": "e8507ca",
+      "subject": "On agent/rework-buildfail-qafix-pareto-2080-07062319-slice-4-a7288db: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260817T083337-Trojun-b4769b8e",
+      "sha": "b4769b8",
+      "subject": "Rename Illuminati application to Trojun",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260817T084557-dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-p4-deploy-kpi-a2a99a1c",
+      "sha": "a2a99a1",
+      "subject": "On agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-p4-deploy-kpi: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260817T115724-orch-config-consumption-7e390167",
+      "sha": "7e39016",
+      "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260819T003441-contracts-smarter-aece6346",
+      "sha": "aece634",
+      "subject": "On agent/contracts-smarter: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260819T003442-counterfactual-replay-ee61eeb3",
+      "sha": "ee61eeb",
+      "subject": "On agent/counterfactual-replay: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "refs/orch-rescue/20260819T124804-canary-deepseek-1-3864dbce",
+      "sha": "3864dbc",
+      "subject": "On agent/canary-deepseek-1: orch-rescue: periodic sweep",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "orch-rescue snapshot from Trojun (illuminati renamed); project absorbed into apparently per operator directive 2026-08-07; project paused"
+    },
+    {
+      "ref": "codex/trojun-canonical-rename",
+      "sha": "b4769b8",
+      "subject": "Rename Illuminati application to Trojun",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "codex branch for Trojun canonical rename; project absorbed into apparently; rename is historical artifact"
+    },
+    {
+      "ref": "/Users/kpasch/Documents/Trojun",
+      "sha": "N/A",
+      "subject": "unregistered_local_repo at /Users/kpasch/Documents/Trojun",
+      "source_repo": "/Users/kpasch/Documents/Trojun",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "unregistered local repo; illuminati/Trojun absorbed into apparently per operator directive"
+    },
+    {
+      "ref": "/Users/kpasch/Documents/_Trojun_archived",
+      "sha": "N/A",
+      "subject": "unregistered_local_repo at /Users/kpasch/Documents/_Trojun_archived",
+      "source_repo": "/Users/kpasch/Documents/_Trojun_archived",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "archived Trojun checkout; illuminati absorbed into apparently; repo is historical archive"
+    }
+  ]
+}
