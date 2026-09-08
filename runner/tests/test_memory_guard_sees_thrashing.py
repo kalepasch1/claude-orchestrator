@@ -115,7 +115,7 @@ class TheGuardActsOnEitherSignal(unittest.TestCase):
     def test_the_crisis_now_trips_the_guard_on_swapouts_alone(self):
         """67% free, which the old signal called healthy, plus real eviction."""
         state, _actions = self._run_guard(CRISIS_FREE_PCT, THRASHING_SWAPOUTS_PPS)
-        self.assertGreater(state.get("mem_warn_streak", 0), EXPECTED_NONE,
+        self.assertGreater(len(state.get("mem_episodes") or []), EXPECTED_NONE,
                            "thrashing at 67% free still did not reach the guard")
 
     def test_it_says_which_signal_fired_and_that_the_percentage_missed_it(self):
@@ -126,19 +126,19 @@ class TheGuardActsOnEitherSignal(unittest.TestCase):
     def test_outright_starvation_still_trips_it_without_any_eviction(self):
         """The original signal must keep working; this adds a signal, it replaces none."""
         state, _actions = self._run_guard(STARVED_FREE_PCT, QUIET_SWAPOUTS_PPS)
-        self.assertGreater(state.get("mem_warn_streak", 0), EXPECTED_NONE)
+        self.assertGreater(len(state.get("mem_episodes") or []), EXPECTED_NONE)
 
     def test_a_healthy_box_is_left_alone(self):
         state, actions = self._run_guard(HEALTHY_FREE_PCT, QUIET_SWAPOUTS_PPS)
-        self.assertEqual(state.get("mem_warn_streak", 0), EXPECTED_NONE)
+        self.assertEqual(len(state.get("mem_episodes") or []), EXPECTED_NONE)
         self.assertEqual(len(actions), EXPECTED_NONE, "a quiet fleet must never be paged")
 
     def test_an_unreadable_swapout_counter_falls_back_to_the_percentage(self):
         """Off macOS, or where vm_stat fails, behaviour is exactly as it was before."""
         state, _actions = self._run_guard(HEALTHY_FREE_PCT, None)
-        self.assertEqual(state.get("mem_warn_streak", 0), EXPECTED_NONE)
+        self.assertEqual(len(state.get("mem_episodes") or []), EXPECTED_NONE)
         state, _actions = self._run_guard(STARVED_FREE_PCT, None)
-        self.assertGreater(state.get("mem_warn_streak", 0), EXPECTED_NONE)
+        self.assertGreater(len(state.get("mem_episodes") or []), EXPECTED_NONE)
 
     def test_neither_signal_readable_does_nothing_rather_than_guessing(self):
         state, actions = self._run_guard(None, None)

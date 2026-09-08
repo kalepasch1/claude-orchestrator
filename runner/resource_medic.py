@@ -74,6 +74,14 @@ PRESSURE_CRIT = int(os.environ.get("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% b
 #: 800 KB/s of sustained eviction -- unmissable against a zero floor, and well clear of
 #: any single build's startup transient.
 SWAPOUT_THRASH_PPS = int(os.environ.get("MEDIC_SWAPOUT_THRASH_PPS", "200"))
+#: How long a memory-pressure EPISODE stays on the record when deciding whether pressure
+#: is recurring. See memory_guard: the old consecutive-cycle streak could not survive the
+#: guard's own success, so the durable fix behind it was unreachable.
+MEM_EPISODE_WINDOW_H = float(os.environ.get("MEDIC_MEM_EPISODE_WINDOW_H", "24"))
+#: Episodes inside that window before the lane ceiling is lowered durably. Five, matching
+#: the streak length this replaces. Measured: 15 episodes between 2026-09-06 and 09-08
+#: would have escalated on the fifth instead of never.
+MEM_EPISODES_BEFORE_DURABLE = int(os.environ.get("MEDIC_MEM_EPISODES_BEFORE_DURABLE", "5"))
 
 
 def _now():
@@ -165,16 +173,21 @@ def _swapouts_total():
 def swapout_rate_pps(st):
     """Pages per second being evicted to swap since the last call. None on first call.
 
-    THIS IS THE SIGNAL memory_free_pct COULD NOT PROVIDE.
+    A SUPPLEMENT TO memory_free_pct, NOT A REPLACEMENT -- AND THE COMMIT THAT ADDED IT
+    SAID OTHERWISE, WRONGLY.
 
-    memory_pressure's "System-wide memory free percentage" is what memory_guard has
-    always watched, and it cannot see this failure. Measured on this host 2026-09-08
-    DURING a genuine memory crisis -- 3.62 GB free, 44 GB of swap in use, 18,006,808
-    cumulative swapouts, a load average of 55 with only 14 of 772 processes runnable
-    because the rest were blocked on paging -- memory_pressure reported 67% free. The
-    warn threshold is 25%. The guard was not broken and did not misfire; it was never
-    reachable, so nothing intervened for days while the fleet's own test verdicts were
-    being corrupted by the thrashing.
+    d5dd1105 claimed memory_guard "existed through the entire crisis and never ran once".
+    That is false, and the journal says so plainly: the guard fired 15 times between
+    2026-09-06 and 09-08, at free percentages of 16 to 24. The claim came from a single
+    memory_pressure reading of 67% taken at one moment and reasoned from, instead of a
+    grep of .runtime/medic.jsonl. Corrected here so nobody inherits it.
+
+    What is true is narrower and still worth acting on: the percentage counts
+    compressible and reclaimable pages as free, so it CAN sit well above the 25% warn
+    line while the machine is evicting hard. The 67% reading was real, taken while the
+    host had 3.62 GB free, 44 GB of swap in use and a load average of 55 with only 14 of
+    772 processes runnable. On that cycle the guard would not have fired, and swapouts
+    would have caught it. That is the gap this closes -- one blind spot, not a dead guard.
 
     The percentage is not a bad number, it is the wrong question: macOS counts
     compressible and reclaimable pages as free, so it stays high precisely when the
@@ -201,23 +214,53 @@ def swapout_rate_pps(st):
     return (total - previous_total) / elapsed
 
 
+def _recent_episodes(st, record=False):
+    """Timestamps of memory-pressure episodes still inside MEM_EPISODE_WINDOW_H.
+
+    Replaces a consecutive-cycle streak that the guard's own success always reset. See
+    the long note in memory_guard for the evidence; the short version is that unloading a
+    16 GB model recovers free% by design, so a counter that resets on recovery can only
+    ever reach one.
+    """
+    now = time.time()
+    cutoff = now - MEM_EPISODE_WINDOW_H * 3600
+    episodes = [at for at in (st.get("mem_episodes") or []) if at >= cutoff]
+    if record:
+        episodes.append(now)
+    return episodes
+
+
 # ── BOT 1: memory_guard (predictive OOM prevention) ───────────────────────────
 
 def memory_guard(st):
     free = memory_free_pct()
-    # TWO SIGNALS, BECAUSE ONE OF THEM COULD NOT SEE THE 2026-09-08 CRISIS.
+    # TWO SIGNALS, BECAUSE EITHER CAN MISS A CYCLE THE OTHER CATCHES.
     #
-    # free% is the OS's own summary and is right about outright exhaustion. It is blind
-    # to thrashing: it read 67% while this box had 3.62 GB free, 44 GB swapped and a
-    # load of 55 spent paging. swapout_rate_pps is blind to nothing else, but it sees
-    # eviction directly, and its healthy baseline is measured at exactly zero. Either
-    # one is enough to act on; requiring both would reintroduce the blind spot.
+    # free% is the OS's own summary and is right about outright exhaustion -- it fired
+    # 15 times over three days in September at 16-24% free, so it works. It can also sit
+    # at 67% while the box has 3.62 GB free and a load of 55 spent paging, because it
+    # counts compressible pages as free. swapout_rate_pps sees eviction directly and its
+    # healthy baseline is measured at exactly zero. Either one is enough to act on;
+    # requiring both would reintroduce the blind spot.
     evicting = swapout_rate_pps(st)
     thrashing = evicting is not None and evicting >= SWAPOUT_THRASH_PPS
     if free is None and not thrashing:
         return
     if (free is None or free >= PRESSURE_WARN) and not thrashing:
-        st["mem_warn_streak"] = 0
+        # NOTE WHAT IS NOT HERE: a reset of the episode record.
+        #
+        # This used to be `st["mem_warn_streak"] = 0`, and that single line made the
+        # durable fix below unreachable. The streak counted CONSECUTIVE cycles under the
+        # threshold, and the guard's own first action -- unloading a 16-23 GB model --
+        # reliably pushes free% back above it. So the next cycle recovered, the streak
+        # reset to zero, ollama reloaded the model on the next request, and the pressure
+        # returned. The journal is unambiguous: 15 `unloaded-model` rows between
+        # 2026-09-06 and 09-08, and not one `durable-lower-lanes`. Fifteen interventions,
+        # zero durable fixes, on a box that sat at 44 GB of swap throughout.
+        #
+        # Recurrence is the thing the durable fix cares about, and recurrence is measured
+        # over time, not over consecutive samples. Episodes age out of the window on their
+        # own; a genuinely healthy fleet empties the record without needing this reset.
         return
     if free is None or free >= PRESSURE_WARN:
         level = "warn"                   # thrashing, but not yet starved
@@ -226,7 +269,7 @@ def memory_guard(st):
                 f"memory_pressure reports {free}% free -- the percentage cannot see this")
     else:
         level = "critical" if free < PRESSURE_CRIT else "warn"
-    st["mem_warn_streak"] = int(st.get("mem_warn_streak", 0)) + 1
+    st["mem_episodes"] = _recent_episodes(st, record=True)
     # 1) unload the heaviest loaded local model (biggest instant win)
     unloaded = _unload_heaviest_model()
     if unloaded:
@@ -243,7 +286,7 @@ def memory_guard(st):
         if reaped:
             journal("memory_guard", "reaped-agent-critical", reaped)
     # 4) recurring memory warns => the sustained-load cap is too high for this box: lower it durably
-    if st.get("mem_warn_streak", 0) >= 5:
+    if len(st.get("mem_episodes") or []) >= MEM_EPISODES_BEFORE_DURABLE:
         try:
             cur = int(os.environ.get("MAX_PARALLEL", "10"))
             new = max(4, cur - 2)
@@ -251,24 +294,57 @@ def memory_guard(st):
                 _set_fleet_config("MAX_PARALLEL_CEILING", new)
                 journal("memory_guard", "durable-lower-lanes", f"MAX_PARALLEL {cur}->{new} (sustained mem pressure)", durable=True)
                 _escalate(f"Lanes lowered to {new} (sustained memory pressure)",
-                          f"memory_pressure stayed <{PRESSURE_WARN}% free for {st['mem_warn_streak']} cycles at {cur} lanes.",
+                          f"{len(st['mem_episodes'])} memory-pressure episodes in "
+                          f"{MEM_EPISODE_WINDOW_H:.0f}h at {cur} lanes.",
                           "Prevents OOM/restart thrash; raise later if RAM added.")
-                st["mem_warn_streak"] = 0
+                st["mem_episodes"] = []
         except Exception:
             pass
 
 
+#: `ollama ps` prints SIZE as a number and a unit in SEPARATE columns. Multipliers to GB.
+_MODEL_SIZE_UNITS = {"KB": 1.0 / (1024 * 1024), "MB": 1.0 / 1024, "GB": 1.0, "TB": 1024.0}
+
+
 def _loaded_models():
-    """[(gb, name)] of currently loaded ollama models, biggest first."""
+    """[(gb, name)] of currently loaded ollama models, biggest first.
+
+    THE UNIT COLUMN IS A SEPARATE COLUMN, AND IGNORING IT INVERTED THE RANKING.
+
+    `ollama ps` prints:
+
+        NAME                       ID              SIZE      PROCESSOR   CONTEXT  UNTIL
+        nomic-embed-text:latest    0a109f422b47    370 MB    100% GPU    2048     4 minutes...
+
+    so p[2] is "370" and p[3] is "MB". This read float(p[2]) as gigabytes, which turned a
+    370 MB embedding model into a 370 GB one -- larger than anything real. Since the list
+    is sorted biggest-first and _unload_heaviest_model takes models[0], the guard then
+    unloaded the SMALLEST model on the box while a genuine 16 GB one sat untouched, and
+    journalled it as a success. It is in the record twice:
+
+        2026-09-07T05:35:27  unloaded-model  nomic-embed-text:latest (370.0GB) at free=20%
+        2026-09-07T05:38:11  unloaded-model  nomic-embed-text:latest (370.0GB) at free=18%
+
+    Two interventions three minutes apart, each freeing 370 MB and reporting 370 GB. The
+    second one happened because the first could not have helped.
+
+    It also defeated the MEDIC_UNLOAD_MIN_GB=8 floor, which exists to stop the guard
+    thrashing small models: 370 clears 8 comfortably when the units are wrong.
+    """
     out = []
     try:
         for line in sh("ollama", "ps", timeout=20).stdout.splitlines()[1:]:
-            p = line.split()
-            if len(p) >= 3:
-                try:
-                    out.append((float(p[2]), p[0]))
-                except ValueError:
-                    continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                magnitude = float(parts[2])
+            except ValueError:
+                continue
+            multiplier = _MODEL_SIZE_UNITS.get(parts[3].upper())
+            if multiplier is None:
+                continue          # an unknown unit is not a number we may guess at
+            out.append((magnitude * multiplier, parts[0]))
     except Exception:
         pass
     out.sort(reverse=True)
