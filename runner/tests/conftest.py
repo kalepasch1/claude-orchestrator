@@ -1,5 +1,6 @@
 # conftest.py provides shared fixtures for all runner tests.
 """Suite-wide isolation for tests that mutate process-global state."""
+import functools
 import os
 import sys
 import pytest
@@ -433,15 +434,38 @@ def _derive_module_lists():
 _REAL_MODULES, _SYNTHETIC_ONLY_MODULES = _derive_module_lists()
 
 
-def _is_real_runner_module(module):
-    """True for an imported module whose source file lives in runner/."""
-    path = getattr(module, "__file__", None)
-    if not path:
-        return False
+@functools.lru_cache(maxsize=None)
+def _path_is_in_runner_dir(path):
+    """Whether this __file__ string resolves into runner/. Cached; the answer is fixed.
+
+    A module object's __file__ does not change once it is imported, and abspath is a pure
+    string operation on an unchanging input, so this is a memoisable fact about a path
+    rather than a question about the world.
+    """
     try:
         return os.path.dirname(os.path.abspath(path)) == _RUNNER_DIR
     except Exception:
         return False
+
+
+def _is_real_runner_module(module):
+    """True for an imported module whose source file lives in runner/.
+
+    CACHED BECAUSE THIS RUNS PER MODULE PER TEST. _remember_real_modules walks all of
+    sys.modules on every single test, and sys.modules holds ~1,000 entries by the time
+    the suite is warm. cProfile of a single test on 2026-09-08:
+
+        197,034 calls  _is_real_runner_module
+        172,248 calls  posixpath.abspath
+        231,256 calls  posix.stat
+
+    for ONE test. Across 18,991 tests that is the largest fixed per-test cost in the
+    suite, and every call of it re-derives an answer that cannot have changed.
+    """
+    path = getattr(module, "__file__", None)
+    if not path:
+        return False
+    return _path_is_in_runner_dir(path)
 
 
 def _remember_real_modules():
@@ -477,6 +501,22 @@ def _remember_real_modules():
             _REAL_MODULES[name] = module
 
 
+@functools.lru_cache(maxsize=1)
+def _runner_module_names():
+    """Every top-level module name backed by a runner/<name>.py, listed once.
+
+    Deliberately a snapshot: a test that CREATES runner/<name>.py mid-run would not be
+    seen. That is the same assumption _derive_module_lists already makes at import time,
+    and this suite does not add modules to runner/ while it runs -- the fleet's own
+    convention is that a new module arrives with a commit, not inside a test.
+    """
+    try:
+        return frozenset(entry[:-len(".py")] for entry in os.listdir(_RUNNER_DIR)
+                         if entry.endswith(".py"))
+    except OSError:
+        return frozenset()
+
+
 def _evict_stub_shadows():
     """Drop synthetic stand-ins that shadow a real runner/ module.
 
@@ -488,10 +528,15 @@ def _evict_stub_shadows():
     modules that do NOT live in runner/ (a fake `requests`, say) are left alone; they
     shadow nothing this suite owns.
     """
+    runner_module_names = _runner_module_names()
     for name, module in list(sys.modules.items()):
         if "." in name or module is None:
             continue
-        if not os.path.isfile(os.path.join(_RUNNER_DIR, f"{name}.py")):
+        # Set membership, not a stat. This was os.path.isfile(runner/<name>.py) for every
+        # entry in sys.modules, on every test -- ~220,000 stat syscalls in the profile of a
+        # SINGLE test, all of them asking the same unchanging question about a directory
+        # listing that is read once above.
+        if name not in runner_module_names:
             continue
         if not _is_stand_in(module):
             continue
