@@ -61,7 +61,28 @@ SUPER_KEYWORDS = re.compile(r"\b(strategy|strategic|legal memo|legal opinion|reg
 
 
 def route(prompt: str, attempt: int = 1) -> dict:
+    """Route a task to the cheapest capable model.
+
+    Fail-soft: returns a valid dict (defaulting to HAIKU) on any error —
+    None prompt, non-integer attempt, regex failure — so the caller never
+    needs to handle an exception from the router itself.
+    """
+    try:
+        return _route_inner(prompt, attempt)
+    except Exception as exc:
+        # Fail-soft: a router crash must not block a task from running.
+        import logging
+        logging.getLogger(__name__).warning("model_router.route fail-soft: %s", exc)
+        return {"model": HAIKU, "base": HAIKU, "attempt": int(attempt or 1),
+                "reason": f"fail-soft fallback ({exc.__class__.__name__})"}
+
+
+def _route_inner(prompt: str, attempt: int = 1) -> dict:
     p = prompt or ""
+    try:
+        attempt = max(1, int(attempt))
+    except (TypeError, ValueError):
+        attempt = 1
     score = len(HEAVY.findall(p)) * 2 - len(MECHANICAL.findall(p))
     long = len(p) > 1200
     # HAIKU-FIRST (matches model_policy + ORCH_DEFAULT_MODEL=haiku): ordinary work starts on the
