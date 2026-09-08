@@ -32,44 +32,94 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync:
+  # THE GATE. Nothing reaches master until this job is green.
+  #
+  # WHAT THIS REPLACED. Until 2026-09-08 the promote step had no `needs:` at all: a push
+  # to orchestrator/dev fast-forwarded master with no test of any kind. Measured on
+  # 2026-09-07 — master moved 27 seconds after a dev push, no run in the proof graph.
+  # The two things that looked like gates were not:
+  #
+  #   * ci.yml runs `on: push: branches: [master]`, but auto-sync promoted with
+  #     GITHUB_TOKEN, and GITHUB_TOKEN pushes never trigger workflows (GitHub's recursion
+  #     guard). So the promote moved master and fired nothing.
+  #   * production_push_guard is a LOCAL pre-push hook. It only sees a direct push to
+  #     master from someone's checkout. The routine path does not go through it.
+  #
+  # The earlier fix here was a PAT (`RELEASE_TRAIN_PAT`), which would make the promote's
+  # push trigger ci.yml. That is DETECTION: the code is on master before CI starts, and a
+  # red run tells you production is already broken. This job is PREVENTION instead, and
+  # needs no credential of any kind.
+  #
+  # WHAT IT DOES NOT COVER, said plainly. This is not the full runner suite. That suite is
+  # ~19,000 tests, most of which require SUPABASE_URL + SUPABASE_SERVICE_KEY, and it takes
+  # over an hour. Wiring it in as the blocker would make the train fail closed on missing
+  # credentials and on every unrelated flake — and a release train that fails closed is a
+  # worse outage than the gap it was added to close. The full suite still runs locally
+  # through production_push_guard on a direct master push.
+  #
+  # What this job does cover is the class that has actually broken the fleet: the
+  # half-landed refactor (an undefined name, a missing import that fail-soft handling
+  # masked) and regressions in the offline guards. It is credential-free, deterministic,
+  # and about a minute. Verified green against the dev tip (0b3aeb57) before being wired
+  # in as a blocker: 80 passed in 4.08s, both compileall passes exit 0.
+  #
+  # Widen it by adding steps here, not by loosening the `needs:` below.
+  gate:
+    name: gate — offline guards + syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      # Keep pinned in step with ci.yml's runner-guards job and requirements-dev.txt.
+      # Named directly rather than `-r requirements-dev.txt` because that file pulls in
+      # requirements.txt, and this job unsets SUPABASE_* on purpose to prove the tests
+      # are offline.
+      - name: Install test dependencies
+        run: pip install --quiet 'pytest>=8.0' 'pytest-timeout>=2.2'
+
+      - name: Run offline guard tests
+        working-directory: runner
+        # Deliberately unset so a test that quietly reaches for the control plane fails
+        # here instead of passing and lying about what it covers.
+        env:
+          SUPABASE_URL: ''
+          SUPABASE_SERVICE_KEY: ''
+        run: python -m pytest tests/test_ci_offline.py -q --no-header
+
+      - name: Syntax-check every runner module
+        working-directory: runner
+        run: python -m compileall -q . > /dev/null
+
+      - name: Syntax-check repo-root modules
+        run: python -m compileall -q *.py > /dev/null
+
+  promote:
+    name: promote orchestrator/dev → master
+    needs: gate
+    if: github.ref == 'refs/heads/orchestrator/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       # RELEASE_TRAIN_PAT, FALLING BACK TO GITHUB_TOKEN, AND THE FALLBACK IS THE POINT.
       #
-      # The token here is the one release_train_sync.sh pushes with, and which token that
-      # is decides whether the promotion is ever verified.
-      #
-      # GITHUB_TOKEN pushes do not trigger workflows -- GitHub's recursion guard. ci.yml
-      # runs `on: push: branches: [master]`, so a promote made with GITHUB_TOKEN moves
-      # master and fires nothing: the tests never run against the commit that just became
-      # production. ci.yml's own header already records this ("master could change with no
-      # CI run to show for it") and offers workflow_dispatch as the manual escape hatch,
-      # which only helps someone who thinks to press it.
-      #
-      # Found on 2026-09-07 while tracing how a commit reached master: a push to
-      # orchestrator/dev fast-forwarded master 27 seconds later with no test run of any
-      # kind. production_push_guard did not cover it either -- that is a local pre-push
-      # hook, so it only sees a direct push to master from someone's checkout, and the
-      # routine path does not go through it. The promotion path had no automated gate at
-      # either end.
-      #
-      # A PAT is an ordinary user credential, so its pushes DO trigger workflows: with
-      # RELEASE_TRAIN_PAT set, every promote starts a ci.yml run against the new master.
-      #
-      # Be clear about what this buys. It is DETECTION, not prevention: the code is on
-      # master before CI starts, and a red run tells you production is broken rather than
-      # stopping it from breaking. Prevention means gating the promote step on the suite
-      # (`needs:` a job that runs it), which costs a full suite per promotion and blocks
-      # the fleet's dev pushes when they are red. This is the cheaper half, chosen
-      # deliberately.
+      # With `gate` above, the promote is now prevented rather than merely observed, so
+      # the PAT is no longer load-bearing. It is kept because it buys a second, different
+      # thing: a PAT is an ordinary user credential, so its pushes DO trigger workflows,
+      # which means a promote made with it also starts a ci.yml run against the new
+      # master — the darwin-kernel tests, the dependency manifest and the task
+      # reconciliation, none of which `gate` runs.
       #
       # The `||` fallback keeps the train running when the secret does not exist. Without
-      # it, adding this line would break every promotion until someone created the secret
-      # -- and a release train that fails closed on a missing credential is a worse
-      # outage than the gap it was added to close. Until RELEASE_TRAIN_PAT is created in
-      # the repository's secrets, behaviour is exactly as before.
+      # it, this line would break every promotion until someone created the secret, and a
+      # release train that fails closed on a missing credential is a worse outage than the
+      # gap it was added to close. Until RELEASE_TRAIN_PAT exists, behaviour is exactly as
+      # before, minus the hole that `gate` closes.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -81,16 +131,65 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Promote orchestrator/dev → master
-        if: github.ref == 'refs/heads/orchestrator/dev'
         run: bash scripts/release_train_sync.sh promote
 
-      # reabsorb THEN promote, in one job on purpose. A push made with GITHUB_TOKEN does
-      # not trigger workflows (GitHub's recursion guard), so the re-absorbing push to
-      # orchestrator/dev fires nothing. In the diverged case that would leave dev ahead of
-      # master with no promote scheduled — the train repaired but stalled. Promote is a
-      # no-op when the two are already equal, so running it unconditionally is free.
-      - name: Re-absorb master → orchestrator/dev, then promote
-        if: github.ref == 'refs/heads/master'
+  # REABSORB IS UNGATED, ON PURPOSE, AND IT IS THE ONE EXCEPTION.
+  #
+  # This job runs when master gained a commit dev does not have — the wedge case the
+  # header describes, usually a PR merged against the default branch. Reabsorb does not
+  # move master; it folds master back into orchestrator/dev so the ff-only invariant holds
+  # again. It is the repair.
+  #
+  # Gating a repair on a test run is how a wedged train stays wedged: if the gate is red,
+  # the thing that would unwedge it never runs, and every subsequent promote fails on the
+  # divergence rather than on the actual problem. The code being reabsorbed is already on
+  # master either way — refusing to fold it into dev protects nothing and costs the
+  # invariant.
+  reabsorb:
+    name: re-absorb master → orchestrator/dev
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TRAIN_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
         run: |
-          bash scripts/release_train_sync.sh reabsorb
-          bash scripts/release_train_sync.sh promote
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Re-absorb master → orchestrator/dev
+        run: bash scripts/release_train_sync.sh reabsorb
+
+  # The follow-on promote, split out of `reabsorb` so it can carry `needs: gate`.
+  #
+  # It exists because the re-absorbing push to orchestrator/dev is made with a token whose
+  # pushes may not trigger workflows (GITHUB_TOKEN's recursion guard), so nothing would
+  # schedule the promote that clears the remaining divergence. That would leave dev ahead
+  # of master with no promote pending — the train repaired but stalled. Promote is a no-op
+  # when the two are already equal, so running it unconditionally is free.
+  #
+  # Unlike `reabsorb`, this one DOES move master, so it is gated like any other promote.
+  # A red gate here leaves the train repaired-but-not-advanced, which is the safe half.
+  promote-after-reabsorb:
+    name: promote after re-absorb
+    needs: [gate, reabsorb]
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TRAIN_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Promote orchestrator/dev → master
+        run: bash scripts/release_train_sync.sh promote
