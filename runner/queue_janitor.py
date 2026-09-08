@@ -317,6 +317,26 @@ def _candidate_lock_paths(git_dir):
     return found
 
 
+def _held_in_one_batch(batch):
+    """Which paths in this one batch some live process has open.
+
+    Returns the WHOLE batch when lsof cannot answer -- see _held_lock_paths for why that
+    is the safe default rather than the empty set.
+    """
+    try:
+        out = subprocess.run(["lsof", "-F", "n", "--", *batch],
+                             capture_output=True, text=True,
+                             timeout=LOCK_HOLDER_TIMEOUT_S)
+    except Exception as error:
+        print(f"janitor: lsof failed for {len(batch)} lock paths ({error}) -- treating "
+              f"them all as held")
+        return set(batch)
+    # lsof exits nonzero when it simply found nothing open, which is the normal and
+    # expected answer here, so the exit code is not a failure signal. Only an exception
+    # (missing binary, timeout) means we did not get an answer.
+    return {line[1:] for line in out.stdout.splitlines() if line.startswith("n")}
+
+
 def _held_lock_paths(lock_paths):
     """Which of these lockfiles some live process currently has open.
 
@@ -332,19 +352,7 @@ def _held_lock_paths(lock_paths):
     """
     held = set()
     for start in range(0, len(lock_paths), LOCK_HOLDER_BATCH):
-        batch = lock_paths[start:start + LOCK_HOLDER_BATCH]
-        try:
-            out = subprocess.run(["lsof", "-F", "n", "--", *batch],
-                                 capture_output=True, text=True,
-                                 timeout=LOCK_HOLDER_TIMEOUT_S)
-            # lsof exits nonzero when it simply found nothing open, which is the normal
-            # and expected answer here, so the exit code is not a failure signal. Only an
-            # exception (missing binary, timeout) means we did not get an answer.
-            for line in out.stdout.splitlines():
-                if line.startswith("n"):
-                    held.add(line[1:])
-        except Exception:
-            held.update(batch)
+        held.update(_held_in_one_batch(lock_paths[start:start + LOCK_HOLDER_BATCH]))
     return held
 
 
@@ -468,8 +476,10 @@ def _journal_lock_sweep(repo, removed, remaining, held, oldest_age_min):
     try:
         import resource_medic
         resource_medic.journal("git_hygiene", action, detail)
-    except Exception:
-        print(f"janitor: {action} {detail}")
+        return True
+    except Exception as error:
+        print(f"janitor: {action} {detail} (journal unavailable: {error})")
+        return False
 
 
 def _git_dir(repo):

@@ -57,6 +57,7 @@ files is wrong about its scope, not about its rule.
 Run: pytest runner/tests/test_canary_improvements.py -v
 """
 import ast
+import functools
 import io
 import json
 import re
@@ -243,14 +244,53 @@ def get_product_sources() -> List[Path]:
     return [p for p in get_python_files() if not is_test_file(p)]
 
 
+#: Seconds to wait for `git ls-files`. A fuse, not a budget -- the call is a single
+#: index read and returns in milliseconds.
+_TRACKED_FILE_LISTING_TIMEOUT_S = 30
+
+
+@functools.lru_cache(maxsize=1)
+def tracked_paths() -> frozenset:
+    """Every path git has under version control, repo-relative POSIX.
+
+    Empty when git cannot answer (no git binary, not a checkout), which the caller reads
+    as "do not filter" so a non-repo checkout still scans something rather than nothing.
+    """
+    try:
+        listing = subprocess.run(["git", "ls-files"], cwd=str(REPO_ROOT),
+                                 capture_output=True, text=True,
+                                 timeout=_TRACKED_FILE_LISTING_TIMEOUT_S)
+        if listing.returncode:
+            return frozenset()
+        return frozenset(line.strip() for line in listing.stdout.splitlines() if line.strip())
+    except Exception:
+        return frozenset()
+
+
 def get_doc_files() -> List[Path]:
-    """Product documentation.
+    """Product documentation. TRACKED FILES ONLY.
 
     Dotfiles are excluded on purpose. The repo root holds 25 `.recovery-intent-*.txt` agent
     scratch files (and coding tools drop transcripts like `.aider.chat.history.md` here);
     those are working notes belonging to a tool, not documentation this project publishes,
     and holding them to a doc standard produces findings nobody can act on.
+
+    UNTRACKED FILES ARE EXCLUDED FOR THE SAME REASON, and that was a real failure, not a
+    hypothetical one. On 2026-09-08 test_markdown_headings_do_not_regress failed on
+    `SPEC.md` -- an LLM-written scratch file an agent had dropped in the repo root and
+    never committed, opening with "Here is the SPEC.md contents based on the provided
+    signals:". Nothing about the repository had regressed. A ratchet on the project's
+    documentation must measure the project, and the project is what is committed; the
+    working tree of a machine that runs an agent fleet is full of files nobody chose.
+
+    Same reasoning, and same fix, as the convention-lint ratchet's move to linting
+    `git archive HEAD` rather than the working directory. `git ls-files` is used instead
+    of an export because these scanners want real paths on disk to read.
+
+    Fails SOFT: if git cannot answer, nothing is filtered and the old behaviour stands. A
+    scanner that silently covers zero files is worse than one that covers too many.
     """
+    tracked = tracked_paths()
     doc_files: List[Path] = []
     for directory in (REPO_ROOT, REPO_ROOT / "docs"):
         if not directory.is_dir():
@@ -259,6 +299,7 @@ def get_doc_files() -> List[Path]:
             doc_files.extend(
                 p for p in directory.glob(pattern)
                 if p.is_file() and not p.name.startswith(".")
+                and (not tracked or rel(p) in tracked)
             )
     return sorted(doc_files)
 
@@ -703,6 +744,25 @@ class TestCanaryImprovement:
                 errors.append(f"{rel(doc_file)}: contains NUL bytes; not a text document")
 
         assert not errors, "Unreadable documentation:\n" + "\n".join(errors[:10])
+
+    def test_an_untracked_scratch_file_is_not_scanned_as_documentation(self):
+        """The 2026-09-08 failure, pinned.
+
+        An agent dropped `SPEC.md` in the repo root -- untracked, never committed, opening
+        with "Here is the SPEC.md contents based on the provided signals:" and carrying no
+        heading. test_markdown_headings_do_not_regress failed on it, and nothing about the
+        repository had regressed. On a machine that runs an agent fleet the working tree is
+        full of files nobody chose; the project is what is COMMITTED.
+        """
+        scratch = REPO_ROOT / "untracked-scratch-probe-for-doc-scan.md"
+        scratch.write_text("no heading here at all\n", encoding="utf-8")
+        try:
+            scanned = {rel(f) for f in get_doc_files()}
+        finally:
+            scratch.unlink()
+        assert scratch.name not in scanned, (
+            f"{scratch.name} is untracked and must not be scanned as documentation"
+        )
 
     def test_markdown_headings_do_not_regress(self):
         """RATCHET. Two docs have no heading; no third one may join them.
