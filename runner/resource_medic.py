@@ -64,6 +64,16 @@ BUILD_ORPHAN_MAX_MIN = int(os.environ.get("MEDIC_BUILD_ORPHAN_MAX_MIN", "30"))
 BUILD_ORPHAN_GATE_MAX_MIN = int(os.environ.get("MEDIC_BUILD_ORPHAN_GATE_MAX_MIN", "3"))
 PRESSURE_WARN = int(os.environ.get("MEDIC_PRESSURE_WARN_PCT", "25"))   # free% below this = warn
 PRESSURE_CRIT = int(os.environ.get("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% below this = critical
+#: Sustained page-out rate that means the machine is EVICTING, not merely busy.
+#:
+#: 200 rather than 1, because a short burst when a large build starts is normal and
+#: self-correcting; and 200 rather than 5,000, because the healthy baseline is not
+#: "low", it is ZERO. Measured 2026-09-08 across ten consecutive 15-second samples on
+#: this host while it was healthy: swapouts/s was 0 in every single one, while swapins
+#: ranged 2-863/s and memory_pressure reported 81-83% free. 200 pages/s is roughly
+#: 800 KB/s of sustained eviction -- unmissable against a zero floor, and well clear of
+#: any single build's startup transient.
+SWAPOUT_THRASH_PPS = int(os.environ.get("MEDIC_SWAPOUT_THRASH_PPS", "200"))
 
 
 def _now():
@@ -140,16 +150,82 @@ def memory_free_pct():
     return None
 
 
+def _swapouts_total():
+    """Cumulative pages evicted to swap since boot, or None where unavailable."""
+    try:
+        out = sh("vm_stat", timeout=15).stdout
+        for line in out.splitlines():
+            if line.startswith("Swapouts"):
+                return int(line.rsplit(None, 1)[-1].strip().rstrip("."))
+    except Exception:
+        return None
+    return None
+
+
+def swapout_rate_pps(st):
+    """Pages per second being evicted to swap since the last call. None on first call.
+
+    THIS IS THE SIGNAL memory_free_pct COULD NOT PROVIDE.
+
+    memory_pressure's "System-wide memory free percentage" is what memory_guard has
+    always watched, and it cannot see this failure. Measured on this host 2026-09-08
+    DURING a genuine memory crisis -- 3.62 GB free, 44 GB of swap in use, 18,006,808
+    cumulative swapouts, a load average of 55 with only 14 of 772 processes runnable
+    because the rest were blocked on paging -- memory_pressure reported 67% free. The
+    warn threshold is 25%. The guard was not broken and did not misfire; it was never
+    reachable, so nothing intervened for days while the fleet's own test verdicts were
+    being corrupted by the thrashing.
+
+    The percentage is not a bad number, it is the wrong question: macOS counts
+    compressible and reclaimable pages as free, so it stays high precisely when the
+    machine is working hardest to keep it high. Eviction is the thing that hurts, and
+    eviction has its own counter.
+
+    Swapins were considered and rejected as the signal. They fire during ordinary
+    recovery -- a process touching a page evicted hours ago faults it back, which is
+    normal -- and the same ten healthy samples showed 2 to 863 swapins/s while swapouts
+    stayed at 0. Swapins measure the past; swapouts measure now.
+    """
+    now = time.time()
+    total = _swapouts_total()
+    previous_total = st.get("swapouts_total")
+    previous_at = st.get("swapouts_at")
+    if total is not None:
+        st["swapouts_total"] = total
+        st["swapouts_at"] = now
+    if total is None or previous_total is None or previous_at is None:
+        return None
+    elapsed = now - previous_at
+    if elapsed <= 0 or total < previous_total:
+        return None                      # clock skew, or the counter wrapped/rebooted
+    return (total - previous_total) / elapsed
+
+
 # ── BOT 1: memory_guard (predictive OOM prevention) ───────────────────────────
 
 def memory_guard(st):
     free = memory_free_pct()
-    if free is None:
+    # TWO SIGNALS, BECAUSE ONE OF THEM COULD NOT SEE THE 2026-09-08 CRISIS.
+    #
+    # free% is the OS's own summary and is right about outright exhaustion. It is blind
+    # to thrashing: it read 67% while this box had 3.62 GB free, 44 GB swapped and a
+    # load of 55 spent paging. swapout_rate_pps is blind to nothing else, but it sees
+    # eviction directly, and its healthy baseline is measured at exactly zero. Either
+    # one is enough to act on; requiring both would reintroduce the blind spot.
+    evicting = swapout_rate_pps(st)
+    thrashing = evicting is not None and evicting >= SWAPOUT_THRASH_PPS
+    if free is None and not thrashing:
         return
-    if free >= PRESSURE_WARN:
+    if (free is None or free >= PRESSURE_WARN) and not thrashing:
         st["mem_warn_streak"] = 0
         return
-    level = "critical" if free < PRESSURE_CRIT else "warn"
+    if free is None or free >= PRESSURE_WARN:
+        level = "warn"                   # thrashing, but not yet starved
+        journal("memory_guard", "thrashing",
+                f"swapouts {evicting:.0f}/s (threshold {SWAPOUT_THRASH_PPS}/s) while "
+                f"memory_pressure reports {free}% free -- the percentage cannot see this")
+    else:
+        level = "critical" if free < PRESSURE_CRIT else "warn"
     st["mem_warn_streak"] = int(st.get("mem_warn_streak", 0)) + 1
     # 1) unload the heaviest loaded local model (biggest instant win)
     unloaded = _unload_heaviest_model()
