@@ -275,9 +275,50 @@ def checkout_guard(st=None):
                                or ln[3:].endswith((".py", ".sh"))]
             if protected_dirty:
                 hb = f"hotfix/sentinel-rescue-{int(time.time())}"
-                git("stash", "push", "-m", f"pre-rescue-{int(time.time())}")   # atomic handoff
-                git("checkout", "-b", hb)
-                git("stash", "pop")
+                # THE HANDOFF IS CHECKED AT EVERY STEP (2026-09-09).
+                #
+                # This sequence used to run unconditionally: push a stash, branch, pop it,
+                # `add -u`, commit, emit "hotfix-rescued". Every one of those can fail, and
+                # none of the return codes were read. The dangerous shape is a failed `pop`
+                # (a conflict, or a `checkout -b` that failed because the branch name already
+                # existed): the commit then captures NOTHING, the emit still fires, and the
+                # operator is told their work was preserved on a branch that is empty while
+                # the real content sits in the stash pile this function exists to avoid.
+                # A false success is worse than a loud failure — it stops anyone looking.
+                _label = f"pre-rescue-{int(time.time())}"
+                _before = len([l for l in (git("stash", "list").stdout or "").splitlines()
+                               if l.strip()])
+                git("stash", "push", "-m", _label)   # atomic handoff
+                _after = len([l for l in (git("stash", "list").stdout or "").splitlines()
+                              if l.strip()])
+                if _after <= _before:
+                    emit("hotfix-rescue-failed", branch=hb, stage="stash-push",
+                         files=len(protected_dirty))
+                    log("hotfix-rescue-failed",
+                        f"could not capture {len(protected_dirty)} protected file(s) for rescue — "
+                        f"work is still dirty in the working tree, NOT lost; leaving the checkout "
+                        f"on '{branch}' rather than risking it")
+                    return
+                _cb = git("checkout", "-b", hb)
+                if _cb.returncode != 0:
+                    git("stash", "pop")   # put the operator's work back where it was
+                    emit("hotfix-rescue-failed", branch=hb, stage="branch",
+                         stderr=(_cb.stderr or "")[-200:])
+                    log("hotfix-rescue-failed",
+                        f"could not create {hb} ({(_cb.stderr or '').strip()[-120:]}) — "
+                        f"work restored to the working tree, checkout left on '{branch}'")
+                    return
+                _pop = git("stash", "pop")
+                if _pop.returncode != 0:
+                    # The content is still in the stash (pop is atomic on failure). Say so
+                    # loudly and by name, and do NOT commit an empty rescue on top of it.
+                    emit("hotfix-rescue-failed", branch=hb, stage="stash-pop",
+                         stash=_label, stderr=(_pop.stderr or "")[-200:])
+                    log("hotfix-rescue-failed",
+                        f"stash '{_label}' would not re-apply on {hb} — the work is INTACT in "
+                        f"that stash entry (git stash list) and needs a human; refusing to "
+                        f"commit an empty rescue that would look like success")
+                    return
                 # `add -u` (tracked modifications ONLY), never `add -A`. -A swept UNTRACKED
                 # files onto the rescue branch, and the subsequent `checkout BASE_BRANCH` then
                 # removed them from the working tree — so an intake drop that landed during a
@@ -286,13 +327,41 @@ def checkout_guard(st=None):
                 # same 2026-07-08..16 loss shape the `-u` ban already exists to prevent.
                 # Untracked files are not what blocks a branch switch, so they need no staging.
                 git("add", "-u")
-                git("-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
-                    "commit", "-m",
-                    f"rescue: operator/agent changes preserved by sentinel ({len(protected_dirty)} file(s))")
-                emit("hotfix-rescued", branch=hb, files=len(protected_dirty))
+                _ci = git("-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
+                          "commit", "-m",
+                          f"rescue: operator/agent changes preserved by sentinel ({len(protected_dirty)} file(s))")
+                if _ci.returncode != 0:
+                    # Nothing was actually committed (empty index, hook refusal, ...). The work
+                    # is back in the working tree from the pop above, so it is not lost — but
+                    # claiming a rescue that did not happen is exactly the failure mode this
+                    # guard exists to prevent.
+                    emit("hotfix-rescue-failed", branch=hb, stage="commit",
+                         stderr=(_ci.stderr or _ci.stdout or "")[-200:])
+                    log("hotfix-rescue-failed",
+                        f"no commit was created on {hb} — {len(protected_dirty)} protected file(s) "
+                        f"are still dirty in the working tree on that branch, needs a human")
+                    return
+                # A LOCAL BRANCH IS STILL ONLY ONE `rm -rf` FROM GONE (2026-09-09).
+                #
+                # The whole point of committing instead of stashing is durability, and a branch
+                # that exists in exactly one clone on one laptop is only durable relative to a
+                # stash. The drift-stash path directly below already mirrors its rescue to
+                # origin for precisely this reason; the protected-path rescue — which by
+                # definition holds the MORE valuable work, the fleet's own critical path — did
+                # not. Same convention, same best-effort posture: a preservation attempt must
+                # never be the reason the recovery it is protecting fails, so this is wrapped
+                # and its failure is reported rather than raised.
+                try:
+                    _pr = git("push", "origin", f"{hb}:refs/heads/{hb}")
+                    _mirrored = _pr.returncode == 0
+                except Exception:
+                    _mirrored = False
+                emit("hotfix-rescued", branch=hb, files=len(protected_dirty), mirrored=_mirrored)
                 log("hotfix-rescued",
                     f"preserved {len(protected_dirty)} protected file(s) on {hb} instead of stashing — "
-                    f"review and merge (git log {hb})")
+                    + (f"mirrored to origin/{hb}; review and merge (git log {hb})" if _mirrored else
+                       f"branch is LOCAL-ONLY (push to origin failed) — review and merge "
+                       f"promptly (git log {hb})"))
                 r = git("checkout", BASE_BRANCH)
             else:
                 _label = f"sentinel-drift-{branch}-{int(time.time())}"
