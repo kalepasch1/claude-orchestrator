@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, asdict, field
 
 # Strict apply verdict lives in one module so every reconciler agrees on what
@@ -148,16 +149,46 @@ def changed_files(sha: str) -> "list[str]":
     return [f for f in out.splitlines() if f.strip()]
 
 
+# (base, path) -> unix time of the newest commit on `base` touching `path`.
+#
+# This cache is the difference between a scan that finishes and one that does
+# not. `newest_touch` is called once per touched file per ref, and a periodic
+# sweep commit touches the same handful of paths over and over, so on this repo
+# (570+ rescue refs) the uncached version issues thousands of full-history
+# `git log` walks over a few hundred distinct paths. `base` is fixed for the
+# whole run, so the answer is a pure function of the key and safe to memoise for
+# the process lifetime.
+_NEWEST_TOUCH_CACHE: "dict[tuple[str, str], int]" = {}
+
+
 def newest_touch(base: str, path: str) -> int:
+    key = (base, path)
+    hit = _NEWEST_TOUCH_CACHE.get(key)
+    if hit is not None:
+        return hit
     out = git("log", "-1", "--format=%ct", base, "--", path, check=False).strip()
-    return int(out) if out.isdigit() else 0
+    val = int(out) if out.isdigit() else 0
+    _NEWEST_TOUCH_CACHE[key] = val
+    return val
+
+
+# sha -> containing origin/agent/* branches. `git branch --contains` walks
+# history from every agent tip, so it is the second-most expensive call here.
+# Periodic sweeps repeatedly re-record the SAME branch tip under a new dated
+# ref, so the same sha recurs across many refs and the cache pays for itself.
+_CONTAINS_CACHE: "dict[str, list]" = {}
 
 
 def agent_branches_containing(sha: str) -> "list[str]":
+    hit = _CONTAINS_CACHE.get(sha)
+    if hit is not None:
+        return list(hit)
     out = git(
         "branch", "-r", "--contains", sha, "--list", "origin/agent/*", check=False
     )
-    return [b.strip() for b in out.splitlines() if b.strip()]
+    val = [b.strip() for b in out.splitlines() if b.strip()]
+    _CONTAINS_CACHE[sha] = val
+    return list(val)
 
 
 def diff_applies(diff_text: str, base: str = "HEAD", cwd: str = ".") -> bool:
@@ -236,6 +267,13 @@ def main() -> int:
     ap.add_argument("--depth", type=int, default=1500,
                     help="how many base commits to fingerprint for patch-id match")
     ap.add_argument("--limit", type=int, default=0, help="0 = all refs")
+    ap.add_argument("--max-seconds", type=int, default=0,
+                    help="0 = no budget. When the budget is spent the remaining "
+                         "refs are left UNKNOWN and the ledger is written "
+                         "anyway, so a slow scan yields a partial-but-honest "
+                         "ledger instead of nothing at all.")
+    ap.add_argument("--progress-every", type=int, default=25,
+                    help="emit a progress line to stderr every N refs; 0 = silent")
     args = ap.parse_args()
 
     items = enumerate_refs()
@@ -246,13 +284,33 @@ def main() -> int:
 
     known = base_patch_ids(args.base, args.depth) if items else set()
 
-    for it in items:
+    started = time.monotonic()
+    budget_spent = False
+    for n, it in enumerate(items, 1):
+        if args.max_seconds and time.monotonic() - started > args.max_seconds:
+            # Deliberately UNKNOWN, not a classification. Calling an unexamined
+            # ref "conflicted" or "already present" would let a real gap
+            # masquerade as clean evidence — the exact failure this whole file
+            # is written to avoid. UNKNOWN keeps the exit code non-zero and the
+            # completion gate closed until the rest is actually scanned.
+            it.disposition = ("not reached: --max-seconds %d budget spent after "
+                              "%d/%d refs" % (args.max_seconds, n - 1, len(items)))
+            it.evidence = "budget exhausted"
+            budget_spent = True
+            continue
         try:
             classify(it, args.base, known)
         except Exception as exc:  # never leave an item UNKNOWN silently
             it.classification = "CONFLICTED_NEEDS_FOCUSED_TASK"
             it.disposition = "classification error, needs focused task: %s" % exc
             it.evidence = "exception"
+        if args.progress_every and n % args.progress_every == 0:
+            # Without this the tool is silent for many minutes and a caller
+            # cannot tell a slow scan from a hung one — which is why these
+            # scans kept being killed rather than waited out.
+            print("reconcile_rescue_refs: %d/%d refs, %.0fs elapsed"
+                  % (n, len(items), time.monotonic() - started),
+                  file=sys.stderr, flush=True)
 
     counts = {}
     for it in items:
@@ -264,6 +322,8 @@ def main() -> int:
         "total": len(items),
         "counts": counts,
         "unknown": counts.get("UNKNOWN", 0),
+        "truncated": budget_spent,
+        "scan_seconds": round(time.monotonic() - started, 1),
         "items": [asdict(it) for it in items],
     }
 
