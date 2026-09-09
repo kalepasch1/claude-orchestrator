@@ -2,8 +2,17 @@
   "name": "claude-orchestrator",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "test": "python3 -m pytest runner/tests/ -x --tb=short -q",
+    "test:lib": "vitest run lib",
+    "test:darwin": "vitest run lib/__tests__/determinations.test.ts",
     "rls-gate-check": "python3 runner/rls_guard.py"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.112.3",
+    "@types/node": "^26.1.0",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.11"
   }
 }

@@ -21,9 +21,18 @@ then: clone the repo, scp runner/.env from the Mac, `claude login`, `nohup bash 
   extension reported "not connected"; the Control Chrome MCP and the in-app browser pane both
   require approval and no one was present to grant it during the unattended run.
   Capacity status therefore unchanged/unknown since 2026-07-02.
+- 2026-09-09 (scheduled task, 2nd run): **not attempted, same blocker.** Claude in Chrome still
+  "not connected" (list_connected_browsers returned empty, retried twice); the in-app browser pane
+  requested access to cloud.oracle.com and was auto-declined with no one present.
+  Capacity status still unknown since 2026-07-02. This task cannot succeed unattended until the
+  Chrome extension is installed + signed in, or the OCI CLI/API is set up (see below).
 
 ## Unblock options (pick one)
 1. Automatic: a scheduled Claude task retries the creation daily and notifies on success (set up 2026-07-02).
 2. Instant: upgrade the OCI account to Pay As You Go — capacity constraint largely disappears and
    A1 within Always Free limits still bills $0 (billing decision is yours).
 3. Manual: retry in console at off-peak hours with this doc.
+4. Make the scheduled retry actually work headlessly — either install/sign in to the Claude in Chrome
+   extension, or set up the OCI CLI (`oci setup config` + API key) so retries use
+   `oci compute instance launch` instead of driving the console UI. The CLI path is the robust one:
+   it returns the "Out of capacity" error directly and needs no browser or approvals.
