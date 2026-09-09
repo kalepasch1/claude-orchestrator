@@ -33,11 +33,44 @@ RECOVERY_PREFIX = "recover-missing-branch-"
 PRESSURE_KEY = "merge_train_pressure"
 ACTIVE_STATES = "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,QUARANTINED)"
 
+class BranchProbeUndetermined(Exception):
+    """The probe could not establish whether a branch exists.
+
+    Deliberately NOT a boolean. This module's history is that both answers are
+    expensive when guessed:
+
+      * guessing MISSING files a recovery task. When `_branch_exists` was replaced by
+        a stub that always returned False, the sweeper treated every passed task as a
+        lost branch; the truncation bug did the same thing for one slug shape and left
+        3,944 recover-missing-branch-* rows, 17.5% of the entire tasks table.
+      * guessing EXISTS sends the merge train after a ref that is not there.
+
+    So a probe that times out raises this instead, and `_queue_recovery` treats it as
+    "ask again next sweep" — the only answer that is true.
+    """
+
+
+#: Bound for a single branch probe. Matches the timeout every other git call in this
+#: module already uses.
+PROBE_TIMEOUT_S = int(os.environ.get("INTEGRATION_SWEEPER_PROBE_TIMEOUT_S", "30"))
+
+
 def _branch_exists(repo, branch):
     if not repo or not os.path.isdir(repo):
         return False
-    return subprocess.run(["git", "rev-parse", "--verify", branch],
-                          cwd=repo, capture_output=True).returncode == 0
+    # Bounded like every other git call here. This was the exception, and it is the
+    # worst place to be unbounded: it runs once per task in the scan (LIMIT=150), so
+    # one wedged `git rev-parse` — a stale network mount, a held index.lock, a repo
+    # mid-gc — hangs the whole sweeper, which then files nothing and reports nothing
+    # wrong. Surfaced by conftest's UnboundedSubprocessInTest warning.
+    try:
+        return subprocess.run(["git", "rev-parse", "--verify", branch],
+                              cwd=repo, capture_output=True,
+                              timeout=PROBE_TIMEOUT_S).returncode == 0
+    except subprocess.TimeoutExpired as exc:
+        raise BranchProbeUndetermined(
+            f"`git rev-parse --verify {branch}` in {repo} exceeded {PROBE_TIMEOUT_S}s"
+        ) from exc
 
 
 # RESTORED: the helpers below were dropped by merges a780345c / d26357a6 and had been
@@ -260,8 +293,11 @@ def _upstream_refs(repo, strict=False):
                 continue
             try:
                 probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
-                                       cwd=repo, capture_output=True)
-            except OSError:
+                                       cwd=repo, capture_output=True,
+                                       timeout=PROBE_TIMEOUT_S)
+            # TimeoutExpired is NOT an OSError, so it has to be named here or the bound
+            # added above would escape a handler that was written to absorb probe faults.
+            except (OSError, subprocess.TimeoutExpired):
                 if strict:
                     return None
                 continue
@@ -649,7 +685,16 @@ def _queue_recovery(task, proj, recovery_index=None):
     # recovery_index is the prebuilt active-recovery index from _active_recovery_index(); sweep()
     # passes it so the duplicate check is one in-memory lookup instead of 2 DB reads per task.
     # None keeps the old per-task DB path (used by any caller that has no index).
-    if not _agent_branch_exists(proj.get("repo_path", ""), task.get("slug")):
+    try:
+        exists = _agent_branch_exists(proj.get("repo_path", ""), task.get("slug"))
+    except BranchProbeUndetermined as exc:
+        # "I could not tell" is not "it is missing". Filing recovery on a probe that
+        # timed out is how a slow disk turns into a churn loop — and the recovery task
+        # it files is itself swept, probed, and re-filed. Skip; the next sweep re-asks.
+        print(f"integration_sweeper: branch probe UNDETERMINED for "
+              f"{task.get('slug')!r} ({exc}); not filing recovery this pass")
+        return False
+    if not exists:
         return _handle_missing_branch(task, proj, recovery_index=recovery_index)
     return False
 
