@@ -1,4 +1,6 @@
 import pytest
+import json
+import sys
 import time
 from unittest.mock import Mock, patch, call
 from runner.deploy_kpi import KPIWriter, write_deploy_kpi, MAX_RETRIES
@@ -202,14 +204,109 @@ class TestKPIWriterRetryBackoff:
 
 
 class TestDefaultKPIWriter:
-    def test_default_write_function(self):
-        writer = KPIWriter()
+    """The default write path, corrected.
 
-        record = {
-            "deploy_id": "deploy-123",
-            "timestamp": "2026-09-03T12:00:00Z",
-            "status": "succeeded",
-        }
+    This class previously asserted `write_kpi(...) is True` against a
+    `_default_write` that logged at DEBUG and returned True without writing
+    anything anywhere. The assertion passed and the contract was false: any
+    caller that did not supply its own `write_func` was told the KPI had been
+    recorded, so a dashboard built on this writer would have shown an empty
+    table while every deploy reported a successful KPI write.
 
-        result = writer.write_kpi(record)
-        assert result is True
+    The default now persists to `coordination_tasks` and returns whether the row
+    actually landed. These tests pin both directions, because the failure that
+    hid here was a success value, not an exception.
+    """
+
+    RECORD = {
+        "deploy_id": "deploy-123",
+        "timestamp": "2026-09-03T12:00:00Z",
+        "status": "succeeded",
+    }
+
+    def test_a_row_is_written_and_success_is_reported(self, monkeypatch):
+        import runner.deploy_kpi as dk
+
+        written = []
+
+        class FakeDb:
+            @staticmethod
+            def insert(table, row, upsert=False):
+                written.append((table, row))
+                return row
+
+        monkeypatch.setitem(sys.modules, "db", FakeDb)
+
+        assert KPIWriter().write_kpi(dict(self.RECORD)) is True
+        assert len(written) == 1
+        table, row = written[0]
+        assert table == "coordination_tasks"
+        assert row["task_type"] == "deploy_kpi"
+        assert json.loads(row["payload"])["deploy_id"] == "deploy-123"
+
+    def test_an_unreachable_backend_reports_failure_rather_than_success(
+            self, monkeypatch):
+        """The regression this class exists for.
+
+        Returning True here is what made the writer look healthy while storing
+        nothing. False is the honest answer; the retry wrapper treats it as
+        "try again" and, after exhaustion, logs and lets the deploy continue.
+        """
+        import runner.deploy_kpi as dk
+
+        class DownDb:
+            @staticmethod
+            def insert(table, row, upsert=False):
+                raise RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY")
+
+        monkeypatch.setitem(sys.modules, "db", DownDb)
+        monkeypatch.setattr(dk.time, "sleep", lambda s: None)
+
+        assert KPIWriter().write_kpi(dict(self.RECORD)) is False
+
+    def test_a_write_failure_never_raises_into_the_deploy(self, monkeypatch):
+        # A KPI is telemetry. It must not be able to fail a deployment.
+        import runner.deploy_kpi as dk
+
+        class Exploding:
+            @staticmethod
+            def insert(table, row, upsert=False):
+                raise MemoryError("boom")
+
+        monkeypatch.setitem(sys.modules, "db", Exploding)
+        monkeypatch.setattr(dk.time, "sleep", lambda s: None)
+
+        assert KPIWriter().write_kpi(dict(self.RECORD)) is False
+
+    def test_the_payload_is_bounded(self, monkeypatch):
+        # coordination_tasks.payload is a text column shared by the whole fleet;
+        # an unbounded error_message would be a way to fill it.
+        written = []
+
+        class FakeDb:
+            @staticmethod
+            def insert(table, row, upsert=False):
+                written.append(row)
+                return row
+
+        monkeypatch.setitem(sys.modules, "db", FakeDb)
+        record = dict(self.RECORD, status="failed", error_message="x" * 50000)
+
+        KPIWriter().write_kpi(record)
+        assert len(written[0]["payload"]) <= 8000
+
+    def test_an_invalid_record_is_rejected_before_any_write_is_attempted(
+            self, monkeypatch):
+        attempts = []
+
+        class FakeDb:
+            @staticmethod
+            def insert(table, row, upsert=False):
+                attempts.append(row)
+                return row
+
+        monkeypatch.setitem(sys.modules, "db", FakeDb)
+
+        assert KPIWriter().write_kpi({"deploy_id": "", "timestamp": "",
+                                      "status": "succeeded"}) is False
+        assert attempts == [], "a record that failed validation was still written"
