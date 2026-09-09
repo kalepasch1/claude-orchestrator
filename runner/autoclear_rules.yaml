@@ -23,3 +23,40 @@ rules:
     kind: secret
     max_usd: 25.0
     enabled: true
+
+# Autoclear policy — defines how to handle stale/conflicting rule resources.
+# When rules conflict or become stale, these policies determine what cleanup actions
+# to take (e.g., delete associated volumes, logs, or artifacts).
+#
+# Policy rule format:
+#   - id: unique policy rule identifier
+#   - action: cleanup action (delete_volume, delete_logs, delete_artifacts)
+#   - target: resource identifier or glob pattern
+#   - condition: (optional) predicate on task context (e.g., "status==completed")
+#   - rollback: if true, flag error when action fails; if false, log warning and continue
+#   - enabled: whether this policy rule is active
+
+policy:
+  # Example: auto-cleanup volumes for completed tasks
+  - id: cleanup-completed-volumes
+    action: delete_volume
+    target: task-*-vol
+    condition: status==completed
+    rollback: false
+    enabled: true
+
+  # Example: auto-cleanup logs for cancelled tasks
+  - id: cleanup-cancelled-logs
+    action: delete_logs
+    target: task-*-logs
+    condition: status==cancelled
+    rollback: false
+    enabled: true
+
+  # Example: auto-cleanup artifacts with rollback on failure
+  - id: cleanup-stale-artifacts
+    action: delete_artifacts
+    target: task-*-artifacts
+    condition: status!=pending
+    rollback: true
+    enabled: true

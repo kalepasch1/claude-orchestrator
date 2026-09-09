@@ -88,13 +88,13 @@ def _evaluate_condition(condition: str, task_context: dict) -> bool:
     if not condition or not isinstance(condition, str):
         return True
 
-    parts = condition.split("==")
+    parts = condition.split("==", 1)
     if len(parts) == 2:
         key, expected = parts[0].strip(), parts[1].strip()
         actual = task_context.get(key)
         return str(actual).lower() == expected.lower()
 
-    parts = condition.split("!=")
+    parts = condition.split("!=", 1)
     if len(parts) == 2:
         key, expected = parts[0].strip(), parts[1].strip()
         actual = task_context.get(key)
