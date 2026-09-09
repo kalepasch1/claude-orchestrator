@@ -205,21 +205,13 @@ class CheckoutGuardRescueTests(unittest.TestCase):
         self.assertFalse(fields["mirrored"],
                          "no origin remote exists here, so the mirror cannot have succeeded")
 
-    def test_failed_stash_pop_does_not_report_a_false_rescue(self):
-        """A rescue that captured nothing must never emit `hotfix-rescued`.
-
-        The dangerous shape is a silent partial: pop fails, the commit captures nothing, the
-        success event fires anyway, and the operator stops looking for work that is actually
-        sitting in the stash pile this guard exists to avoid.
-        """
-        self._write("runner/critical.py", "VERSION = 'hotfix'\n")
-        self._assert_checkout_is_blocked()
-
+    def _with_failing(self, prefix, stderr="fatal: refused"):
+        """Run checkout_guard with one git subcommand forced to fail."""
         real_git = sentinel.git
 
         def flaky(*args, **kwargs):
-            if args[:2] == ("stash", "pop"):
-                return subprocess.CompletedProcess(args, 1, "", "CONFLICT (content): merge conflict")
+            if args[:len(prefix)] == prefix:
+                return subprocess.CompletedProcess(args, 1, "", stderr)
             return real_git(*args, **kwargs)
 
         sentinel.git = flaky
@@ -227,6 +219,48 @@ class CheckoutGuardRescueTests(unittest.TestCase):
             sentinel.checkout_guard({})
         finally:
             sentinel.git = real_git
+
+    def test_the_protected_rescue_never_runs_a_stash_command(self):
+        """Slice 2: the handoff is `checkout -b` alone — no stash push, no pop.
+
+        `git checkout -b` moves HEAD to a new branch at the same commit without touching
+        the index or the working tree, so the dirty files are already on the rescue branch.
+        The stash push/pop pair this replaces bought nothing and could strand the
+        operator's hotfix in the stash pile the guard exists to avoid. Asserting on the
+        *commands* rather than only the end state, because a future refactor that
+        reintroduces a stash would still pass the outcome tests on the happy path.
+        """
+        self._write("runner/critical.py", "VERSION = 'operator hotfix'\n")
+        self._assert_checkout_is_blocked()
+
+        real_git = sentinel.git
+        seen = []
+
+        def recording(*args, **kwargs):
+            seen.append(args)
+            return real_git(*args, **kwargs)
+
+        sentinel.git = recording
+        try:
+            sentinel.checkout_guard({})
+        finally:
+            sentinel.git = real_git
+
+        self.assertTrue(self._rescue_branches(), "setup check: the rescue must have run")
+        mutating = [a for a in seen if a and a[0] == "stash" and a[1:2] != ("list",)]
+        self.assertEqual(mutating, [],
+                         f"the protected-path rescue must not touch the stash, ran: {mutating}")
+
+    def test_a_blocked_branch_creation_does_not_report_a_false_rescue(self):
+        """A rescue that captured nothing must never emit `hotfix-rescued`.
+
+        The dangerous shape is a silent partial: the branch is never created, nothing is
+        committed, the success event fires anyway, and the operator stops looking.
+        """
+        self._write("runner/critical.py", "VERSION = 'hotfix'\n")
+        self._assert_checkout_is_blocked()
+
+        self._with_failing(("checkout", "-b"), "fatal: a branch named ... already exists")
 
         kinds = [k for k, _ in self.events]
         self.assertNotIn("hotfix-rescued", kinds,
@@ -234,31 +268,34 @@ class CheckoutGuardRescueTests(unittest.TestCase):
         self.assertIn("hotfix-rescue-failed", kinds,
                       "a failed rescue must be loud — silence is indistinguishable from loss")
         self.assertEqual(dict(self.events[kinds.index("hotfix-rescue-failed")][1])["stage"],
-                         "stash-pop")
+                         "branch")
 
-    def test_failed_rescue_leaves_the_work_recoverable(self):
-        """Loud failure is acceptable; losing the content is not."""
+    def test_a_refused_commit_does_not_report_a_false_rescue(self):
+        self._write("runner/critical.py", "VERSION = 'hotfix'\n")
+        self._assert_checkout_is_blocked()
+
+        self._with_failing(("-c",), "error: hook declined")
+
+        kinds = [k for k, _ in self.events]
+        self.assertNotIn("hotfix-rescued", kinds)
+        self.assertEqual(dict(self.events[kinds.index("hotfix-rescue-failed")][1])["stage"],
+                         "commit")
+
+    def test_a_failed_rescue_leaves_the_work_in_the_working_tree(self):
+        """Loud failure is acceptable; losing the content is not.
+
+        With the stash gone there is nowhere for the content to hide: a rescue that does
+        not complete must leave the operator's file on disk, exactly as they wrote it.
+        """
         self._write("runner/critical.py", "VERSION = 'operator hotfix — must not be lost'\n")
         self._assert_checkout_is_blocked()
 
-        real_git = sentinel.git
+        self._with_failing(("checkout", "-b"), "fatal: cannot create branch")
 
-        def flaky(*args, **kwargs):
-            if args[:2] == ("stash", "pop"):
-                return subprocess.CompletedProcess(args, 1, "", "CONFLICT")
-            return real_git(*args, **kwargs)
-
-        sentinel.git = flaky
-        try:
-            sentinel.checkout_guard({})
-        finally:
-            sentinel.git = real_git
-
-        # The pop was refused, so the content must still be retrievable from the stash entry.
-        self.assertEqual(len(self._stash_entries()), 1,
-                         "the operator's work must remain in the stash when the pop is refused")
-        blob = _run(self.repo, "git", "show", "stash@{0}:runner/critical.py").stdout
-        self.assertIn("operator hotfix — must not be lost", blob)
+        with open(os.path.join(self.repo, "runner/critical.py")) as f:
+            self.assertIn("operator hotfix — must not be lost", f.read())
+        self.assertEqual(self._stash_entries(), [],
+                         "a failed rescue must not leave the work in a stash either")
 
     def test_guard_never_stashes_untracked_files(self):
         """`git stash push -u` here destroyed 282 batches of queued work (2026-07-08..16)."""

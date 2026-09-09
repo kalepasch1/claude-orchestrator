@@ -275,49 +275,33 @@ def checkout_guard(st=None):
                                or ln[3:].endswith((".py", ".sh"))]
             if protected_dirty:
                 hb = f"hotfix/sentinel-rescue-{int(time.time())}"
-                # THE HANDOFF IS CHECKED AT EVERY STEP (2026-09-09).
+                # THE RESCUE NO LONGER TOUCHES THE STASH AT ALL (2026-09-09, slice 2).
                 #
-                # This sequence used to run unconditionally: push a stash, branch, pop it,
-                # `add -u`, commit, emit "hotfix-rescued". Every one of those can fail, and
-                # none of the return codes were read. The dangerous shape is a failed `pop`
-                # (a conflict, or a `checkout -b` that failed because the branch name already
-                # existed): the commit then captures NOTHING, the emit still fires, and the
-                # operator is told their work was preserved on a branch that is empty while
-                # the real content sits in the stash pile this function exists to avoid.
-                # A false success is worse than a loud failure — it stops anyone looking.
-                _label = f"pre-rescue-{int(time.time())}"
-                _before = len([l for l in (git("stash", "list").stdout or "").splitlines()
-                               if l.strip()])
-                git("stash", "push", "-m", _label)   # atomic handoff
-                _after = len([l for l in (git("stash", "list").stdout or "").splitlines()
-                              if l.strip()])
-                if _after <= _before:
-                    emit("hotfix-rescue-failed", branch=hb, stage="stash-push",
-                         files=len(protected_dirty))
-                    log("hotfix-rescue-failed",
-                        f"could not capture {len(protected_dirty)} protected file(s) for rescue — "
-                        f"work is still dirty in the working tree, NOT lost; leaving the checkout "
-                        f"on '{branch}' rather than risking it")
-                    return
+                # The handoff was `stash push` -> `checkout -b` -> `stash pop`, and slice 1
+                # had to write a failure handler for each of those three stages. The stash
+                # was never needed: `git checkout -b` moves HEAD onto a new branch at the
+                # SAME commit and does not touch the index or the working tree, so the dirty
+                # protected files are already on `hb` the moment it exists. The push/pop pair
+                # bought nothing and added the one genuinely dangerous failure mode in the
+                # sequence — a `pop` that conflicts, stranding the operator's hotfix in the
+                # very stash pile this guard exists to avoid, on a branch that then commits
+                # empty. Deleting the stash is the fix; handling it better is not.
+                #
+                # This is also what the spec asked for in the first place: preserve protected
+                # work "without stashing or discarding changes".
+                #
+                # The remaining stages are still checked, because a false "rescued" is worse
+                # than a loud failure: it stops anyone looking for the work.
                 _cb = git("checkout", "-b", hb)
                 if _cb.returncode != 0:
-                    git("stash", "pop")   # put the operator's work back where it was
+                    # Nothing has moved: no stash to restore, no branch created, the working
+                    # tree is exactly as the operator left it on `branch`.
                     emit("hotfix-rescue-failed", branch=hb, stage="branch",
-                         stderr=(_cb.stderr or "")[-200:])
+                         files=len(protected_dirty), stderr=(_cb.stderr or "")[-200:])
                     log("hotfix-rescue-failed",
                         f"could not create {hb} ({(_cb.stderr or '').strip()[-120:]}) — "
-                        f"work restored to the working tree, checkout left on '{branch}'")
-                    return
-                _pop = git("stash", "pop")
-                if _pop.returncode != 0:
-                    # The content is still in the stash (pop is atomic on failure). Say so
-                    # loudly and by name, and do NOT commit an empty rescue on top of it.
-                    emit("hotfix-rescue-failed", branch=hb, stage="stash-pop",
-                         stash=_label, stderr=(_pop.stderr or "")[-200:])
-                    log("hotfix-rescue-failed",
-                        f"stash '{_label}' would not re-apply on {hb} — the work is INTACT in "
-                        f"that stash entry (git stash list) and needs a human; refusing to "
-                        f"commit an empty rescue that would look like success")
+                        f"{len(protected_dirty)} protected file(s) are untouched in the working "
+                        f"tree, checkout left on '{branch}'")
                     return
                 # `add -u` (tracked modifications ONLY), never `add -A`. -A swept UNTRACKED
                 # files onto the rescue branch, and the subsequent `checkout BASE_BRANCH` then
@@ -332,9 +316,9 @@ def checkout_guard(st=None):
                           f"rescue: operator/agent changes preserved by sentinel ({len(protected_dirty)} file(s))")
                 if _ci.returncode != 0:
                     # Nothing was actually committed (empty index, hook refusal, ...). The work
-                    # is back in the working tree from the pop above, so it is not lost — but
-                    # claiming a rescue that did not happen is exactly the failure mode this
-                    # guard exists to prevent.
+                    # never left the working tree, so it is not lost — but claiming a rescue
+                    # that did not happen is exactly the failure mode this guard exists to
+                    # prevent.
                     emit("hotfix-rescue-failed", branch=hb, stage="commit",
                          stderr=(_ci.stderr or _ci.stdout or "")[-200:])
                     log("hotfix-rescue-failed",

@@ -45,14 +45,20 @@ def _guard(git_impl, st=None):
 
 class TestNeverStashesUntracked(unittest.TestCase):
     def test_no_stash_uses_dash_u_when_checkout_blocked(self):
-        """THE regression: -u must never appear in a stash invocation."""
+        """THE regression: -u must never appear in a stash invocation.
+
+        Dirtied file is `docs/notes.md`, deliberately NOT a protected path: protected
+        paths take the hotfix-branch rescue, which does not stash at all (see
+        `test_protected_dirt_is_rescued_without_any_stash`), so pointing this case at
+        `runner/db.py` would exercise a path with no stash left in it.
+        """
         def git_impl(*args):
             if args[:2] == ("branch", "--show-current"):
                 return _R(stdout="agent/some-branch\n")
             if args[0] == "checkout":
                 return _R(returncode=1, stderr="error: local changes")
             if args[0] == "status":
-                return _R(stdout=" M runner/db.py\n")
+                return _R(stdout=" M docs/notes.md\n")
             return _R()
 
         calls, _ = _guard(git_impl)
@@ -61,6 +67,29 @@ class TestNeverStashesUntracked(unittest.TestCase):
         for c in stashes:
             self.assertNotIn("-u", c, f"stash must never sweep untracked files: {c}")
             self.assertNotIn("--include-untracked", c)
+
+    def test_protected_dirt_is_rescued_without_any_stash(self):
+        """Protected paths are committed to a hotfix branch, never stashed.
+
+        `git checkout -b` carries the dirty tree onto the new branch by itself, so the
+        old `stash push`/`stash pop` handoff was pure risk: a conflicting pop stranded
+        the operator's hotfix in the stash pile this guard exists to avoid.
+        """
+        def git_impl(*args):
+            if args[:2] == ("branch", "--show-current"):
+                return _R(stdout="agent/some-branch\n")
+            if args[0] == "checkout" and args[1:2] != ("-b",):
+                return _R(returncode=1, stderr="error: local changes")
+            if args[0] == "status":
+                return _R(stdout=" M runner/db.py\n")
+            return _R()
+
+        calls, _ = _guard(git_impl)
+        mutating = [c for c in calls if c and c[0] == "stash" and c[1:2] != ("list",)]
+        self.assertEqual(mutating, [],
+                         f"the protected-path rescue must not touch the stash, ran: {mutating}")
+        self.assertTrue([c for c in calls if c[:2] == ("checkout", "-b")],
+                        "the rescue must create the hotfix branch")
 
     def test_status_check_excludes_untracked(self):
         """Dirty-check must ignore untracked files, or it stashes for no reason."""
