@@ -196,9 +196,13 @@ def reconcile_project(project, apply=False, verbose=False):
             rc, sha = _git(repo, "log", prod_ref, "-1", "--format=%h",
                            "--grep", "^agent: {}$".format(slug), "-E")
             proof = sha if rc == 0 and sha else "merged"
+            # db.update() adds the `eq.` operator itself, so match takes raw
+            # values. Matching on `id` also keeps each write a single-row update,
+            # which is what exempts it from bulk_update_guard -- this tool must
+            # never look like the bulk state flip that guard exists to stop.
             db.update(
                 "tasks",
-                {"id": "eq.{}".format(task["id"]), "state": "eq.QUEUED"},
+                {"id": task["id"], "state": "QUEUED"},
                 {"state": "SUPERSEDED",
                  "note": ("reconcile_queue_against_git: already merged into {} as {}; "
                           "closed without a duplicate commit".format(prod_ref, proof))},

@@ -53,6 +53,56 @@ class TestClassify:
         assert set(out[rq.CLASS_ABSENT]) == {"d"}
 
 
+class TestApplyWritesSingleRowUpdates:
+    """Pin the db.update() calling contract.
+
+    First --apply run died with `invalid input syntax for type uuid:
+    "eq.b7c89e21-..."` because the match dict pre-applied the `eq.` operator
+    that db.update() adds itself. Matching on `id` also matters for a second
+    reason: bulk_update_guard exempts single-row updates keyed on id, and this
+    tool must never resemble the bulk state flip that guard exists to stop.
+    """
+
+    def test_match_uses_raw_values_and_keys_on_id(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(rq.db, "update",
+                            lambda t, m, p: calls.append((t, m, p)))
+        monkeypatch.setattr(rq.db, "localize_repo_path", lambda p: str(tmp_path))
+        monkeypatch.setattr(rq.db, "select_all",
+                            lambda *a, **k: [{"id": "uuid-1", "slug": "s1"}])
+        monkeypatch.setattr(rq, "production_branch", lambda r, p: "refs/heads/master")
+        monkeypatch.setattr(rq, "shipped_slugs", lambda r, ref: {"s1"})
+        monkeypatch.setattr(rq, "pushed_branches", lambda r: set())
+        monkeypatch.setattr(rq, "_git", lambda *a, **k: (0, "abc1234"))
+        monkeypatch.setattr(os.path, "isdir", lambda p: True)
+
+        rq.reconcile_project({"id": "p1", "name": "proj"}, apply=True)
+
+        assert len(calls) == 1
+        _table, match, patch = calls[0]
+        assert match["id"] == "uuid-1", "raw value, not eq.-prefixed"
+        assert not str(match["id"]).startswith("eq.")
+        assert "id" in match, "must stay a single-row update for bulk_update_guard"
+        assert patch["state"] == "SUPERSEDED"
+        assert "abc1234" in patch["note"], "note must record the proving commit"
+
+    def test_report_mode_writes_nothing(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(rq.db, "update", lambda t, m, p: calls.append(m))
+        monkeypatch.setattr(rq.db, "localize_repo_path", lambda p: str(tmp_path))
+        monkeypatch.setattr(rq.db, "select_all",
+                            lambda *a, **k: [{"id": "uuid-1", "slug": "s1"}])
+        monkeypatch.setattr(rq, "production_branch", lambda r, p: "refs/heads/master")
+        monkeypatch.setattr(rq, "shipped_slugs", lambda r, ref: {"s1"})
+        monkeypatch.setattr(rq, "pushed_branches", lambda r: set())
+        monkeypatch.setattr(os.path, "isdir", lambda p: True)
+
+        r = rq.reconcile_project({"id": "p1", "name": "proj"}, apply=False)
+
+        assert calls == [], "report mode must never write"
+        assert r[rq.CLASS_SHIPPED] == 1
+
+
 class TestAgainstARealRepo:
     """Exercise the git readers on a throwaway repo, not a mock.
 
