@@ -25,9 +25,17 @@ from intake import (  # noqa: E402
     classify,
     parse_inbound,
 )
+from authority import (  # noqa: E402
+    DEFAULT_CAP_USD,
+    Decision,
+    authorize,
+)
 
 __all__ = [
     "InboundItem",
     "classify",
     "parse_inbound",
+    "Decision",
+    "authorize",
+    "DEFAULT_CAP_USD",
 ]
