@@ -38,25 +38,76 @@ def _profile(hostname=None):
                 "max_ollama_gb": 16, "heavy_models": [], "total_ram_gb": None, "free_ram_gb": None}
 
 
-def _check_revenue_critical_lane():
-    """Check and prioritize revenue-critical lane tasks (set by economic_scheduler)."""
+def _revenue_critical_ordering(tasks, now_iso):
+    """Order revenue-critical tasks for the priority boost: breach-first.
+
+    economic_scheduler defines a 60-minute SLA for the revenue-critical lane
+    (vs 480 default) and the helpers to evaluate it, but nothing called them —
+    this function used to write `priority = idx + 1` over whatever order
+    Postgres happened to return. A task five hours past its SLA therefore got
+    the same treatment as one queued a minute ago, which makes the shorter SLA
+    decorative. Breach first, worst overrun first, then oldest.
+
+    Pure and fail-soft: returns the input order if the SLA helpers are
+    unavailable, so a broken import degrades to the old behaviour rather than
+    dropping the boost entirely.
+    """
+    rows = [t for t in (tasks or []) if isinstance(t, dict)]
     try:
-        critical_tasks = db.select("tasks", {"select": "id,lane,priority",
+        import economic_scheduler
+    except Exception:
+        return rows, 0
+
+    def _key(task):
+        try:
+            status = economic_scheduler.sla_status(task, now_iso)
+        except Exception:
+            return (1, 0.0, 0.0)
+        if status.get("breached"):
+            overrun = (status.get("age_minutes") or 0.0) - (status.get("budget_minutes") or 0.0)
+            return (0, -overrun, 0.0)
+        # Unknown timestamps sort after healthy ones: we cannot show they are
+        # late, and guessing would let an unreadable row jump the queue.
+        if status.get("unknown"):
+            return (2, 0.0, 0.0)
+        return (1, -(status.get("age_minutes") or 0.0), 0.0)
+
+    ordered = sorted(rows, key=_key)
+    breached = 0
+    for task in rows:
+        try:
+            if economic_scheduler.sla_status(task, now_iso).get("breached"):
+                breached += 1
+        except Exception:
+            pass
+    return ordered, breached
+
+
+def _check_revenue_critical_lane():
+    """Check and prioritize revenue-critical lane tasks (set by economic_scheduler).
+
+    Returns (boosted_count, breached_count). The breach count is reported so a
+    starving fast lane is a number on the snapshot rather than a suspicion.
+    """
+    try:
+        critical_tasks = db.select("tasks", {"select": "id,lane,priority,created_at",
                                              "state": "eq.QUEUED",
                                              "lane": "eq.revenue-critical",
                                              "limit": "20"}) or []
-        if critical_tasks:
-            # Boost priority of revenue-critical tasks (lower number = claimed first)
-            for idx, task in enumerate(critical_tasks):
-                try:
-                    db.update("tasks", {"id": task["id"]},
-                              {"priority": idx + 1, "updated_at": "now()"})
-                except Exception:
-                    pass
-            return len(critical_tasks)
-        return 0
+        if not critical_tasks:
+            return 0, 0
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+        ordered, breached = _revenue_critical_ordering(critical_tasks, now_iso)
+        # Boost priority of revenue-critical tasks (lower number = claimed first)
+        for idx, task in enumerate(ordered):
+            try:
+                db.update("tasks", {"id": task["id"]},
+                          {"priority": idx + 1, "updated_at": "now()"})
+            except Exception:
+                pass
+        return len(ordered), breached
     except Exception:
-        return 0
+        return 0, 0
 
 
 def run():
@@ -81,8 +132,9 @@ def run():
     # 5. Report lane availability
     available_lanes = profile["max_ollama_lanes"] - len(running)
 
-    # 6. Prioritize revenue-critical lane tasks (set by economic_scheduler)
-    critical_lane_count = _check_revenue_critical_lane()
+    # 6. Prioritize revenue-critical lane tasks (set by economic_scheduler),
+    # breach-first against the lane's own SLA.
+    critical_lane_count, critical_lane_breached = _check_revenue_critical_lane()
 
     # 7. Publish this machine's capability snapshot so the rest of the fleet knows what's
     # actually available here (models pulled + free lanes), not just that a heartbeat exists.
@@ -106,6 +158,7 @@ def run():
                 "orphans_killed": orphans_killed,
                 "unloaded": unloaded,
                 "critical_lane_count": critical_lane_count,
+                "critical_lane_sla_breached": critical_lane_breached,
                 "checked_at": time.time()
             }),
             "updated_at": "now()"
@@ -116,10 +169,12 @@ def run():
     if orphans_killed or unloaded or critical_lane_count:
         print(f"[lane_scheduler] {hostname}: orphans_killed={orphans_killed} unloaded={unloaded} "
               f"running={len(running)} available={max(0, available_lanes)} ram_ok={ram_ok} "
-              f"critical_lane={critical_lane_count} "
+              f"critical_lane={critical_lane_count} sla_breached={critical_lane_breached} "
               f"profile={profile.get('source')}({profile['max_ollama_lanes']}lanes/{profile.get('max_ollama_gb')}GB)")
 
-    return {"available_lanes": max(0, available_lanes), "ram_ok": ram_ok, "critical_lane_count": critical_lane_count}
+    return {"available_lanes": max(0, available_lanes), "ram_ok": ram_ok,
+            "critical_lane_count": critical_lane_count,
+            "critical_lane_sla_breached": critical_lane_breached}
 
 
 def can_schedule_model(model_name):
