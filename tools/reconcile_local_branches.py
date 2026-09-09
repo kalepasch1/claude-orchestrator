@@ -1201,6 +1201,21 @@ def tip_timestamp(sha: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
+def tip_timestamp(sha: str) -> int:
+    """Committer date of the tip commit itself.
+
+    `%(creatordate:unix)` on a ref can be unavailable (it parses to 0 in
+    enumerate_local_only). The commit object always carries a committer date,
+    so this is the authoritative fallback for "when was this tip authored".
+    Without it the supersession check in classify() is skipped entirely for
+    such refs and they fall through to RECOVERABLE_VALUE -- failing open in
+    the dangerous direction, because a recovery task generated from a stale
+    tip proposes reverting whatever base has done since.
+    """
+    out = git("log", "-1", "--format=%ct", sha).strip()
+    return int(out) if out.isdigit() else 0
+
+
 def remote_branches_containing(sha: str) -> "list[str]":
     if not is_contained_in_any_remote(sha):
         return []
