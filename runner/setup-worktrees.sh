@@ -75,11 +75,58 @@ git -C "$REPO_ROOT" worktree lock "$DEST" --reason "task ${SLUG} in use" 2>/dev/
 mkdir -p "$DEST/.claude"
 [ -f "$REPO_ROOT/.claude/settings.local.json" ] && cp "$REPO_ROOT/.claude/settings.local.json" "$DEST/.claude/settings.local.json" || true
 
+# PORTABLE TIMEOUT: coreutils `timeout` is NOT present on a stock macOS box (it ships as
+# `gtimeout` only if someone `brew install coreutils`). Every call site below used to be
+# `timeout N ... || true`, so on macOS the command failed instantly with
+# "command not found" and the `|| true` swallowed it — the step silently never ran.
+# Prefer timeout/gtimeout when present, otherwise run with a watchdog kill.
+# ORCH_TIMEOUT_FORCE_FALLBACK=1 exercises the watchdog path on a host that does have
+# coreutils; it exists so the fallback is actually covered by tests rather than only
+# running on machines nobody tests on.
+orch_timeout() {
+  _secs="$1"; shift
+  if [ "${ORCH_TIMEOUT_FORCE_FALLBACK:-0}" != "1" ]; then
+    if command -v timeout  >/dev/null 2>&1; then timeout  "$_secs" "$@"; return $?; fi
+    if command -v gtimeout >/dev/null 2>&1; then gtimeout "$_secs" "$@"; return $?; fi
+  fi
+  "$@" &
+  _cmd_pid=$!
+  # Watchdog. `sleep` is POSIX and present on every Unix (unlike GNU `timeout`), so it
+  # is a safe dependency here. It is still guarded: if sleep is somehow unavailable it
+  # returns immediately, and killing the guarded command on that basis would be far
+  # worse than not enforcing the bound — these call sites are all best-effort prep.
+  # So the watchdog only fires when sleep actually completed the full delay.
+  ( if sleep "$_secs" 2>/dev/null; then kill -TERM "$_cmd_pid" 2>/dev/null || true; fi ) &
+  _watchdog_pid=$!
+  # `set -e` must not abort on a non-zero exit we are deliberately capturing.
+  _rc=0; wait "$_cmd_pid" 2>/dev/null || _rc=$?
+  kill -TERM "$_watchdog_pid" 2>/dev/null || true
+  wait "$_watchdog_pid" 2>/dev/null || true
+  return $_rc
+}
+
+# REPO-NATIVE PREP FIRST: some repos ship their own worktree provisioning script that knows
+# exactly which generated dirs must be linked vs. regenerated (e.g. tomorrow's
+# `npm run prepare:worktree` links node_modules AND .nuxt). When a repo declares one, it is
+# authoritative — the generic symlink pass below cannot know a repo's private layout, and
+# guessing wrong is what left fresh worktrees without node_modules, so every dependency-
+# importing lint died on ERR_MODULE_NOT_FOUND and was recorded as a genuine `testfail`.
+WT_PREPARED=false
+if [ "${ORCH_WARM_DEPS:-true}" = "true" ] && [ -f "$DEST/package.json" ] \
+   && grep -q '"prepare:worktree"' "$DEST/package.json" 2>/dev/null; then
+  if (cd "$DEST" && orch_timeout 300 npm run prepare:worktree --silent >/dev/null 2>&1); then
+    WT_PREPARED=true
+    echo "   deps: repo-native 'npm run prepare:worktree'"
+  else
+    echo "   deps: repo-native prepare:worktree failed — falling back to symlink warm" >&2
+  fi
+fi
+
 # WARM DEPS: the agent's build-to-green loop dominates wall-clock, and a fresh worktree would
 # `npm install` from scratch every time (minutes). Symlink the main checkout's node_modules (and
 # reuse path-safe build caches) so `npm run build`/tests start instantly. Symlink = zero copy, zero disk.
 # Disable with ORCH_WARM_DEPS=false. (npm/pnpm resolve a symlinked node_modules fine for builds.)
-if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
+if [ "${ORCH_WARM_DEPS:-true}" = "true" ] && [ "$WT_PREPARED" = "false" ]; then
   # Never share .nuxt: generated tsconfig/type files contain absolute checkout
   # paths and make QA in one worktree type-check stale sources from another.
   for depdir in node_modules .next/cache node_modules/.cache; do
@@ -90,12 +137,25 @@ if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
     fi
   done
 fi
+
+# VERIFY DEPS RESOLVE: a worktree that reaches the agent without a resolvable node_modules
+# turns every lint/test into a false negative that re-queues the task forever. Fail loudly
+# here instead — a provisioning fault must not be laundered into a code verdict.
+if [ -f "$DEST/package.json" ] && [ ! -e "$DEST/node_modules" ]; then
+  if [ -e "$REPO_ROOT/node_modules" ]; then
+    echo "worktree has package.json but no resolvable node_modules: $DEST" >&2
+    exit 75
+  fi
+  echo "   deps: no node_modules in $REPO_ROOT either — skipping dep warm" >&2
+fi
+
 # NUXT TYPES: generated files are worktree-specific because they embed absolute
 # paths. Regenerate the type stubs once, best-effort, so tsc-based acceptance
 # checks use this checkout and can actually go green. Cheap (~seconds).
-if [ "${ORCH_NUXT_PREPARE:-true}" = "true" ] && [ ! -e "$DEST/.nuxt" ] && [ -f "$DEST/package.json" ] \
+if [ "${ORCH_NUXT_PREPARE:-true}" = "true" ] && [ "$WT_PREPARED" = "false" ] \
+   && [ ! -e "$DEST/.nuxt" ] && [ -f "$DEST/package.json" ] \
    && grep -q '"nuxt"' "$DEST/package.json" 2>/dev/null; then
-  (cd "$DEST" && timeout 180 npx nuxi prepare >/dev/null 2>&1) || true
+  (cd "$DEST" && orch_timeout 180 npx nuxi prepare >/dev/null 2>&1) || true
 fi
 
 echo "✅ worktree ready: $DEST  (branch $BRANCH, based on $BASE)"
