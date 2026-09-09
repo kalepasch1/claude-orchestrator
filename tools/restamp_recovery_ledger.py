@@ -186,6 +186,44 @@ def restamp(ledger: dict, fingerprint: str, json_name: str = "",
     return out
 
 
+def check_completeness(ledger: dict) -> str:
+    """Refuse to multiply a ledger that has not met the completion bar.
+
+    Restamping exists to turn ONE sound scan into N audit records. Applied to an
+    UNSOUND scan it does the same thing to the unsoundness: a partial
+    classification acquires a fresh fingerprint, a fresh `restamped_at`, and the
+    appearance of an independent complete audit — and there is nothing in the
+    output to say the underlying evidence was never fully examined.
+
+    Two ways a ledger can be incomplete:
+
+      * `truncated` — the scanner's --max-seconds budget was spent, so refs past
+        that point were never looked at. That flag exists precisely so a partial
+        ledger is honest about itself; propagating it silently would undo the
+        point of having it.
+      * UNKNOWN items — an item the scanner could not classify. Zero UNKNOWN is
+        the stated completion condition for the recovery contract.
+
+    Overridable with --allow-incomplete for the legitimate case (an operator
+    knowingly re-stamping a partial ledger while the rest of the scan catches
+    up), because refusing outright would just push people to hand-edit the JSON.
+    """
+    if not isinstance(ledger, dict):
+        return "source is not a ledger object"
+    if ledger.get("truncated") is True:
+        scanned = ledger.get("scan_seconds")
+        return ("source ledger is truncated (scanner budget spent%s); its "
+                "unscanned items would inherit a fingerprint claiming a "
+                "complete audit"
+                % (" after %ss" % scanned if scanned is not None else ""))
+    unknown = unknown_count(ledger.get("items"))
+    if unknown:
+        return ("source ledger has %d UNKNOWN item(s); the completion bar is "
+                "zero, and re-stamping would republish unclassified evidence "
+                "under a new audit fingerprint" % unknown)
+    return ""
+
+
 def check_drift(meta: dict, expect_repo: str, expect_base_sha: str) -> str:
     """Return a human-readable refusal reason, or '' when the reuse is sound."""
     if not isinstance(meta, dict):
@@ -219,12 +257,27 @@ def main(argv=None) -> int:
     ap.add_argument("--expect-base-sha", default="")
     ap.add_argument("--allow-base-drift", action="store_true",
                     help="proceed despite repo/base mismatch (records the override)")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="proceed despite a truncated or UNKNOWN-carrying source "
+                         "ledger (records the override)")
     args = ap.parse_args(argv)
 
     ledger = load_ledger(args.src)
     if not ledger or not isinstance(ledger.get("items"), list):
         sys.stderr.write("refused: %s is not a readable ledger with an items list\n"
                          % args.src)
+        return 2
+
+    # Completeness is checked BEFORE drift, because it is the more fundamental
+    # objection: a drifted-but-complete scan is a judgement call about whether
+    # the evidence still applies, while an incomplete one has not finished
+    # looking at the evidence at all. Reporting the weaker reason first would
+    # invite an operator to reach for --allow-base-drift and be told the same
+    # thing again.
+    incomplete = check_completeness(ledger)
+    if incomplete and not args.allow_incomplete:
+        sys.stderr.write("refused: %s (pass --allow-incomplete to override)\n"
+                         % incomplete)
         return 2
 
     if is_flat(ledger):
@@ -242,6 +295,14 @@ def main(argv=None) -> int:
     out = restamp(ledger, args.fingerprint,
                   json_name=args.json_name or os.path.basename(args.out),
                   source_path=args.src, project=args.project, repo=args.repo)
+    if incomplete:
+        # An overridden incompleteness must travel WITH the ledger. Otherwise
+        # the derived record is indistinguishable from one backed by a complete
+        # scan, which is the whole thing the check exists to prevent.
+        if isinstance(out.get("meta"), dict):
+            out["meta"]["restampIncompleteOverride"] = incomplete
+        else:
+            out["restamp_incomplete_override"] = incomplete
     if reason:
         # Record the override in whichever shape this ledger uses.
         if isinstance(out.get("meta"), dict):
