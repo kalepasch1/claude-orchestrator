@@ -38,10 +38,32 @@ STAGES = (
 )
 
 
+def supports_flag(script: str, tools: str, flag: str) -> bool:
+    """Does this stage script accept `flag`?
+
+    The stages are separate programs that gain options at different times, and
+    the driver must keep working against a stage that has not caught up yet:
+    passing an unknown flag makes argparse exit 2, which the driver would record
+    as a `driver_error` — a whole evidence class going unclassified because of a
+    command line, which is precisely the failure this driver is written to make
+    impossible. So the flag is offered, never assumed.
+    """
+    try:
+        with open(os.path.join(tools, script), "r", errors="replace") as fh:
+            return flag in fh.read()
+    except OSError:
+        return False
+
+
 def stage_argv(script: str, tools: str, base: str, fingerprint: str, repo: str,
-               out: str, args) -> "list[str]":
+               out: str, args, budget: int = 0) -> "list[str]":
     argv = [sys.executable, os.path.join(tools, script),
             "--base", base, "--fingerprint", fingerprint, "--out", out]
+    if budget and supports_flag(script, tools, "--max-seconds"):
+        argv += ["--max-seconds", str(budget)]
+    if args.progress_every is not None and supports_flag(
+            script, tools, "--progress-every"):
+        argv += ["--progress-every", str(args.progress_every)]
     if script == "reconcile_worktree_evidence.py":
         argv += ["--repo", repo]
         if args.dropbox:
@@ -54,7 +76,7 @@ def stage_argv(script: str, tools: str, base: str, fingerprint: str, repo: str,
 
 
 def run_stage(script: str, kind: str, tools: str, base: str, fingerprint: str,
-              repo: str, args) -> "tuple[list, str]":
+              repo: str, args, budget: int = 0) -> "tuple[list, str]":
     path = os.path.join(tools, script)
     if not os.path.isfile(path):
         return [{
@@ -72,7 +94,7 @@ def run_stage(script: str, kind: str, tools: str, base: str, fingerprint: str,
     os.close(fd)
     try:
         proc = subprocess.run(
-            stage_argv(script, tools, base, fingerprint, repo, tmp, args),
+            stage_argv(script, tools, base, fingerprint, repo, tmp, args, budget),
             cwd=repo, capture_output=True, text=True, errors="replace",
         )
         if not os.path.getsize(tmp):
@@ -92,7 +114,10 @@ def run_stage(script: str, kind: str, tools: str, base: str, fingerprint: str,
         items = ledger.get("items", [])
         for it in items:
             it.setdefault("kind", kind)
-        return items, "ok"
+        # "truncated" is louder than "ok": a stage that ran out of budget
+        # classified only part of its evidence class, and the merged ledger must
+        # say so rather than average it away into an overall pass.
+        return items, ("truncated" if ledger.get("truncated") else "ok")
     finally:
         try:
             os.unlink(tmp)
@@ -111,6 +136,15 @@ def main() -> int:
     ap.add_argument("--exclude-path", default="")
     ap.add_argument("--exclude-branch", default="")
     ap.add_argument("--only", default="", help="comma-separated stage scripts")
+    ap.add_argument("--max-seconds", type=int, default=0,
+                    help="total scan budget across all stages; 0 = unlimited. "
+                         "Split evenly, because a stage that overruns must not "
+                         "silently consume the budget of the stages after it — "
+                         "that would leave a whole evidence class unscanned "
+                         "while the earlier stage looked thorough.")
+    ap.add_argument("--progress-every", type=int, default=None,
+                    help="forwarded to any stage that supports it; "
+                         "omit to leave each stage on its own default")
     args = ap.parse_args()
 
     repo = os.path.abspath(args.repo)
@@ -122,11 +156,16 @@ def main() -> int:
     seen: set = set()
     stage_status: dict = {}
 
+    planned = [s_ for s_, _ in STAGES if not only or s_ in only]
+    per_stage_budget = (args.max_seconds // len(planned)) if (
+        args.max_seconds and planned) else 0
+
     for script, kind in STAGES:
         if only and script not in only:
             continue
         items, status = run_stage(script, kind, tools, args.base,
-                                  args.fingerprint, repo, args)
+                                  args.fingerprint, repo, args,
+                                  per_stage_budget)
         stage_status[script] = status
         for it in items:
             key = (it.get("kind", kind), it.get("ref", ""))
@@ -153,6 +192,11 @@ def main() -> int:
         "counts": counts,
         "counts_by_kind": by_kind,
         "unknown": counts.get("UNKNOWN", 0),
+        # One stage running out of budget makes the WHOLE merged ledger
+        # partial: the classes are disjoint, so an unscanned stage is an entire
+        # evidence class nobody looked at. Marking the merge truncated is what
+        # stops restamp_recovery_ledger reusing it as a complete audit.
+        "truncated": any(v == "truncated" for v in stage_status.values()),
         "items": merged,
     }
 
