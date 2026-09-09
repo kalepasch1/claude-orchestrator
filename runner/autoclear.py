@@ -54,6 +54,21 @@ def load_rules() -> list[dict]:
     return rules
 
 
+def _load_policies_from_yaml() -> list[dict]:
+    try:
+        import yaml  # type: ignore
+        with open(_YAML_FALLBACK, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return [p for p in (data.get("policy") or []) if p.get("enabled", True)]
+    except Exception:
+        return []
+
+
+def load_policies() -> list[dict]:
+    """Return active policies from YAML (policies not yet stored in DB)."""
+    return _load_policies_from_yaml()
+
+
 def _parse_usd(detail: str) -> Optional[float]:
     """Extract the first dollar amount from a card's detail string."""
     m = re.search(r"\$([0-9]+(?:\.[0-9]+)?)", detail or "")

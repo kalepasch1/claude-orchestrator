@@ -16,6 +16,12 @@ ssh -i scripts/cloud-vm/runner2_ed25519 ubuntu@<PUBLIC_IP>
 then: clone the repo, scp runner/.env from the Mac, `claude login`, `nohup bash runner/keepalive.sh &`
 (cloud-init already installed node22 + claude-code CLI + python deps; see /home/ubuntu/SETUP-NEXT.txt)
 
+## Retry log
+- 2026-09-09 (scheduled task): **not attempted** — no browser was reachable. Claude in Chrome
+  extension reported "not connected"; the Control Chrome MCP and the in-app browser pane both
+  require approval and no one was present to grant it during the unattended run.
+  Capacity status therefore unchanged/unknown since 2026-07-02.
+
 ## Unblock options (pick one)
 1. Automatic: a scheduled Claude task retries the creation daily and notifies on success (set up 2026-07-02).
 2. Instant: upgrade the OCI account to Pay As You Go — capacity constraint largely disappears and
