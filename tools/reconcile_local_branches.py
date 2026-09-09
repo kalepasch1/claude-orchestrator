@@ -38,6 +38,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 
 # Strict apply verdict lives in one module so every reconciler agrees on what
@@ -166,12 +167,53 @@ def changed_files(base: str, sha: str) -> "list[str]":
     return [f for f in out.splitlines() if f.strip()]
 
 
+# (base, path) -> unix time of the newest commit on `base` touching `path`.
+# Called once per touched file per branch tip; `base` is fixed for a run, so the
+# answer is a pure function of the key. Local tips cluster on the same handful
+# of paths, so without this the scan re-walks the same history hundreds of
+# times.
+_NEWEST_TOUCH_CACHE: "dict[tuple[str, str], int]" = {}
+
+
 def newest_touch(base: str, path: str) -> int:
+    key = (base, path)
+    hit = _NEWEST_TOUCH_CACHE.get(key)
+    if hit is not None:
+        return hit
     out = git("log", "-1", "--format=%ct", base, "--", path).strip()
-    return int(out) if out.isdigit() else 0
+    val = int(out) if out.isdigit() else 0
+    _NEWEST_TOUCH_CACHE[key] = val
+    return val
+
+
+def is_contained_in_any_remote(sha: str, remote: str = "origin") -> bool:
+    """Cheap NEGATIVE test for "is this tip published anywhere on the remote?"
+
+    `git branch -r --contains <sha>` is the expensive way to answer this: it
+    walks history from every remote tip, and this repo carries ~1,725 of them.
+    Paid once per local-only tip (~1,000 of those) it is the single largest cost
+    in this scan.
+
+    `rev-list --count <sha> --not --remotes=<remote>` answers the same question
+    with one traversal: it counts commits reachable from `sha` but from no
+    remote ref. Zero means the tip is fully reachable from the remote — i.e.
+    SOME remote branch contains it. Non-zero means no remote branch can.
+
+    And non-zero is the common case, because these tips were selected precisely
+    for being local-only. So the expensive naming query is only paid on the rare
+    tip that is actually published. A parse failure returns True, which merely
+    falls through to the exact query — the fast path may never be the reason an
+    owner goes unfound.
+    """
+    out = git("rev-list", "--count", sha, "--not", "--remotes=" + remote).strip()
+    if not out.isdigit():
+        return True
+    return int(out) == 0
 
 
 def remote_branches_containing(sha: str) -> "list[str]":
+    if not is_contained_in_any_remote(sha):
+        return []
     out = git("branch", "-r", "--contains", sha)
     return [
         b.strip() for b in out.splitlines()
@@ -258,6 +300,13 @@ def main() -> int:
     ap.add_argument("--exclude-self", default="",
                     help="branch name of the reconciling task itself")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--max-seconds", type=int, default=0,
+                    help="0 = no budget. When spent, the remaining tips are left "
+                         "UNKNOWN and the ledger is written anyway, so a slow "
+                         "scan yields a partial-but-honest ledger rather than "
+                         "nothing at all.")
+    ap.add_argument("--progress-every", type=int, default=25,
+                    help="emit a progress line to stderr every N tips; 0 = silent")
     args = ap.parse_args()
 
     items = enumerate_local_only(args.exclude_self)
@@ -266,13 +315,29 @@ def main() -> int:
 
     known = base_patch_ids(args.base, args.depth) if items else set()
 
-    for it in items:
+    started = time.monotonic()
+    budget_spent = False
+    for n, it in enumerate(items, 1):
+        if args.max_seconds and time.monotonic() - started > args.max_seconds:
+            # Left UNKNOWN on purpose. A tip nobody looked at must not be given
+            # a plausible label: "ALREADY_PRESENT" would retire real local-only
+            # work unexamined, which is the loss this reconciler exists to
+            # prevent. UNKNOWN keeps the exit code non-zero.
+            it.disposition = ("not reached: --max-seconds %d budget spent after "
+                              "%d/%d tips" % (args.max_seconds, n - 1, len(items)))
+            it.evidence = "budget exhausted"
+            budget_spent = True
+            continue
         try:
             classify(it, args.base, known)
         except Exception as exc:  # never leave an item UNKNOWN silently
             it.classification = "CONFLICTED_NEEDS_FOCUSED_TASK"
             it.disposition = "classification error, needs focused task: %s" % exc
             it.evidence = "exception"
+        if args.progress_every and n % args.progress_every == 0:
+            print("reconcile_local_branches: %d/%d tips, %.0fs elapsed"
+                  % (n, len(items), time.monotonic() - started),
+                  file=sys.stderr, flush=True)
 
     counts: dict = {}
     for it in items:
@@ -285,6 +350,8 @@ def main() -> int:
         "total": len(items),
         "counts": counts,
         "unknown": counts.get("UNKNOWN", 0),
+        "truncated": budget_spent,
+        "scan_seconds": round(time.monotonic() - started, 1),
         "items": [asdict(it) for it in items],
     }
 
