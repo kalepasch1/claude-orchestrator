@@ -284,3 +284,20 @@ Here are the extracted conventions and DO/AVOID rules:
 * DO use `Instrumented walk` to measure directory traversal and optimize performance.
 * AVOID making changes to production code that are not explicitly documented in the commit message.
 * AVOID making changes that break existing functionality without a clear justification.
+
+
+## Learned from merged work (auto)
+Here are the extracted **CONVENTIONS** and **DO/AVOID rules**:
+
+**Conventions:**
+* Use `pytest` fixtures to stub out expensive or slow functionality.
+* Use `autouse` fixtures to make them run automatically for all tests in a module.
+* Use `allow_env_sweep` markers to opt-in to using the real `env_permission_sweep` function.
+* Use `Convention-lint` to check for coding conventions and report any grandfathered violations.
+* Document changes to production code in the commit message.
+
+**DO/AVOID rules:**
+* DO use profiling and instrumentation to measure and optimize performance-critical code.
+* DO use `cProfile` to measure execution time and identify performance bottlenecks.
+* AVOID making changes to production code that are not explicitly documented in the commit message.
+* AVOID making changes that break existing functionality without a clear justification.
