@@ -211,6 +211,21 @@ def is_contained_in_any_remote(sha: str, remote: str = "origin") -> bool:
     return int(out) == 0
 
 
+def tip_timestamp(sha: str) -> int:
+    """Committer date of the tip commit itself.
+
+    `%(creatordate:unix)` on a ref can be unavailable (it parses to 0 in
+    enumerate_local_only). The commit object always carries a committer date,
+    so this is the authoritative fallback for "when was this tip authored".
+    Without it the supersession check in classify() is skipped entirely for
+    such refs and they fall through to RECOVERABLE_VALUE -- failing open in
+    the dangerous direction, because a recovery task generated from a stale
+    tip proposes reverting whatever base has done since.
+    """
+    out = git("log", "-1", "--format=%ct", sha).strip()
+    return int(out) if out.isdigit() else 0
+
+
 def remote_branches_containing(sha: str) -> "list[str]":
     if not is_contained_in_any_remote(sha):
         return []
@@ -263,8 +278,16 @@ def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
         return
 
     # 5. Base rewrote every touched path after this tip was authored.
-    if item.created_at and all(
-        newest_touch(base, f) > item.created_at for f in item.files
+    #
+    # `item.created_at` comes from %(creatordate:unix) and can be 0 when the
+    # ref carries no usable creator date. Guarding the whole check on it fails
+    # open: the tip skips supersession and falls through to step 6, which calls
+    # anything still-appliable RECOVERABLE_VALUE. Fall back to the tip commit's
+    # own committer date, which always exists, so an unavailable creator date
+    # no longer silently converts a superseded tip into a recovery proposal.
+    authored_at = item.created_at or tip_timestamp(item.sha)
+    if authored_at and all(
+        newest_touch(base, f) > authored_at for f in item.files
     ):
         item.classification = "SUPERSEDED_BY_NEWER"
         item.disposition = (
