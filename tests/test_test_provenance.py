@@ -12,7 +12,27 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-import test_provenance as TP  # noqa: E402
+# `tools/test_provenance.py` — the provenance-marker linter this file tests — is
+# not in the repository. The 45 tests below were committed without their subject,
+# so they have never run.
+#
+# They did not fail visibly either, because `pytest.ini` sets `testpaths =
+# runner`, which excludes this directory: nothing collected the file. The moment
+# anything DOES collect `tests/` the bare import raised ModuleNotFoundError at
+# module scope, and pytest treats a collection error as fatal — one absent module
+# aborted the entire 146-file test root before a single test ran.
+#
+# Skipping at module scope is the honest state: the tests are preserved as the
+# executable specification of the missing linter (they describe parse/format/
+# insert/check_file/main precisely), they announce why they are not running, and
+# they no longer take the rest of the directory down with them. Implementing
+# `tools/test_provenance.py` against this spec is its own task; when it lands,
+# this skip stops firing and 45 tests come back on their own.
+TP = pytest.importorskip(
+    "test_provenance",
+    reason="tools/test_provenance.py is not implemented; these tests are its "
+           "executable specification and skip until it exists",
+)
 
 SHA = "95fc17a356b7"
 
