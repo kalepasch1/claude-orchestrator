@@ -20,6 +20,7 @@ import os, sys, re, subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import auth_expiry
 
 # --- Configuration (env vars with sensible defaults) ---
 
@@ -31,11 +32,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # --- Diagnosis patterns ---
 
-_AUTH_ERROR = re.compile(
-    r"not logged in|auth.?fail|auth.?error|token expired|unauthorized|"
-    r"login required|session expired|credential.*invalid",
-    re.I,
-)
+# Sourced from `auth_expiry` rather than restated. The local copy had drifted:
+# it did not match "OAuth token has expired. Please run /login", "invalid api
+# key" or "authentication_error", so a RUNNING task stuck on dead credentials was
+# diagnosed `unknown` and left to age out on the stale timeout instead of being
+# reset the moment the cause was visible.
+_AUTH_ERROR = auth_expiry.AUTH_EXPIRY_RE
 
 _BUILD_TEST_FAIL = re.compile(
     r"build.?fail|test.?fail|compilation.?error|type.?error|lint.?error|"
