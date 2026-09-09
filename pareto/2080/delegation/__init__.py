@@ -37,8 +37,22 @@ from negotiate import (  # noqa: E402
     propose,
     settle,
 )
+from disputes import (  # noqa: E402
+    DRAFT_FOOTER,
+    DRAFT_HEADER,
+    GROUNDS,
+    DisputeDraft,
+    draft,
+    render,
+)
 
 __all__ = [
+    "DisputeDraft",
+    "draft",
+    "render",
+    "DRAFT_HEADER",
+    "DRAFT_FOOTER",
+    "GROUNDS",
     "InboundItem",
     "classify",
     "parse_inbound",
