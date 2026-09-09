@@ -28,20 +28,29 @@ DO_NOT_WIRE = {
         "optional guarded-import module, unrelated to queue health.",
         "",
     ),
-    "remotegc": (
-        "workflow_guardrails.gc_remote_branches() deleted origin/agent/* by AGE ONLY "
-        "(`git push origin --delete`, ORCH_REMOTE_BRANCH_GC_DRY_RUN=false in .env) and — unlike "
-        "local branch_gc.py — did not check task state, so it could delete the branch of a "
-        "QUEUED/RUNNING/BLOCKED task. Irreversible external deletion = material.",
-        "gc_remote_branches must mirror branch_gc.py's terminal_slugs gate "
-        "(DONE/MERGED/QUARANTINED only) and fail safe when that set is unavailable.",
-    ),
 }
 
-# The one entry whose prerequisite this change set satisfies. Kept separate from DO_NOT_WIRE
-# so that satisfying a prerequisite is a deliberate, reviewable edit rather than a silent one:
-# the gate now exists, but wiring the job is still an operator decision.
-PREREQUISITE_SATISFIED = {"remotegc"}
+# Kept separate from DO_NOT_WIRE so that satisfying a prerequisite stays a deliberate,
+# reviewable edit. Empty is the correct resting state: an entry whose prerequisite is met
+# belongs below, wired — or back on DO_NOT_WIRE with a new reason. Sitting here, satisfied
+# and unwired, is what cost five weeks.
+PREREQUISITE_SATISFIED = set()
+
+#: Jobs that were on DO_NOT_WIRE, had their prerequisite met, and are NOW SCHEDULED.
+#: Recorded rather than deleted, so the next audit that finds remotegc doing
+#: `git push --delete` on a schedule learns it was a decision — not the hazard the old
+#: entry described. tests/test_do_not_touch.py asserts every name here really is in
+#: runner.py's _SCHEDULE; that assertion is the one that would have caught this.
+WIRED_AFTER_PREREQUISITE = {
+    "remotegc": (
+        "Wired 2026-09-09 as remotegc-3600 in runner.py's _SCHEDULE. Its prerequisite — "
+        "mirror branch_gc.py's terminal_slugs gate (DONE/MERGED/QUARANTINED only) and fail "
+        "safe when that set is unavailable — was satisfied 2026-08-04, alongside a "
+        "commits_reachable_elsewhere check and an archive before every delete. It then sat "
+        "unwired for five weeks because the note in _SCHEDULE still described the pre-gate "
+        "behaviour, while apparently-law accumulated 547 remote refs, 517 of them empty."
+    ),
+}
 
 
 def is_deliberately_unscheduled(job):

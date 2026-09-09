@@ -3231,12 +3231,20 @@ _SCHEDULE = [
     ("rtconfig-300",  "rtconfig",           "interval", 300),   # canonical fleet_config real-time sync (realtime_config_sync.run()). This is
                                                                   # the runner half of "integrate real-time sync into the Mac runner"; the
                                                                   # Vercel half lives in a different repo and is not reachable from here.
-    # NOTE: "remotegc" (workflow_guardrails.gc_remote_branches, deletes origin/agent/* branches
-    # >7d old) has the same never-scheduled gap but is intentionally left OUT here: with
-    # ORCH_REMOTE_BRANCH_GC_DRY_RUN=false in .env it does real, irreversible `git push --delete`
-    # on the remote, and unlike branch_gc.py's local equivalent it doesn't check the branch's
-    # task is in a terminal state first — it could delete a branch for a task that's still
-    # QUEUED/RUNNING/BLOCKED just because the branch itself is old. Left for a human decision.
+    ("remotegc-3600", "remotegc",           "interval", 3600),  # delete origin/agent/* once its task is TERMINAL and its
+                                                                # commits are reachable from another origin ref. WIRED
+                                                                # 2026-09-09. This note used to say gc_remote_branches
+                                                                # "doesn't check the branch's task is in a terminal state
+                                                                # first"; it has checked since 2026-08-04 — terminal-slug
+                                                                # gate mirroring branch_gc.py, a refusal to delete when that
+                                                                # set is unavailable, a commits_reachable_elsewhere check,
+                                                                # and an archive before every delete. The gate landed and
+                                                                # this comment did not, so the job stayed off five weeks for
+                                                                # a danger already fixed, while apparently-law reached 547
+                                                                # remote refs of which 517 carried nothing. Same
+                                                                # never-scheduled defect as rtmon and priorityscore above,
+                                                                # in its most expensive form: the fix existed and only the
+                                                                # sentence about it was stale.
     ("sweep-90",      "integration_sweeper.py","interval",90),  # passed-tests-but-not-integrated -> canonical train
     ("sentinel-300",  "sentinel.py",        "interval", 300),   # self-healing: DB-outage offline sweeps, checkout drift, runner singleton, RAM clamp, stale code
     ("medic-90",      "resource_medic.py",  "interval", 90),    # autonomous resource bots: predictive OOM guard, thrash-hunter (durable model exclusion / lane lowering), process hygiene, loop breaker
