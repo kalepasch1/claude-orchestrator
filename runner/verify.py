@@ -81,6 +81,15 @@ def review_diff(worktree, base="main", max_chars=None, dependents=None, project=
         m = re.search(r"\{.*\}", out, re.S)
         d = json.loads(m.group(0)) if m else {"verdict": "pass", "notes": "unparseable; defaulting pass"}
         d["verdict"] = "fail" if str(d.get("verdict", "")).lower().startswith("fail") else "pass"
+        # `notes` is normalised here for the same reason `verdict` is: everything
+        # downstream reads it positionally. The review model supplies this dict, and a
+        # bare {"verdict": "pass"} is a perfectly ordinary completion — but run_task's
+        # success path does v["notes"] straight into integrate(), so a missing key
+        # raised KeyError: 'notes' AFTER the agent had already built and committed the
+        # branch. The task died at the last step, its work orphaned, and the sweeper
+        # requeued it as an "orphaned-running" repair. Defaulting the key costs nothing
+        # and removes that entire failure class at the source.
+        d.setdefault("notes", "")
         # Grounding gate: a fail whose notes cannot cite any verbatim diff content is
         # an ungrounded claim (the "env-var name flagged as secret" class). Confirm it.
         if d["verdict"] == "fail":
