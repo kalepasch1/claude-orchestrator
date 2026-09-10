@@ -1,0 +1,1592 @@
+{
+  "audit_fingerprint": "d6bdec16843f5b7f187f53d514e24d30bb7b73ee4062ae47d7d7f4e0a5edc7f7",
+  "task_slug": "chatgpt-local-reconcile-beethoven-d6bdec16843f",
+  "evidence_kind": "local_only_branch_tips",
+  "repo": "/Users/kpasch/Documents/beethoven/claude-orchestrator",
+  "reconciled_at": "2026-09-08T22:45:02.677987+00:00",
+  "summary": {
+    "total_items": 225,
+    "classifications": {
+      "ALREADY_PRESENT": 161,
+      "SUPERSEDED_BY_NEWER": 64
+    },
+    "unknown_items": 0
+  },
+  "items": [
+    {
+      "ref": "_rb",
+      "sha": "fcef8e066",
+      "subject": "agent: dropbox-wave-c-compounding-codegen-platform-spine--slice-2 \u2014 unblock train: passport digest order-independence + ",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-add-focused-max-turns-detection-test-in-",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-add-max-turns-error-handling-logging-fie",
+      "sha": "1fc5f6b9e",
+      "subject": "agent: approval-digest-batching-add-max-turns-error-handling-logging-fie",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/approval-digest-batching-add-targeted-regression-test-for-max-tur",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-ensure-clean-diff-and-re-run-checks-afte",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-final-verification-ensure-no-remaining-c",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-fix-conflicting-runner-approval-push-py-",
+      "sha": "5c4eaf2f5",
+      "subject": "fix(executor): the fleet had no working coder and could not tell",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-fix-unblock-conflicting-git-rebase-by-re",
+      "sha": "d90037dde",
+      "subject": "fix(banner): \"reset by peer\" is not a quota reset",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-handle-max-turns-terminal-reason-in-clau",
+      "sha": "94258a20e",
+      "subject": "agent: approval-digest-batching-handle-max-turns-terminal-reason-in-clau",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/approval-digest-batching-implement-verify-max-turns-detection-log",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-inspect-and-fix-git-conflict-in-runner-a",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-manual-rescope-conflict-resolution",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-preserve-max-turns-errors-through-call-c",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-propagate-max-turns-error-fields",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-resolve-approval-push-merge-conflict",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-resolve-conflicting-runner-approval-push",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-split-1-resolve-merge-conflict-in-runner",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-split-3-ensure-formatting-linting-consis",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/approval-digest-batching-wire-error-terminal-reason-through-claud",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-04cfd39",
+      "sha": "baa379023",
+      "subject": "agent: backlog-batch-beethoven-04cfd39",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-22ee5bc-pinned-express-lan-slice-5",
+      "sha": "00c5591c5",
+      "subject": "agent: backlog-batch-beethoven-22ee5bc-pinned-express-lan-slice-5",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-22ee5bc-prompt-evolution-bandit-add-test-checks",
+      "sha": "2b371960a",
+      "subject": "recovery-intent-stub: backlog-batch-beethoven-22ee5bc-prompt-evolution-bandit-add-test-checks",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-22ee5bc-remaining-stale-backlog-items",
+      "sha": "6993006d2",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-e0945946bd0d",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-2863be9-add-new-files",
+      "sha": "59b85efe4",
+      "subject": "fix(tests): a stub registry kept in sync by grep was not in sync, and 35 files paid for it",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-2863be9-update-tests-slice-3",
+      "sha": "c902fd14e",
+      "subject": "agent: backlog-batch-beethoven-2863be9-update-tests-slice-3",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-4b9d260-split-the-consolidated-stale-backlog-rec",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-52d9da1",
+      "sha": "43a707024",
+      "subject": "security(fleet_config): close the credential READ door, which fails silently",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-comprehen",
+      "sha": "06e27d03c",
+      "subject": "Stop failing good code because the test gate cannot find npm",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-load-orch",
+      "sha": "06e27d03c",
+      "subject": "Stop failing good code because the test gate cannot find npm",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-split-the-build-tas",
+      "sha": "06e27d03c",
+      "subject": "Stop failing good code because the test gate cannot find npm",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-verify-pytest-passe",
+      "sha": "06e27d03c",
+      "subject": "Stop failing good code because the test gate cannot find npm",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-write-comprehensive",
+      "sha": "06e27d03c",
+      "subject": "Stop failing good code because the test gate cannot find npm",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-e34b0f0-slice-4",
+      "sha": "a67938fbf",
+      "subject": "regen-from-cache(template): backlog-batch-beethoven-e34b0f0-slice-4",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/backlog-batch-beethoven-ea327e9",
+      "sha": "e7a5e6336",
+      "subject": "agent: backlog-batch-beethoven-ea327e9",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-unknown-7cc8037-human-bypass-status-watcher-and-ticketin",
+      "sha": "fd9a87598",
+      "subject": "agent: backlog-batch-unknown-7cc8037-human-bypass-status-watcher-and-ticketin",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-unknown-7cc8037-parse-backlog-log-and-extract-guardrail-",
+      "sha": "7847a72a3",
+      "subject": "agent: backlog-batch-unknown-7cc8037-parse-backlog-log-and-extract-guardrail-",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-unknown-7cc8037-queue-clearance-guardrail8-gating-check",
+      "sha": "ae7390c30",
+      "subject": "agent: backlog-batch-unknown-7cc8037-queue-clearance-guardrail8-gating-check",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/backlog-batch-unknown-7cc8037-recover-stale-backlog-queue-velocity-she",
+      "sha": "be8d4f071",
+      "subject": "agent: backlog-batch-unknown-7cc8037-recover-stale-backlog-queue-velocity-she",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/canary-claude-27-slice-3-adapt-prior-merged-patterns-extract-proven-diffs-extrac",
+      "sha": "3a3a7ac04",
+      "subject": "agent: canary-claude-27-slice-3-adapt-prior-merged-patterns-extract-proven-diffs-extrac",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/canary-codex-31",
+      "sha": "adad8b40e",
+      "subject": "agent: canary-codex-31",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/canary-codex-53",
+      "sha": "74c5db982",
+      "subject": "agent: canary-codex-53",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/canary-codex-58-finalize-and-commit-commit-and-push-fixes",
+      "sha": "72e521478",
+      "subject": "agent: dropbox-pareto-life-goal-autonomy-stack-p4-household-legal-doc-updater-notificat",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/canary-deepseek-1",
+      "sha": "a9fa358e0",
+      "subject": "Merge branch 'agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-12' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/canary-gemini-25-canary-gemini-25-request-retry-logic",
+      "sha": "7cfe7857c",
+      "subject": "agent: canary-gemini-25-canary-gemini-25-request-retry-logic",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/canary-gemini-25-commit-and-test",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/canary-gpt-mini-3",
+      "sha": "34305095f",
+      "subject": "test(canary): fix the canary validator's own checks",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/canary-self-deploy-live-slice-4",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-create-recovery-ledger-records-fo",
+      "sha": "a0135be3f",
+      "subject": "fix(release): a release must not fail because two agents rewrote the same cache",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-manage-conflicts-and-unknown-item",
+      "sha": "a0135be3f",
+      "subject": "fix(release): a release must not fail because two agents rewrote the same cache",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-split-the-build-task-into-smaller",
+      "sha": "a0135be3f",
+      "subject": "fix(release): a release must not fail because two agents rewrote the same cache",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-10d6c3591091",
+      "sha": "c8cead4db",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-10d6c3591091",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-215fba971ab9",
+      "sha": "70820c0da",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-215fba971ab9",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-383306e1301e",
+      "sha": "d2b25c8b6",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-383306e1301e",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-4d83819ff744",
+      "sha": "25ece4a25",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-4d83819ff744",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-5e30d0e05126",
+      "sha": "cf2b83c2e",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-5e30d0e05126",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-656c0680da0f-coordination-recovery-ledger-reco",
+      "sha": "469019c39",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-656c0680da0f-coordination-recovery-ledger-reco",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-656c0680da0f-inventory-and-classify-evidence-i",
+      "sha": "4bda18e2e",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-656c0680da0f-inventory-and-classify-evidence-i",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-6d094ab1edfa",
+      "sha": "7cfd86c01",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-6d094ab1edfa",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-7401bcfcbcb1",
+      "sha": "10ea50ce4",
+      "subject": "fix(reconcile): carry the same classifier as its sibling branches",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-797668765dad",
+      "sha": "4b47c19de",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-797668765dad",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-7b6f925e1e7a",
+      "sha": "20ba3d128",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-7b6f925e1e7a",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-ab0a05980686",
+      "sha": "fb8d3cb68",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-ab0a05980686",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-ac93979d6c7a",
+      "sha": "a29d1d59e",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-ac93979d6c7a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-b8e9c5940976",
+      "sha": "bae16db4b",
+      "subject": "feat(releases): record the 419 production deployments the ledger could not see",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-bf841dc595e6",
+      "sha": "a202c0f0a",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-bf841dc595e6",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-c54c216bc5d3",
+      "sha": "58700f631",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-c54c216bc5d3",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-c59669efa6f0",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-d6ab3873f38e",
+      "sha": "6c8bf094d",
+      "subject": "fix(reconcile): carry the same classifier as its sibling branches",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-d6bdec16843f",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-d854da55ab98",
+      "sha": "5e6cd8b47",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-d854da55ab98",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-da1590032ff1-split-the-reconcilation-task-into",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-e4b9212494ba",
+      "sha": "9ab141624",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-e4b9212494ba",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/chatgpt-local-reconcile-beethoven-ebc84c355791",
+      "sha": "4021013e6",
+      "subject": "agent: chatgpt-local-reconcile-beethoven-ebc84c355791",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/copyfix-beethoven-07151953-slice-5",
+      "sha": "11fc3334e",
+      "subject": "agent: copyfix-beethoven-07151953-slice-5",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy",
+      "sha": "42fb10bed",
+      "subject": "agent: copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy-clean-140991",
+      "sha": "37a6932a8",
+      "subject": "self-heal: clean files from agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy (31 files)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/copyfix-beethoven-07180848-slice-5",
+      "sha": "3a3a7ac04",
+      "subject": "agent: canary-claude-27-slice-3-adapt-prior-merged-patterns-extract-proven-diffs-extrac",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/crashloop-governor-049e2f00",
+      "sha": "77126f9c6",
+      "subject": "fix(appreview): drain the review queue oldest-first, so its tail is reachable",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/deployfix-beethoven-07152141",
+      "sha": "b0c2209aa",
+      "subject": "agent: deployfix-beethoven-07152141",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/deploysilence-kalepasch-com",
+      "sha": "22259a0c4",
+      "subject": "fix(deploy-silence): measure origin, not the local ref, and compare deploy to commit",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-apparently-merge-vigil-into-apparently-gaming-exams-for-all--master-task",
+      "sha": "e30581381",
+      "subject": "recovery-intent-stub: dropbox-apparently-merge-vigil-into-apparently-gaming-exams-for-all--master-task",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-1-integrate-adapted-cha",
+      "sha": "526720afc",
+      "subject": "fix(tests): eval_harness's causal attribution was measuring its own fail-soft arm",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2",
+      "sha": "9456613ab",
+      "subject": "feat(heuristics): add is_merge_commit() message predicate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2-recovered",
+      "sha": "bd34514d8",
+      "subject": "agent: dropbox-beethoven-audit-addendum-two-session-recon-slice-2-recovered",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3",
+      "sha": "59de85f23",
+      "subject": "feat(intake): assumptions-ledger gate core (swarm rank 8)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3-recovered",
+      "sha": "9d60d16ed",
+      "subject": "agent: dropbox-wave-c-compounding-codegen-platform-spine--slice-1-recovered",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4",
+      "sha": "59de85f23",
+      "subject": "feat(intake): assumptions-ledger gate core (swarm rank 8)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered",
+      "sha": "1444c6eef",
+      "subject": "agent: dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-3",
+      "sha": "28a7d6d10",
+      "subject": "recovery-intent-stub: recover-missing-branch-dropbox-wave-c-compounding-codegen-platform-spine-pipeline-structure-part-6",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-5-recovered",
+      "sha": "42a57164f",
+      "subject": "agent: dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-5-recovered",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-1",
+      "sha": "4ac6b09dc",
+      "subject": "agent: dropbox-beethoven-fleet-immune-system-throughput-a-slice-1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-2",
+      "sha": "2ad146dfc",
+      "subject": "agent: dropbox-beethoven-fleet-immune-system-throughput-a-slice-2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-2-machine-pipeline-heartbeat-alerts-p0",
+      "sha": "90b2163ce",
+      "subject": "agent: dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-2-machine-pipeline-heartbeat-alerts-p0",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-contracts",
+      "sha": "28a7d6d10",
+      "subject": "recovery-intent-stub: recover-missing-branch-dropbox-wave-c-compounding-codegen-platform-spine-pipeline-structure-part-6",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-configure-operator-s-",
+      "sha": "f892656a8",
+      "subject": "fix(stub-guard): a named threshold is not a stubbed function",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-establish-shared-cont",
+      "sha": "f892656a8",
+      "subject": "fix(stub-guard): a named threshold is not a stubbed function",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-remove-competition-in",
+      "sha": "f892656a8",
+      "subject": "fix(stub-guard): a named threshold is not a stubbed function",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-split-the-build-task-",
+      "sha": "f892656a8",
+      "subject": "fix(stub-guard): a named threshold is not a stubbed function",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-2-split-the-build-task-",
+      "sha": "f892656a8",
+      "subject": "fix(stub-guard): a named threshold is not a stubbed function",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-commit-the-final-impl",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-fix-source-config-tes",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reconstruct-the-small",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-repair-dependencies-b",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reproduce-or-inspect-",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-1",
+      "sha": "6c519ff5d",
+      "subject": "fix(durability): finish the archive pushes that quietly never landed",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2-clean-129448",
+      "sha": "358297faa",
+      "subject": "self-heal: clean files from agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2 (18 files)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-batch-fusion-unpause",
+      "sha": "cffc4f77d",
+      "subject": "test(batch_fusion): pin drain env so generator-throttling assertion is hermetic",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-governor-ra",
+      "sha": "dbd87a342",
+      "subject": "recovery-intent-stub: dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-governor-ra",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-hermetic-worktree-preflight",
+      "sha": "446cb9f1a",
+      "subject": "Merge branch 'agent/copyfix-beethoven-07180848-slice-3-public-landing-domain-intent-labels-copy-clean-144858' (auto-reso",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-10",
+      "sha": "6b3bad6d7",
+      "subject": "agent: dropbox-prompt-merged-diff-memory-system-task-spec-group-10",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-18",
+      "sha": "b960c680d",
+      "subject": "agent: dropbox-prompt-merged-diff-memory-system-task-spec-group-18",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-2-recovered",
+      "sha": "abc2402ac",
+      "subject": "agent: dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-2-recovered",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-3",
+      "sha": "4331d4734",
+      "subject": "chore: commit cost intelligence report drift to unblock fleet auto-pull",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-4",
+      "sha": "8331d7a05",
+      "subject": "agent: dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-4",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-release-pipeline-completion-windows-half-l-slice-2-ensure-test-dependenc",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-1-define-shared-typescr",
+      "sha": "1aef5875a",
+      "subject": "agent: dropbox-wave-c-compounding-codegen-platform-spine--slice-1-define-shared-typescr",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-2-reuse-project-helpers",
+      "sha": "4331d4734",
+      "subject": "chore: commit cost intelligence report drift to unblock fleet auto-pull",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-3",
+      "sha": "9de61b3d8",
+      "subject": "agent: dropbox-wave-c-compounding-codegen-platform-spine--slice-3 \u2014 platform spine + order-independent passport digest, ",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-4",
+      "sha": "7eba81da2",
+      "subject": "Merge branch 'agent/copyfix-beethoven-07180848-slice-3-public-landing-portfolio-objectives-copy' (auto-resolved)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-fix-the-root-cause-or-cl",
+      "sha": "9a875d0fe",
+      "subject": "fix(quality-gate): an advisory finding on a passing gate was thrown away",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-inspect-the-actual-error",
+      "sha": "9a875d0fe",
+      "subject": "fix(quality-gate): an advisory finding on a passing gate was thrown away",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-split-the-task-into-smal",
+      "sha": "9a875d0fe",
+      "subject": "fix(quality-gate): an advisory finding on a passing gate was thrown away",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-canary-codex-39-check-the-shelved-queue-for-possible-iss",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-canary-codex-39-check-the-test-results-for-clues",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-canary-codex-39-consider-rebasing-the-branch-manually",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-canary-codex-39-re-run-the-test-with-increased-test-spee",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-canary-codex-39-split-the-build-task-into-smaller-sub-ta",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-dropbox-wave-c-compounding-codegen-platform-spine-sl-split-the-b",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/factory-unblock-improve-immediate-auto-merge-on-te-slice-2",
+      "sha": "ccb809706",
+      "subject": "regen-from-cache(template): factory-unblock-improve-immediate-auto-merge-on-te-slice-2",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/factory-unblock-orch-cross-project-depends-fix-remaining-conflicts-r",
+      "sha": "a92148d6c",
+      "subject": "agent: factory-unblock-orch-cross-project-depends-fix-remaining-conflicts-r",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/fix-deploy-verification-stuck-20260903-dv27-decompose-the-large-build-task-into-",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/focused-conflicted-rescue-refs-13-items-5dc36bf5e0-slice-2",
+      "sha": "a5a40d666",
+      "subject": "recovery: focused per-hunk triage of the 13 CONFLICTED rescue refs",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/followup-fix-merged-diff-test-helper-hardcoded-master-checkout",
+      "sha": "96ed6c05e",
+      "subject": "agent: followup-fix-merged-diff-test-helper-hardcoded-master-checkout",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/human-decision-git-error-mac235-20260903-h35m-check-and-resolve-git-errors-on-ma",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/human-decision-git-error-mac235-20260903-h35m-monitor-fleet-cycles-for-mac-235-l",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/human-decision-git-error-mac235-20260903-h35m-verify-git-sync-is-successful-on-m",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/human-decision-git-error-mac235-20260903-h35m-verify-host-mac-235-lan-s-git-stat",
+      "sha": "e16f754c7",
+      "subject": "fix(merge-train): 5s was losing the repo lock 607 times",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/human-decision-git-error-mac290-20260905-h4wz-split-large-build-task-into-smalle",
+      "sha": "7aeae1ff5",
+      "subject": "fix: a documented format string is not a hardcoded credential",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-automate-configuration-management-slice-1",
+      "sha": "b79b31caf",
+      "subject": "fix(build_cache): the documented TTL was never applied, and the tests were for a different module",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/improve-enhance-branch-management-with-automated-r-slice-2",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-enhance-test-automation-for-ci-cd-pipeli-slice-5",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-enhanced-testing-pipeline-fix-source-confi-slice-4",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-enhanced-testing-pipeline-inspect-local-br-slice-2",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-enhanced-testing-pipeline-missing-branch-r-slice-1",
+      "sha": "715d176a4",
+      "subject": "feat(recovery): batch recover_missing_branches \u2014 merge-train missing branches heal from the library instead of quarantin",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-implement-automated-branch-management-dedu-slice-4",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-implement-real-time-queue-state-update-slice-5",
+      "sha": "bcacf428e",
+      "subject": "correct a false claim, and fix the two defects that let memory_guard fire 15 times and fix nothing",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-missing-branch-auto-creator-slice-3-locate-decomposition-event-handler-a-clean-152441",
+      "sha": "dc65c5428",
+      "subject": "self-heal: clean files from agent/improve-missing-branch-auto-creator-slice-3-locate-decomposition-event-handler-a (30 f",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-identify-owner-module-in",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-validate-repository",
+      "sha": "149dd6183",
+      "subject": "agent: improve-missing-branch-auto-recovery-fleet-wide-slice-3-validate-repository",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-optimize-ci-cd-pipeline-slice-1",
+      "sha": "c02f59c55",
+      "subject": "agent: improve-optimize-ci-cd-pipeline-slice-1",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/improve-optimize-ci-cd-pipeline-slice-5",
+      "sha": "5ea8f1f92",
+      "subject": "agent: improve-optimize-ci-cd-pipeline-slice-5",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-pre-decomposition-branch-availability-ve-slice-3-implement-bootstrap-inj",
+      "sha": "7711bd7ab",
+      "subject": "feat(runner): branch bootstrap queue injection \u2014 stage missing base branches ahead of tasks at enqueue time",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-upgrade-to-ai-powered-error-handling-slice-1",
+      "sha": "87c60c8c7",
+      "subject": "agent: improve-upgrade-to-ai-powered-error-handling-slice-1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-clean-151469",
+      "sha": "a9e98fc3c",
+      "subject": "self-heal: clean files from agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests (3 files)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-eliminate",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-final-ver",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-confl",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-uncom",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-make-test",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-run-full-",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-verify-an",
+      "sha": "8f04c7c38",
+      "subject": "fix(account_pool): add thread-safety locks for module-level singletons",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-3575",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-3575-check-and-escalate-the-guardrail-8-halt-",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-3575-derive-and-update-numbers-via-sql",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-3575-run-the-orch-operator-p1-queue-clearance",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-3575-schedule-a-new-session",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-3575-split-the-task-into-3-sub-tasks",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-tq95",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-tq95-split-the-build-task-into-smaller-sub-ta",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260821-wz71",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/log-p1-queue-clearance-20260822-b7n4",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/merge-train-blocker-passport-ts-overlay-conflict",
+      "sha": "9849c8cfe",
+      "subject": "agent: merge-train-blocker-passport-ts-overlay-conflict",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/metaopt-d1-scoreboard-persist-and-dashboard-surface-added-metrics-on-the-dashboa",
+      "sha": "5f7943490",
+      "subject": "Merge branch 'agent/deployfix-beethoven-07160110' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/orch-config-consumption-apply-minimal-conflict-resolution",
+      "sha": "c5462d625",
+      "subject": "feat(readiness): a funded account is not sufficient to resume",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-config-consumption-final-verification-run-full-build-tests-",
+      "sha": "fb8954399",
+      "subject": "fix(hisanta): resolve the four conflicted files, once and in one direction",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe-split-the-bu",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-fix-any-remaining-failures-and-rerun-ful",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-inspect-conflict-restore-repo-state",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-rebase-cross-project-depends-core",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-implement-safe-chan",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-split-the-build-tas",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-write-acceptance-te",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/orch-cross-project-depends-verify-full-runner-suite",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-repair-dependencies-b",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-reproduce-or-inspect-",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-split-the-build-task-",
+      "sha": "25eaa9006",
+      "subject": "fix(stub-guard): one constant in the base was quarantining every smarter candidate",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/qafix-beethoven-08020135",
+      "sha": "785e24563",
+      "subject": "recovery-intent-stub: qafix-beethoven-08020135",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/qafix-beethoven-08021822",
+      "sha": "0f7456645",
+      "subject": "recovery-intent-stub: qafix-beethoven-08021822",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/qafix-beethoven-09021459-checkout-the-latest-code-and-verify-the-",
+      "sha": "2cec93d74",
+      "subject": "fix(release): union-merge append-only transcripts instead of refusing them",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/qafix-pareto-2080-07062319-slice-1-slice-5-fix-source-config-tests",
+      "sha": "f9ffdc455",
+      "subject": "fix: the last 13 suite failures, and the three gates that were blocking a good push",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/recover-codex-worktree-orchestrator-visibility-remediation",
+      "sha": "ae3e2d4a9",
+      "subject": "agent: recover-codex-worktree-orchestrator-visibility-remediation",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/recover-rescue-refs-group-scanner-and-queue-health",
+      "sha": "2045db153",
+      "subject": "agent: recover-rescue-refs-group-scanner-and-queue-health",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/relfix-beethoven-299c6b3c3bc6",
+      "sha": "1685c6a28",
+      "subject": "recovery-intent-stub: relfix-beethoven-299c6b3c3bc6",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/remediate-dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-c",
+      "sha": "a44ff8558",
+      "subject": "agent: remediate-dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/remediate-improve-immediate-auto-merge-on-test-pass-low-r-slice-3-locate-existin",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/remediate-improve-streamline-merge-workflow-with-ai-based-slice-3-update-documen",
+      "sha": "f08dcdfa2",
+      "subject": "chore(gitignore): the bridge writes one level deeper than the ignore reached",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "agent/remediation-canary-real-regression-25eaa900",
+      "sha": "6aa7cf97d",
+      "subject": "recovery-intent-stub: remediation-canary-real-regression-25eaa900",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "agent/wedged-quarantine",
+      "sha": "3b04e7f90",
+      "subject": "agent: wedged-quarantine",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "audit/recover-stranded-20260723",
+      "sha": "338615dbf",
+      "subject": "feat: add fleet-wide V15 adaptive runtime",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "backlog-batch-illuminati-1d1b027",
+      "sha": "0abf5b6d4",
+      "subject": "fix(backlog-batch-illuminati): timestamp in empty batch result + floating point precision in tests",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "backup-node-precatchup2-20260818",
+      "sha": "ee62af443",
+      "subject": "Merge branch 'agent/canary-codex-3' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "chore/chatgpt-bridge-protocol",
+      "sha": "5d7f14f51",
+      "subject": "feat(chatgpt-bridge): register the 2080 repo (pareto/2080)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "codex/orchestrator-session-fabric",
+      "sha": "59de85f23",
+      "subject": "feat(intake): assumptions-ledger gate core (swarm rank 8)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "cowork/improvement-loop-repair-20260901",
+      "sha": "1f9e80830",
+      "subject": "Make the self-improvement loop measurable, and stop it destroying its own work",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "feat/oc-autoclear-policy",
+      "sha": "d5b885691",
+      "subject": "Merge commit 'c95d78b6f97a4d7f0e460f054f636448455c3527' into HEAD",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "feat/oc-autoclear-policy-final",
+      "sha": "c95d78b6f",
+      "subject": "stop thirteen unit tests from walking the operator's home directory",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "fix-branch",
+      "sha": "54b416f7f",
+      "subject": "fix: govern() respects ORCH_DISABLE_MEM_GATE \u2014 skip RAM throttle+clamp when set",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "fix-release-train-manifest-import-20260807",
+      "sha": "6d77311f9",
+      "subject": "fix: add missing release_manifest import in release_train.py",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "fix/preflight-substantial-specs",
+      "sha": "d3a6b47ab",
+      "subject": "feat(claim): a floor for the four apps the owner actually named",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "fix/reserved-worktree-guard-20260812",
+      "sha": "6d5471008",
+      "subject": "fix(worktree): stop _free_branch force-removing an operator's worktree",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "fix/session-20260816-repairs",
+      "sha": "75d7e08b5",
+      "subject": "Merge branch 'agent/chatgpt-local-reconcile-beethoven-c54c216bc5d3' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "improve/cost-ledger-fail-soft",
+      "sha": "b0ba3f39e",
+      "subject": "Add fail-soft error handling to cost_ledger module",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "mac1-wip-2026-07-30",
+      "sha": "5bc36d6af",
+      "subject": "fleet: ship orchestrator changes + restart",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "merge/madeus-to-master",
+      "sha": "68746f3b5",
+      "subject": "fix(deploy): remove ignoreCommand that canceled all master prod builds",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "orchestrator/dev-local",
+      "sha": "50f90b625",
+      "subject": "fix(slicer): a dropped slice left its successors depending on a row that was never written",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "probe",
+      "sha": "6c519ff5d",
+      "subject": "fix(durability): finish the archive pushes that quietly never landed",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "qa-backup-20260825",
+      "sha": "77ab94372",
+      "subject": "fix(tests): eval_harness's causal attribution was measuring its own fail-soft arm",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "rescue/operator-worktree-20260901",
+      "sha": "79ce0a0cb",
+      "subject": "rescue: uncommitted operator-session work found in the live orchestrator checkout",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "runner/counterfactual-replay-impl-7aeae1ff",
+      "sha": "7aeae1ff5",
+      "subject": "fix: a documented format string is not a hardcoded credential",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "salvage/fleet-runner-edits-20260806",
+      "sha": "59ff15ead",
+      "subject": "feat(fleet): make multi-Mac an advantage \u2014 single integration owner, stale-host guard, flow metric",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "verify/cowork-batch1",
+      "sha": "609c9b2af",
+      "subject": "Merge branch 'agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered' into verify/cowork-batch1",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "verify/solo3",
+      "sha": "f1aeea3f2",
+      "subject": "Merge remote-tracking branch 'origin/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered' into ve",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "local-only unmerged branch; no remote counterpart; work superseded by later merges"
+    },
+    {
+      "ref": "work-branch",
+      "sha": "e74d6fee6",
+      "subject": "Merge branch 'agent/log-p1-queue-clearance-guardrail8-held-20260827-x4qp' (auto-resolved)",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    },
+    {
+      "ref": "worktree-agent-a4d8f842ebe05a089",
+      "sha": "cc9ec6dc9",
+      "subject": "fleet: replace hardcoded per-Mac MACHINE_PROFILES with dynamic machine_profile.py + cross-Mac model visibility via fleet",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "content merged into master; local branch is stale reference"
+    }
+  ]
+}
