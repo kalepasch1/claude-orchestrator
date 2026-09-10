@@ -19,12 +19,20 @@ Classification vocabulary (matches the orchestrator recovery-ledger contract):
 
 Usage:
     python3 tools/reconcile_rescue_refs.py --base origin/main \
+        --newest master \
         --fingerprint <audit-sha> --out .orch/recovery-ledger.json
+
+Pass --newest whenever the merge train is holding unpushed commits, which is
+most of the time. Without it the scan can only see decisions that have already
+reached --base, and a ref that applies cleanly *because* the base still holds a
+file a newer commit deleted gets recovered by undoing that deletion. See
+`deletion_supersedes` for the run where that was 39% of the recoverable set.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import subprocess
@@ -153,6 +161,49 @@ def newest_touch(base: str, path: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
+@functools.lru_cache(maxsize=None)
+def path_in_tree(ref: str, path: str) -> bool:
+    """Whether `path` exists in `ref`'s tree. Cached: the answer cannot change mid-run."""
+    return bool(git("ls-tree", "-r", "--name-only", ref, "--", path, check=False).strip())
+
+
+@functools.lru_cache(maxsize=None)
+def deleting_commit(ref: str, path: str) -> str:
+    """The most recent commit on `ref` that DELETED `path`, as `sha date subject`."""
+    return git(
+        "log", "-1", "--format=%h %ad %s", "--date=short", "--diff-filter=D",
+        ref, "--", path, check=False,
+    ).strip()
+
+
+def deletion_supersedes(files, present_in_base, present_in_newest) -> bool:
+    """True when every touched path is still in the base but GONE from the newer lineage.
+
+    WHY THIS IS NOT COVERED BY `newest_touch`.
+    Step 5 asks whether the base has rewritten every touched path since the ref was
+    cut. It cannot see a decision that has not reached the base yet — and the base is
+    usually behind, because the merge train holds unpushed commits for hours at a
+    time. A ref then "applies cleanly" for the worst possible reason: the base still
+    contains the very files a newer commit deleted on purpose.
+
+    That is not hypothetical. Reconciling beethoven under fingerprint 169a0a07fa18,
+    59 of 151 RECOVERABLE_VALUE verdicts — 39% — were refs touching only
+    web/types/log.js and web/utils/cookie-compat.js. Both were removed by d63e93da1
+    ("finish fbd49cff8: drop the last 2 compiled .js files shadowing their .ts
+    sources") the day before the scan. d63e93da1 is on local master and on
+    orchestrator/dev; it had not reached origin/master, which was the scan base.
+    Recovering those 59 would have re-added compiled .js files shadowing their
+    TypeScript sources — reintroducing the exact bug fbd49cff8 was written to fix.
+
+    Pure and injectable so the rule can be tested without a git fixture: the two
+    predicates are the only things that touch the repository.
+    """
+    files = list(files or [])
+    if not files:
+        return False
+    return all(present_in_base(f) and not present_in_newest(f) for f in files)
+
+
 def agent_branches_containing(sha: str) -> "list[str]":
     out = git(
         "branch", "-r", "--contains", sha, "--list", "origin/agent/*", check=False
@@ -165,7 +216,7 @@ def diff_applies(diff_text: str, base: str = "HEAD", cwd: str = ".") -> bool:
     return apply_verdict(diff_text, base, cwd) in LANDABLE
 
 
-def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
+def classify(item: Item, base: str, known_patch_ids: "set[str]", newest: str = "") -> None:
     # 1. Reachable from base -> already merged.
     if git_ok("merge-base", "--is-ancestor", item.sha, base):
         item.classification = "ALREADY_PRESENT"
@@ -211,6 +262,25 @@ def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
         item.evidence = "base newer on every touched path"
         return
 
+    # 5b. Every touched file was DELETED on a newer lineage the base has not caught
+    #     up to. See deletion_supersedes: the base is usually behind the merge train,
+    #     and a ref that applies cleanly only because the base still holds files a
+    #     newer commit deliberately removed is the most dangerous false positive this
+    #     tool can produce — it recovers by undoing.
+    if newest and deletion_supersedes(
+        item.files,
+        lambda f: path_in_tree(base, f),
+        lambda f: path_in_tree(newest, f),
+    ):
+        who = deleting_commit(newest, item.files[0])
+        item.classification = "SUPERSEDED_BY_NEWER"
+        item.disposition = (
+            "all %d touched file(s) deleted on %s, which %s has not caught up to; "
+            "recovering would undo that deletion" % (len(item.files), newest, base)
+        )
+        item.evidence = "deleted on %s by %s" % (newest, who or "an unnamed commit")
+        return
+
     # 6. Still has value. Does it still apply?
     if diff_applies(diff_text, base):
         item.classification = "RECOVERABLE_VALUE"
@@ -236,6 +306,12 @@ def main() -> int:
     ap.add_argument("--depth", type=int, default=1500,
                     help="how many base commits to fingerprint for patch-id match")
     ap.add_argument("--limit", type=int, default=0, help="0 = all refs")
+    ap.add_argument("--newest", default="",
+                    help="a ref AHEAD of --base (the local integration tip, e.g. "
+                         "master or orchestrator/dev). Used to catch refs that only "
+                         "apply because the base has not received a deletion yet. "
+                         "Empty disables the check; supply it whenever the merge "
+                         "train is holding unpushed commits, which is most of the time.")
     args = ap.parse_args()
 
     items = enumerate_refs()
@@ -248,7 +324,7 @@ def main() -> int:
 
     for it in items:
         try:
-            classify(it, args.base, known)
+            classify(it, args.base, known, args.newest)
         except Exception as exc:  # never leave an item UNKNOWN silently
             it.classification = "CONFLICTED_NEEDS_FOCUSED_TASK"
             it.disposition = "classification error, needs focused task: %s" % exc
