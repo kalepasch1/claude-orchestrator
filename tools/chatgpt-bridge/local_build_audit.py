@@ -757,13 +757,43 @@ def registry_orphans(state_path: Path) -> list[dict[str, Any]]:
     return sorted(orphans, key=lambda row: (str(row["project"]), str(row["slug"])))
 
 
+def _evidence_digest(project: str, items: list[dict[str, Any]], base: str = "") -> str:
+    """Stable digest of an evidence SET, independent of when it was snapshotted.
+
+    The audit fingerprint is unique per snapshot by construction — it hashes the
+    snapshot, so two sweeps of an unchanged evidence set never collide and the
+    duplicate check never fires. That is why one already-committed answer was
+    re-derived ~86 times: the manifest cleanup re-opened the items, each sweep
+    minted a fresh fingerprint, and a fresh fingerprint always looks new.
+
+    This digest hashes the evidence CONTENT instead: the per-item fingerprint
+    each item already carries in the registry, sorted so snapshot order cannot
+    move it, plus the base it would be reconciled against. Same evidence and
+    same base means the same answer, so the task is not filed twice. Change any
+    item — including one ref inside a rescue-ref collection — or move the base,
+    and the digest moves too, because then the answer really can differ.
+
+    Hashing the whole item (not a handful of top-level keys) is what makes the
+    second part true: a rescue-ref group carries its refs in a nested list, so a
+    shallow key digest would read a 3-ref and a 4-ref collection as identical
+    and suppress genuinely new evidence.
+    """
+    identity = sorted(_fingerprint(item) for item in items)
+    return _fingerprint({"project": project, "base": base or "", "identity": identity})
+
+
 def queue_groups(
     groups: dict[str, list[dict[str, Any]]], intake: Path, state_path: Path,
+    base: str = "",
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     state = _json_read(state_path, {"schema": 1, "queued": {}, "last_run": 0})
     state.setdefault("queued", {})
     legacy_migration = "evidence" not in state
     state.setdefault("evidence", {})
+    # evidence-set digest -> the task that already answered it. Keyed on the
+    # evidence, not on the snapshot, so re-snapshotting settled evidence is a
+    # no-op rather than a new task.
+    state.setdefault("digests", {})
     queued, duplicates = [], []
     # Budget shared across all projects this run, so a single project cannot
     # consume the whole recovery allowance.
@@ -815,6 +845,17 @@ def queue_groups(
                                "slug": prior_slug or "already-covered"})
             continue
         new_items = [item for _, item in unseen]
+        # The evidence gate. Everything above decides WHICH items are unclaimed;
+        # this decides whether that exact set, against this base, has already
+        # been answered. Without it a re-opened item mints a fresh fingerprint
+        # every sweep and files another task for a question already committed
+        # to a ledger.
+        digest = _evidence_digest(project, new_items, base)
+        prior_digest = state["digests"].get(digest)
+        if prior_digest:
+            duplicates.append({"project": project, "fingerprint": digest,
+                               "slug": prior_digest.get("slug") or "already-reconciled"})
+            continue
         fp = _fingerprint({"project": project, "evidence": new_items})
         slug = f"chatgpt-local-reconcile-{_slug(project, 30)}-{fp[:12]}"
         filename = f"chatgpt-local-audit-{_slug(project, 40)}-{fp[:12]}.md"
@@ -825,6 +866,9 @@ def queue_groups(
             os.replace(tmp, path)
         state["queued"][fp] = {"project": project, "slug": slug, "intake": str(path),
                                 "created_at": int(time.time()), "items": len(new_items)}
+        state["digests"][digest] = {"project": project, "slug": slug, "fingerprint": fp,
+                                    "base": base or "", "created_at": int(time.time()),
+                                    "items": len(new_items)}
         for item_fp, item in unseen:
             state["evidence"][item_fp] = {
                 "project": project, "slug": slug, "kind": item.get("kind"),

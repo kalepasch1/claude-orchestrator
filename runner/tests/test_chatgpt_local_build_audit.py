@@ -87,6 +87,62 @@ class LocalBuildAuditTest(unittest.TestCase):
             self.assertIn("/tmp/c.patch", rendered)
             self.assertNotIn("/tmp/a.patch", rendered)
 
+    def _rescue_refs(self, n=3):
+        return [{
+            "kind": "orchestrator_rescue_refs",
+            "repo": "/tmp/claude-orchestrator",
+            "count": n,
+            "items": [{"ref": f"refs/orch-rescue/{i}", "sha": f"{i}" * 8} for i in range(n)],
+        }]
+
+    def test_unchanged_rescue_ref_evidence_does_not_requeue_after_manifest_cleanup(self):
+        """A second snapshot of unchanged evidence must produce no new task.
+
+        This is the loop that re-derived one committed answer ~86 times. The
+        evidence (rescue refs) is permanent on disk, so it always re-reads as
+        actionable; the manifest that claimed it gets swept; the item re-opens;
+        and because the audit fingerprint hashes the SNAPSHOT it is fresh every
+        time, so the duplicate check never fires and another task is filed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            intake, state = root / "intake", root / "state.json"
+            groups = {"beethoven": self._rescue_refs()}
+
+            first, _ = audit.queue_groups(groups, intake, state)
+            self.assertEqual(len(first), 1)
+
+            # The manifest cleanup that orphaned the evidence in the first place.
+            for manifest in intake.glob("*.md"):
+                manifest.unlink()
+
+            second, duplicates = audit.queue_groups(groups, intake, state)
+            self.assertEqual(second, [], "unchanged evidence must not file a second task")
+            self.assertEqual(len(duplicates), 1)
+            self.assertEqual(duplicates[0]["slug"], first[0]["slug"])
+            self.assertEqual(len(list(intake.glob("*.md"))), 0)
+
+    def test_changed_evidence_still_queues(self):
+        """The gate must suppress repeats, not real new evidence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            intake, state = root / "intake", root / "state.json"
+            first, _ = audit.queue_groups({"beethoven": self._rescue_refs(3)}, intake, state)
+            self.assertEqual(len(first), 1)
+            for manifest in intake.glob("*.md"):
+                manifest.unlink()
+            grown, _ = audit.queue_groups({"beethoven": self._rescue_refs(4)}, intake, state)
+            self.assertEqual(len(grown), 1, "new refs are a different question and must queue")
+
+    def test_evidence_digest_moves_with_base_but_not_with_snapshot_time(self):
+        items = [{"kind": "orchestrator_rescue_refs", "repo": "/r", "ref": "refs/orch-rescue/1",
+                  "sha": "deadbeef"}]
+        a = audit._evidence_digest("beethoven", items, base="master@1")
+        b = audit._evidence_digest("beethoven", list(reversed(items)), base="master@1")
+        c = audit._evidence_digest("beethoven", items, base="master@2")
+        self.assertEqual(a, b, "same evidence, same base — same question")
+        self.assertNotEqual(a, c, "a moved base can change the answer")
+
     def test_scanner_ignores_its_own_intake_manifests(self):
         self.assertTrue(audit._is_scanner_output("intake/chatgpt-local-audit-smarter-a.md"))
         self.assertTrue(audit._is_scanner_output(
