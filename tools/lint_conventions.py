@@ -530,16 +530,78 @@ def regressions(counts, baseline):
     return out
 
 
-def write_baseline(counts, path=None):
+def raised_rules(counts, baseline):
+    """(rule, new, old) for rules whose recorded ceiling would go UP.
+
+    A rule absent from the baseline is not a raise: it is a rule that did not
+    exist when the baseline was written, and recording its current count is the
+    only way to start ratcheting it.
+    """
+    out = []
+    for rule, count in sorted(counts.items()):
+        if rule in baseline and count > baseline[rule]:
+            out.append((rule, count, baseline[rule]))
+    return out
+
+
+class EmptyScanRefused(Exception):
+    """Raised when a zero-violation scan would overwrite a real baseline."""
+
+    def __init__(self, rule_count):
+        self.rule_count = rule_count
+        super().__init__(
+            "refusing to overwrite a baseline of %d rule(s) with an empty "
+            "scan; check the paths you passed" % rule_count
+        )
+
+
+class BaselineWouldRise(Exception):
+    """Raised when --update-baseline would loosen an existing ceiling."""
+
+    def __init__(self, rises):
+        self.rises = rises
+        super().__init__(
+            "refusing to raise the convention-lint baseline for: "
+            + ", ".join("%s %d->%d" % (r, old, new) for r, new, old in rises)
+        )
+
+
+def write_baseline(counts, path=None, allow_raise=False, baseline=None):
+    """Record `counts` as the new ceiling.
+
+    A ratchet needs a pawl. The generated file has always carried the sentence
+    "never raise one to make a commit pass", but nothing enforced it: this
+    function wrote whatever it was handed and main() exited 0. So the single
+    documented way to defeat the gate -- run --update-baseline on a dirty tree
+    -- was also the easiest, and it grandfathers the new violations
+    permanently and silently.
+
+    Raising now requires --allow-raise, which is for the cases where it is
+    genuinely correct (a rule's detection got stricter, a large vendored import
+    landed) and leaves the intent visible in the shell history and the diff.
+    """
     target = Path(path or BASELINE_PATH)
+    current = load_baseline(target) if baseline is None else baseline
+
+    # An empty scan must not rewrite a non-empty ceiling. Found while testing
+    # this change: `--update-baseline <path-that-does-not-exist>` warned that
+    # the target was not a file or directory, then cheerfully wrote a baseline
+    # of zero violations across zero rules over the real one. A typo'd path is
+    # not evidence that the tree is clean.
+    if current and not counts and not allow_raise:
+        raise EmptyScanRefused(len(current))
+
+    rises = raised_rules(counts, current)
+    if rises and not allow_raise:
+        raise BaselineWouldRise(rises)
     payload = {
         "_comment": (
             "Grandfathered convention-lint counts, from a whole-tree scan of "
             "`runner tools scripts`. The hook fails only when a rule's count RISES above "
             "these numbers, so the gate is enforceable today without a repo-wide cleanup "
-            "patch. Lower these as violations are fixed; never raise one to make a commit "
-            "pass. Regenerate with: python tools/lint_conventions.py --update-baseline "
-            "runner tools scripts"
+            "patch. Lower these as violations are fixed; raising one to make a commit "
+            "pass is refused unless --allow-raise is passed explicitly. Regenerate with: "
+            "python tools/lint_conventions.py --update-baseline runner tools scripts"
         ),
         "counts": {k: int(v) for k, v in sorted(counts.items())},
         "total": int(sum(counts.values())),
@@ -568,13 +630,17 @@ def main():
     that path prints a NOTE saying so instead of a green OK.
 
     `--update-baseline` rewrites the file (use after fixing violations, or when adding a
-    rule). `--strict` ignores the baseline entirely, for a full audit.
+    rule). It REFUSES to raise an existing rule's ceiling — that is the one move that
+    defeats a ratchet, and it used to be both undefended and the easiest thing to do.
+    Pass `--allow-raise` when the rise is genuinely correct. `--strict` ignores the
+    baseline entirely, for a full audit.
     """
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     flags = {a for a in sys.argv[1:] if a.startswith("-")}
     if not args:
-        print("Usage: python lint_conventions.py [--strict|--update-baseline] "
-              "<file_or_dir> [...]", file=sys.stderr)
+        print("Usage: python lint_conventions.py "
+              "[--strict|--update-baseline [--allow-raise]] <file_or_dir> [...]",
+              file=sys.stderr)
         sys.exit(1)
 
     all_violations = []
@@ -594,7 +660,26 @@ def main():
     counts = count_by_rule(all_violations)
 
     if "--update-baseline" in flags:
-        payload = write_baseline(counts)
+        try:
+            payload = write_baseline(counts,
+                                     allow_raise="--allow-raise" in flags)
+        except EmptyScanRefused as exc:
+            print("convention-lint: REFUSING to write the baseline — %s. A "
+                  "typo'd path is not evidence that the tree is clean."
+                  % exc, file=sys.stderr)
+            sys.exit(2)
+        except BaselineWouldRise as exc:
+            print("convention-lint: REFUSING to write the baseline — it would "
+                  "raise the ceiling on %d rule(s), which grandfathers new "
+                  "violations permanently:" % len(exc.rises), file=sys.stderr)
+            for rule, count, allowed in exc.rises:
+                print("  %s  %d -> %d  (+%d)" % (rule, allowed, count,
+                                                 count - allowed),
+                      file=sys.stderr)
+            print("convention-lint: fix those violations, or re-run with "
+                  "--allow-raise if the rise is deliberate (a rule got "
+                  "stricter, a vendored tree landed).", file=sys.stderr)
+            sys.exit(2)
         print(f"convention-lint: baseline written ({payload['total']} violations across "
               f"{len(payload['counts'])} rules) -> {BASELINE_PATH.name}")
         sys.exit(0)
