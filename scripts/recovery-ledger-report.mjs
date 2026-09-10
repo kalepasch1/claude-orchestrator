@@ -33,7 +33,65 @@ const MD = argOf('md', LEDGER.replace(/\.json$/, '.md'));
 const SQL = argOf('sql', '');
 const PROJECT = argOf('project', 'unknown');
 
-const ledger = JSON.parse(readFileSync(LEDGER, 'utf8'));
+/**
+ * THREE LEDGER SCHEMAS, ONE READER.
+ *
+ * This repo writes recovery ledgers from two scripts that never agreed on a
+ * shape, and this reader only ever understood one of them:
+ *
+ *   reconcile-rescue-refs.mjs  {records[], audit_fingerprint, total_items,
+ *                               unknown_items, summary} · per item
+ *                              {source, source_sha, source_subject,
+ *                               touched_file_count}
+ *   reconcile-evidence.mjs     {items[], auditFingerprint, itemCount, unknown,
+ *                               counts, against} · per item
+ *                              {kind, ref, sha, classification, reason}
+ *
+ * Anything but the first died on `ledger.records.filter` of undefined — which
+ * is every ledger reconcile-evidence.mjs has ever produced, including via the
+ * two-command "Regenerate with" block this script writes into its own output.
+ * A reconciliation whose report cannot be generated is a reconciliation nobody
+ * reads.
+ *
+ * Normalising on read, rather than changing a producer, is deliberate: ledgers
+ * of all three shapes are already on disk and in git, and they have to stay
+ * readable.
+ */
+function normalise(raw) {
+  const items = Array.isArray(raw.records) ? raw.records : Array.isArray(raw.items) ? raw.items : [];
+  return {
+    ...raw,
+    audit_fingerprint: raw.audit_fingerprint ?? raw.auditFingerprint ?? raw.fingerprint ?? '',
+    // reconcile-evidence.mjs writes the base as {ref, sha}, not two strings.
+    base: raw.base ?? raw.against?.ref ?? 'unknown',
+    base_sha: raw.base_sha ?? raw.against?.sha ?? '',
+    generated_at: raw.generated_at ?? raw.generatedAt ?? '',
+    total_items: raw.total_items ?? raw.itemCount ?? raw.total ?? items.length,
+    unknown_items: raw.unknown_items ?? raw.unknown ?? 0,
+    summary: raw.summary ?? raw.counts ?? {},
+    records: items.map((it) => ({
+      ...it,
+      source: it.source ?? it.ref ?? it.path ?? '',
+      source_sha: it.source_sha ?? it.sha ?? '',
+      // reconcile-evidence.mjs carries no commit subject; its `reason` is the
+      // human-readable string, and printing it beats printing undefined.
+      source_subject: it.source_subject ?? it.subject ?? it.reason ?? '',
+      // file_count is the true total — `files` is capped by the producer, so
+      // counting the array understates a large item's blast radius.
+      touched_file_count:
+        it.touched_file_count ?? it.file_count ?? (Array.isArray(it.files) ? it.files.length : 0),
+    })),
+  };
+}
+
+const rawLedger = JSON.parse(readFileSync(LEDGER, 'utf8'));
+// Which script wrote this? `auditFingerprint`/`itemCount` are reconcile-evidence's
+// camelCase signature; `records`/`audit_fingerprint` are reconcile-rescue-refs'.
+const PRODUCER =
+  rawLedger.auditFingerprint !== undefined || rawLedger.itemCount !== undefined
+    ? 'reconcile-evidence'
+    : 'reconcile-rescue-refs';
+const ledger = normalise(rawLedger);
 
 const ORDER = [
   'RECOVERABLE_VALUE',
@@ -71,9 +129,19 @@ function markdown() {
   l.push(`Audit fingerprint: \`${ledger.audit_fingerprint}\``, '');
   l.push(`Base: \`${ledger.base}\` @ \`${ledger.base_sha.slice(0, 12)}\` · generated ${ledger.generated_at}`, '');
   l.push('Regenerate with:', '', '```bash');
-  l.push(`node scripts/reconcile-rescue-refs.mjs --base ${ledger.base} \\`);
-  l.push(`  --fingerprint ${ledger.audit_fingerprint} \\`);
-  l.push(`  --out ${LEDGER}`);
+  // Name the producer that actually made this file. Printing the other one
+  // sends the next reader to a command that rebuilds a *different* ledger over
+  // this path — the two enumerate different evidence and disagree on schema.
+  if (PRODUCER === 'reconcile-evidence') {
+    l.push('node scripts/reconcile-evidence.mjs \\');
+    l.push(`  --fingerprint ${ledger.audit_fingerprint} \\`);
+    l.push(`  --default-branch ${ledger.base.replace(/^origin\//, '')} \\`);
+    l.push(`  --json ${LEDGER}`);
+  } else {
+    l.push(`node scripts/reconcile-rescue-refs.mjs --base ${ledger.base} \\`);
+    l.push(`  --fingerprint ${ledger.audit_fingerprint} \\`);
+    l.push(`  --out ${LEDGER}`);
+  }
   l.push(`node scripts/recovery-ledger-report.mjs --ledger ${LEDGER} --project ${PROJECT}`);
   l.push('```', '');
   l.push('## Result', '');
