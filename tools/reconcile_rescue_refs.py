@@ -38,7 +38,29 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from recovery_apply_check import apply_verdict, deletes_live_paths, LANDABLE  # noqa: E402
 
 
-RESCUE_NAMESPACES = ("refs/orch-rescue/", "refs/stash", "refs/orch-evidence/")
+RESCUE_NAMESPACES = ("refs/orch-rescue/", "refs/orch-evidence/")
+
+# Stashes are deliberately NOT in RESCUE_NAMESPACES, and removing them is a bug
+# fix rather than a coverage cut.
+#
+# A stash commit has up to three parents: ^1 the commit it was taken from, ^2
+# the index, ^3 the untracked files stashed with -u/-a. Every probe in this
+# module reads a commit with `--first-parent`, which sees only the tracked
+# delta -- so a stash carrying untracked files was enumerated here, classified
+# with an incomplete file list, and written into the ledger as fully handled.
+# Verified on a throwaway repo: a stash of `app.py` (modified) plus
+# `brand_new.py` (untracked) reports exactly one path, and a recovery driven
+# off that ledger entry loses the new file without anything reporting a gap.
+#
+# `git for-each-ref refs/stash` also reports only the TIP of the stash stack, so
+# a repo with thirteen stashes looked like it had one.
+#
+# tools/reconcile_stashes.py already owns this evidence class correctly: it
+# enumerates the full reflog via `git stash list` and diffs `stash^1..stash`
+# including the untracked parent. Two reconcilers claiming the same item with
+# different methods produced two contradictory ledger rows for it.
+STASH_NAMESPACE = "refs/stash"
+STASH_OWNER = "tools/reconcile_stashes.py"
 
 
 def git(*args: str, check: bool = True) -> str:
@@ -68,8 +90,42 @@ class Item:
     evidence: str = ""
 
 
+def count_stashes() -> int:
+    """How many stash entries exist, read from the reflog. Never mutates the stack."""
+    out = git("stash", "list", check=False)
+    return len([ln for ln in out.splitlines() if ln.strip()])
+
+
+def stash_deferral() -> "dict | None":
+    """Provenance record for stash evidence this reconciler deliberately skips.
+
+    Returns None when there are no stashes. Dropping a namespace silently would
+    trade one bug (wrong classification) for a worse one (missing item), so the
+    skip is recorded in the ledger and announced on stderr instead.
+    """
+    count = count_stashes()
+    if not count:
+        return None
+    return {
+        "namespace": STASH_NAMESPACE,
+        "count": count,
+        "owner": STASH_OWNER,
+        "reason": (
+            "stash commits carry untracked content on their third parent, which "
+            "this module's --first-parent probes cannot see; %s enumerates the "
+            "full reflog and diffs stash^1..stash including that parent"
+            % STASH_OWNER
+        ),
+    }
+
+
 def enumerate_refs() -> "list[Item]":
-    """Enumerate every rescue ref. The source is never mutated."""
+    """Enumerate every rescue ref. The source is never mutated.
+
+    Stash refs are excluded on purpose -- see STASH_NAMESPACE above. Callers
+    that need stash coverage run tools/reconcile_stashes.py, and main() records
+    the deferral in the ledger so the gap is visible rather than assumed.
+    """
     fmt = "%(refname)%09%(objectname)%09%(creatordate:unix)%09%(contents:subject)"
     items = []
     for ns in RESCUE_NAMESPACES:
@@ -79,6 +135,11 @@ def enumerate_refs() -> "list[Item]":
             if len(parts) < 4:
                 continue
             ref, sha, created, subject = parts[0], parts[1], parts[2], parts[3]
+            # Belt and braces: a stash must never reach classify() even if the
+            # namespace tuple is edited back, because every probe here would
+            # under-report its content rather than fail.
+            if ref == STASH_NAMESPACE or ref.startswith(STASH_NAMESPACE + "@"):
+                continue
             items.append(
                 Item(
                     ref=ref,
@@ -244,6 +305,18 @@ def main() -> int:
     if not items:
         print("no rescue refs found", file=sys.stderr)
 
+    deferred = stash_deferral()
+    if deferred:
+        print(
+            "NOTE: %d stash entr%s not classified here; run %s for that evidence "
+            "class (stash untracked content lives on the third parent and is "
+            "invisible to this module's --first-parent probes)."
+            % (deferred["count"],
+               "y is" if deferred["count"] == 1 else "ies are",
+               STASH_OWNER),
+            file=sys.stderr,
+        )
+
     known = base_patch_ids(args.base, args.depth) if items else set()
 
     for it in items:
@@ -264,6 +337,10 @@ def main() -> int:
         "total": len(items),
         "counts": counts,
         "unknown": counts.get("UNKNOWN", 0),
+        # Evidence this pass deliberately did not classify, and who owns it.
+        # Present so a reader can tell "no stashes" from "stashes handled
+        # elsewhere" -- an absent key used to mean both.
+        "deferred": [deferred] if deferred else [],
         "items": [asdict(it) for it in items],
     }
 
