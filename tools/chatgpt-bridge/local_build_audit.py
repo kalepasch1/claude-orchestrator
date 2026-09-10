@@ -31,6 +31,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from orchestration_artifacts import (  # noqa: E402
+    classify_exclusion,
+    partition_evidence,
+)
+
 
 HERE = Path(__file__).resolve().parent
 ORCH_ROOT = HERE.parent.parent
@@ -236,6 +242,20 @@ def _worktrees(repo: Path) -> list[Path]:
     return paths or [repo]
 
 
+def _ref_paths(repo: Path, sha: str) -> list[str]:
+    """Files a ref's tip commit carries, for the bookkeeping test.
+
+    Raises on failure so ``partition_evidence`` keeps the item: "we could not read
+    what it carries" must never be mistaken for "it carries only ledgers".
+    """
+    if not sha:
+        raise ValueError("no sha")
+    rc, out = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+    if rc != 0:
+        raise RuntimeError(f"diff-tree failed for {sha}")
+    return [line for line in out.splitlines() if line.strip()]
+
+
 def _default_branch(repo: Path) -> str:
     rc, out = _git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if rc == 0 and out:
@@ -245,6 +265,7 @@ def _default_branch(repo: Path) -> str:
 
 def scan_repo(app: str, repo: Path, cutoff: float) -> tuple[list[dict[str, Any]], set[Path]]:
     evidence: list[dict[str, Any]] = []
+    excluded_artifacts: list[dict[str, Any]] = []
     known_worktrees: set[Path] = set()
     if not (repo / ".git").exists():
         return evidence, known_worktrees
@@ -258,12 +279,21 @@ def scan_repo(app: str, repo: Path, cutoff: float) -> tuple[list[dict[str, Any]]
         if names and (not cutoff or newest <= cutoff):
             _rc, branch = _git(wt, "symbolic-ref", "--quiet", "--short", "HEAD")
             _rc, head = _git(wt, "rev-parse", "HEAD")
-            evidence.append({
+            row = {
                 "kind": "dirty_worktree", "path": str(wt), "branch": branch or "DETACHED",
                 "head": head[:40], "change_count": len(names), "changes": names[:100],
                 "changes_digest": _fingerprint(names),
                 "newest_change_mtime": int(newest),
-            })
+            }
+            # A sweep whose every path is the fleet's own bookkeeping is not
+            # evidence of unshipped work — it is the last pass's exhaust. Excluded
+            # before it can become a task, and recorded, never dropped silently.
+            dropped, reason, detail = classify_exclusion(names)
+            if dropped:
+                excluded_artifacts.append({**row, "excluded_reason": reason,
+                                           "excluded_detail": detail})
+            else:
+                evidence.append(row)
 
     # Branch tips that contain commits not reachable from any remote are durable
     # only on this machine. Record tips, not every ancestor, to keep prompts compact.
@@ -334,9 +364,23 @@ def scan_repo(app: str, repo: Path, cutoff: float) -> tuple[list[dict[str, Any]]
             if len(parts) == 4 and (not cutoff or int(parts[2] or 0) <= cutoff):
                 rescue_rows.append({"ref": parts[0], "sha": parts[1],
                                     "created_at": int(parts[2] or 0), "subject": parts[3][:240]})
+    # A rescue ref carrying nothing but a sibling's ledger or reconcile script is
+    # the canonical self-feeding case: swept by the periodic sweeper, it arrives as
+    # the next pass's evidence. Read what each ref actually carries and partition
+    # before emitting. A ref whose paths cannot be read is kept and classified.
+    rescue_rows, rescue_excluded = partition_evidence(
+        rescue_rows, lambda row: _ref_paths(repo, row.get("sha", "")))
+    excluded_artifacts.extend(
+        {**row, "kind": "orchestrator_rescue_ref", "repo": str(repo)}
+        for row in rescue_excluded)
     if rescue_rows:
         evidence.append({"kind": "orchestrator_rescue_refs", "repo": str(repo),
                          "count": len(rescue_rows), "items": rescue_rows})
+    if excluded_artifacts:
+        # Named key with a count, so the ledger reader can see exactly what the
+        # producer declined to treat as evidence and why.
+        evidence.append({"kind": "excluded_orchestration_artifacts", "repo": str(repo),
+                         "count": len(excluded_artifacts), "items": excluded_artifacts})
     return evidence, known_worktrees
 
 
