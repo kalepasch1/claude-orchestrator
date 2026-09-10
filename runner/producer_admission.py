@@ -90,6 +90,19 @@ DEFAULT_THROTTLED_DAILY_CAP = 25
 #: mostly duplicates may still be the only source of the one thing that matters, and a
 #: gate that silences it completely stops being a throttle and becomes a ban.
 DEFAULT_THROTTLED_DAILY_FLOOR = 5
+#: Share of the fleet's whole QUEUED backlog one producer may hold. Above this it is
+#: rationed to the same daily quota redundancy earns. 0.40 sits well clear of the
+#: measured well-behaved producers (backlog-batch held 8.3%) and well under the
+#: offender (56.7%), so it separates the two cases rather than splitting them.
+#: A minority share is not throttled no matter how large the queue is.
+DEFAULT_QUEUE_SHARE_CEILING = 0.40
+#: Below this many QUEUED tasks fleet-wide, share is meaningless — 2 of 3 is 67%.
+DEFAULT_QUEUE_MIN_TOTAL = 200
+#: How much a producer over the share ceiling has its redundancy ceiling tightened.
+#: Halving takes 35% to 17.5%, which is under the measured offender's 21.5% and well
+#: over the well-behaved producers' 1-2.4%. It is a multiplier rather than a second
+#: fixed threshold so the two ceilings cannot drift apart.
+SHARE_PRESSURE_FACTOR = 0.5
 #: How much history the verdict considers.
 DEFAULT_WINDOW_DAYS = 14
 #: How long a verdict is cached, to keep the insert path off the database.
@@ -146,8 +159,14 @@ def daily_floor():
     return max(0, _i("ORCH_PRODUCER_THROTTLED_DAILY_FLOOR", DEFAULT_THROTTLED_DAILY_FLOOR))
 
 
-def quota_for(redundant_rate):
+def quota_for(redundant_rate, ceiling=None):
     """A throttled producer's daily quota, scaled by how redundant it actually is.
+
+    `ceiling` overrides the configured redundancy ceiling. Passed by `verdict` when a
+    producer is over the queue-share ceiling and its redundancy ceiling has been
+    tightened: the quota has to be measured against the SAME ceiling the throttle
+    decision used, or a producer could be throttled at 17.5% and then handed the full
+    unthrottled cap because 21.5% is under the 35% the quota was still looking at.
 
     ONE FLAT CAP TREATS 36% AND 84% THE SAME. Measured 2026-09-02, 14-day window:
 
@@ -186,7 +205,7 @@ def quota_for(redundant_rate):
     and the quota falls further on its own; that self-correction is the point, and it is
     why this is not a number to tune by hand.
     """
-    ceiling = redundant_ceiling()
+    ceiling = redundant_ceiling() if ceiling is None else ceiling
     cap, floor = daily_cap(), daily_floor()
     if floor >= cap:
         return cap
@@ -199,6 +218,14 @@ def quota_for(redundant_rate):
     # Fraction of the way from the ceiling to fully redundant.
     over = min(1.0, max(0.0, (rate - ceiling) / (1.0 - ceiling)))
     return max(floor, int(round(cap - over * (cap - floor))))
+
+
+def queue_share_ceiling():
+    return max(0.0, _f("ORCH_PRODUCER_QUEUE_SHARE_CEILING", DEFAULT_QUEUE_SHARE_CEILING))
+
+
+def queue_min_total():
+    return max(1, _i("ORCH_PRODUCER_QUEUE_MIN_TOTAL", DEFAULT_QUEUE_MIN_TOTAL))
 
 
 def window_days():
@@ -268,10 +295,55 @@ def _measure(key, db):
     redundant = sum(1 for r in rows if _is_redundant(r))
     day_ago = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - SECONDS_PER_DAY))
     last_24h = sum(1 for r in rows if str(r.get("created_at") or "") >= day_ago)
+    # Numerator from the rows already in hand rather than a second query: this producer's
+    # QUEUED count comes free out of the window scan. It understates slightly (it misses
+    # anything queued longer than the window — for the measured offender, 799 of its 888
+    # queued tasks fell inside 14 days, ~90%), and understating is the conservative
+    # direction for a throttle. That leaves exactly ONE extra read, for the fleet total,
+    # which is the cheapest way to make the ratio meaningful.
+    queued = sum(1 for r in rows if str(r.get("state") or "") == "QUEUED")
+    queue_total = _fleet_queued(db)
     return {"filed": filed, "merged": merged, "redundant": redundant,
             "last_24h": last_24h,
+            "queued": queued, "queue_total": queue_total,
+            "queue_share": (queued / float(queue_total)) if queue_total else 0.0,
             "rate": (merged / float(filed)) if filed else 0.0,
             "redundant_rate": (redundant / float(filed)) if filed else 0.0}
+
+
+def _fleet_queued(db):
+    """How many tasks are QUEUED fleet-wide. 0 when unmeasurable.
+
+    WHY A SECOND SIGNAL EXISTS AT ALL
+    ---------------------------------
+    Redundancy only sees duplicates the fleet has RESOLVED as duplicates. A producer
+    whose output is never consumed at all is invisible to it, because a task sitting
+    QUEUED forever is neither merged nor marked redundant. Measured 2026-09-09:
+
+        producer                filed(14d)  merged  redundant  still QUEUED
+        slug:chatgpt-local          1,518        2      21.5%           799
+
+    21.5% is under the 35% ceiling, so the gate never fired — while that one producer
+    grew to hold 888 of the 1,566 tasks in the queue, 56.7% of the whole backlog. The
+    next largest identified producer held 8.3%.
+
+    WHY SHARE AND NOT MERGE RATE
+    ----------------------------
+    The module docstring rejects a merge-rate gate, and rightly: merge rate collapses
+    for everyone when the fleet's own merge machinery is stalled, so it blames producers
+    for a fault that is not theirs. Queue SHARE does not have that defect — it is
+    relative. A fleet-wide stall lifts every producer's backlog together and leaves the
+    shares roughly where they were; one producer holding a majority of the queue while
+    the next holds 8% is a fact about that producer.
+
+    Fails to 0, which makes `queue_share` 0 and the share test inert — an unreadable
+    queue must not become a verdict about a producer, exactly like every other read here.
+    """
+    try:
+        return len(db.select("tasks", {"select": "id", "state": "eq.QUEUED",
+                                       "limit": str(VERDICT_ROW_LIMIT)}) or [])
+    except Exception:  # noqa: BLE001 - unmeasurable is not the same as bad
+        return 0
 
 
 def verdict(row, db=None):
@@ -298,11 +370,52 @@ def verdict(row, db=None):
         return True, ""
     if stats["filed"] < min_sample():
         return True, ""
-    if stats["redundant_rate"] <= redundant_ceiling():
+
+    # QUEUE SHARE TIGHTENS THE REDUNDANCY CEILING; IT IS NOT A GATE OF ITS OWN.
+    #
+    # The first version of this made share an independent ground for throttling, and it
+    # broke `test_a_clean_producer_is_admitted_however_much_it_files` — correctly. That
+    # test encodes the principle the whole module is built on: VOLUME IS NOT
+    # MISBEHAVIOUR. A single healthy producer that happens to be the only one filing
+    # will hold most of the queue, and throttling it for that is the same mistake as
+    # the merge-rate gate this module already rejected — condemning a producer for the
+    # fleet's state rather than its own conduct.
+    #
+    # What share legitimately says is narrower: when a producer already holds most of
+    # the backlog, the fleet can afford less of its duplication. So it halves the
+    # redundancy ceiling rather than bypassing it. Against the measured numbers:
+    #
+    #   slug:chatgpt-local   21.5% redundant, 56.7% share -> ceiling 17.5%  -> throttled
+    #   slug:backlog-batch    2.4% redundant,  8.3% share -> ceiling 35%    -> admitted
+    #   a clean high-volume producer  1% redundant, 80% share -> 17.5%      -> admitted
+    #
+    # which separates the case that was flooding the queue from the cases that were not.
+    over_share = (stats.get("queue_total", 0) >= queue_min_total()
+                  and stats.get("queue_share", 0.0) > queue_share_ceiling())
+    ceiling = redundant_ceiling()
+    if over_share:
+        ceiling *= SHARE_PRESSURE_FACTOR
+
+    if stats["redundant_rate"] <= ceiling:
         return True, ""
-    quota = quota_for(stats["redundant_rate"])
+
+    quota = quota_for(stats["redundant_rate"], ceiling=ceiling)
     if stats["last_24h"] < quota:
         return True, ""
+
+    if over_share:
+        return False, (
+            "producer %s is throttled: it holds %d of the fleet's %d QUEUED tasks "
+            "(%.1f%%, over the %.0f%% share ceiling), so its redundancy ceiling is "
+            "tightened to %.1f%% — and %d of %d tasks it filed in the last %d days were "
+            "work the fleet already had (%.1f%%). It has filed %d in the last 24h "
+            "(quota %d/day). It is not blocked -- its quota returns as soon as the queue "
+            "drains or it stops filing duplicates."
+            % (key, stats.get("queued", 0), stats.get("queue_total", 0),
+               100.0 * stats.get("queue_share", 0.0), 100.0 * queue_share_ceiling(),
+               100.0 * ceiling, stats["redundant"], stats["filed"], window_days(),
+               100.0 * stats["redundant_rate"], stats["last_24h"], quota))
+
     return False, (
         "producer %s is throttled: %d of %d tasks it filed in the last %d days were work "
         "the fleet already had (%.1f%%, ceiling %.0f%%), and it has filed %d in the last "
