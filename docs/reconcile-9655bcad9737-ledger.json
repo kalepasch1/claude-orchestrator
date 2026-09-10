@@ -1,0 +1,1616 @@
+{
+  "audit_fingerprint": "9655bcad97371c11c41ac1bbd6650533d37105de7d6f5cfebb95520ceed4211b",
+  "mode": "local-branches",
+  "master_sha": "bcacf428ecb1",
+  "generated_at": "2026-09-08T21:41:53.811996+00:00",
+  "total_items": 229,
+  "summary": {
+    "ALREADY_PRESENT": 165,
+    "RECOVERABLE_VALUE": 64
+  },
+  "items": [
+    {
+      "ref": "refs/heads/_rb",
+      "sha": "fcef8e0665f9",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "_rb"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-add-focused-max-turns-detection-test-in-",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-add-focused-max-turns-detection-test-in-"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-add-max-turns-error-handling-logging-fie",
+      "sha": "1fc5f6b9eab9",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/approval-digest-batching-add-max-turns-error-handling-logging-fie"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-add-targeted-regression-test-for-max-tur",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-add-targeted-regression-test-for-max-tur"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-ensure-clean-diff-and-re-run-checks-afte",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-ensure-clean-diff-and-re-run-checks-afte"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-final-verification-ensure-no-remaining-c",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-final-verification-ensure-no-remaining-c"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-fix-conflicting-runner-approval-push-py-",
+      "sha": "5c4eaf2f5620",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-fix-conflicting-runner-approval-push-py-"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-fix-unblock-conflicting-git-rebase-by-re",
+      "sha": "d90037dde74d",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-fix-unblock-conflicting-git-rebase-by-re"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-handle-max-turns-terminal-reason-in-clau",
+      "sha": "94258a20e330",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/approval-digest-batching-handle-max-turns-terminal-reason-in-clau"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-implement-verify-max-turns-detection-log",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-implement-verify-max-turns-detection-log"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-inspect-and-fix-git-conflict-in-runner-a",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-inspect-and-fix-git-conflict-in-runner-a"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-manual-rescope-conflict-resolution",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-manual-rescope-conflict-resolution"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-preserve-max-turns-errors-through-call-c",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-preserve-max-turns-errors-through-call-c"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-propagate-max-turns-error-fields",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-propagate-max-turns-error-fields"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-resolve-approval-push-merge-conflict",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-resolve-approval-push-merge-conflict"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-resolve-conflicting-runner-approval-push",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-resolve-conflicting-runner-approval-push"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-split-1-resolve-merge-conflict-in-runner",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-split-1-resolve-merge-conflict-in-runner"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-split-3-ensure-formatting-linting-consis",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-split-3-ensure-formatting-linting-consis"
+    },
+    {
+      "ref": "refs/heads/agent/approval-digest-batching-wire-error-terminal-reason-through-claud",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/approval-digest-batching-wire-error-terminal-reason-through-claud"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-04cfd39",
+      "sha": "baa37902381a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-beethoven-04cfd39"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-22ee5bc-pinned-express-lan-slice-5",
+      "sha": "00c5591c5338",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-beethoven-22ee5bc-pinned-express-lan-slice-5"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-22ee5bc-prompt-evolution-bandit-add-test-checks",
+      "sha": "2b371960afbf",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-beethoven-22ee5bc-prompt-evolution-bandit-add-test-checks"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-22ee5bc-remaining-stale-backlog-items",
+      "sha": "6993006d297a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-22ee5bc-remaining-stale-backlog-items"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-2863be9-add-new-files",
+      "sha": "59b85efe4198",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-beethoven-2863be9-add-new-files"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-2863be9-update-tests-slice-3",
+      "sha": "c902fd14ec0d",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-2863be9-update-tests-slice-3"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-4b9d260-split-the-consolidated-stale-backlog-rec",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-beethoven-4b9d260-split-the-consolidated-stale-backlog-rec"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-52d9da1",
+      "sha": "43a707024296",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-52d9da1"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-comprehen",
+      "sha": "06e27d03c246",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-comprehen"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-load-orch",
+      "sha": "06e27d03c246",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-implement-load-orch"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-split-the-build-tas",
+      "sha": "06e27d03c246",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-split-the-build-tas"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-verify-pytest-passe",
+      "sha": "06e27d03c246",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-verify-pytest-passe"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-write-comprehensive",
+      "sha": "06e27d03c246",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-7371e3f-setup-config-consumer-module-write-comprehensive"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-e34b0f0-slice-4",
+      "sha": "a67938fbf4a6",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/backlog-batch-beethoven-e34b0f0-slice-4"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-beethoven-ea327e9",
+      "sha": "e7a5e633606c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-beethoven-ea327e9"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-unknown-7cc8037-human-bypass-status-watcher-and-ticketin",
+      "sha": "fd9a8759806d",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-unknown-7cc8037-human-bypass-status-watcher-and-ticketin"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-unknown-7cc8037-parse-backlog-log-and-extract-guardrail-",
+      "sha": "7847a72a31c0",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-unknown-7cc8037-parse-backlog-log-and-extract-guardrail-"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-unknown-7cc8037-queue-clearance-guardrail8-gating-check",
+      "sha": "ae7390c30169",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-unknown-7cc8037-queue-clearance-guardrail8-gating-check"
+    },
+    {
+      "ref": "refs/heads/agent/backlog-batch-unknown-7cc8037-recover-stale-backlog-queue-velocity-she",
+      "sha": "be8d4f07179e",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/backlog-batch-unknown-7cc8037-recover-stale-backlog-queue-velocity-she"
+    },
+    {
+      "ref": "refs/heads/agent/canary-claude-27-slice-3-adapt-prior-merged-patterns-extract-proven-diffs-extrac",
+      "sha": "3a3a7ac04aad",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/canary-claude-27-slice-3-adapt-prior-merged-patterns-extract-proven-diffs-extrac"
+    },
+    {
+      "ref": "refs/heads/agent/canary-codex-31",
+      "sha": "adad8b40eecf",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/canary-codex-31"
+    },
+    {
+      "ref": "refs/heads/agent/canary-codex-53",
+      "sha": "74c5db98280f",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/canary-codex-53"
+    },
+    {
+      "ref": "refs/heads/agent/canary-codex-58-finalize-and-commit-commit-and-push-fixes",
+      "sha": "72e521478094",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/canary-codex-58-finalize-and-commit-commit-and-push-fixes"
+    },
+    {
+      "ref": "refs/heads/agent/canary-deepseek-1",
+      "sha": "a9fa358e0005",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/canary-deepseek-1"
+    },
+    {
+      "ref": "refs/heads/agent/canary-gemini-25-canary-gemini-25-request-retry-logic",
+      "sha": "7cfe7857c28a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/canary-gemini-25-canary-gemini-25-request-retry-logic"
+    },
+    {
+      "ref": "refs/heads/agent/canary-gemini-25-commit-and-test",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/canary-gemini-25-commit-and-test"
+    },
+    {
+      "ref": "refs/heads/agent/canary-gpt-mini-3",
+      "sha": "34305095ff70",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/canary-gpt-mini-3"
+    },
+    {
+      "ref": "refs/heads/agent/canary-self-deploy-live-slice-4",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/canary-self-deploy-live-slice-4"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-0d43116732f8-create-recovery-ledger-records-fo",
+      "sha": "a0135be3f4c1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-create-recovery-ledger-records-fo"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-0d43116732f8-manage-conflicts-and-unknown-item",
+      "sha": "a0135be3f4c1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-manage-conflicts-and-unknown-item"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-0d43116732f8-split-the-build-task-into-smaller",
+      "sha": "a0135be3f4c1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-0d43116732f8-split-the-build-task-into-smaller"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-10d6c3591091",
+      "sha": "c8cead4dbc3a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-10d6c3591091"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-215fba971ab9",
+      "sha": "70820c0da559",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-215fba971ab9"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-2735649e88bb",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-2735649e88bb"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-383306e1301e",
+      "sha": "d2b25c8b605f",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-383306e1301e"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-4d83819ff744",
+      "sha": "25ece4a257ae",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-4d83819ff744"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-50a4fcd03802",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-50a4fcd03802"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-59dc7d2afd37",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-59dc7d2afd37"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-5e30d0e05126",
+      "sha": "cf2b83c2e6b3",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-5e30d0e05126"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-656c0680da0f-coordination-recovery-ledger-reco",
+      "sha": "469019c39c92",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-656c0680da0f-coordination-recovery-ledger-reco"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-656c0680da0f-inventory-and-classify-evidence-i",
+      "sha": "4bda18e2ea33",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-656c0680da0f-inventory-and-classify-evidence-i"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-6d094ab1edfa",
+      "sha": "7cfd86c016b9",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-6d094ab1edfa"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-7401bcfcbcb1",
+      "sha": "10ea50ce4a9a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-7401bcfcbcb1"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-797668765dad",
+      "sha": "4b47c19de893",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-797668765dad"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-7b6f925e1e7a",
+      "sha": "20ba3d128d2a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-7b6f925e1e7a"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-9284e2824803",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-9284e2824803"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-933a191b9acb",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-933a191b9acb"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-962a4e83d49f",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-962a4e83d49f"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-9655bcad9737",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-9655bcad9737"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-ab0a05980686",
+      "sha": "fb8d3cb685d8",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-ab0a05980686"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-ac93979d6c7a",
+      "sha": "a29d1d59e9bb",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-ac93979d6c7a"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-b8e9c5940976",
+      "sha": "bae16db4b7c3",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-b8e9c5940976"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-bf841dc595e6",
+      "sha": "a202c0f0aa11",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-bf841dc595e6"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-c54c216bc5d3",
+      "sha": "58700f6319c1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-c54c216bc5d3"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-d6ab3873f38e",
+      "sha": "6c8bf094d139",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-d6ab3873f38e"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-d854da55ab98",
+      "sha": "5e6cd8b474b4",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-d854da55ab98"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-da1590032ff1-split-the-reconcilation-task-into",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-da1590032ff1-split-the-reconcilation-task-into"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-e4b9212494ba",
+      "sha": "9ab141624002",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-e4b9212494ba"
+    },
+    {
+      "ref": "refs/heads/agent/chatgpt-local-reconcile-beethoven-ebc84c355791",
+      "sha": "4021013e6d69",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/chatgpt-local-reconcile-beethoven-ebc84c355791"
+    },
+    {
+      "ref": "refs/heads/agent/copyfix-beethoven-07151953-slice-5",
+      "sha": "11fc3334e82d",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/copyfix-beethoven-07151953-slice-5"
+    },
+    {
+      "ref": "refs/heads/agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy",
+      "sha": "42fb10bed655",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy"
+    },
+    {
+      "ref": "refs/heads/agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy-clean-140991",
+      "sha": "37a6932a8bf6",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy-clean-140991"
+    },
+    {
+      "ref": "refs/heads/agent/copyfix-beethoven-07180848-slice-5",
+      "sha": "3a3a7ac04aad",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/copyfix-beethoven-07180848-slice-5"
+    },
+    {
+      "ref": "refs/heads/agent/crashloop-governor-049e2f00",
+      "sha": "77126f9c67bd",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/crashloop-governor-049e2f00"
+    },
+    {
+      "ref": "refs/heads/agent/deployfix-beethoven-07152141",
+      "sha": "b0c2209aa1f8",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/deployfix-beethoven-07152141"
+    },
+    {
+      "ref": "refs/heads/agent/deploysilence-kalepasch-com",
+      "sha": "22259a0c4700",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/deploysilence-kalepasch-com"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-apparently-merge-vigil-into-apparently-gaming-exams-for-all--master-task",
+      "sha": "e30581381d12",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-apparently-merge-vigil-into-apparently-gaming-exams-for-all--master-task"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-1-integrate-adapted-cha",
+      "sha": "526720afc073",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-1-integrate-adapted-cha"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2",
+      "sha": "9456613abec2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2-recovered",
+      "sha": "bd34514d8018",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-2-recovered"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3",
+      "sha": "59de85f238e6",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3-recovered",
+      "sha": "9d60d16ed566",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-3-recovered"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4",
+      "sha": "59de85f238e6",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered",
+      "sha": "1444c6eef192",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-3",
+      "sha": "28a7d6d10437",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-3"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-5-recovered",
+      "sha": "42a57164f3e0",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-5-recovered"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-1",
+      "sha": "4ac6b09dcf39",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-1"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-2",
+      "sha": "2ad146dfcd1a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-fleet-immune-system-throughput-a-slice-2"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-2-machine-pipeline-heartbeat-alerts-p0",
+      "sha": "90b2163ce3e5",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-2-machine-pipeline-heartbeat-alerts-p0"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-contracts",
+      "sha": "28a7d6d10437",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-contracts"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-configure-operator-s-",
+      "sha": "f892656a852a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-configure-operator-s-"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-establish-shared-cont",
+      "sha": "f892656a852a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-establish-shared-cont"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-remove-competition-in",
+      "sha": "f892656a852a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-remove-competition-in"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-split-the-build-task-",
+      "sha": "f892656a852a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-1-split-the-build-task-"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-2-split-the-build-task-",
+      "sha": "f892656a852a",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-2-split-the-build-task-"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-commit-the-final-impl",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-commit-the-final-impl"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-fix-source-config-tes",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-fix-source-config-tes"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reconstruct-the-small",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reconstruct-the-small"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-repair-dependencies-b",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-repair-dependencies-b"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reproduce-or-inspect-",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-beethoven-madeus-web-multi-tenant-claude-p-slice-3-reproduce-or-inspect-"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-1",
+      "sha": "6c519ff5d23a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-1"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2-clean-129448",
+      "sha": "358297faa18f",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2-clean-129448"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-batch-fusion-unpause",
+      "sha": "cffc4f77d731",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-batch-fusion-unpause"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-governor-ra",
+      "sha": "dbd87a342854",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-governor-ra"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-hermetic-worktree-preflight",
+      "sha": "446cb9f1a1e0",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-hermetic-worktree-preflight"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-10",
+      "sha": "6b3bad6d7417",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-10"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-18",
+      "sha": "b960c680d7df",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-18"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-2-recovered",
+      "sha": "abc2402acedc",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-2-recovered"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-3",
+      "sha": "4331d4734a8b",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-3"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-4",
+      "sha": "8331d7a05600",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-4"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-1-define-shared-typescr",
+      "sha": "1aef5875a0fc",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-1-define-shared-typescr"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-2-reuse-project-helpers",
+      "sha": "4331d4734a8b",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-2-reuse-project-helpers"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-3",
+      "sha": "9de61b3d8b17",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-3"
+    },
+    {
+      "ref": "refs/heads/agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-4",
+      "sha": "7eba81da2c28",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/dropbox-wave-c-compounding-codegen-platform-spine--slice-4"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-fix-the-root-cause-or-cl",
+      "sha": "9a875d0fe113",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-fix-the-root-cause-or-cl"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-inspect-the-actual-error",
+      "sha": "9a875d0fe113",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-inspect-the-actual-error"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-split-the-task-into-smal",
+      "sha": "9a875d0fe113",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-backlog-batch-beethoven-4c9d580-slice-5-split-the-task-into-smal"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-canary-codex-39-check-the-shelved-queue-for-possible-iss",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-canary-codex-39-check-the-shelved-queue-for-possible-iss"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-canary-codex-39-check-the-test-results-for-clues",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-canary-codex-39-check-the-test-results-for-clues"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-canary-codex-39-consider-rebasing-the-branch-manually",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-canary-codex-39-consider-rebasing-the-branch-manually"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-canary-codex-39-re-run-the-test-with-increased-test-spee",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-canary-codex-39-re-run-the-test-with-increased-test-spee"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-canary-codex-39-split-the-build-task-into-smaller-sub-ta",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-canary-codex-39-split-the-build-task-into-smaller-sub-ta"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-dropbox-wave-c-compounding-codegen-platform-spine-sl-split-the-b",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/factory-unblock-dropbox-wave-c-compounding-codegen-platform-spine-sl-split-the-b"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-improve-immediate-auto-merge-on-te-slice-2",
+      "sha": "ccb809706983",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/factory-unblock-improve-immediate-auto-merge-on-te-slice-2"
+    },
+    {
+      "ref": "refs/heads/agent/factory-unblock-orch-cross-project-depends-fix-remaining-conflicts-r",
+      "sha": "a92148d6c6f7",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/factory-unblock-orch-cross-project-depends-fix-remaining-conflicts-r"
+    },
+    {
+      "ref": "refs/heads/agent/fix-deploy-verification-stuck-20260903-dv27-decompose-the-large-build-task-into-",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/fix-deploy-verification-stuck-20260903-dv27-decompose-the-large-build-task-into-"
+    },
+    {
+      "ref": "refs/heads/agent/focused-conflicted-rescue-refs-13-items-5dc36bf5e0-slice-2",
+      "sha": "a5a40d666f15",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/focused-conflicted-rescue-refs-13-items-5dc36bf5e0-slice-2"
+    },
+    {
+      "ref": "refs/heads/agent/followup-fix-merged-diff-test-helper-hardcoded-master-checkout",
+      "sha": "96ed6c05ed07",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/followup-fix-merged-diff-test-helper-hardcoded-master-checkout"
+    },
+    {
+      "ref": "refs/heads/agent/human-decision-git-error-mac235-20260903-h35m-check-and-resolve-git-errors-on-ma",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/human-decision-git-error-mac235-20260903-h35m-check-and-resolve-git-errors-on-ma"
+    },
+    {
+      "ref": "refs/heads/agent/human-decision-git-error-mac235-20260903-h35m-monitor-fleet-cycles-for-mac-235-l",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/human-decision-git-error-mac235-20260903-h35m-monitor-fleet-cycles-for-mac-235-l"
+    },
+    {
+      "ref": "refs/heads/agent/human-decision-git-error-mac235-20260903-h35m-verify-git-sync-is-successful-on-m",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/human-decision-git-error-mac235-20260903-h35m-verify-git-sync-is-successful-on-m"
+    },
+    {
+      "ref": "refs/heads/agent/human-decision-git-error-mac235-20260903-h35m-verify-host-mac-235-lan-s-git-stat",
+      "sha": "e16f754c7e68",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/human-decision-git-error-mac235-20260903-h35m-verify-host-mac-235-lan-s-git-stat"
+    },
+    {
+      "ref": "refs/heads/agent/human-decision-git-error-mac290-20260905-h4wz-split-large-build-task-into-smalle",
+      "sha": "7aeae1ff5717",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/human-decision-git-error-mac290-20260905-h4wz-split-large-build-task-into-smalle"
+    },
+    {
+      "ref": "refs/heads/agent/improve-automate-configuration-management-slice-1",
+      "sha": "b79b31caf2a8",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/improve-automate-configuration-management-slice-1"
+    },
+    {
+      "ref": "refs/heads/agent/improve-enhance-branch-management-with-automated-r-slice-2",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-enhance-branch-management-with-automated-r-slice-2"
+    },
+    {
+      "ref": "refs/heads/agent/improve-enhance-test-automation-for-ci-cd-pipeli-slice-5",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-enhance-test-automation-for-ci-cd-pipeli-slice-5"
+    },
+    {
+      "ref": "refs/heads/agent/improve-enhanced-testing-pipeline-fix-source-confi-slice-4",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-enhanced-testing-pipeline-fix-source-confi-slice-4"
+    },
+    {
+      "ref": "refs/heads/agent/improve-enhanced-testing-pipeline-inspect-local-br-slice-2",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-enhanced-testing-pipeline-inspect-local-br-slice-2"
+    },
+    {
+      "ref": "refs/heads/agent/improve-enhanced-testing-pipeline-missing-branch-r-slice-1",
+      "sha": "715d176a4345",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-enhanced-testing-pipeline-missing-branch-r-slice-1"
+    },
+    {
+      "ref": "refs/heads/agent/improve-implement-automated-branch-management-dedu-slice-4",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-implement-automated-branch-management-dedu-slice-4"
+    },
+    {
+      "ref": "refs/heads/agent/improve-implement-real-time-queue-state-update-slice-5",
+      "sha": "bcacf428ecb1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-implement-real-time-queue-state-update-slice-5"
+    },
+    {
+      "ref": "refs/heads/agent/improve-missing-branch-auto-creator-slice-3-locate-decomposition-event-handler-a-clean-152441",
+      "sha": "dc65c5428c7c",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/improve-missing-branch-auto-creator-slice-3-locate-decomposition-event-handler-a-clean-152441"
+    },
+    {
+      "ref": "refs/heads/agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-identify-owner-module-in",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-identify-owner-module-in"
+    },
+    {
+      "ref": "refs/heads/agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-validate-repository",
+      "sha": "149dd618323e",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-missing-branch-auto-recovery-fleet-wide-slice-3-validate-repository"
+    },
+    {
+      "ref": "refs/heads/agent/improve-optimize-ci-cd-pipeline-slice-1",
+      "sha": "c02f59c55564",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/improve-optimize-ci-cd-pipeline-slice-1"
+    },
+    {
+      "ref": "refs/heads/agent/improve-optimize-ci-cd-pipeline-slice-5",
+      "sha": "5ea8f1f92fc1",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-optimize-ci-cd-pipeline-slice-5"
+    },
+    {
+      "ref": "refs/heads/agent/improve-pre-decomposition-branch-availability-ve-slice-3-implement-bootstrap-inj",
+      "sha": "7711bd7ab387",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-pre-decomposition-branch-availability-ve-slice-3-implement-bootstrap-inj"
+    },
+    {
+      "ref": "refs/heads/agent/improve-upgrade-to-ai-powered-error-handling-slice-1",
+      "sha": "87c60c8c71cd",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-upgrade-to-ai-powered-error-handling-slice-1"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-clean-151469",
+      "sha": "a9e98fc3c705",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-clean-151469"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-eliminate",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-eliminate"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-final-ver",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-final-ver"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-confl",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-confl"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-uncom",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-fix-uncom"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-make-test",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-make-test"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-run-full-",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-run-full-"
+    },
+    {
+      "ref": "refs/heads/agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-verify-an",
+      "sha": "8f04c7c38a8c",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-verify-an"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-3575",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-3575"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-3575-check-and-escalate-the-guardrail-8-halt-",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-3575-check-and-escalate-the-guardrail-8-halt-"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-3575-derive-and-update-numbers-via-sql",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-3575-derive-and-update-numbers-via-sql"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-3575-run-the-orch-operator-p1-queue-clearance",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-3575-run-the-orch-operator-p1-queue-clearance"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-3575-schedule-a-new-session",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-3575-schedule-a-new-session"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-3575-split-the-task-into-3-sub-tasks",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-3575-split-the-task-into-3-sub-tasks"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-tq95",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-tq95"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-tq95-split-the-build-task-into-smaller-sub-ta",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-tq95-split-the-build-task-into-smaller-sub-ta"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260821-wz71",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260821-wz71"
+    },
+    {
+      "ref": "refs/heads/agent/log-p1-queue-clearance-20260822-b7n4",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/log-p1-queue-clearance-20260822-b7n4"
+    },
+    {
+      "ref": "refs/heads/agent/merge-train-blocker-passport-ts-overlay-conflict",
+      "sha": "9849c8cfe766",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/merge-train-blocker-passport-ts-overlay-conflict"
+    },
+    {
+      "ref": "refs/heads/agent/metaopt-d1-scoreboard-persist-and-dashboard-surface-added-metrics-on-the-dashboa",
+      "sha": "5f7943490a2b",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/metaopt-d1-scoreboard-persist-and-dashboard-surface-added-metrics-on-the-dashboa"
+    },
+    {
+      "ref": "refs/heads/agent/orch-config-consumption-apply-minimal-conflict-resolution",
+      "sha": "c5462d6259db",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-config-consumption-apply-minimal-conflict-resolution"
+    },
+    {
+      "ref": "refs/heads/agent/orch-config-consumption-final-verification-run-full-build-tests-",
+      "sha": "fb89543994c2",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/orch-config-consumption-final-verification-run-full-build-tests-"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe-split-the-bu",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-add-runner-tests-test-cross-project-depe-split-the-bu"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-fix-any-remaining-failures-and-rerun-ful",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-fix-any-remaining-failures-and-rerun-ful"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-inspect-conflict-restore-repo-state",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-inspect-conflict-restore-repo-state"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-rebase-cross-project-depends-core",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-rebase-cross-project-depends-core"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-rebase-cross-project-depends-core-implement-safe-chan",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-implement-safe-chan"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-rebase-cross-project-depends-core-split-the-build-tas",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-split-the-build-tas"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-rebase-cross-project-depends-core-write-acceptance-te",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-rebase-cross-project-depends-core-write-acceptance-te"
+    },
+    {
+      "ref": "refs/heads/agent/orch-cross-project-depends-verify-full-runner-suite",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/orch-cross-project-depends-verify-full-runner-suite"
+    },
+    {
+      "ref": "refs/heads/agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-repair-dependencies-b",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-repair-dependencies-b"
+    },
+    {
+      "ref": "refs/heads/agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-reproduce-or-inspect-",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-reproduce-or-inspect-"
+    },
+    {
+      "ref": "refs/heads/agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-split-the-build-task-",
+      "sha": "25eaa9006058",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/p1-artifact-commit-fanout-is-not-evidence-20260812-slice-4-split-the-build-task-"
+    },
+    {
+      "ref": "refs/heads/agent/qafix-beethoven-08020135",
+      "sha": "785e245631a9",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/qafix-beethoven-08020135"
+    },
+    {
+      "ref": "refs/heads/agent/qafix-beethoven-08021822",
+      "sha": "0f7456645c3e",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/qafix-beethoven-08021822"
+    },
+    {
+      "ref": "refs/heads/agent/qafix-beethoven-09021459-checkout-the-latest-code-and-verify-the-",
+      "sha": "2cec93d74724",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/qafix-beethoven-09021459-checkout-the-latest-code-and-verify-the-"
+    },
+    {
+      "ref": "refs/heads/agent/qafix-pareto-2080-07062319-slice-1-slice-5-fix-source-config-tests",
+      "sha": "f9ffdc4551e9",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/qafix-pareto-2080-07062319-slice-1-slice-5-fix-source-config-tests"
+    },
+    {
+      "ref": "refs/heads/agent/recover-codex-worktree-orchestrator-visibility-remediation",
+      "sha": "ae3e2d4a9e67",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/recover-codex-worktree-orchestrator-visibility-remediation"
+    },
+    {
+      "ref": "refs/heads/agent/recover-rescue-refs-group-scanner-and-queue-health",
+      "sha": "2045db153246",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/recover-rescue-refs-group-scanner-and-queue-health"
+    },
+    {
+      "ref": "refs/heads/agent/relfix-beethoven-299c6b3c3bc6",
+      "sha": "1685c6a28907",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/relfix-beethoven-299c6b3c3bc6"
+    },
+    {
+      "ref": "refs/heads/agent/remediate-dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-c",
+      "sha": "a44ff8558236",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/remediate-dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-c"
+    },
+    {
+      "ref": "refs/heads/agent/remediate-improve-immediate-auto-merge-on-test-pass-low-r-slice-3-locate-existin",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/remediate-improve-immediate-auto-merge-on-test-pass-low-r-slice-3-locate-existin"
+    },
+    {
+      "ref": "refs/heads/agent/remediate-improve-streamline-merge-workflow-with-ai-based-slice-3-update-documen",
+      "sha": "f08dcdfa26b2",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "agent/remediate-improve-streamline-merge-workflow-with-ai-based-slice-3-update-documen"
+    },
+    {
+      "ref": "refs/heads/agent/remediation-canary-real-regression-25eaa900",
+      "sha": "6aa7cf97d329",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/remediation-canary-real-regression-25eaa900"
+    },
+    {
+      "ref": "refs/heads/agent/wedged-quarantine",
+      "sha": "3b04e7f90ebe",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "agent/wedged-quarantine"
+    },
+    {
+      "ref": "refs/heads/audit/recover-stranded-20260723",
+      "sha": "338615dbf0cc",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "audit/recover-stranded-20260723"
+    },
+    {
+      "ref": "refs/heads/backlog-batch-illuminati-1d1b027",
+      "sha": "0abf5b6d4c52",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "backlog-batch-illuminati-1d1b027"
+    },
+    {
+      "ref": "refs/heads/backup-node-precatchup2-20260818",
+      "sha": "ee62af4431c3",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "backup-node-precatchup2-20260818"
+    },
+    {
+      "ref": "refs/heads/chore/chatgpt-bridge-protocol",
+      "sha": "5d7f14f5148e",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "chore/chatgpt-bridge-protocol"
+    },
+    {
+      "ref": "refs/heads/codex/orchestrator-session-fabric",
+      "sha": "59de85f238e6",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "codex/orchestrator-session-fabric"
+    },
+    {
+      "ref": "refs/heads/cowork/improvement-loop-repair-20260901",
+      "sha": "1f9e80830bd6",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "cowork/improvement-loop-repair-20260901"
+    },
+    {
+      "ref": "refs/heads/feat/oc-autoclear-policy",
+      "sha": "d5b88569173f",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "feat/oc-autoclear-policy"
+    },
+    {
+      "ref": "refs/heads/feat/oc-autoclear-policy-final",
+      "sha": "c95d78b6f97a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "feat/oc-autoclear-policy-final"
+    },
+    {
+      "ref": "refs/heads/fix-branch",
+      "sha": "54b416f7fe88",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "fix-branch"
+    },
+    {
+      "ref": "refs/heads/fix-release-train-manifest-import-20260807",
+      "sha": "6d77311f95e2",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "fix-release-train-manifest-import-20260807"
+    },
+    {
+      "ref": "refs/heads/fix/preflight-substantial-specs",
+      "sha": "d3a6b47abff4",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "fix/preflight-substantial-specs"
+    },
+    {
+      "ref": "refs/heads/fix/reserved-worktree-guard-20260812",
+      "sha": "6d5471008360",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "fix/reserved-worktree-guard-20260812"
+    },
+    {
+      "ref": "refs/heads/fix/session-20260816-repairs",
+      "sha": "75d7e08b5e41",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "fix/session-20260816-repairs"
+    },
+    {
+      "ref": "refs/heads/improve/cost-ledger-fail-soft",
+      "sha": "b0ba3f39e943",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "improve/cost-ledger-fail-soft"
+    },
+    {
+      "ref": "refs/heads/mac1-wip-2026-07-30",
+      "sha": "5bc36d6af61d",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "mac1-wip-2026-07-30"
+    },
+    {
+      "ref": "refs/heads/merge/madeus-to-master",
+      "sha": "68746f3b5115",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "merge/madeus-to-master"
+    },
+    {
+      "ref": "refs/heads/orchestrator/dev-local",
+      "sha": "50f90b6252a7",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "orchestrator/dev-local"
+    },
+    {
+      "ref": "refs/heads/probe",
+      "sha": "6c519ff5d23a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "probe"
+    },
+    {
+      "ref": "refs/heads/qa-backup-20260825",
+      "sha": "77ab94372038",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "qa-backup-20260825"
+    },
+    {
+      "ref": "refs/heads/rescue/operator-worktree-20260901",
+      "sha": "79ce0a0cb73e",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "rescue/operator-worktree-20260901"
+    },
+    {
+      "ref": "refs/heads/runner/counterfactual-replay-impl-7aeae1ff",
+      "sha": "7aeae1ff5717",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "runner/counterfactual-replay-impl-7aeae1ff"
+    },
+    {
+      "ref": "refs/heads/salvage/fleet-runner-edits-20260806",
+      "sha": "59ff15eada3a",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "salvage/fleet-runner-edits-20260806"
+    },
+    {
+      "ref": "refs/heads/verify/cowork-batch1",
+      "sha": "609c9b2afa58",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "verify/cowork-batch1"
+    },
+    {
+      "ref": "refs/heads/verify/solo3",
+      "sha": "f1aeea3f2bde",
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "local-only branch not on remote",
+      "branch_name": "verify/solo3"
+    },
+    {
+      "ref": "refs/heads/work-branch",
+      "sha": "e74d6fee6717",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "work-branch"
+    },
+    {
+      "ref": "refs/heads/worktree-agent-a4d8f842ebe05a089",
+      "sha": "cc9ec6dc9960",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "commit reachable from origin/master",
+      "branch_name": "worktree-agent-a4d8f842ebe05a089"
+    }
+  ]
+}
