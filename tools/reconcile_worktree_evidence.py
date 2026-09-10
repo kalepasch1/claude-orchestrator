@@ -158,6 +158,101 @@ def newest_touch(base: str, path: str, cwd: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
+# The single-character escapes git's quote_c_style() emits, besides \ooo.
+_C_ESCAPES = {
+    "a": 0x07, "b": 0x08, "f": 0x0C, "n": 0x0A,
+    "r": 0x0D, "t": 0x09, "v": 0x0B, "\\": 0x5C, '"': 0x22,
+}
+
+
+def unquote_porcelain_path(field: str) -> str:
+    """Decode one path field from `git status --porcelain` v1.
+
+    Git C-quotes any path containing non-ASCII bytes, spaces-with-specials,
+    quotes or control characters, and escapes the bytes in octal:
+
+        ?? "caf\\303\\251 men\\303\\274.py"
+
+    The previous parser did `.strip('"')`, which removed the quotes and left
+    the literal backslash-octal text. The result was a string naming no file on
+    disk, so every downstream probe -- base_blob, worktree_blob, newest_touch,
+    is_generated -- answered "not there" and the path flowed into item.files
+    looking handled.
+
+    Decoding is done by hand rather than via codecs' "unicode_escape", which
+    warns (and will eventually raise) on sequences git legitimately emits and
+    would also honour \\u escapes that git never writes.
+
+    Fail-soft: an undecodable field is returned with the quotes stripped, which
+    is no worse than the old behaviour.
+    """
+    field = field.strip()
+    if not (len(field) >= 2 and field.startswith('"') and field.endswith('"')):
+        return field
+    body = field[1:-1]
+
+    out = bytearray()
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\":
+            out.extend(ch.encode("utf-8"))
+            i += 1
+            continue
+        i += 1
+        if i >= n:                      # trailing backslash: keep it literally
+            out.extend(b"\\")
+            break
+        esc = body[i]
+        if esc in _C_ESCAPES:
+            out.append(_C_ESCAPES[esc])
+            i += 1
+        elif esc in "01234567":
+            octal = body[i : i + 3]
+            try:
+                out.append(int(octal, 8) & 0xFF)
+            except ValueError:          # short/invalid run: keep it literally
+                out.extend(("\\" + octal).encode("utf-8"))
+            i += len(octal)
+        else:                           # unknown escape: keep both characters
+            out.extend(("\\" + esc).encode("utf-8"))
+            i += 1
+
+    return out.decode("utf-8", "replace")
+
+
+def parse_status_porcelain(status: str) -> "tuple[list[str], list[str]]":
+    """(tracked, untracked) paths from `git status --porcelain` v1 output.
+
+    Two shapes the old inline parser got wrong, both reproduced on a throwaway
+    repo:
+
+      R  old_name.py -> new_name.py     parsed as the single path
+                                        "old_name.py -> new_name.py"
+      ?? "caf\\303\\251 men\\303\\274.py"   parsed with the escapes left literal
+
+    Neither names a file that exists, so the dirty path became a phantom that
+    no probe could resolve while still counting as classified. Renames report
+    the DESTINATION -- that is where the content lives now and what a recovery
+    has to write.
+    """
+    tracked: "list[str]" = []
+    untracked: "list[str]" = []
+    for line in status.splitlines():
+        if len(line) < 4:
+            continue
+        code, rest = line[:2], line[3:]
+        # Rename/copy entries carry "src -> dst". Split before unquoting,
+        # because either side may be quoted independently.
+        if code[0] in ("R", "C") and " -> " in rest:
+            rest = rest.split(" -> ", 1)[1]
+        path = unquote_porcelain_path(rest)
+        if not path:
+            continue
+        (untracked if code == "??" else tracked).append(path)
+    return tracked, untracked
+
+
 def is_generated(path: str) -> bool:
     p = "/" + path.replace(os.sep, "/")
     return any(h in p for h in GENERATED_HINTS)
@@ -237,12 +332,7 @@ def classify_worktree(item: Item, path: str, head: str, branch: str,
         item.evidence = "git status --porcelain empty"
         return
 
-    tracked, untracked = [], []
-    for line in status.splitlines():
-        if len(line) < 4:
-            continue
-        code, p = line[:2], line[3:].strip().strip('"')
-        (untracked if code == "??" else tracked).append(p)
+    tracked, untracked = parse_status_porcelain(status)
     item.files = sorted(tracked + untracked)
 
     real = [f for f in item.files if not is_generated(f)]
