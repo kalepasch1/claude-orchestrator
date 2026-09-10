@@ -62,6 +62,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 import stderr_digest  # noqa: E402
+from staging_branch import staging_branch_for
 
 # Verdicts
 OK = "ok"
@@ -346,8 +347,9 @@ def resolve_target(task, repo=None, prod_branch=None):
         return repo, prod_branch, f"project {task.get('project_id')!r} not resolvable"
     mode = str(os.environ.get("ORCH_CODE_MERGE_TARGET", "dev") or "dev").lower()
     if mode in ("dev", "staging", "integration"):
-        target = (os.environ.get("ORCH_STAGING_BRANCH") or row.get("staging_branch")
-                  or row.get("default_base") or row.get("prod_branch"))
+        # Per project first (projects.staging_branch), then ORCH_STAGING_BRANCH,
+        # then the fleet default -- staging_branch.py says why the row wins now.
+        target = staging_branch_for(row=row)[0] or row.get("default_base") or row.get("prod_branch")
     else:
         target = row.get("default_base") or row.get("prod_branch")
     return repo or row.get("repo_path"), prod_branch or target, None

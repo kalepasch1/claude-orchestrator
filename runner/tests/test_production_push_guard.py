@@ -137,3 +137,41 @@ def test_a_repo_with_no_staging_branch_is_not_held_to_the_rule():
         ok, message = production_push_guard.verify_promoted_from_staging(work, sha)
         assert ok is True
         assert "does not apply" in message
+
+
+def test_the_project_registry_names_the_staging_branch(monkeypatch):
+    # smarter and apparently-law integrate on `dev` (projects.staging_branch);
+    # the guard must check containment in THAT branch, and say where the name
+    # came from.
+    import staging_branch
+    monkeypatch.setattr(staging_branch, "project_row_for_repo",
+                        lambda repo, select=None: {"repo_path": repo, "staging_branch": "dev"})
+    with tempfile.TemporaryDirectory() as tmp:
+        work, _ = _fleet_repo(tmp)
+        sha = _commit(work, "integrated on dev")
+        _run(work, "git", "push", "-q", "origin", f"{sha}:refs/heads/dev")
+        ok, message = production_push_guard.verify_promoted_from_staging(work, sha)
+        assert ok is True
+        assert "origin/dev" in message
+        assert "dev (project registry)" in message
+
+
+def test_the_fleet_branch_does_not_count_when_the_project_uses_dev(monkeypatch):
+    # The commit is on origin/orchestrator/dev and origin/dev exists but does
+    # not contain it: for a project whose staging branch is dev, that is NOT
+    # integrated, and the refusal names dev, with its source.
+    import staging_branch
+    monkeypatch.setattr(staging_branch, "project_row_for_repo",
+                        lambda repo, select=None: {"repo_path": repo, "staging_branch": "dev"})
+    with tempfile.TemporaryDirectory() as tmp:
+        work, _ = _fleet_repo(tmp)
+        base = _commit(work, "the dev tip")
+        _run(work, "git", "push", "-q", "origin", f"{base}:refs/heads/dev")
+        sha = _commit(work, "landed on the wrong staging branch")
+        _run(work, "git", "push", "-q", "origin", f"{sha}:refs/heads/orchestrator/dev")
+        ok, message = production_push_guard.verify_promoted_from_staging(work, sha)
+        assert ok is False
+        assert "origin/dev" in message
+        assert "dev (project registry)" in message
+        assert "git checkout -B dev origin/dev" in message
+
