@@ -30,6 +30,13 @@ from authority import (  # noqa: E402
     Decision,
     authorize,
 )
+from negotiate import (  # noqa: E402
+    NegotiationProposal,
+    PeriodObservation,
+    detect_subscription_creep,
+    propose,
+    settle,
+)
 
 __all__ = [
     "InboundItem",
@@ -38,4 +45,9 @@ __all__ = [
     "Decision",
     "authorize",
     "DEFAULT_CAP_USD",
+    "NegotiationProposal",
+    "PeriodObservation",
+    "detect_subscription_creep",
+    "propose",
+    "settle",
 ]
