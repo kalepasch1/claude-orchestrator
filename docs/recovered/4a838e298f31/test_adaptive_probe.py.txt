@@ -1,0 +1,154 @@
+"""Tests for adaptive_probe.py — probe-first routing for expensive agentic work.
+
+Covers: should_probe gating (env toggle, MARK dedup, kind exclusions, char threshold,
+material flag, kind inclusions), make_probe fail-soft, inject passthrough and injection.
+"""
+import os
+import sys
+import types
+import unittest
+
+# ---------------------------------------------------------------------------
+# Stub db, model_policy, model_gateway before importing
+# ---------------------------------------------------------------------------
+sys.modules.setdefault("db", types.ModuleType("db"))
+
+_probe_response = {"text": "PROMISING: yes\nMINIMAL_SLICE: runner/db.py\nREUSE: none\nRISKS: merge conflict",
+                    "provider": "local", "model": "llama3.2"}
+
+mp = types.ModuleType("model_policy")
+mp.choose = lambda *a, **kw: ("local", "llama3.2", {})
+sys.modules["model_policy"] = mp
+
+mg = types.ModuleType("model_gateway")
+mg.complete = lambda *a, **kw: dict(_probe_response)
+sys.modules["model_gateway"] = mg
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import adaptive_probe as ap
+
+
+class TestShouldProbe(unittest.TestCase):
+    def setUp(self):
+        os.environ["ORCH_ADAPTIVE_PROBE"] = "true"
+        os.environ.pop("ORCH_ADAPTIVE_PROBE_CHARS", None)
+
+    def test_disabled_by_env(self):
+        os.environ["ORCH_ADAPTIVE_PROBE"] = "false"
+        self.assertFalse(ap.should_probe({"kind": "build"}, "x" * 2000))
+
+    def test_enabled_by_env_true(self):
+        os.environ["ORCH_ADAPTIVE_PROBE"] = "true"
+        self.assertTrue(ap.should_probe({"kind": "build"}, "x" * 2000))
+
+    def test_already_probed_skips(self):
+        prompt = f"some text\n{ap.MARK}\nmore text"
+        self.assertFalse(ap.should_probe({"kind": "build"}, prompt))
+
+    def test_mechanical_skips(self):
+        self.assertFalse(ap.should_probe({"kind": "mechanical"}, "x" * 5000))
+
+    def test_chore_skips(self):
+        self.assertFalse(ap.should_probe({"kind": "chore"}, "x" * 5000))
+
+    def test_docs_skips(self):
+        self.assertFalse(ap.should_probe({"kind": "docs"}, "x" * 5000))
+
+    def test_cleanup_skips(self):
+        self.assertFalse(ap.should_probe({"kind": "cleanup"}, "x" * 5000))
+
+    def test_canary_skips(self):
+        self.assertFalse(ap.should_probe({"kind": "canary"}, "x" * 5000))
+
+    def test_long_prompt_triggers(self):
+        self.assertTrue(ap.should_probe({"kind": "feature"}, "x" * 2000))
+
+    def test_short_prompt_with_material_triggers(self):
+        self.assertTrue(ap.should_probe({"kind": "feature", "material": "some data"}, "short"))
+
+    def test_build_kind_triggers(self):
+        self.assertTrue(ap.should_probe({"kind": "build"}, "short prompt"))
+
+    def test_security_kind_triggers(self):
+        self.assertTrue(ap.should_probe({"kind": "security"}, "short prompt"))
+
+    def test_legal_kind_triggers(self):
+        self.assertTrue(ap.should_probe({"kind": "legal"}, "short prompt"))
+
+    def test_feature_short_no_material_skips(self):
+        self.assertFalse(ap.should_probe({"kind": "feature"}, "short"))
+
+    def test_none_task_and_prompt(self):
+        self.assertFalse(ap.should_probe(None, None))
+
+    def test_custom_char_threshold(self):
+        os.environ["ORCH_ADAPTIVE_PROBE_CHARS"] = "50"
+        self.assertTrue(ap.should_probe({"kind": "feature"}, "x" * 60))
+        os.environ.pop("ORCH_ADAPTIVE_PROBE_CHARS", None)
+
+
+class TestMakeProbe(unittest.TestCase):
+    def test_returns_marked_string(self):
+        result = ap.make_probe({"kind": "build"}, "fix the build", "beethoven")
+        self.assertIn(ap.MARK, result)
+        self.assertIn("PROMISING", result)
+
+    def test_empty_on_model_failure(self):
+        original = mg.complete
+        mg.complete = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            result = ap.make_probe({"kind": "build"}, "fix", "proj")
+            self.assertEqual(result, "")
+        finally:
+            mg.complete = original
+
+    def test_empty_on_empty_response(self):
+        original = mg.complete
+        mg.complete = lambda *a, **kw: {"text": ""}
+        try:
+            result = ap.make_probe({"kind": "build"}, "fix", "proj")
+            self.assertEqual(result, "")
+        finally:
+            mg.complete = original
+
+    def test_truncates_long_probe(self):
+        original = mg.complete
+        mg.complete = lambda *a, **kw: {"text": "X" * 5000, "provider": "p", "model": "m"}
+        try:
+            result = ap.make_probe({"kind": "build"}, "fix", "proj")
+            # MARK line + truncated to 1600 chars of content
+            self.assertLessEqual(len(result), 1700)
+        finally:
+            mg.complete = original
+
+
+class TestInject(unittest.TestCase):
+    def setUp(self):
+        os.environ["ORCH_ADAPTIVE_PROBE"] = "true"
+
+    def test_injects_when_should_probe(self):
+        result = ap.inject({"kind": "build"}, "original prompt" + "x" * 2000)
+        self.assertIn(ap.MARK, result)
+        self.assertIn("original prompt", result)
+
+    def test_passthrough_when_should_not_probe(self):
+        result = ap.inject({"kind": "mechanical"}, "short prompt")
+        self.assertEqual(result, "short prompt")
+
+    def test_passthrough_on_none_prompt(self):
+        result = ap.inject(None, None)
+        self.assertIsNone(result)
+
+    def test_probe_failure_returns_original(self):
+        original = mg.complete
+        mg.complete = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            prompt = "x" * 2000
+            result = ap.inject({"kind": "build"}, prompt)
+            self.assertEqual(result, prompt)
+        finally:
+            mg.complete = original
+
+
+if __name__ == "__main__":
+    unittest.main()
