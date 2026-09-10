@@ -18,24 +18,46 @@ __all__ = ["check"]
 RECENT = int(os.environ.get("ANOMALY_RECENT", "30"))     # last N tasks
 SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
-#: Metrics measured as a fraction of the window (0.0-1.0). Only these can be
-#: judged against an absolute floor, because only these have a unit that means
-#: the same thing on every fleet: "share of recent tasks".
-RATE_METRICS = ("fail_rate", "rate_limit_rate")
+# EMERGENCE FLOORS — the ratio test cannot see a metric that appears out of nothing.
+#
+# `now > baseline * SPIKE` is undefined when the baseline is 0: any multiple of zero is
+# zero, so the comparison is skipped. That silently exempted the single most important
+# case this module exists for. A fleet whose trailing 270 tasks all passed has a baseline
+# fail_rate of exactly 0.0; when the recent 30 ALL fail, the ratio branch is unreachable
+# and check() returns ok=True. Total failure was the one anomaly guaranteed not to alert.
+#
+# So a metric that was absent and is now present alerts on its own absolute level. The
+# floors are what keeps that from firing on a single unlucky task: one failure in thirty
+# is 0.033 and stays quiet; a third of the window failing does not.
+#
+# ONLY RATE METRICS GET A FLOOR. A floor is a claim that some absolute level is bad on
+# every fleet, and that claim is only honest for metrics measured as a share of the
+# window: "10% of recent tasks failed" means the same thing everywhere. Dollars and
+# seconds do not have a fleet-independent bad level, and — more importantly — a baseline
+# of exactly $0.00 or 0.0s does not mean "this fleet was free". It means no cost or
+# duration was recorded at all, which is a reporting gap. Alerting on it would page
+# every time telemetry resumes after a backfill, so absolute metrics keep the strict
+# rule: no nonzero baseline, no alert.
+_DEFAULT_FLOORS = {
+    "fail_rate": 0.10,          # >10% of the recent window failing
+    "rate_limit_rate": 0.10,
+}
 
-#: What counts as a spike when the baseline is EXACTLY zero.
-#:
-#: THE HEALTHIEST BASELINE DISABLED THE ALARM. The comparison is
-#: `baseline > 0 and now > baseline * SPIKE`, and the `baseline > 0` guard is
-#: needed — nothing is 1.75x of zero. But it also means a metric that goes from
-#: 0% to 100% raises nothing at all, and 0% is what a healthy fleet's baseline
-#: looks like. The worst possible regression, on the best possible fleet, was
-#: the one case this watchdog could not see: the first 30 tasks after a bad
-#: self-change failing outright read as "ok".
-#:
-#: A floor rather than "any nonzero value" because 1 failure in a 30-task window
-#: is 0.033 and alerting on it would page for every blip on a perfect fleet.
-ZERO_BASELINE_RATE = float(os.environ.get("ANOMALY_ZERO_BASELINE_RATE", "0.2"))
+def _floor(metric: str) -> float:
+    """Absolute level at which *metric* alerts on a zero baseline. Env-overridable.
+
+    Metrics absent from _DEFAULT_FLOORS are absolute (USD, seconds) and are never
+    judged against a floor; see the note above.
+    """
+    if metric not in _DEFAULT_FLOORS:
+        return float("inf")
+    raw = os.environ.get(f"ANOMALY_FLOOR_{metric.upper()}")
+    if raw is None:
+        return _DEFAULT_FLOORS[metric]
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_FLOORS[metric]
 
 
 def _rate(rows: list[dict[str, Any]], pred: Callable[[dict[str, Any]], bool]) -> float:
@@ -68,13 +90,12 @@ def check() -> dict[str, Any]:
     for name, (now, baseline) in metrics.items():
         if baseline > 0:
             if now > baseline * SPIKE:
-                alerts.append(f"{name}: {now:.3f} vs baseline {baseline:.3f} "
-                              f"({now/baseline:.1f}x)")
-        elif name in RATE_METRICS and now >= ZERO_BASELINE_RATE:
-            # No ratio exists to report here, so say what actually happened
-            # rather than printing "infx" or dividing by zero.
-            alerts.append(f"{name}: {now:.3f} against a clean baseline of 0.000 "
-                          f"— new failure mode, not a worsening one")
+                alerts.append(
+                    f"{name}: {now:.3f} vs baseline {baseline:.3f} ({now/baseline:.1f}x)")
+        elif now > _floor(name):
+            # Emergence: no baseline to multiply, so judge the level itself.
+            alerts.append(
+                f"{name}: {now:.3f} vs baseline 0.000 (new; floor {_floor(name):.3f})")
     for a in alerts:
         db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
             "title": "Anomaly detected in orchestrator vitals",

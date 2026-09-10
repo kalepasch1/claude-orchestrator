@@ -24,6 +24,9 @@ Read-only. It issues SELECTs and changes nothing.
 Exit codes:
     0  queue is genuinely empty, or has claimable work
     2  queued > 0 and claimable == 0 — deadlock, not completion
+    3  at least one queued task depends on a task that can never reach a
+       satisfying state — permanent, and outranks 2 because a deadlock can
+       clear itself as running work lands while an unsatisfiable edge cannot
 """
 
 from __future__ import annotations
@@ -39,6 +42,18 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = os.path.join(REPO, "runner", ".env")
 
 SATISFIED_STATES = ("DONE", "MERGED")
+
+# A dep pointing at one of these can never become satisfied: the task is in a
+# terminal state that is not delivery, so waiting on it is waiting forever.
+# A "blocked" task and an UNSATISFIABLE one look identical in the old report --
+# both just sit -- but they need opposite responses. Blocked resolves itself
+# when the dep finishes. Unsatisfiable never does, and the only fixes are to
+# re-point the dep or close the dependent. Reporting them together is why
+# 169 permanently-dead edges (including every operator drop-box task) were
+# mistaken for ordinary queue depth for six weeks.
+TERMINAL_UNSATISFYING_STATES = (
+    "SUPERSEDED", "QUARANTINED", "CLOSED", "PHANTOM_UNVERIFIED",
+)
 
 
 def load_config(env_path: str = ENV) -> tuple:
@@ -96,11 +111,50 @@ def blocking_deps(task: dict, satisfied_slugs_by_project: dict) -> list:
     return [d for d in deps_of(task) if d not in satisfied]
 
 
+def unsatisfiable_deps(task: dict, dep_states_by_project: dict,
+                       childless_decomposed_by_project: dict) -> list:
+    """Deps of `task` that can never reach a satisfying state.
+
+    Three shapes, all permanent:
+      * the dep is in a terminal non-delivery state (SUPERSEDED et al);
+      * the dep is a DECOMPOSED parent with no children, so it can never be
+        closed by runner/db.py::_closed_decompositions() -- which is correct
+        to refuse it, since childless means the work was never delivered;
+      * the dep names a slug that does not exist in the project at all.
+    """
+    project_id = task.get("project_id")
+    if project_id not in (dep_states_by_project or {}):
+        # No state map loaded for this project. Absence of evidence is not
+        # evidence of a dangling dep -- claiming "unsatisfiable" here would
+        # relabel every ordinary blocked task in any caller that did not pass
+        # the map, which is exactly backwards from the point of this check.
+        return []
+    states = dep_states_by_project.get(project_id, {})
+    childless = childless_decomposed_by_project.get(project_id, set()) \
+        if childless_decomposed_by_project else set()
+
+    dead = []
+    for dep in deps_of(task):
+        state = states.get(dep)
+        if state is None:
+            dead.append((dep, "no such task in this project"))
+        elif state in TERMINAL_UNSATISFYING_STATES:
+            dead.append((dep, "dep is %s — terminal, never satisfies" % state))
+        elif dep in childless:
+            dead.append((dep, "dep is DECOMPOSED with zero children — "
+                              "cannot be closed; run "
+                              "tools/reconcile_childless_decompositions.py"))
+    return dead
+
+
 def classify_task(task: dict, project_ids: set,
-                  satisfied_slugs_by_project: dict) -> tuple:
+                  satisfied_slugs_by_project: dict,
+                  dep_states_by_project: dict = None,
+                  childless_decomposed_by_project: dict = None) -> tuple:
     """Return (verdict, detail) for one QUEUED task.
 
-    verdict is one of: claimable, orphan_project, blocked, speculative.
+    verdict is one of: claimable, orphan_project, unsatisfiable, blocked,
+    speculative.
     """
     if task.get("kind") == "speculative":
         return "speculative", "kind=speculative is excluded from claiming"
@@ -117,24 +171,35 @@ def classify_task(task: dict, project_ids: set,
 
     blocking = blocking_deps(task, satisfied_slugs_by_project)
     if blocking:
+        # Distinguish "waiting" from "waiting forever" before reporting.
+        dead = unsatisfiable_deps(task, dep_states_by_project or {},
+                                  childless_decomposed_by_project or {})
+        dead = [d for d in dead if d[0] in blocking]
+        if dead:
+            return ("unsatisfiable",
+                    "; ".join("%s: %s" % (slug, why) for slug, why in dead))
         return "blocked", "waiting on %s" % ", ".join(sorted(blocking))
 
     return "claimable", ""
 
 
 def summarize(tasks: list, project_ids: set,
-              satisfied_slugs_by_project: dict) -> dict:
+              satisfied_slugs_by_project: dict,
+              dep_states_by_project: dict = None,
+              childless_decomposed_by_project: dict = None) -> dict:
     buckets: dict = {"claimable": [], "orphan_project": [], "blocked": [],
-                     "speculative": []}
+                     "unsatisfiable": [], "speculative": []}
     for task in tasks:
-        verdict, detail = classify_task(task, project_ids,
-                                        satisfied_slugs_by_project)
+        verdict, detail = classify_task(
+            task, project_ids, satisfied_slugs_by_project,
+            dep_states_by_project, childless_decomposed_by_project)
         buckets[verdict].append({"slug": task.get("slug"), "detail": detail})
 
     return {
         "queued": len(tasks),
         "claimable": len(buckets["claimable"]),
         "blocked": len(buckets["blocked"]),
+        "unsatisfiable": len(buckets["unsatisfiable"]),
         "orphan_project": len(buckets["orphan_project"]),
         "speculative": len(buckets["speculative"]),
         "deadlocked": len(tasks) > 0 and not buckets["claimable"],
@@ -170,7 +235,21 @@ def main() -> int:
     for row in satisfied:
         by_project.setdefault(row["project_id"], set()).add(row["slug"])
 
-    report = summarize(queued, project_ids, by_project)
+    # Every task's state, so a dep can be told "not finished yet" from
+    # "in a state it can never leave".
+    every = fetch_all(url, key, "tasks?select=id,slug,project_id,state,parent_task_id")
+    dep_states: dict = {}
+    for row in every:
+        dep_states.setdefault(row["project_id"], {})[row["slug"]] = row.get("state")
+
+    parents_with_children = {r["parent_task_id"] for r in every
+                             if r.get("parent_task_id")}
+    childless: dict = {}
+    for row in every:
+        if row.get("state") == "DECOMPOSED" and row["id"] not in parents_with_children:
+            childless.setdefault(row["project_id"], set()).add(row["slug"])
+
+    report = summarize(queued, project_ids, by_project, dep_states, childless)
 
     if args.as_json:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -178,9 +257,10 @@ def main() -> int:
         print("queued          %d" % report["queued"])
         print("  claimable     %d" % report["claimable"])
         print("  blocked       %d" % report["blocked"])
+        print("  unsatisfiable %d" % report["unsatisfiable"])
         print("  orphan project%d" % report["orphan_project"])
         print("  speculative   %d" % report["speculative"])
-        for name in ("orphan_project", "blocked"):
+        for name in ("orphan_project", "unsatisfiable", "blocked"):
             rows = report["buckets"][name]
             if not rows:
                 continue
@@ -190,11 +270,23 @@ def main() -> int:
             if len(rows) > args.limit:
                 print("  ... and %d more" % (len(rows) - args.limit))
 
+        if report["unsatisfiable"]:
+            print("\nUNSATISFIABLE: %d queued task(s) depend on a task that can "
+                  "never reach a satisfying state. These will never be claimed "
+                  "by any executor no matter how long the fleet runs. Fix with "
+                  "tools/reconcile_childless_decompositions.py (childless "
+                  "decompositions) or by re-pointing the dep."
+                  % report["unsatisfiable"], file=sys.stderr)
+
         if report["deadlocked"]:
             print("\nDEADLOCK: %d task(s) queued, none claimable. This is not an "
                   "empty queue and must not be reported as a clean run."
                   % report["queued"], file=sys.stderr)
 
+    # 3 outranks 2: a deadlocked queue may clear itself as running work lands,
+    # but an unsatisfiable edge is permanent and needs a human.
+    if report["unsatisfiable"]:
+        return 3
     return 2 if report["deadlocked"] else 0
 
 

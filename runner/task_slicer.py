@@ -407,17 +407,58 @@ def _insert_task(row):
     # is worse than losing either of those, because it is what lets dependency
     # resolution close a decomposition, and a slice that lands without it is
     # invisible to its own parent forever.
+    #
+    # THE LAST VARIANT USED TO LOSE THE LINK SILENTLY (2026-09-10). It dropped
+    # parent_task_id and returned True, so the caller counted the slice as
+    # landed while the parent could never see it. _closed_decompositions()
+    # finds children by FK alone, so such a parent stays DECOMPOSED with zero
+    # children forever and every dependent behind it deadlocks. Measured on
+    # prod 2026-09-10: 5,017 of 5,319 DECOMPOSED parents (94%) had no FK child,
+    # and 304 of them had 2,164 children sitting right there under
+    # `<slug>-slice-N` with parent_task_id NULL -- fully delivered work
+    # (auth-gate-audit's five slices were all DEPLOYED_AND_VERIFIED) that
+    # dependency resolution still counted as unsatisfied.
+    #
+    # The fallback is kept, because refusing the insert outright would lose the
+    # slice as well as the link. But it is now RECORDED rather than silent: the
+    # note carries `parent=<slug>`, which is the format
+    # tools/reconcile_childless_decompositions.py and the legacy note-link path
+    # both read, so a link that could not be written as a column is still
+    # recoverable instead of simply gone.
+    linkless = {k: v for k, v in row.items()
+                if k not in ("deps", "base_branch", "parent_task_id")}
     variants = [
         row,
         {k: v for k, v in row.items() if k != "deps"},
         {k: v for k, v in row.items() if k not in ("deps", "base_branch")},
-        {k: v for k, v in row.items()
-         if k not in ("deps", "base_branch", "parent_task_id")},
+        linkless,
     ]
     for candidate in variants:
         try:
             db.insert("tasks", candidate)
+            if candidate is linkless and row.get("parent_task_id"):
+                _warn_link_dropped(row)
             return True
         except Exception:
             continue
     raise RuntimeError("no compatible task insert shape")
+
+
+def _warn_link_dropped(row):
+    """Announce a slice that landed without its parent_task_id column.
+
+    Silence here is what let the defect run for weeks: the insert succeeded,
+    the caller saw success, and the missing link only surfaced later as a
+    permanently unclaimable dependent. The note already carries
+    `parent=<slug>` (see _slice_row), so the link survives in prose and the
+    reconciler can rebuild it -- but somebody has to know to run it.
+    """
+    try:
+        sys.stderr.write(
+            "task_slicer: WARNING slice %r landed WITHOUT parent_task_id; "
+            "parent link survives only in the note. Run "
+            "tools/reconcile_childless_decompositions.py to rebuild it.\n"
+            % row.get("slug")
+        )
+    except Exception:
+        pass
