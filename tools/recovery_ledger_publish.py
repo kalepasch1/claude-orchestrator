@@ -31,7 +31,14 @@ import os
 import re
 import sys
 
-TASK_TYPE = "recovery_ledger"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from recovery_ledger_task_types import (  # noqa: E402
+    LEDGER_TASK_TYPE, dedupe_filter,
+)
+
+# What this tool writes. Unchanged; see recovery_ledger_task_types for why the
+# spelling is not being tidied up.
+TASK_TYPE = LEDGER_TASK_TYPE
 ENV_CANDIDATES = ("runner/.env", ".env")
 
 
@@ -177,10 +184,14 @@ def main() -> int:
 
     url, key = load_env(args.repo_root)
 
-    # Idempotency: skip sources already recorded under this fingerprint.
+    # Idempotency: skip sources already recorded under this fingerprint, under
+    # ANY ledger spelling. Reading only this tool's own task_type meant the
+    # sibling publisher's rows were invisible, so publishing a fingerprint
+    # through both tools wrote every item twice with neither one noticing.
     existing: set[str] = set()
     for row in rest(url, key, "GET",
-                    "coordination_tasks?select=payload&task_type=eq." + TASK_TYPE
+                    "coordination_tasks?select=payload&task_type="
+                    + dedupe_filter()
                     + "&payload=like.*" + fingerprint + "*"):
         payload = row.get("payload")
         if not payload:
