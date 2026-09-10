@@ -59,6 +59,29 @@ TASK_TYPE = "chatgpt_local_reconcile_ledger"
 MAX_ROWS = int(os.environ.get("ORCH_RECOVERY_LEDGER_MAX_ROWS", "2000"))
 
 
+def ledger_items(ledger: dict) -> list:
+    """The item list, whichever reconciler wrote the ledger.
+
+    Three tools in this repo emit recovery ledgers and they do not agree on the
+    key. tools/reconcile_*.py and tools/reconcile-local-evidence.mjs write
+    `items[]`; scripts/reconcile-rescue-refs.mjs writes `records[]` with
+    `source`/`source_sha`/`touched_files` instead of `ref`/`files`.
+
+    Reading only `items` is what made this script publish ZERO rows for every
+    rescue-ref ledger while still exiting 0 and printing a clean summary — the
+    durable queue provenance the recovery contract requires was never written,
+    and nothing said so. scripts/recovery-ledger-report.mjs already documents
+    the same disagreement and reads either shape; the publisher now does too.
+    Normalising here rather than at each call site means a fourth emitter only
+    has to be taught to this one function.
+    """
+    for key in ("items", "records"):
+        value = ledger.get(key)
+        if isinstance(value, list) and value:
+            return value
+    return []
+
+
 def status_for(classification: str) -> str:
     return "open" if classification in OPEN_CLASSIFICATIONS else "closed"
 
@@ -66,16 +89,18 @@ def status_for(classification: str) -> str:
 def build_payload(item: dict, ledger: dict, args) -> dict:
     """One flat, queryable record. Files are capped so a 900-path diff does not
     become the row: the ledger blob on the branch stays the full record."""
-    files = item.get("files") or item.get("recover_files") or []
+    files = (item.get("files") or item.get("recover_files")
+             or item.get("touched_files") or [])
     return {
         "audit_fingerprint": ledger.get("audit_fingerprint", ""),
         "task_slug": args.task_slug,
         "project": args.project,
-        "source": item.get("ref", ""),
+        "source": item.get("ref") or item.get("source", ""),
         "source_kind": item.get("kind", ledger.get("evidence_kind", "")),
         "classification": item.get("classification", "UNKNOWN"),
         "disposition": item.get("disposition", ""),
-        "evidence": item.get("evidence", ""),
+        "evidence": (item.get("evidence")
+                     or item.get("classification_reason", "")),
         "files": sorted(set(files))[:20],
         "file_count": len(set(files)),
         "branch": args.branch,
@@ -128,12 +153,21 @@ def main() -> int:
 
     with open(args.ledger) as fh:
         ledger = json.load(fh)
-    items = ledger.get("items", [])
+    items = ledger_items(ledger)
     fingerprint = ledger.get("audit_fingerprint", "")
     if not fingerprint:
         print("ledger has no audit_fingerprint; refusing to publish untraceable "
               "records", file=sys.stderr)
         return 2
+
+    if not items:
+        # A ledger with a fingerprint but no readable items is a shape mismatch,
+        # not an empty pass. Exiting 0 here is what hid the records[]/items[]
+        # bug: "total: 0, failed: 0" reads as success. Fail loudly instead.
+        print("ledger %s has an audit_fingerprint but no readable items "
+              "(looked for 'items' and 'records'); refusing to report a "
+              "zero-row publish as success" % args.ledger, file=sys.stderr)
+        return 3
 
     unknown = [i for i in items
                if i.get("classification", "UNKNOWN") == "UNKNOWN"]
