@@ -207,12 +207,30 @@ class TestResolveTarget(unittest.TestCase):
     def setUp(self):
         self.task = {"project_id": "p1"}
         self.project = {
-            "id": "p1", "repo_path": "/repo", "staging_branch": "stale/staging",
+            "id": "p1", "repo_path": "/repo", "staging_branch": "dev",
             "default_base": "master", "prod_branch": "master",
         }
 
-    def test_dev_mode_uses_runtime_staging_branch_over_stale_project_value(self):
+    def test_dev_mode_uses_the_project_row_over_the_process_variable(self):
+        # Reversed on 2026-09-10 (runner/staging_branch.py). This used to assert the
+        # opposite -- that ORCH_STAGING_BRANCH beat a "stale" project value -- and
+        # that is how one process variable governed sixteen repos. A staging
+        # branch written against ONE project is more specific than one written
+        # for the process; `smarter` and `apparently-law` integrate on `dev`
+        # while the fleet variable still says orchestrator/dev.
         with patch.object(merge_truth, "_project_row", return_value=self.project), \
+             patch.dict(os.environ, {
+                 "ORCH_CODE_MERGE_TARGET": "dev",
+                 "ORCH_STAGING_BRANCH": "orchestrator/dev",
+             }):
+            self.assertEqual(
+                merge_truth.resolve_target(self.task),
+                ("/repo", "dev", None),
+            )
+
+    def test_dev_mode_falls_back_to_the_process_variable_when_the_row_is_blank(self):
+        blank = dict(self.project, staging_branch="  ")
+        with patch.object(merge_truth, "_project_row", return_value=blank), \
              patch.dict(os.environ, {
                  "ORCH_CODE_MERGE_TARGET": "dev",
                  "ORCH_STAGING_BRANCH": "orchestrator/dev",

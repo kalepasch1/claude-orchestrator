@@ -26,6 +26,7 @@ sys.path.insert(0, RUNNER_DIR)
 
 import build_gate
 import proof_graph
+import staging_branch as staging
 
 PRODUCTION_REFS = {"refs/heads/main", "refs/heads/master"}
 ZERO_SHA = "0" * 40
@@ -886,6 +887,10 @@ def verify_immutable_ref(local_ref, local_sha, repo):
     )
 
 
+# The FLEET answer, kept for callers that read it. The guard itself resolves the
+# branch PER PROJECT through staging_branch.staging_branch_for(): the projects
+# registry first, then this variable, then the fleet default. See that module
+# for why the order is this way round.
 STAGING_BRANCH = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 
 
@@ -898,11 +903,14 @@ def _push_remote(repo):
     return "origin" if "origin" in remotes else (remotes[0] if remotes else "origin")
 
 
-def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main"):
+def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main", staging_branch_name=None):
     """Production is a fast-forward of staging, never a side entrance.
 
     Every project in this fleet develops on feature branches and integrates on
-    `orchestrator/dev`. When a commit reaches main or master without passing
+    its staging branch -- `projects.staging_branch`, then ORCH_STAGING_BRANCH,
+    then the fleet default `orchestrator/dev` (staging_branch.py; `smarter` and
+    `apparently-law` use `dev` since 2026-09-10). When a commit reaches main or
+    master without passing
     through that branch, two things are lost at once: the integration merge that
     would have surfaced a conflict against everyone else's in-flight work, and
     the release train's verification of the *merged* result. The commit builds
@@ -920,40 +928,45 @@ def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main"):
     adopted it would only teach people to reach for the override.
     """
     remote = _push_remote(repo)
-    tracking = f"refs/remotes/{remote}/{STAGING_BRANCH}"
+    if staging_branch_name:
+        branch, source = staging_branch_name, "explicit"
+    else:
+        branch, source = staging.staging_branch_for(repo)
+    named = staging.describe(branch, source)
+    tracking = f"refs/remotes/{remote}/{branch}"
     try:
         _git(repo, "fetch", "--quiet", remote,
-             f"+refs/heads/{STAGING_BRANCH}:{tracking}")
+             f"+refs/heads/{branch}:{tracking}")
     except subprocess.CalledProcessError:
         pass  # offline, or no such branch upstream — both resolved by the rev-parse below
     try:
         staging_sha = _git(repo, "rev-parse", "--verify", f"{tracking}^{{commit}}")
     except subprocess.CalledProcessError:
-        return True, f"no {remote}/{STAGING_BRANCH} on this remote — staging rule does not apply here"
+        return True, f"no {remote}/{branch} on this remote — staging rule does not apply here (staging: {named})"
 
     if commit == staging_sha:
-        return True, f"promoting the tip of {remote}/{STAGING_BRANCH}"
+        return True, f"promoting the tip of {remote}/{branch} (staging: {named})"
 
     contained = subprocess.run(["git", "merge-base", "--is-ancestor", commit, staging_sha],
                                cwd=repo, env=_clean_git_env(), capture_output=True, text=True,
                                timeout=30)
     if contained.returncode == 0:
-        return True, f"contained in {remote}/{STAGING_BRANCH}"
+        return True, f"contained in {remote}/{branch} (staging: {named})"
 
     try:
         ahead = _git(repo, "rev-list", "--count", f"{staging_sha}..{commit}")
     except subprocess.CalledProcessError:
         ahead = "?"
     return False, (
-        f"{commit[:12]} is not contained in {remote}/{STAGING_BRANCH} — {ahead} commit(s) "
+        f"{commit[:12]} is not contained in {remote}/{branch} — {ahead} commit(s) "
         f"would reach production without ever being integrated on staging.\n"
-        f"Production is promoted from {STAGING_BRANCH}, not pushed to directly, so that every\n"
+        f"Production is promoted from {named}, not pushed to directly, so that every\n"
         f"change meets the rest of the in-flight work in one place and conflicts are resolved\n"
         f"there rather than discovered in production.\n\n"
         f"    git fetch {remote}\n"
-        f"    git checkout -B {STAGING_BRANCH} {remote}/{STAGING_BRANCH}\n"
+        f"    git checkout -B {branch} {remote}/{branch}\n"
         f"    git merge {commit[:12]}        # resolve conflicts HERE, keeping the better side\n"
-        f"    git push {remote} HEAD:refs/heads/{STAGING_BRANCH}\n"
+        f"    git push {remote} HEAD:refs/heads/{branch}\n"
         f"    git push {remote} <new-dev-sha>:{remote_ref}\n\n"
         f"Emergency only: ORCH_ALLOW_DIRECT_PROD_PUSH=1. That is a separate switch from the\n"
         f"build and test overrides on purpose — skipping integration is its own decision."

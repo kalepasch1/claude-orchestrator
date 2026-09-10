@@ -16,6 +16,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import merge_train
+from staging_branch import staging_branch_for
 
 try:
     import branch_prediction_predictor as _bp_predictor
@@ -282,9 +283,16 @@ def _upstream_refs(repo, strict=False):
     unspawnable git (OSError) returns None — "cannot prove integration" — rather than an
     empty list, so a broken repo_path can never be read as "nothing is integrated".
     """
-    targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
-                           os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
-                           "main", "master") if t]
+    # The project's own staging branch first (projects.staging_branch), then the
+    # fleet's, then the conventional names -- a UNION, as before, because
+    # projects do not agree on where code lands.
+    targets = []
+    for t in (staging_branch_for(repo)[0],
+              os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
+              os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
+              "main", "master"):
+        if t and t not in targets:
+            targets.append(t)
     refs = []
     seen = set()
     for tgt in targets:
