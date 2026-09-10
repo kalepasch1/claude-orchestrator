@@ -220,4 +220,25 @@ MSG
   fi
 fi
 
+# ── 5. Compiled .js shadowing its .ts source ─────────────────────────────────────
+#
+# WHY (2026-09-09): Node/Nuxt resolution prefers .js over .ts, so a committed build
+# artifact silently becomes the file that actually runs while its .ts keeps being
+# edited. web/types/log.ts is types-only, so its emit was a two-line stub and every
+# import resolving to it got nothing; web/utils/cookie-compat.js had drifted from
+# its source and was still the loaded copy. fbd49cff8 swept ten of these, two
+# survived, and .gitignore cannot catch them because they were already TRACKED.
+#
+# It also fed a self-perpetuating token burn: the integration build deletes these
+# artifacts every run, leaving all 40 worktrees under .runtime/integration-worktrees
+# permanently dirty on the same two paths, which the evidence scanner kept
+# harvesting into fresh chatgpt-local-reconcile-beethoven-* tasks with no real work
+# in them. Refusing the artifact at commit time is what ends that loop.
+#
+# Escape hatch: SKIP_JS_DUPLICATE_GATE=1 git commit …
+# Safe by design: skipped entirely when the script is absent.
+if [ -x scripts/check-compiled-js-duplicates.sh ]; then
+  scripts/check-compiled-js-duplicates.sh --staged || exit 1
+fi
+
 exit 0
