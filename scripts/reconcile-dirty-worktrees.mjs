@@ -33,6 +33,9 @@ import { writeFileSync } from 'node:fs'
 
 const READ_ONLY = new Set([
   'worktree', 'status', 'hash-object', 'ls-tree', 'rev-parse', 'cat-file', 'diff', 'log',
+  // Added deliberately for the ownership check: both only read refs.
+  // `for-each-ref` lists local agent branches; `ls-remote` lists the remote's.
+  'for-each-ref', 'ls-remote',
 ])
 
 const DESTRUCTIVE = new Set([
@@ -193,25 +196,88 @@ export function reconcileWorktree(wt, base, { cap = 4000 } = {}) {
   }
 }
 
+/**
+ * Is this worktree still owned by a live agent task?
+ *
+ * This repo's convention (CLAUDE.md): "All agent work happens in isolated git
+ * worktrees under {repo}-wt/{slug} ... the agent/{slug} branch persists for
+ * merge-train pickup." So a dirty worktree sitting on an `agent/*` branch that
+ * still resolves is not orphaned work — it is somebody's open task, mid-edit.
+ *
+ * The distinction is load-bearing, not cosmetic. Uncommitted-and-unique is the
+ * same observation in both cases; only ownership separates "the only copy of
+ * something nobody will come back for" from "another executor is typing into
+ * this right now". Calling the second one RECOVERABLE_VALUE invites exactly the
+ * behaviour the coordination rule forbids — a second task hauling a first
+ * task's in-flight edits onto its own branch.
+ *
+ * This pass caught its own sibling doing it: run before
+ * chatgpt-local-reconcile-beethoven-0ce4c6e8284c committed, it reported that
+ * task's half-written scripts/reconcile-dirty-worktrees.mjs as recoverable.
+ *
+ * A DETACHED worktree, or one whose branch has been deleted, has no owner left
+ * and stays RECOVERABLE_VALUE — that is the case worth alarming about.
+ */
+export function ownedByLiveTask(wt, { liveBranches }) {
+  if (!wt.branch || wt.branch === 'DETACHED') return null
+  const ref = wt.branch.replace(/^refs\/heads\//, '')
+  if (!ref.startsWith('agent/')) return null
+  return liveBranches.has(ref) ? ref : null
+}
+
 /** A worktree is only as safe as its least-safe uncommitted path. */
 export function worktreeClassification(wt) {
   if (wt.unreadable) return 'CONFLICTED_NEEDS_FOCUSED_TASK'
-  return (wt.counts.RECOVERABLE_VALUE ?? 0) > 0 ? 'RECOVERABLE_VALUE' : 'ALREADY_PRESENT'
+  if ((wt.counts.RECOVERABLE_VALUE ?? 0) === 0) return 'ALREADY_PRESENT'
+  return wt.ownerBranch ? 'ACTIVE_IN_ANOTHER_TASK' : 'RECOVERABLE_VALUE'
+}
+
+/**
+ * Every `agent/*` branch that still resolves, local or on the remote. Local
+ * counts on its own: a task that has not pushed yet is the one most likely to
+ * be mid-edit, and therefore the one it would be worst to treat as abandoned.
+ */
+export function liveAgentBranches(repo, { offline = false } = {}) {
+  const set = new Set()
+  const local = runGit(['for-each-ref', '--format=%(refname:short)', 'refs/heads/agent/'], {
+    cwd: repo,
+    allowFail: true,
+  })
+  for (const b of (local ?? '').split('\n').filter(Boolean)) set.add(b)
+  if (!offline) {
+    // ls-remote is a read; it is on the allowlist. Failure is non-fatal —
+    // offline we still have the local refs, which are the riskier half anyway.
+    const remote = runGit(['ls-remote', '--heads', 'origin', 'refs/heads/agent/*'], {
+      cwd: repo,
+      allowFail: true,
+    })
+    for (const line of (remote ?? '').split('\n').filter(Boolean)) {
+      const ref = line.split('\t')[1]
+      if (ref) set.add(ref.replace(/^refs\/heads\//, ''))
+    }
+  }
+  return set
 }
 
 export function reconcile(repo, base, fingerprint, opts = {}) {
-  const worktrees = listWorktrees(repo).map((w) => reconcileWorktree(w, base, opts))
+  const liveBranches = opts.liveBranches ?? liveAgentBranches(repo, opts)
+  const worktrees = listWorktrees(repo)
+    .map((w) => reconcileWorktree(w, base, opts))
+    .map((w) => ({ ...w, ownerBranch: ownedByLiveTask(w, { liveBranches }) }))
   const items = worktrees.map((w) => ({
     kind: 'dirty_worktree',
     ref: w.path,
     branch: w.branch,
+    ownerBranch: w.ownerBranch,
     classification: worktreeClassification(w),
     dirtyPaths: w.dirty,
     truncated: w.truncated ?? 0,
     counts: w.counts,
     reason: w.unreadable
       ? 'worktree could not be read; unknown is not "fine", so it needs a focused look'
-      : `${w.counts.RECOVERABLE_VALUE ?? 0} of ${w.dirty} uncommitted path(s) exist only here`,
+      : w.ownerBranch
+        ? `${w.counts.RECOVERABLE_VALUE ?? 0} uncommitted path(s), but ${w.ownerBranch} still owns this worktree — leave it to that task; do not carry its edits onto another branch`
+        : `${w.counts.RECOVERABLE_VALUE ?? 0} of ${w.dirty} uncommitted path(s) exist only here, and no live task owns them`,
     recoverable: (w.paths ?? [])
       .filter((p) => p.classification === 'RECOVERABLE_VALUE')
       .map((p) => p.path),
@@ -227,7 +293,14 @@ export function reconcile(repo, base, fingerprint, opts = {}) {
     itemCount: items.length,
     unknown: 0,
     counts,
-    uncommittedAtRisk: items.reduce((n, i) => n + (i.counts.RECOVERABLE_VALUE ?? 0), 0),
+    // Only ownerless paths are "at risk". Work an open task is still editing is
+    // not at risk from neglect; it is at risk from a second task touching it.
+    uncommittedAtRisk: items
+      .filter((i) => i.classification === 'RECOVERABLE_VALUE')
+      .reduce((n, i) => n + (i.counts.RECOVERABLE_VALUE ?? 0), 0),
+    uncommittedOwnedElsewhere: items
+      .filter((i) => i.classification === 'ACTIVE_IN_ANOTHER_TASK')
+      .reduce((n, i) => n + (i.counts.RECOVERABLE_VALUE ?? 0), 0),
     items,
   }
 }
@@ -259,11 +332,24 @@ export function markdown(report, { project = 'beethoven', ledgerPath = '' } = {}
   l.push('| Classification | Worktrees |', '|---|---:|')
   for (const [k, v] of Object.entries(report.counts)) l.push(`| ${k} | ${v} |`)
   l.push('')
-  l.push('## Worktrees holding the only copy', '')
+  l.push('## Worktrees holding the only copy, with no live task to claim it', '')
   l.push('| Worktree | Branch | Unique | Dirty |', '|---|---|---:|---:|')
   for (const i of report.items.filter((x) => x.classification === 'RECOVERABLE_VALUE').sort((a, b) => at(b) - at(a)))
     l.push(`| \`${i.ref}\` | ${i.branch} | ${at(i)} | ${i.dirtyPaths} |`)
   l.push('')
+  const owned = report.items.filter((x) => x.classification === 'ACTIVE_IN_ANOTHER_TASK').sort((a, b) => at(b) - at(a))
+  if (owned.length) {
+    l.push('## Dirty, but another live task owns it — do not touch', '')
+    l.push(
+      `${owned.length} worktree(s), ${report.uncommittedOwnedElsewhere} uncommitted path(s). ` +
+        'These are open tasks mid-edit, not lost work. Carrying their edits onto a ' +
+        'second branch is the duplication the coordination rule exists to prevent.',
+      '',
+    )
+    l.push('| Worktree | Owned by | Unique |', '|---|---|---:|')
+    for (const i of owned) l.push(`| \`${i.ref}\` | \`${i.ownerBranch}\` | ${at(i)} |`)
+    l.push('')
+  }
   const unreadable = report.items.filter((x) => x.classification === 'CONFLICTED_NEEDS_FOCUSED_TASK')
   if (unreadable.length) {
     l.push('## Unreadable — unknown is not "fine"', '')
@@ -297,7 +383,8 @@ function main(argv) {
   console.log(`  against:   ${report.against.ref} @ ${report.against.sha.slice(0, 8)}`)
   console.log(`  worktrees: ${report.itemCount}`)
   for (const [k, v] of Object.entries(report.counts)) console.log(`    ${k.padEnd(30)} ${v}`)
-  console.log(`  UNCOMMITTED PATHS THAT EXIST ONLY HERE: ${report.uncommittedAtRisk}`)
+  console.log(`  UNCOMMITTED PATHS THAT EXIST ONLY HERE, UNOWNED: ${report.uncommittedAtRisk}`)
+  console.log(`  uncommitted paths owned by a live task (leave alone): ${report.uncommittedOwnedElsewhere}`)
   for (const i of report.items.filter((x) => x.classification === 'RECOVERABLE_VALUE')) {
     console.log(`\n  ${i.ref}  [${i.branch}]`)
     console.log(`    ${i.counts.RECOVERABLE_VALUE} of ${i.dirtyPaths} dirty path(s) unique`)

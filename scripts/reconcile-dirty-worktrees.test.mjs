@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   classifyPath,
   isNoise,
+  ownedByLiveTask,
   parseStatusZ,
   runGit,
   worktreeClassification,
@@ -95,4 +96,51 @@ test('a worktree is only as safe as its least-safe path', () => {
   )
   // Unknown is not "fine".
   assert.equal(worktreeClassification({ unreadable: true, counts: {} }), 'CONFLICTED_NEEDS_FOCUSED_TASK')
+})
+
+// ─── ownership ───────────────────────────────────────────────────────────────
+// Uncommitted-and-unique is the same observation whether or not a task owns the
+// worktree. Only ownership separates "nobody is coming back for this" from
+// "another executor is editing it right now", and only the first is recoverable.
+
+const live = new Set([
+  'agent/chatgpt-local-reconcile-beethoven-2829958769f3',
+  'agent/canary-deepseek-1',
+])
+
+test('a dirty worktree on a live agent branch belongs to that task', () => {
+  const wt = { branch: 'refs/heads/agent/chatgpt-local-reconcile-beethoven-2829958769f3' }
+  assert.equal(ownedByLiveTask(wt, { liveBranches: live }), 'agent/chatgpt-local-reconcile-beethoven-2829958769f3')
+  assert.equal(
+    worktreeClassification({ counts: { RECOVERABLE_VALUE: 1 }, ownerBranch: 'agent/x' }),
+    'ACTIVE_IN_ANOTHER_TASK',
+  )
+})
+
+test('detached and deleted-branch worktrees have no owner left', () => {
+  assert.equal(ownedByLiveTask({ branch: 'DETACHED' }, { liveBranches: live }), null)
+  // The branch was deleted after the worktree was cut — nobody will come back.
+  assert.equal(ownedByLiveTask({ branch: 'refs/heads/agent/long-gone' }, { liveBranches: live }), null)
+  assert.equal(
+    worktreeClassification({ counts: { RECOVERABLE_VALUE: 705 }, ownerBranch: null }),
+    'RECOVERABLE_VALUE',
+  )
+})
+
+test('only agent/* branches confer task ownership', () => {
+  // A dirty main checkout is not "somebody's open task"; it is a dirty checkout.
+  assert.equal(ownedByLiveTask({ branch: 'refs/heads/master' }, { liveBranches: live }), null)
+  assert.equal(ownedByLiveTask({ branch: 'refs/heads/orchestrator/dev' }, { liveBranches: live }), null)
+})
+
+test('ownership never rescues a clean or unreadable worktree', () => {
+  // Clean stays ALREADY_PRESENT; ownership only ever downgrades RECOVERABLE_VALUE.
+  assert.equal(
+    worktreeClassification({ counts: { ALREADY_PRESENT: 3 }, ownerBranch: 'agent/x' }),
+    'ALREADY_PRESENT',
+  )
+  assert.equal(
+    worktreeClassification({ unreadable: true, counts: {}, ownerBranch: 'agent/x' }),
+    'CONFLICTED_NEEDS_FOCUSED_TASK',
+  )
 })
