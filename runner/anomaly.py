@@ -29,22 +29,35 @@ SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 # So a metric that was absent and is now present alerts on its own absolute level. The
 # floors are what keeps that from firing on a single unlucky task: one failure in thirty
 # is 0.033 and stays quiet; a third of the window failing does not.
+#
+# ONLY RATE METRICS GET A FLOOR. A floor is a claim that some absolute level is bad on
+# every fleet, and that claim is only honest for metrics measured as a share of the
+# window: "10% of recent tasks failed" means the same thing everywhere. Dollars and
+# seconds do not have a fleet-independent bad level, and — more importantly — a baseline
+# of exactly $0.00 or 0.0s does not mean "this fleet was free". It means no cost or
+# duration was recorded at all, which is a reporting gap. Alerting on it would page
+# every time telemetry resumes after a backfill, so absolute metrics keep the strict
+# rule: no nonzero baseline, no alert.
 _DEFAULT_FLOORS = {
     "fail_rate": 0.10,          # >10% of the recent window failing
     "rate_limit_rate": 0.10,
-    "cost_per_task": 0.05,      # USD/task appearing where there was no spend
-    "avg_duration_s": 60.0,     # a minute per task where the baseline was unmeasured
 }
 
 def _floor(metric: str) -> float:
-    """Absolute level at which *metric* alerts on a zero baseline. Env-overridable."""
+    """Absolute level at which *metric* alerts on a zero baseline. Env-overridable.
+
+    Metrics absent from _DEFAULT_FLOORS are absolute (USD, seconds) and are never
+    judged against a floor; see the note above.
+    """
+    if metric not in _DEFAULT_FLOORS:
+        return float("inf")
     raw = os.environ.get(f"ANOMALY_FLOOR_{metric.upper()}")
     if raw is None:
-        return _DEFAULT_FLOORS.get(metric, 0.0)
+        return _DEFAULT_FLOORS[metric]
     try:
         return float(raw)
     except (TypeError, ValueError):
-        return _DEFAULT_FLOORS.get(metric, 0.0)
+        return _DEFAULT_FLOORS[metric]
 
 
 def _rate(rows: list[dict[str, Any]], pred: Callable[[dict[str, Any]], bool]) -> float:
