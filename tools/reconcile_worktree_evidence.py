@@ -163,6 +163,33 @@ def is_generated(path: str) -> bool:
     return any(h in p for h in GENERATED_HINTS)
 
 
+def is_own_task_scratch(path: str, worktree_root: str) -> bool:
+    """True when `path` is this worktree's own task named it into existence.
+
+    Agent worktrees are created as {repo}-wt/{slug}, and a task that writes a
+    report about itself names the file after its own slug -- e.g. the worktree
+    `chatgpt-local-reconcile-beethoven-2829958769f3` holding an untracked
+    `docs/chatgpt-local-reconcile-beethoven-2829958769f3.md`.
+
+    Left unrecognised, that closes a loop with a real cost. The reconciler sees
+    a dirty worktree carrying a non-generated file the base does not have,
+    classifies it RECOVERABLE_VALUE, and files a recovery task. That task opens
+    a worktree, writes its own report, leaves it untracked, and the next sweep
+    finds THAT. Three worktrees in this checkout were dirty with nothing but
+    their own report, and the evidence snapshot for the task that prompted this
+    fix is one of them -- a reconcile task about the leftovers of a reconcile
+    task, costing an executor claim each round.
+
+    Keyed on the worktree's own directory name, so it can only ever match a
+    task's own output. A file named after some OTHER task is somebody's
+    recovered work and stays classifiable.
+    """
+    slug = os.path.basename(os.path.normpath(worktree_root or ""))
+    if not slug or len(slug) < 8:
+        return False
+    return slug in os.path.basename(path.replace(os.sep, "/"))
+
+
 def base_blob(base: str, path: str, cwd: str) -> str:
     """Blob sha of `path` in `base`, or "" when the base does not carry it.
 
@@ -253,6 +280,22 @@ def classify_worktree(item: Item, path: str, head: str, branch: str,
             "(caches/build output); nothing to recover"
         )
         item.evidence = "generated-only working tree"
+        return
+
+    # A worktree dirty with nothing but its own task's report is not recovered
+    # work; it is the previous pass's exhaust. Classifying it RECOVERABLE_VALUE
+    # files a recovery task whose own leftovers the next sweep then finds.
+    # Treated like generated noise: enumerated and classified, never dropped
+    # silently, and the source is left exactly as found.
+    own_scratch = [f for f in real if is_own_task_scratch(f, path)]
+    if own_scratch and len(own_scratch) == len(real):
+        item.classification = "ALREADY_PRESENT"
+        item.disposition = (
+            f"{len(own_scratch)} dirty path(s), all named after this "
+            "worktree's own task; the reconciler's own report, not recovered "
+            "work: " + ", ".join(own_scratch[:6])
+        )
+        item.evidence = "self-referential task scratch"
         return
 
     # Uncommitted tracked edits are the only part git can diff directly.
