@@ -270,6 +270,14 @@ def has_policy_change(old_decision, replay_result):
     """Check if a replay result shows policy change."""
     try:
         old_output = old_decision.get("output", {})
+        # No prior route means there is nothing to have changed FROM. Without
+        # this, an empty or malformed old decision compares None against the
+        # replay's route and reports a policy change — a divergence
+        # manufactured out of missing data, which is the same false-positive
+        # the normalisation below exists to prevent, arriving from the other
+        # side. Unanswerable is not "changed".
+        if not isinstance(old_output, dict) or old_output.get("route") is None:
+            return False
         # A replay result names its choice "decision"; a stored output names it
         # "route" (analyze_replay_impact already compares exactly those two
         # fields). Normalise before handing it to detect_policy_change, which
