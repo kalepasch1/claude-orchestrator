@@ -1,12 +1,19 @@
 ## Branch flow (enforced — read before pushing anything)
 
-**Every project in this fleet promotes production from `orchestrator/dev`. Nothing
+**Every project in this fleet promotes production from its staging branch. Nothing
 is pushed to `main`/`master` directly.**
 
-    feature branch  ->  orchestrator/dev  ->  main / master  ->  Vercel
+    feature branch  ->  <staging branch>  ->  main / master  ->  Vercel
+
+The staging branch is PER PROJECT: `projects.staging_branch` in the registry,
+then `ORCH_STAGING_BRANCH`, then the fleet default `orchestrator/dev`
+(`runner/staging_branch.py`). Since 2026-09-10 `smarter` and `apparently-law`
+integrate on `dev`; every other project still uses `orchestrator/dev`. The
+commands below say `orchestrator/dev`; substitute the project's branch, which
+the guard names in its refusal.
 
 Develop wherever you like — `agent/*`, `feat/*`, a worktree, another machine. But
-the change has to land on `orchestrator/dev` before it can reach production, and
+the change has to land on the staging branch before it can reach production, and
 that merge is where conflicts get resolved. Resolving them there is the whole
 point: it is the one place every in-flight change meets, so the better side can be
 kept deliberately instead of whichever branch happened to push last winning by
@@ -32,8 +39,10 @@ for one never silently waives the others:
 | `ORCH_ALLOW_UNVERIFIED_PROD_PUSH=1` | the green-build requirement |
 | `ORCH_ALLOW_RED_TESTS=1` | the green-suite requirement |
 
-A repo whose remote has no `orchestrator/dev` is not held to the rule. Set
-`ORCH_STAGING_BRANCH` if a project integrates somewhere else.
+A repo whose remote has no staging branch is not held to the rule. Set
+`projects.staging_branch` for the one project that integrates somewhere else;
+`ORCH_STAGING_BRANCH` changes the whole fleet at once, which is rarely what is
+meant.
 
 The guard only reaches a repo whose `core.hooksPath` points at
 `runner/hooks`. After cloning:
