@@ -25,8 +25,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const argOf = (name, fallback) => {
@@ -52,6 +53,28 @@ function git(cliArgs, opts = {}) {
       stdio: ['ignore', 'pipe', 'ignore'],
       ...opts,
     }).trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * git() with the output left EXACTLY as git wrote it.
+ *
+ * Never use the trimming git() for anything fed back into git as a patch. A
+ * diff must end with a newline; strip it and `git apply` answers
+ * "error: corrupt patch at line N" and exits 128 -- which the classifier below
+ * reads as "does not apply". Verified on a throwaway repo: the same one-file
+ * addition checks clean with the trailing newline and is rejected without it.
+ */
+function gitRaw(cliArgs, opts = {}) {
+  try {
+    return execFileSync('git', cliArgs, {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      ...opts,
+    });
   } catch {
     return '';
   }
@@ -127,7 +150,22 @@ function classify(item, baseSha) {
   const { sha } = item;
 
   if (!git(['cat-file', '-t', sha])) {
-    return { classification: 'ALREADY_PRESENT', reason: 'object missing from object db (already gc-ed / never had content)', files: [], carriers: [] };
+    // NOT "already present". An object git can no longer read is evidence
+    // whose content is unknown, and unknown content cannot be asserted to be
+    // on the default branch — those are opposite conclusions reached from the
+    // same fact. The old line closed these items with the disposition
+    // "no action — value already on the default branch", which is a claim the
+    // run has no basis for and which leaves nobody looking for the work.
+    //
+    // The sibling reconciler already gets this right: for a broken worktree
+    // whose HEAD is not in base, reconcile_worktree_evidence.py says "queue a
+    // focused task to recover from the commit graph, do not prune".
+    return {
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      reason: `object ${sha.slice(0, 12)} is not in the object db (gc-ed or never written); content unreadable, so presence on ${BASE} cannot be asserted`,
+      files: [],
+      carriers: [],
+    };
   }
 
   // Reachable from base => the work shipped.
@@ -171,8 +209,12 @@ function classify(item, baseSha) {
   const applies = (() => {
     // Scope the applicability check to real source files — a generated file
     // that conflicts must not condemn an otherwise-clean recovery.
-    const patch = git(['diff', `${mergeBase}..${sha}`, '--', ...files]);
-    if (!patch) return false;
+    // gitRaw, NOT git: the trimming helper strips the diff's trailing newline
+    // and `git apply` then rejects it as a corrupt patch, so every ref reaching
+    // this step was classified CONFLICTED regardless of whether it applies --
+    // RECOVERABLE_VALUE was effectively unreachable through this branch.
+    const patch = gitRaw(['diff', `${mergeBase}..${sha}`, '--', ...files]);
+    if (!patch.trim()) return false;
     try {
       // Plain `--check`, deliberately not `--3way`. A 3-way check writes blobs
       // into the object database, so it blocks on `.git/objects/maintenance.lock`
@@ -184,7 +226,10 @@ function classify(item, baseSha) {
       // unattended over hundreds of refs, and one pathological patch must
       // degrade to CONFLICTED_NEEDS_FOCUSED_TASK, never stall the run.
       execFileSync('git', ['apply', '--check', '-'], {
-        input: patch,
+        // Belt and braces on the newline: git's own output already ends with
+        // one, but a patch assembled from anywhere else must not silently
+        // become "corrupt" here.
+        input: patch.endsWith('\n') ? patch : `${patch}\n`,
         stdio: ['pipe', 'ignore', 'ignore'],
         timeout: APPLY_CHECK_TIMEOUT_MS,
       });
@@ -256,4 +301,22 @@ function main() {
   return ledger.unknown_items === 0 ? 0 : 1;
 }
 
-process.exit(main());
+/**
+ * Only run when invoked directly. Without this guard the module could not be
+ * imported at all -- a bare `process.exit(main())` at top level runs a full
+ * reconciliation and kills the importing process, which is why this file had no
+ * tests while its sibling scripts/reconcile-evidence.mjs does.
+ */
+function invokedDirectly() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) process.exit(main());
+
+export { classify, DISPOSITION, isGenerated, listEvidenceRefs, main };
