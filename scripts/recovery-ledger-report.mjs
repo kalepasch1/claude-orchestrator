@@ -33,7 +33,46 @@ const MD = argOf('md', LEDGER.replace(/\.json$/, '.md'));
 const SQL = argOf('sql', '');
 const PROJECT = argOf('project', 'unknown');
 
-const ledger = JSON.parse(readFileSync(LEDGER, 'utf8'));
+/**
+ * Two reconcilers in this repo emit recovery ledgers and they do not agree on
+ * field names. scripts/reconcile-rescue-refs.mjs writes {audit_fingerprint,
+ * total_items, unknown_items, summary, records[{source_sha, source_subject,
+ * touched_file_count}]}; tools/reconcile-local-evidence.mjs writes {fingerprint,
+ * total, unknown, counts, items[{sha, subject, files}]}. Both classify the same
+ * five buckets over the same kinds of evidence, so the reporting layer should
+ * read either rather than forcing a caller to pick the one reconciler this
+ * script happened to be written against — pointing it at a local-evidence
+ * ledger previously died on `ledger.records.filter is not a function`, which
+ * left the local-branches and rescue-refs kinds with no reporting path at all.
+ *
+ * Normalising on read (rather than changing either producer) keeps ledgers of
+ * both shapes that are already on disk readable. A ledger is an audit record;
+ * rewriting old ones to suit a new reader would defeat the point of keeping it.
+ */
+function normaliseLedger(raw) {
+  if (Array.isArray(raw.records)) return raw; // already the reference shape
+
+  const items = Array.isArray(raw.items) ? raw.items : [];
+  return {
+    ...raw,
+    audit_fingerprint: raw.audit_fingerprint ?? raw.fingerprint ?? '',
+    total_items: raw.total_items ?? raw.total ?? items.length,
+    // `unknown` is a count, and 0 is the success case — ?? not ||.
+    unknown_items: raw.unknown_items ?? raw.unknown ?? 0,
+    summary: raw.summary ?? raw.counts ?? {},
+    generator: raw.generator ?? 'reconcile-local-evidence.mjs',
+    records: items.map((it) => ({
+      ...it,
+      source: it.source ?? it.ref ?? '',
+      source_sha: it.source_sha ?? it.sha ?? '',
+      source_subject: it.source_subject ?? it.subject ?? '',
+      touched_file_count:
+        it.touched_file_count ?? it.file_count ?? (Array.isArray(it.files) ? it.files.length : 0),
+    })),
+  };
+}
+
+const ledger = normaliseLedger(JSON.parse(readFileSync(LEDGER, 'utf8')));
 
 const ORDER = [
   'RECOVERABLE_VALUE',
@@ -71,9 +110,20 @@ function markdown() {
   l.push(`Audit fingerprint: \`${ledger.audit_fingerprint}\``, '');
   l.push(`Base: \`${ledger.base}\` @ \`${ledger.base_sha.slice(0, 12)}\` · generated ${ledger.generated_at}`, '');
   l.push('Regenerate with:', '', '```bash');
-  l.push(`node scripts/reconcile-rescue-refs.mjs --base ${ledger.base} \\`);
-  l.push(`  --fingerprint ${ledger.audit_fingerprint} \\`);
-  l.push(`  --out ${LEDGER}`);
+  // Name the reconciler that actually produced this ledger. The two take
+  // different flags (--json/--kind vs --out), so one hardcoded command cannot
+  // reproduce both, and a regenerate hint that does not regenerate is worse
+  // than none.
+  if (ledger.generator === 'reconcile-local-evidence.mjs') {
+    l.push(`node tools/reconcile-local-evidence.mjs --kind ${ledger.kind} \\`);
+    l.push(`  --base ${ledger.base} \\`);
+    l.push(`  --fingerprint ${ledger.audit_fingerprint} \\`);
+    l.push(`  --json ${LEDGER}`);
+  } else {
+    l.push(`node scripts/reconcile-rescue-refs.mjs --base ${ledger.base} \\`);
+    l.push(`  --fingerprint ${ledger.audit_fingerprint} \\`);
+    l.push(`  --out ${LEDGER}`);
+  }
   l.push(`node scripts/recovery-ledger-report.mjs --ledger ${LEDGER} --project ${PROJECT}`);
   l.push('```', '');
   l.push('## Result', '');
