@@ -206,6 +206,32 @@ def _superseded(repo: str, ref: str, base_ref: str, paths: list) -> bool:
     "All", not "any", on purpose: a ref that touches ten files of which base moved one is
     still carrying nine files of recoverable value, and calling that superseded is how
     work gets quietly dropped.
+
+    DO NOT "OPTIMISE" THIS INTO A SINGLE `git log --since --name-only` PASS.
+    ----------------------------------------------------------------------
+    The per-path loop below looks like an obvious O(n) blunder — one subprocess per path,
+    against evidence sets of ~10,700 distinct rescue commits (beethoven) and ~26,000
+    (tomorrow), which is genuinely why a full reconcile run can take hours. Replacing it
+    with one `git log --since=@<tip> --format=%ct --name-only <base>` and testing set
+    membership is the natural fix, reads as exactly equivalent, and was tried and measured
+    on 2026-09-09 against beethoven on a fixed 200-item sample:
+
+        per-path (this code)        38.5s
+        single-pass --name-only    112.8s      ← 3x SLOWER
+        verdicts identical?        NO          ← and it changed classifications
+
+    Both results independently disqualify it. It is slower because `git log --name-only`
+    over a wide window diffs every commit in that window, while the per-path form is
+    pruned by pathspec and stops at the first hit (`-1`). And the verdict divergence was
+    never explained — a hand-built repro of the suspected `--since` traversal-pruning
+    mechanism did NOT reproduce it, so the true cause is still unknown.
+
+    An unexplained verdict change in this function decides whether real recovered work is
+    written off as SUPERSEDED_BY_NEWER. That is not a trade to make for a speedup that
+    did not materialise. If you want this faster, the load-bearing measurement is that
+    the cost is dominated by path COUNT per item — attack `_touched_paths` (rescue refs on
+    long-diverged branches report the whole branch diff, not the snapshot's own dirt), not
+    the shape of this loop.
     """
     if not paths:
         return False
@@ -242,6 +268,75 @@ def _applies_cleanly(repo: str, ref: str, base_ref: str) -> tuple:
     return False, combined.splitlines()[0][:200] if combined else "merge conflict"
 
 
+def contained_refs(repo: str, base_ref: str) -> set:
+    """Every evidence ref fully contained in `base_ref`, resolved in ONE git call.
+
+    WHY THIS EXISTS — the classifier could not finish on the repo it was pointed at.
+    ------------------------------------------------------------------------------
+    `classify()` opens with `_unique_commits()`, i.e. one `git rev-list base..ref`
+    subprocess per evidence item, and that step alone decides the single most common
+    verdict: ALREADY_PRESENT. Measured 2026-09-09 on the live repos this reconciler is
+    actually run against:
+
+        beethoven  11,894 evidence items (10,889 rescue refs / 10,716 distinct commits)
+        tomorrow   27,033 evidence items (~26,345 rescue refs)
+
+    Both are two orders of magnitude larger than the 357- and 636-item samples the task
+    prompts carry, because `refs/orch-rescue/` and `refs/recovery/` accumulate a snapshot
+    per sweep and nothing prunes them. A full unpatched run on beethoven produced no
+    output in 22 minutes and was killed — which is the real reason these reconcile tasks
+    keep timing out and re-queueing (attempt 3 and climbing on some), rather than
+    anything about the evidence itself.
+
+    A slow reconciler is not a cosmetic problem. It is why the ledger never gets written,
+    and an unwritten ledger is indistinguishable from unreconciled work.
+
+    `git for-each-ref --merged` answers "is this ref an ancestor of base?" for the whole
+    ref namespace in a single traversal, which is the same question `rev-list base..ref`
+    answers one ref at a time. Same verdict, same read-only posture, one call instead of
+    n. Failure is non-fatal: an empty set just means every item takes the original slow
+    path, so a git too old for `--merged` on `for-each-ref` degrades to correct-but-slow
+    rather than wrong.
+
+    HONEST SIZING — this is a real but SMALL win, not the fix for the timeouts.
+    Measured on beethoven 2026-09-09: 168 of 11,894 evidence items (1.4%) are contained
+    in master. The rest are snapshots taken on agent branches, which genuinely do carry
+    unique commits and still take the full path. The dominant cost is `_superseded` and
+    `_touched_paths` on refs sitting atop long-diverged branches; see the block comment
+    on `_superseded` for what was tried there, measured, and rejected. Do not read this
+    function as having solved the throughput problem.
+    """
+    merged = set()
+    for prefix in EVIDENCE_REF_PREFIXES:
+        res = _git(["git", "for-each-ref", f"--merged={base_ref}",
+                    "--format=%(refname)", prefix], repo)
+        if res.returncode != 0:
+            continue
+        merged.update(_lines(res))
+    return merged
+
+
+def evidence_ref_shas(repo: str) -> dict:
+    """ref -> commit sha for the whole evidence namespace, in ONE git call.
+
+    Used to key per-commit verdict sharing. It has to be batched to be worth doing at
+    all: `git rev-parse` per item would add one subprocess for every one of the ~10,900
+    rescue refs in order to save the ~170 that are genuine duplicates — a net loss.
+    `for-each-ref` resolves all of them in a single call (measured at 0.0s for 10,889
+    refs), so the sharing costs nothing and only ever saves work.
+    """
+    shas = {}
+    for prefix in EVIDENCE_REF_PREFIXES:
+        res = _git(["git", "for-each-ref", "--format=%(objectname) %(refname)", prefix], repo)
+        if res.returncode != 0:
+            continue
+        for line in _lines(res):
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                shas[parts[1]] = parts[0]
+    return shas
+
+
 def classify(repo: str, item: dict, ctx: dict) -> dict:
     """Classify one evidence item. Always returns one of CLASSIFICATIONS or UNKNOWN."""
     record = {
@@ -268,6 +363,16 @@ def classify(repo: str, item: dict, ctx: dict) -> dict:
         record["detail"] = "ref not resolvable at reconciliation time"
         return record
     record["commit"] = sha
+
+    # Batched fast path: `contained_refs` already asked "is this an ancestor of base?"
+    # for the whole namespace in one traversal. Re-asking per ref is the n-subprocess
+    # cost that stopped this reconciler finishing. Same verdict as `not unique` below.
+    if ref in ctx.get("contained_refs", ()):
+        record["classification"] = "ALREADY_PRESENT"
+        record["disposition"] = (f"every commit is an ancestor of {ctx['base']}; "
+                                 f"evidence left in place as residue")
+        record["detail"] = "contained in base (batched for-each-ref --merged)"
+        return record
 
     unique = _unique_commits(repo, ref, base_ref)
     record["unique_commits"] = len(unique)
@@ -619,18 +724,55 @@ def reconcile(repo: str, fingerprint: str, *, base: str = "", db=None,
     if not ctx["base_sha"]:
         report["error"] = f"could not resolve base ref {ctx['base_ref']}"
         return report
+    ctx["contained_refs"] = contained_refs(repo, ctx["base_ref"])
+
+    # SNAPSHOT REFS REPEAT THEMSELVES — CLASSIFY THE COMMIT, NOT THE REF (2026-09-09).
+    #
+    # `refs/orch-rescue/` and `refs/recovery/` get a fresh timestamped ref on every sweep,
+    # and a sweep that runs while nothing has changed writes a ref pointing at a commit an
+    # earlier sweep already recorded. The refs are therefore many-to-one onto commits, and
+    # the classification is a property of the COMMIT: two refs on the same sha cannot merge
+    # differently, conflict differently, or be superseded differently.
+    #
+    # So the expensive verdict is computed once per distinct sha and shared. Every ref still
+    # gets its own ledger record — the ledger is a per-evidence-item contract and dropping
+    # duplicate refs would silently shrink it — but the git work behind those records
+    # collapses to the number of distinct commits. Each shared record keeps its own
+    # `source`/`name`/`slug`; only the verdict fields are copied.
+    _verdict_by_sha = {}
+    _ref_shas = evidence_ref_shas(repo)
+    _shared = 0
 
     for item in (items if items is not None else enumerate_evidence(repo)):
         # classify_any, not classify: an item that cannot be classified mechanically is
         # incomplete evidence (CONFLICTED_NEEDS_FOCUSED_TASK, with the gap named), never
         # UNKNOWN. Zero-UNKNOWN is the completion bar for this reconciliation.
-        record = classify_any(repo, item, ctx)
+        _sha = _ref_shas.get(item.get("ref", "")) if item.get("kind") == "rescue-ref" else ""
+        _cached = _verdict_by_sha.get(_sha) if _sha else None
+        if _cached is not None:
+            record = dict(_cached)
+            record.update({"source": item.get("ref", ""), "kind": item.get("kind", ""),
+                           "name": item.get("name", ""), "slug": _slug_of(item)})
+            _shared += 1
+        else:
+            record = classify_any(repo, item, ctx)
+            if _sha:
+                _verdict_by_sha[_sha] = record
         report["records"].append(record)
         cls = record["classification"]
         if cls in report["counts"]:
             report["counts"][cls] += 1
         else:
             report["unknown"].append(record["source"])
+
+    # Observable, not just faster: if a later change silently reverts the batching, these
+    # numbers go to zero and the regression is visible in the report instead of only in
+    # a wall-clock nobody is watching.
+    report["prefilter"] = {
+        "contained_refs": len(ctx["contained_refs"]),
+        "distinct_commits": len(_verdict_by_sha),
+        "verdicts_shared": _shared,
+    }
 
     if write and report["records"]:
         report["ledger"] = write_ledger(report["records"], fingerprint, db=db)
