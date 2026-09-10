@@ -2,10 +2,16 @@
 """Run the whole reconciler family and merge the result into one ledger.
 
 Local ChatGPT/Codex evidence arrives in several shapes at once — rescue refs,
-local-only branch tips, unmerged agent branches, dirty worktrees, broken
-worktrees, bridge patch artifacts. Each has its own reconciler; a recovery task
-usually spans several of them and needs a SINGLE ledger under ONE audit
-fingerprint, with zero UNKNOWN items across the whole set.
+stash entries, local-only branch tips, unmerged agent branches, dirty
+worktrees, broken worktrees, bridge patch artifacts. Each has its own
+reconciler; a recovery task usually spans several of them and needs a SINGLE
+ledger under ONE audit fingerprint, with zero UNKNOWN items across the whole
+set.
+
+STAGES below is the coverage, and it is the thing to check when this list
+changes. It is meant to be exhaustive over the shapes named here: a shape with
+a reconciler beside this file but no entry in STAGES is evidence the driver
+never looks at while still reporting zero UNKNOWN.
 
 This driver runs each reconciler as a subprocess (so each stays independently
 testable and is used exactly as written), then merges their ledgers, dedupes by
@@ -30,10 +36,25 @@ import subprocess
 import sys
 import tempfile
 
-# (script, evidence_kind, extra argv builder)
+# (script, evidence_kind)
+#
+# This tuple is the driver's actual coverage, and it has to match the shapes the
+# docstring above promises. It did not: the docstring names stashes and unmerged
+# agent branches, both have a reconciler sitting beside this one, and neither was
+# ever run. The driver then reported "zero UNKNOWN across the whole set" over
+# evidence it had not looked at -- exactly the "missing input masquerading as
+# clean evidence" its own contract says it exists to prevent.
+#
+# refs/stash is not covered by reconcile_rescue_refs.py either: `git for-each-ref
+# refs/stash` returns only the tip of the stack, so this checkout's stashes
+# looked like one item. reconcile_stashes.py walks the full reflog and reads the
+# untracked (^3) parent, which is why it is a separate stage rather than a
+# namespace in the rescue-ref reconciler.
 STAGES = (
     ("reconcile_rescue_refs.py", "orchestrator_rescue_refs"),
+    ("reconcile_stashes.py", "stash_entries"),
     ("reconcile_local_branches.py", "local_only_branch_tips"),
+    ("reconcile_agent_branches.py", "unmerged_agent_branches"),
     ("reconcile_worktree_evidence.py", "worktrees_and_bridge_artifacts"),
 )
 
@@ -50,6 +71,14 @@ def stage_argv(script: str, tools: str, base: str, fingerprint: str, repo: str,
             argv += ["--exclude-path", args.exclude_path]
     if script == "reconcile_local_branches.py" and args.exclude_branch:
         argv += ["--exclude-self", args.exclude_branch]
+    if script == "reconcile_agent_branches.py":
+        # Slugs a live task already owns. Without them every open agent branch
+        # reads as ownerless evidence and the driver proposes recovering work
+        # that is simply in flight.
+        if args.live_slugs:
+            argv += ["--live-slugs", args.live_slugs]
+        if args.agent_branch_pattern:
+            argv += ["--pattern", args.agent_branch_pattern]
     return argv
 
 
@@ -110,6 +139,12 @@ def main() -> int:
     ap.add_argument("--dropbox", default="")
     ap.add_argument("--exclude-path", default="")
     ap.add_argument("--exclude-branch", default="")
+    ap.add_argument("--live-slugs", default="",
+                    help="comma-separated slugs a live task already owns "
+                         "(passed to reconcile_agent_branches.py)")
+    ap.add_argument("--agent-branch-pattern", default="",
+                    help="ref glob for the agent-branch stage; defaults to that "
+                         "reconciler's own default")
     ap.add_argument("--only", default="", help="comma-separated stage scripts")
     args = ap.parse_args()
 
