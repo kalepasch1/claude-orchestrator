@@ -51,6 +51,26 @@ GENERATED_HINTS = (
     "/.orch/", "/.DS_Store",
 )
 
+# Orchestrator scratch the loops drop into a worktree to record their own run.
+# `/.orch/` above covers the directory but NOT these root-level files, and the
+# gap was not theoretical: a sweep of 86 evidence items returned 30
+# RECOVERABLE_VALUE, of which 23 were nothing but `.orch-worktree.json` -- the
+# per-worktree identity marker runner/worktree_identity.py writes into every
+# agent worktree. It is bookkeeping for a run already queued, it is not in
+# .gitignore, and "recovering" it would have committed 23 copies of the
+# orchestrator's own scratch state as authored work.
+#
+# Matched on the BASENAME, not as a substring of the path. GENERATED_HINTS is
+# substring-matched, which is fine for `/node_modules/` but wrong for a filename:
+# as a plain hint, `.orch-worktree.json` also excluded an authored
+# `docs/.orch-worktree.json.md`. A rule that quietly drops real files is the
+# expensive direction of this trade. tools/reconcile-local-evidence.mjs anchors
+# the same list with `$`; these two agree deliberately.
+ORCH_SCRATCH_BASENAMES = frozenset({
+    ".orch-worktree.json", ".deploy-canary", ".aider.chat.history.md",
+})
+ORCH_SCRATCH_PREFIXES = (".recovery-intent-",)
+
 
 def git(*args: str, cwd: str = ".", check: bool = False) -> str:
     proc = subprocess.run(
@@ -158,9 +178,16 @@ def newest_touch(base: str, path: str, cwd: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
+def is_orch_scratch(path: str) -> bool:
+    """True for the orchestrator's own per-run markers, matched on basename."""
+    base = os.path.basename(path.replace(os.sep, "/"))
+    return (base in ORCH_SCRATCH_BASENAMES
+            or base.startswith(ORCH_SCRATCH_PREFIXES))
+
+
 def is_generated(path: str) -> bool:
     p = "/" + path.replace(os.sep, "/")
-    return any(h in p for h in GENERATED_HINTS)
+    return any(h in p for h in GENERATED_HINTS) or is_orch_scratch(path)
 
 
 def is_own_task_scratch(path: str, worktree_root: str) -> bool:

@@ -45,7 +45,7 @@ const ARTIFACT_RE =
 // Orchestrator scratch: markers the recovery/dropbox loops drop into the worktree to
 // record their own intent. They are bookkeeping for a run that has already been
 // queued, never product code, so recovering them re-litigates finished plumbing.
-const ORCH_SCRATCH_RE = /(^|\/)(\.recovery-intent-[^/]*\.txt|\.deploy-canary|\.aider\.chat\.history\.md)$/
+const ORCH_SCRATCH_RE = /(^|\/)(\.recovery-intent-[^/]*\.txt|\.deploy-canary|\.aider\.chat\.history\.md|\.orch-worktree\.json)$/
 
 /** Drop generated output and orchestrator scratch so adjudication only sees authored work. */
 function sourceFilesOnly(files) {
