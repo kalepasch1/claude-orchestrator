@@ -2153,6 +2153,51 @@ def _done_slugs():
         return _done_cache["slugs"]
 
 
+_COLLAPSE_RE = re.compile(r"backlog-compactor:\s*collapsed into\s+([A-Za-z0-9._-]+)")
+
+
+def _collapse_target(note):
+    """Slug a backlog-compactor note says this task was folded into, else None.
+
+    Deliberately strict: only the compactor's own generated phrasing is read as
+    a pointer. A looser pattern would match prose in a hand-written note and
+    manufacture a target slug, and a manufactured target that happened to name
+    a finished task would release dependents of work that was never done.
+    """
+    if not note:
+        return None
+    m = _COLLAPSE_RE.search(str(note))
+    return m.group(1) if m else None
+
+
+def _closed_collapses(by_id, seen_children):
+    """(slug, project_id) of childless DECOMPOSED parents whose collapse landed.
+
+    Only considers parents with NO children -- one that has children is already
+    adjudicated by its children and must not be short-circuited by a note.
+    """
+    candidates = {pid: p for pid, p in by_id.items()
+                  if not seen_children.get(pid) and _collapse_target(p.get("note"))}
+    if not candidates:
+        return []
+
+    wanted = {_collapse_target(p.get("note")) for p in candidates.values()}
+    finished = set()
+    for row in select_all("tasks", {
+        "select": "slug,project_id,state",
+        "state": "in.(%s)" % ",".join(sorted(_DEP_SATISFYING_STATES)),
+    }, order="id.asc") or []:
+        if row.get("slug") in wanted:
+            finished.add((row.get("project_id"), row.get("slug")))
+
+    out = []
+    for parent in candidates.values():
+        target = _collapse_target(parent.get("note"))
+        if (parent.get("project_id"), target) in finished:
+            out.append((parent["slug"], parent.get("project_id")))
+    return out
+
+
 def _closed_decompositions(done_slugs):
     """(slug, project_id) of DECOMPOSED tasks whose every child is finished.
 
@@ -2180,7 +2225,7 @@ def _closed_decompositions(done_slugs):
     """
     try:
         parents = select_all("tasks", {
-            "select": "id,slug,project_id",
+            "select": "id,slug,project_id,note",
             "state": "eq.DECOMPOSED",
         }, order="id.asc") or []
         if not parents:
@@ -2212,6 +2257,26 @@ def _closed_decompositions(done_slugs):
             if total and total == finished:
                 parent = by_id[parent_id]
                 closed.append((parent["slug"], parent.get("project_id")))
+
+        # A decomposition is not the only way a task retires into other work.
+        # backlog_compactor folds a task into a BATCH task and marks the
+        # original DECOMPOSED, so the work moves sideways into a sibling rather
+        # than down into children -- no parent_task_id row is ever written and
+        # the loop above cannot see it. Measured 2026-09-09: 2,433 of the 5,015
+        # childless DECOMPOSED parents are compactor collapses, and the dead
+        # edges behind them are what left every operator dropbox-* task
+        # unclaimable at attempt=0 since 2026-08-07.
+        #
+        # This follows the collapse pointer and closes the parent only when the
+        # target has actually finished. That is the same rule as above, not a
+        # weaker one: "its work is done" still has to be shown, the work just
+        # lives under a different slug. A collapse into a target that is
+        # unfinished -- or that does not exist at all, which is true of 804 of
+        # them -- deliberately closes nothing, because releasing dependents on
+        # the strength of a task nobody can point at is precisely the trap the
+        # childless rule above exists to avoid. Repairing those is
+        # tools/reconcile_childless_decompositions.py's job, not this one's.
+        closed.extend(_closed_collapses(by_id, seen_children))
         return closed
     except Exception as exc:
         _dep_log("could not close decompositions: %s", exc)

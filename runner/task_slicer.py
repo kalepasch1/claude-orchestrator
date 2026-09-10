@@ -327,7 +327,7 @@ def _insert_chain(parts, make_row, exists, insert, attempts=2):
 
     Returns (landed_slugs, dropped_slugs). Pure with respect to the injected callables.
     """
-    landed, dropped, prev = [], [], None
+    landed, dropped, orphaned, prev = [], [], [], None
     for part in parts:
         slug = part["slug"]
         if exists(slug):
@@ -337,7 +337,9 @@ def _insert_chain(parts, make_row, exists, insert, attempts=2):
         row = make_row(part, [prev] if prev else [])
         for _ in range(max(1, attempts)):
             try:
-                insert(row)
+                if insert(row) is False:
+                    # Row landed but without its parent link (see _insert_task).
+                    orphaned.append(slug)
                 landed.append(slug)
                 prev = slug
                 break
@@ -345,7 +347,7 @@ def _insert_chain(parts, make_row, exists, insert, attempts=2):
                 continue
         else:
             dropped.append(slug)
-    return landed, dropped
+    return landed, dropped, orphaned
 
 
 def pre_agent_hook(task):
@@ -370,7 +372,7 @@ def pre_agent_hook(task):
     except Exception:
         return bool(already)
 
-    landed, dropped = _insert_chain(
+    landed, dropped, orphaned = _insert_chain(
         parts,
         lambda part, deps: _slice_row(task, part, deps),
         lambda slug: _slice_exists(task, slug),
@@ -385,6 +387,20 @@ def pre_agent_hook(task):
         except Exception:
             pass
         return False
+    if orphaned:
+        # A slice that landed without parent_task_id leaves the parent childless,
+        # which reads as a healthy decomposition while being permanently dead.
+        # Name it on the parent so the reconciler and queue-health check can see
+        # it rather than discovering it in the next deadlock audit.
+        try:
+            db.update("tasks", {"id": task["id"]},
+                      {"state": "DECOMPOSED", "updated_at": "now()",
+                       "note": f"{MARK}: parent={task.get('slug')}; "
+                               f"{len(orphaned)} slice(s) landed WITHOUT parent_task_id "
+                               f"({', '.join(orphaned)}); parent is childless by FK and "
+                               f"needs tools/reconcile_childless_decompositions.py"})
+        except Exception:
+            pass
     if dropped:
         # A partial decomposition is a real defect even though the survivors are
         # claimable. Name the casualties on the parent so triage can regenerate them
@@ -417,7 +433,15 @@ def _insert_task(row):
     for candidate in variants:
         try:
             db.insert("tasks", candidate)
-            return True
+            # An insert that had to drop parent_task_id "succeeded" in the only
+            # sense the old code measured -- a row exists -- while creating the
+            # exact defect _closed_decompositions() refuses to paper over: a
+            # slice that is invisible to its own parent, so the parent is
+            # childless forever and every dependent behind it is unclaimable.
+            # Measured 2026-09-09, 5,015 of 5,316 DECOMPOSED parents were
+            # childless. Return whether the link survived so the caller can
+            # record the orphan instead of reporting a clean decomposition.
+            return "parent_task_id" in candidate or "parent_task_id" not in row
         except Exception:
             continue
     raise RuntimeError("no compatible task insert shape")

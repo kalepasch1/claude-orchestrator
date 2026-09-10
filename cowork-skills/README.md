@@ -23,3 +23,31 @@ skill, re-run the sync:
 4. `FOR UPDATE OF t SKIP LOCKED` — locking the joined `projects` row makes 16 concurrent
    executors skip each other's whole projects.
 5. DONE only after a verified push of a non-doc diff. No stub commits, no DONE on push failure.
+6. HONOUR THE KILL SWITCH before claiming. `runner/db.py` drops paused projects from its
+   claim set via `kill_switch.is_paused()`; a skill whose claim SQL ignores `controls` will
+   commit and push straight through a deliberate halt.
+
+## Known divergence from `runner/db.py` (open)
+
+The claim SQL in these skills resolves a dependency with:
+
+    WHERE t2.state IN ('DONE','MERGED','DEPLOYED_AND_VERIFIED')
+
+`runner/db.py::_done_slugs()` accepts that set **plus** the output of
+`_closed_decompositions()` — a DECOMPOSED parent whose every child has finished, and (since
+2026-09-09) one whose backlog-compactor collapse target has finished. A DECOMPOSED parent
+never reaches DONE by design, so the skills are strictly stricter than the runner: an
+executor refuses work the runner would take.
+
+This is not theoretical. It is half of what deadlocked the operator drop-box — all 6 QUEUED
+`dropbox-*` tasks sat at attempt=0 from 2026-08-07, and 5,015 of 5,316 DECOMPOSED parents
+were childless when it was measured on 2026-09-09.
+
+Closing it means teaching all 16 copies to also accept a parent whose children are all
+finished, e.g. as an extra `OR EXISTS` arm on the dep check. Until that lands,
+`tools/queue_health.py --assert-satisfiable` is the backstop: it fails loudly (exit 1) when
+any QUEUED task depends on work that can never reach a satisfying state, instead of letting
+the edge sit dead and unreported. Repair with:
+
+    python3 tools/reconcile_childless_decompositions.py            # report
+    python3 tools/reconcile_childless_decompositions.py --apply    # write
