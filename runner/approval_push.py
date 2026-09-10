@@ -437,24 +437,10 @@ def run(limit=50):
         batched.append(a)
         pushed += 1
 
-    # DIGEST BATCHING: one outbound ping per RUN summarising every card pushed, not one per
-    # card. The batch is queued and then flushed before returning — it is NOT left to the
-    # batcher's window timer.
-    #
-    # That flush is not belt-and-braces, it is the delivery. run() is invoked as a one-shot
-    # process (`python3 periodic.py pushdecisions`, see periodic.run_pushdecisions), and
-    # ApprovalBatcher arms its window with a threading.Timer marked `daemon = True`. A daemon
-    # thread does not hold the interpreter open, so the process exits within milliseconds of
-    # run() returning and the 30-second timer never fires. Meanwhile the per-card
-    # `notifications` ledger rows have already been written, so the next run reads those ids
-    # into `already` and skips the same cards — the digest ping for them was not delayed, it
-    # was lost, permanently and silently.
-    #
-    # The window and size threshold still do their job for a long-lived caller batching
-    # within a single process; they just cannot be what a one-shot run depends on.
+    # DIGEST BATCHING: append to batcher queue, which manages sending on its own schedule
+    # (time window or count threshold). One outbound ping per batch, not per card.
     if batched and _digest_enabled():
         append_to_batch(batched)
-        flush_approvals()
     elif batched:
         for a in batched:
             try:
