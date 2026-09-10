@@ -124,6 +124,45 @@ class PassReport:
     def is_no_op(self):
         return not self._merged
 
+    # ── reason accounting ────────────────────────────────────────────────────
+    # Every skip/failure site passes a "<reason-key>: <detail>" string. The key
+    # before the first colon is the reason class. Aggregating those is the only
+    # way to see WHY a pass skipped N branches: `skipped_reasons` is a per-slug
+    # map truncated to 50 entries, so on a 581-skip pass it showed 50 arbitrary
+    # slugs and no totals. That is how "0 merged, 581 skipped" sat unexplained
+    # from Jul 28 — a silent-failure class. The histogram is uncapped: it is one
+    # small int per distinct reason, not per branch.
+    @staticmethod
+    def _histogram(reasons):
+        out = {}
+        for r in reasons:
+            key = str(r).split(":", 1)[0].strip() or "unspecified"
+            out[key] = out.get(key, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    def skipped_by_reason(self):
+        """{reason_class: count} over every skipped branch. Uncapped."""
+        with self._lock:
+            return self._histogram(list(self._skipped.values()))
+
+    def failed_by_reason(self):
+        """{reason_class: count} over every failed branch. Uncapped."""
+        with self._lock:
+            return self._histogram(list(self._failed.values()))
+
+    def blocked_by_reason(self):
+        """{reason_class: count} over failed + skipped together."""
+        with self._lock:
+            return self._histogram(
+                list(self._failed.values()) + list(self._skipped.values()))
+
+    @staticmethod
+    def _fmt_breakdown(hist, limit=None):
+        items = list(hist.items())
+        if limit is not None:
+            items = items[:limit]
+        return ", ".join(f"{k}={v}" for k, v in items)
+
     def no_op_reason(self):
         """Why this pass merged nothing. Never returns None when is_no_op() is true."""
         if not self.is_no_op():
@@ -135,12 +174,7 @@ class PassReport:
         stray = self.unaccounted()
         if stray:
             return f"unaccounted:{len(stray)} card(s) considered and never resolved"
-        reasons = {}
-        for r in list(self._failed.values()) + list(self._skipped.values()):
-            key = r.split(":", 1)[0].strip() or "unspecified"
-            reasons[key] = reasons.get(key, 0) + 1
-        top = sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))
-        return "all-cards-blocked: " + ", ".join(f"{k}={v}" for k, v in top)
+        return "all-cards-blocked: " + self._fmt_breakdown(self.blocked_by_reason())
 
     def to_dict(self):
         self.finished = self.finished or time.time()
@@ -161,6 +195,11 @@ class PassReport:
             "merged_slugs": self._merged[:50],
             "failed_reasons": dict(list(self._failed.items())[:50]),
             "skipped_reasons": dict(list(self._skipped.items())[:50]),
+            # Uncapped per-reason histograms. The *_reasons maps above are
+            # per-slug and truncated to 50, so they cannot answer "why did 581
+            # branches skip?". These can.
+            "skipped_by_reason": self.skipped_by_reason(),
+            "failed_by_reason": self.failed_by_reason(),
         }
 
     def summary_line(self):
@@ -169,6 +208,13 @@ class PassReport:
                 f"{d['considered']} considered, {d['merged']} merged, "
                 f"{d['failed']} failed, {d['skipped']} skipped "
                 f"in {d['duration_s']}s")
+        # A skip count with no reason attached is unactionable -- surface the
+        # top reason classes on EVERY pass, not just no-op ones. A pass that
+        # merges 2 and skips 579 is just as broken as one that merges 0.
+        if d["skipped"]:
+            line += f" [skips: {self._fmt_breakdown(d['skipped_by_reason'], limit=6)}]"
+        if d["failed"]:
+            line += f" [fails: {self._fmt_breakdown(d['failed_by_reason'], limit=6)}]"
         if d["unaccounted"]:
             line += f" -- WARNING {d['unaccounted']} unaccounted"
         if d["no_op"]:
@@ -193,6 +239,17 @@ class PassReport:
                          "metric": f"merge_train.{metric}",
                          "value": float(d[metric]),
                          "tags": {"pass_id": d["pass_id"], "host": d["host"]}})
+        # One flat row per reason class so "why are we skipping?" is graphable
+        # over time without unpacking jsonb. Bounded by distinct reason classes
+        # (a handful), not by branch count.
+        for _kind, _hist in (("skipped", d["skipped_by_reason"]),
+                             ("failed", d["failed_by_reason"])):
+            for _reason, _count in _hist.items():
+                rows.append({"app": APP, "domain": "pass",
+                             "metric": f"merge_train.{_kind}_reason",
+                             "value": float(_count),
+                             "tags": {"pass_id": d["pass_id"], "host": d["host"],
+                                      "reason": _reason}})
         for row in rows:
             try:
                 db.insert("fleet_telemetry", row)
