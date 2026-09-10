@@ -417,6 +417,125 @@ def checkout_guard(st=None):
     log("checkout-restored", BASE_BRANCH)
 
 
+# ── 2a1. self-modification guard (proactive, stash-free) ─────────────────────
+#
+# checkout_guard has a rescue path for protected dirty files, but it only fires
+# when drift recovery needs a clean tree. This guard runs EVERY sentinel cycle
+# (rate-limited) to catch in-flight modifications to the fleet's own critical
+# path before a restart, drift, or crash can lose them.
+#
+# Stash-free: creates an isolated worktree from HEAD, copies the dirty files in,
+# commits, and optionally pushes. The main checkout is untouched — dirty files
+# stay dirty in the working tree AND exist on a durable hotfix branch.
+
+SELF_MOD_PROTECTED = ("runner/", "scripts/", "web/server/")
+SELF_MOD_INTERVAL_S = int(os.environ.get("SENTINEL_SELF_MOD_INTERVAL_S", "600"))
+
+
+def self_modification_guard(st=None):
+    """Proactively preserve uncommitted changes to protected runner/** paths.
+
+    Creates a hotfix/<ts> branch with the dirty files committed, WITHOUT stashing
+    or discarding changes from the working tree. The main checkout stays exactly
+    as it was — this is pure preservation plus a loud notification.
+
+    Rate-limited to SELF_MOD_INTERVAL_S (default 10 min) to avoid thrashing on
+    a long editing session. Idempotent: if the same set of files was already
+    rescued (same content hash in state), it does not re-rescue.
+    """
+    import hashlib
+    import shutil
+
+    st = {} if st is None else st
+    last = float(st.get("self_mod_last_check", 0))
+    if time.time() - last < SELF_MOD_INTERVAL_S:
+        return
+    st["self_mod_last_check"] = time.time()
+
+    # Detect dirty protected files (tracked modifications only — never untracked)
+    r = git("status", "--porcelain", "--untracked-files=no")
+    if r.returncode != 0 or not r.stdout.strip():
+        return
+
+    protected = []
+    for ln in r.stdout.strip().splitlines():
+        path = ln[3:]
+        if any(path.startswith(pfx) for pfx in SELF_MOD_PROTECTED):
+            protected.append(path)
+
+    if not protected:
+        return
+
+    # Idempotency: hash the dirty content so we don't re-rescue identical changes
+    content_hash = hashlib.sha256(r.stdout.encode()).hexdigest()[:16]
+    if st.get("self_mod_last_hash") == content_hash:
+        return
+    st["self_mod_last_hash"] = content_hash
+
+    ts = int(time.time())
+    hb = f"hotfix/self-mod-{ts}"
+    wt_dir = os.path.join(RUNTIME, f"self-mod-rescue-{ts}")
+
+    try:
+        os.makedirs(RUNTIME, exist_ok=True)
+        wr = git("worktree", "add", wt_dir, "-b", hb, "HEAD")
+        if wr.returncode != 0:
+            log("self-mod-rescue-failed", f"worktree create: {wr.stderr[:160]}")
+            return
+
+        # Copy dirty files into the worktree (main checkout untouched)
+        copied = 0
+        for path in protected:
+            src = os.path.join(REPO, path)
+            dst = os.path.join(wt_dir, path)
+            if os.path.isfile(src):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                copied += 1
+
+        if copied == 0:
+            log("self-mod-no-files", "protected paths dirty in status but no files to copy")
+            return
+
+        # Commit in the worktree — no stash, no index mutation in the main checkout
+        subprocess.run(["git", "add", "-A"], cwd=wt_dir,
+                        capture_output=True, timeout=30)
+        cr = subprocess.run(
+            ["git", "-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
+             "commit", "--no-verify", "-m",
+             f"rescue: {copied} protected file(s) auto-preserved by sentinel self-mod guard\n\n"
+             f"Files: {', '.join(protected[:10])}"],
+            cwd=wt_dir, capture_output=True, text=True, timeout=30
+        )
+        if cr.returncode != 0:
+            log("self-mod-commit-failed", cr.stderr[:160])
+            return
+
+        # Push best-effort — the branch is durable locally even if push fails
+        pr = subprocess.run(
+            ["git", "push", "origin", f"HEAD:refs/heads/{hb}"],
+            cwd=wt_dir, capture_output=True, text=True, timeout=120
+        )
+        pushed = pr.returncode == 0
+
+        emit("self-mod-rescued", branch=hb, files=copied, pushed=pushed,
+             paths=protected[:5])
+        log("self-mod-rescued",
+            f"preserved {copied} protected file(s) on {hb} "
+            f"({'pushed' if pushed else 'LOCAL-ONLY'}) — "
+            f"working tree untouched (no stash, no discard)")
+        st["self_mod_rescued_total"] = int(st.get("self_mod_rescued_total", 0)) + 1
+
+    except Exception as e:
+        log("self-mod-rescue-error", str(e)[:160])
+    finally:
+        # Always clean up the worktree; the branch survives
+        try:
+            git("worktree", "remove", "--force", wt_dir)
+        except Exception:
+            pass
+
+
 # ── 2a2. stash drift alarm (never touches stashes — see checkout_guard's stash comment) ─
 
 STASH_ALERT_THRESHOLD = int(os.environ.get("SENTINEL_STASH_ALERT_THRESHOLD", "20"))
@@ -1430,6 +1549,10 @@ def main():
         checkout_guard(st)
     except Exception as e:
         log("checkout-guard-error", e)
+    try:
+        self_modification_guard(st)
+    except Exception as e:
+        log("self-mod-guard-error", e)
     try:
         stash_drift_guard(st)
     except Exception as e:
