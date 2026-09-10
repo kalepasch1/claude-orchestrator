@@ -71,9 +71,15 @@ def run_stage(script: str, kind: str, tools: str, base: str, fingerprint: str,
     fd, tmp = tempfile.mkstemp(suffix=".json", prefix="reconcile-")
     os.close(fd)
     try:
+        # stdout is captured (it is the stage's JSON summary); stderr is NOT,
+        # so a stage's progress lines stream straight through to whoever is
+        # watching the driver. Capturing both is what made this driver look
+        # hung for minutes at a time on a large evidence set — the sub-scanner
+        # was reporting progress into a pipe nobody read until it exited, which
+        # is precisely when the caller had already given up and killed it.
         proc = subprocess.run(
             stage_argv(script, tools, base, fingerprint, repo, tmp, args),
-            cwd=repo, capture_output=True, text=True, errors="replace",
+            cwd=repo, stdout=subprocess.PIPE, text=True, errors="replace",
         )
         if not os.path.getsize(tmp):
             return [{
@@ -82,8 +88,10 @@ def run_stage(script: str, kind: str, tools: str, base: str, fingerprint: str,
                 "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
                 "disposition": "reconciler produced no ledger; this evidence "
                                "class was NOT classified",
+                # stderr went to the terminal, not into `proc`, so the trailing
+                # stdout is the best in-ledger breadcrumb available here.
                 "evidence": "driver_error: rc=%d %s" % (
-                    proc.returncode, (proc.stderr or "").strip()[:200]),
+                    proc.returncode, (proc.stdout or "").strip()[-200:]),
                 "kind": kind,
                 "files": [],
             }], "empty"
