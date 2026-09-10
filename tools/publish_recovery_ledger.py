@@ -52,8 +52,15 @@ def _runner_dir() -> str:
 
 sys.path.insert(0, _runner_dir())
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from recovery_ledger_task_types import (  # noqa: E402
+    PUBLISH_TASK_TYPE, dedupe_filter,
+)
+
 OPEN_CLASSIFICATIONS = {"RECOVERABLE_VALUE", "CONFLICTED_NEEDS_FOCUSED_TASK"}
-TASK_TYPE = "chatgpt_local_reconcile_ledger"
+# What this tool writes. Unchanged; see recovery_ledger_task_types for why the
+# spelling is not being tidied up.
+TASK_TYPE = PUBLISH_TASK_TYPE
 # Ledgers of a few hundred items are normal; the cap only stops a runaway input
 # from writing an unbounded number of rows in one pass.
 MAX_ROWS = int(os.environ.get("ORCH_RECOVERY_LEDGER_MAX_ROWS", "2000"))
@@ -95,8 +102,14 @@ def already_published(fingerprint: str, db) -> "set[str]":
         # coordination_tasks returns exactly the 1000-row page cap, which means
         # the far end of the table is invisible and the dedupe silently misses
         # earlier records for this same pass.
+        #
+        # Read across EVERY ledger spelling, not just this tool's own. The
+        # sibling publisher (tools/recovery_ledger_publish.py) writes the same
+        # records under "recovery_ledger", so a same-tool-only dedupe means
+        # publishing a fingerprint through both tools duplicates every item and
+        # neither notices. See recovery_ledger_task_types.
         rows = db.select_all("coordination_tasks", params={
-            "task_type": "eq." + TASK_TYPE,
+            "task_type": dedupe_filter(),
             "payload": "like.*%s*" % fingerprint,
             "select": "payload",
         })
