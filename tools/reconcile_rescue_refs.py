@@ -40,10 +40,16 @@ from recovery_apply_check import apply_verdict, deletes_live_paths, LANDABLE  # 
 
 RESCUE_NAMESPACES = ("refs/orch-rescue/", "refs/stash", "refs/orch-evidence/")
 
+# Repository every git call runs against. Previously every subprocess inherited
+# the process CWD, which meant the module could only ever be exercised against
+# whatever checkout the caller happened to be standing in -- not testable, and a
+# silent source of "reconciled the wrong repo" runs.
+REPO = "."
+
 
 def git(*args: str, check: bool = True) -> str:
     proc = subprocess.run(
-        ("git",) + args, capture_output=True, text=True, errors="replace"
+        ("git",) + args, cwd=REPO, capture_output=True, text=True, errors="replace"
     )
     if check and proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -52,8 +58,39 @@ def git(*args: str, check: bool = True) -> str:
 
 def git_ok(*args: str) -> bool:
     return subprocess.run(
-        ("git",) + args, capture_output=True, text=True
+        ("git",) + args, cwd=REPO, capture_output=True, text=True
     ).returncode == 0
+
+
+class BaseRefError(RuntimeError):
+    """Raised when --base does not name a resolvable commit."""
+
+
+def resolve_base(base: str) -> str:
+    """Return the sha `base` points at, or fail loudly.
+
+    An unresolvable base does not make this script fail -- it makes it lie.
+    Every downstream probe degrades quietly: `merge-base --is-ancestor` is
+    false, `base_patch_ids` swallows the error and returns an empty set,
+    `newest_touch` returns 0 so the supersede rule can never fire, and the
+    apply check rejects everything. The run then exits 0 with `unknown: 0`
+    and a ledger that classifies the entire evidence set as conflicted.
+
+    A ledger nobody can distinguish from a correct one is worse than no
+    ledger, so refuse to produce it.
+    """
+    proc = subprocess.run(
+        ("git", "rev-parse", "--verify", "--quiet", base + "^{commit}"),
+        cwd=REPO, capture_output=True, text=True, errors="replace",
+    )
+    sha = proc.stdout.strip()
+    if proc.returncode != 0 or not sha:
+        raise BaseRefError(
+            "--base %r does not resolve to a commit in %s. Fetch it first "
+            "(git fetch origin) or pass a base that exists; refusing to emit "
+            "a ledger built on a missing base." % (base, os.path.abspath(REPO))
+        )
+    return sha
 
 
 @dataclass
@@ -96,6 +133,7 @@ def _patch_id_of(diff_text: str) -> "str | None":
     out = subprocess.run(
         ["git", "patch-id", "--stable"],
         input=diff_text,
+        cwd=REPO,
         capture_output=True,
         text=True,
         errors="replace",
@@ -114,6 +152,7 @@ def base_patch_ids(base: str, depth: int) -> "set[str]":
         chunk = shas[start : start + 150]
         diff = subprocess.run(
             ["git", "show", "--no-color", "--patch", "--first-parent"] + chunk,
+            cwd=REPO,
             capture_output=True,
             text=True,
             errors="replace",
@@ -121,6 +160,7 @@ def base_patch_ids(base: str, depth: int) -> "set[str]":
         out = subprocess.run(
             ["git", "patch-id", "--stable"],
             input=diff,
+            cwd=REPO,
             capture_output=True,
             text=True,
             errors="replace",
@@ -134,6 +174,7 @@ def base_patch_ids(base: str, depth: int) -> "set[str]":
 def ref_diff(sha: str) -> str:
     return subprocess.run(
         ["git", "show", "--no-color", "--patch", "--first-parent", sha],
+        cwd=REPO,
         capture_output=True,
         text=True,
         errors="replace",
@@ -148,21 +189,52 @@ def changed_files(sha: str) -> "list[str]":
     return [f for f in out.splitlines() if f.strip()]
 
 
+# Periodic rescue sweeps snapshot the same handful of branches over and over, so
+# a 600-ref evidence set resolves to far fewer distinct shas and paths. Without
+# these caches the classifier spawns one `git log` per touched path per ref and
+# one `git branch --contains` per ref -- thousands of processes, and a run that
+# does not finish inside a task's execution window produces no ledger at all.
+# Keyed on (base, path) / sha so a cache entry can never answer for the wrong
+# base or commit.
+_NEWEST_TOUCH_CACHE: "dict[tuple[str, str], int]" = {}
+_CONTAINS_CACHE: "dict[str, list[str]]" = {}
+
+
+def reset_caches() -> None:
+    """Drop memoized git answers. Callers that change REPO or base must call this."""
+    _NEWEST_TOUCH_CACHE.clear()
+    _CONTAINS_CACHE.clear()
+
+
 def newest_touch(base: str, path: str) -> int:
+    key = (base, path)
+    if key in _NEWEST_TOUCH_CACHE:
+        return _NEWEST_TOUCH_CACHE[key]
     out = git("log", "-1", "--format=%ct", base, "--", path, check=False).strip()
-    return int(out) if out.isdigit() else 0
+    value = int(out) if out.isdigit() else 0
+    _NEWEST_TOUCH_CACHE[key] = value
+    return value
 
 
 def agent_branches_containing(sha: str) -> "list[str]":
+    if sha in _CONTAINS_CACHE:
+        return _CONTAINS_CACHE[sha]
     out = git(
         "branch", "-r", "--contains", sha, "--list", "origin/agent/*", check=False
     )
-    return [b.strip() for b in out.splitlines() if b.strip()]
+    owners = [b.strip() for b in out.splitlines() if b.strip()]
+    _CONTAINS_CACHE[sha] = owners
+    return owners
 
 
-def diff_applies(diff_text: str, base: str = "HEAD", cwd: str = ".") -> bool:
-    """True only when the diff lands WITHOUT conflicts (see recovery_apply_check)."""
-    return apply_verdict(diff_text, base, cwd) in LANDABLE
+def diff_applies(diff_text: str, base: str = "HEAD", cwd: "str | None" = None) -> bool:
+    """True only when the diff lands WITHOUT conflicts (see recovery_apply_check).
+
+    `cwd` defaults to REPO rather than the process CWD; the previous "." default
+    meant the apply probe silently ran against a different checkout than every
+    other probe in this module whenever --repo was not the working directory.
+    """
+    return apply_verdict(diff_text, base, REPO if cwd is None else cwd) in LANDABLE
 
 
 def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
@@ -233,10 +305,22 @@ def main() -> int:
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--fingerprint", required=True)
     ap.add_argument("--out", default=".orch/recovery-ledger.json")
+    ap.add_argument("--repo", default=".",
+                    help="checkout to reconcile (default: current directory)")
     ap.add_argument("--depth", type=int, default=1500,
                     help="how many base commits to fingerprint for patch-id match")
     ap.add_argument("--limit", type=int, default=0, help="0 = all refs")
     args = ap.parse_args()
+
+    global REPO
+    REPO = args.repo
+    reset_caches()
+
+    try:
+        base_sha = resolve_base(args.base)
+    except BaseRefError as exc:
+        print("ERROR: %s" % exc, file=sys.stderr)
+        return 2
 
     items = enumerate_refs()
     if args.limit:
@@ -250,9 +334,17 @@ def main() -> int:
         try:
             classify(it, args.base, known)
         except Exception as exc:  # never leave an item UNKNOWN silently
+            # Fail-soft is the convention here, but a swallow with no diagnostic
+            # turns an infrastructure failure into an indistinguishable "content
+            # conflict" and quietly inflates the focused-follow-up queue. Say so.
+            print(
+                "WARN: classify(%s) raised %s: %s -- recording as "
+                "CONFLICTED_NEEDS_FOCUSED_TASK" % (it.ref, type(exc).__name__, exc),
+                file=sys.stderr,
+            )
             it.classification = "CONFLICTED_NEEDS_FOCUSED_TASK"
             it.disposition = "classification error, needs focused task: %s" % exc
-            it.evidence = "exception"
+            it.evidence = "exception:%s" % type(exc).__name__
 
     counts = {}
     for it in items:
@@ -261,6 +353,11 @@ def main() -> int:
     ledger = {
         "audit_fingerprint": args.fingerprint,
         "base": args.base,
+        # The sha `base` resolved to at run time. A ledger that names only a
+        # moving ref cannot be re-derived later, and "origin/master" means
+        # something different every day.
+        "base_sha": base_sha,
+        "repo": os.path.abspath(REPO),
         "total": len(items),
         "counts": counts,
         "unknown": counts.get("UNKNOWN", 0),
