@@ -2596,11 +2596,12 @@ def run_task(t):
                             "Verification failed. Fix the specific verifier objection in the current diff, rerun checks, and commit the corrected implementation.",
                         ):
                             continue
-                        set_state(t["id"], state="BLOCKED", note="verify: " + v["notes"])
+                        _vnotes = v.get("notes") or ""
+                        set_state(t["id"], state="BLOCKED", note="verify: " + _vnotes)
                         approval(name, "verify", f"Verification flagged {slug}",
-                                 why=v["notes"], risk="cheap-model review wants a human look",
+                                 why=_vnotes, risk="cheap-model review wants a human look",
                                  detail=out[-3000:])
-                        regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
+                        regression.record(name, slug, kind, t["prompt"][:500], "verify: " + _vnotes, _vnotes)
                         record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
                 # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
@@ -2767,11 +2768,18 @@ def run_task(t):
                     print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
                           f"branch kept local (governor will not GC unshared branches)")
 
-            result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed", project=name)
+            # `.get`, not `[...]`: this is the success path, reached only after the agent
+            # has built, tested and committed the branch. A bare {"verdict": "pass"} from
+            # the review model used to raise KeyError: 'notes' right here and throw all of
+            # that away — the task went orphaned-running and came back as a repair task.
+            # verify.review_diff now defaults the key; this keeps the crash from returning
+            # if some other producer of `v` ever omits it.
+            _verify_notes = v.get("notes") or ""
+            result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, _verify_notes, "passed", project=name)
             POOL.mark_ok(acct)
             integrated = result == "MERGED"
             if integrated and sig:
-                result_cache.store(sig, name, slug, f"agent/{slug}", v["notes"])
+                result_cache.store(sig, name, slug, f"agent/{slug}", _verify_notes)
             if integrated:
                 try:
                     import merged_diff_library
