@@ -269,6 +269,15 @@ def detect_policy_change(old_output, new_output):
 def has_policy_change(old_decision, replay_result):
     """Check if a replay result shows policy change."""
     try:
+        # An absent/empty/non-dict side carries no route to compare, so it is
+        # not evidence of divergence. Without these guards `{}` falls through
+        # to detect_policy_change with old_route=None and new_route set, which
+        # reports changed=True — the same false-positive the comment below
+        # describes, reached by a different path.
+        if not old_decision or not isinstance(old_decision, dict):
+            return False
+        if not replay_result or not isinstance(replay_result, dict):
+            return False
         old_output = old_decision.get("output", {})
         # No stored route means there is no baseline to diverge FROM, so this is
         # not a policy change. Without this, detect_policy_change compares
