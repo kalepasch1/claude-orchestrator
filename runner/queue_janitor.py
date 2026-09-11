@@ -509,7 +509,19 @@ def archive_stale_git_objects(repo, stale_min=None, now=None):
     stale_seconds = (GIT_TMP_OBJECT_STALE_MIN if stale_min is None else stale_min) * 60
     current = time.time() if now is None else now
     locks = glob.glob(os.path.join(git_dir, "*.lock"))
-    if any(_lock_has_live_holder(lock) or os.path.getmtime(lock) > current - stale_seconds for lock in locks):
+
+    def _lock_is_active(lock):
+        """True when the lock is held or too young. Fail-soft: a vanished lock is not active."""
+        if _lock_has_live_holder(lock):
+            return True
+        try:
+            return os.path.getmtime(lock) > current - stale_seconds
+        except OSError:
+            # Lock disappeared between glob and stat (TOCTOU). It is gone, so it cannot
+            # block a live writer — treat as inactive.
+            return False
+
+    if any(_lock_is_active(lock) for lock in locks):
         return {"refs": 0, "objects": 0}
     objects = []
     for prefix in glob.glob(os.path.join(git_dir, "objects", "[0-9a-f][0-9a-f]")):
