@@ -1,0 +1,98 @@
+{
+  "audit_fingerprint": "0ce4c6e8284c4155d1188f39e5090d874ef75a139d7b3111a311f701c35d841e",
+  "generated_at": "2026-09-11T19:05:43.055424Z",
+  "repo": "claude-orchestrator",
+  "project": "beethoven",
+  "summary": {
+    "total_evidence_items": 1747,
+    "dirty_worktrees": 8,
+    "agent_branches_merged": 1247,
+    "agent_branches_unmerged": 492,
+    "ALREADY_PRESENT": 1248,
+    "SUPERSEDED_BY_NEWER": 499,
+    "RECOVERABLE_VALUE": 0,
+    "UNKNOWN": 0
+  },
+  "dirty_worktrees": [
+    {
+      "path": "improve-enhance-testing-framework-slice-5",
+      "head": "cdb2009ab",
+      "files": [
+        ".orch-worktree.json"
+      ],
+      "classification": "ALREADY_PRESENT",
+      "disposition": "branch merged as master HEAD (817651866)"
+    },
+    {
+      "path": "chatgpt-local-reconcile-beethoven-4a838e298f31",
+      "head": "487c403ff",
+      "files": [
+        "web/types/log.js",
+        "web/utils/cookie-compat.js"
+      ],
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "prior reconcile attempt; files already in master"
+    },
+    {
+      "path": ".runtime/integration-worktrees/5bee398f...run-21029",
+      "head": "df5b0c1e2",
+      "files": [
+        "web/types/log.js",
+        "web/utils/cookie-compat.js"
+      ],
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "integration-runner ephemeral worktree; files already in master"
+    },
+    {
+      "path": ".runtime/integration-worktrees/5bee398f...run-3655",
+      "head": "df5b0c1e2",
+      "files": [
+        "web/types/log.js",
+        "web/utils/cookie-compat.js"
+      ],
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "integration-runner ephemeral worktree; files already in master"
+    },
+    {
+      "path": ".runtime/integration-worktrees/5bee398f...run-37358",
+      "head": "df5b0c1e2",
+      "files": [
+        "web/types/log.js",
+        "web/utils/cookie-compat.js"
+      ],
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "integration-runner ephemeral worktree; files already in master"
+    },
+    {
+      "path": ".runtime/integration-worktrees/5bee398f...run-62570",
+      "head": "df5b0c1e2",
+      "files": [
+        "web/types/log.js",
+        "web/utils/cookie-compat.js"
+      ],
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "integration-runner ephemeral worktree; files already in master"
+    },
+    {
+      "path": ".runtime/integration-worktrees/5bee398f...run-63902",
+      "head": "df5b0c1e2",
+      "files": [
+        "web/types/log.js",
+        "web/utils/cookie-compat.js"
+      ],
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "integration-runner ephemeral worktree; files already in master"
+    },
+    {
+      "path": ".runtime/integration-worktrees/5bee398f...run-77426",
+      "head": "df5b0c1e2",
+      "files": [
+        "web/types/log.js",
+        "web/utils/cookie-compat.js"
+      ],
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "integration-runner ephemeral worktree; files already in master"
+    }
+  ],
+  "agent_branches_note": "1247 merged into master (ALREADY_PRESENT), 492 not merged (SUPERSEDED_BY_NEWER \u2014 old work from deleted or superseded task branches, branch cleanup Sep 2026)"
+}
