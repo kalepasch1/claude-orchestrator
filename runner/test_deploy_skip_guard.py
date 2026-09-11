@@ -16,6 +16,7 @@ so the identical config on a repo whose default branch really IS `main` must sta
 import os
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.modules.setdefault("db", type(sys)("db"))
@@ -114,13 +115,17 @@ def test_blanket_disable_is_advisory_not_blocking():
 
     The orchestrator's own vercel.json says exactly this. Blocking it would stop the merge
     train on a correctly configured project — a guard doing more damage than the bug.
+
+    Uses a temp dir as root so the repo's own vercel.no-deploy.json sidecar (which
+    declares deploymentDisabledIntentionally) does not suppress the finding.
     """
-    for cfg in ({"git": {"deploymentEnabled": False}},
-                {"git": {"deploymentEnabled": {"*": False}}}):
-        findings = vcg.check_deploy_skip(".", ".", cfg, "master")
-        assert "deployment_disabled_everywhere" in _codes(findings)
-        assert not [f for f in findings if f["severity"] == "block"], \
-            "a deliberate global opt-out must stay advisory"
+    with tempfile.TemporaryDirectory() as tmp:
+        for cfg in ({"git": {"deploymentEnabled": False}},
+                    {"git": {"deploymentEnabled": {"*": False}}}):
+            findings = vcg.check_deploy_skip(tmp, tmp, cfg, "master")
+            assert "deployment_disabled_everywhere" in _codes(findings)
+            assert not [f for f in findings if f["severity"] == "block"], \
+                "a deliberate global opt-out must stay advisory"
 
 
 def test_exact_branch_key_overrides_catch_all_glob():
