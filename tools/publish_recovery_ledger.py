@@ -152,30 +152,64 @@ def main() -> int:
     import db  # noqa: E402 - deferred so --dry-run needs no credentials
 
     seen = already_published(fingerprint, db)
-    written = skipped = failed = 0
+    written = skipped = failed = unverified = 0
     for item in items[:MAX_ROWS]:
         payload = build_payload(item, ledger, args)
         if payload["source"] in seen:
             skipped += 1
             continue
         try:
-            db.insert("coordination_tasks", {
+            result = db.insert("coordination_tasks", {
                 "task_type": TASK_TYPE,
                 "payload": json.dumps(payload, ensure_ascii=False),
                 "status": status_for(payload["classification"]),
             })
-            written += 1
+            # A relay or proxy that accepts the POST but does not persist the row
+            # returns 2xx with an empty body: db.insert() gets None back despite
+            # Prefer: return=representation. Counting that as "written" is exactly
+            # the bug that let 393 rows vanish on 2026-09-10 while the report said
+            # they landed. Only confirmed rows count.
+            if result:
+                written += 1
+            else:
+                unverified += 1
+                print("insert returned empty for %s — write unverified"
+                      % payload["source"], file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 - one bad row must not lose the rest
             failed += 1
             print("insert failed for %s: %s" % (payload["source"], exc),
                   file=sys.stderr)
 
-    print(json.dumps({
+    # POST-PUBLISH VERIFICATION: confirm the reported written count matches
+    # what actually landed in the table. A mismatch is the signal that the
+    # transport (relay, proxy) accepted writes without persisting them.
+    verified_count = None
+    if written > 0:
+        try:
+            rows = db.select_all("coordination_tasks", params={
+                "task_type": "eq." + TASK_TYPE,
+                "payload": "like.*%s*" % fingerprint,
+                "select": "id",
+            })
+            verified_count = len(rows) if rows else 0
+            if verified_count < written + skipped:
+                print("VERIFICATION MISMATCH: reported %d written + %d skipped "
+                      "= %d, but only %d rows found for fingerprint %s"
+                      % (written, skipped, written + skipped, verified_count,
+                         fingerprint), file=sys.stderr)
+        except Exception as exc:
+            print("post-publish verification failed: %s" % exc,
+                  file=sys.stderr)
+
+    report = {
         "fingerprint": fingerprint, "total": len(items),
         "written": written, "skipped_already_published": skipped,
-        "failed": failed, "unknown": len(unknown),
-    }, indent=1))
-    return 1 if failed else 0
+        "failed": failed, "unverified": unverified, "unknown": len(unknown),
+    }
+    if verified_count is not None:
+        report["verified_in_table"] = verified_count
+    print(json.dumps(report, indent=1))
+    return 1 if (failed or unverified) else 0
 
 
 if __name__ == "__main__":

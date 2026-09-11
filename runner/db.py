@@ -1791,6 +1791,23 @@ def insert(table, row, upsert=False):
                     row[field] = redact_secrets(row[field])
         h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
         result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+        # WRITE VERIFICATION (2026-09-11): Prefer: return=representation tells PostgREST
+        # to echo the created row. A relay or proxy that accepts the POST and returns 2xx
+        # without forwarding the body (or without persisting the row at all) produces an
+        # empty response — _req returns None. That is indistinguishable from the 409 dedup
+        # path above, which also returns None but means "already satisfied". The difference
+        # matters: an unverified write is NOT satisfied, and the caller carries on believing
+        # its data landed when it did not.
+        #
+        # Root cause: supabase-edge-relay returned 2xx on POSTs without persisting rows,
+        # and publish_recovery_ledger reported {written: 393} with zero rows in the table.
+        # A diagnostic that cannot be seen is the same as no diagnostic.
+        if result is None and not upsert:
+            import logging
+            logging.getLogger("db").warning(
+                "insert-unverified: POST %s returned empty response despite "
+                "Prefer: return=representation — write may not have persisted. "
+                "Row: %.200s", table, json.dumps(row, default=str)[:200])
     except ControlPlaneDown:
         # NOT a 409. The breaker refused before touching the network, so nothing satisfied
         # this write. Swallowing it here would silently drop task states, outcomes and lease
