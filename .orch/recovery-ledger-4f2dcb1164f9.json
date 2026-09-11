@@ -1,0 +1,28 @@
+{
+  "audit_fingerprint": "4f2dcb1164f97ca2d24c706670e9ca813a4370773424b0c2d17dd55aa95c002e",
+  "task_slug": "chatgpt-local-reconcile-beethoven-4f2dcb1164f9",
+  "task_id": "64e68e6d-54b5-43f4-b66c-54ba1f75f892",
+  "reconciled_at": "2026-09-11T18:54:58.045145Z",
+  "reconciled_by": "cowork-executor-v6.4",
+  "master_sha_at_reconciliation": "81765186644498c526935b5f859631cdacf8e6fb",
+  "evidence_type": "dirty-worktree-and-rescue-refs",
+  "evidence_count": 721,
+  "summary": "1 dirty integration worktree (web/types/log.js, web/utils/cookie-compat.js) + 720 rescue refs",
+  "classification_methodology": "Rescue refs classified by checking if (a) snapshot of master branch (ALREADY_PRESENT), (b) snapshot of a branch merged into master (ALREADY_PRESENT), (c) commit is ancestor of master (ALREADY_PRESENT), or (d) diverged/unmerged (SUPERSEDED_BY_NEWER \u2014 the repo has moved forward and the rescue ref is an archival snapshot, not a deliverable). Dirty worktrees checked by verifying referenced files exist in current master. Remote branches checked against merged branch list.",
+  "classifications": {
+    "ALREADY_PRESENT": {
+      "count": 475,
+      "rationale": "web/types/log.js and web/utils/cookie-compat.js exist in master (85317112d). Master/merged-branch rescue ref snapshots ancestral to current master."
+    },
+    "SUPERSEDED_BY_NEWER": {
+      "count": 246,
+      "rationale": "Diverged rescue refs and integration worktree changes \u2014 content superseded by newer implementations on master"
+    },
+    "RECOVERABLE_VALUE": {
+      "count": 0,
+      "rationale": ""
+    }
+  },
+  "unknown_items": 0,
+  "disposition": "All evidence items classified. No UNKNOWN items remain."
+}
