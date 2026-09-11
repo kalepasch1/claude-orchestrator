@@ -435,6 +435,11 @@ def gate_merged_patch(task, patch, repo=None, prod_branch=None, fetch=True):
                       f"one commit (add '{JUSTIFIED_MARKER} <reason>' to the note to "
                       f"override). Row left unchanged.")
                 return None
+        # Anchor the commit to the project that owns it so a bare sha
+        # is never the only evidence (see artifact_commit_repo_evidence migration).
+        pname = _row.get("name")
+        if pname:
+            patch["artifact_repo"] = pname
         return patch
 
     if verdict == INFRA_ERROR:
