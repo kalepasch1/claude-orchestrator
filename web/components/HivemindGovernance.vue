@@ -38,7 +38,7 @@ const relative = (value: string) => {
 
 async function load() {
   try {
-    state.value = await authed('/api/hivemind/outcomes')
+    state.value = await authed('/api/network/outcomes')
   } catch (error: any) {
     message.value = error?.data?.message || error?.message || 'The outcome view is temporarily unavailable.'
   }
@@ -62,17 +62,17 @@ async function act(key: string, url: string, body: any) {
 
 const prepare = (opportunity: any) => act(
   `bundle:${opportunity.id}`,
-  '/api/hivemind/governance',
+  '/api/network/governance',
   { action: 'bundle', opportunity_id: opportunity.id, objective: opportunity.title },
 )
 const vote = (proposal: any, decision: 'support' | 'oppose') => act(
   `vote:${proposal.id}`,
-  '/api/hivemind/governance',
+  '/api/network/governance',
   { action: 'vote', proposal_id: proposal.id, vote: decision },
 )
 const discloseConflict = (proposal: any) => act(
   `conflict:${proposal.id}`,
-  '/api/hivemind/outcomes',
+  '/api/network/outcomes',
   { action: 'conflict', proposal_id: proposal.id, relationship_class: 'material_beneficiary', material_interest: true },
 )
 
@@ -96,7 +96,7 @@ onMounted(() => {
           <i />
           <span v-if="state?.attention?.length">{{ state.attention.length }} outcome{{ state.attention.length === 1 ? '' : 's' }} need your attention</span>
           <span v-else>Portfolio protected · no action needed</span>
-          <button :disabled="busy === 'refresh'" @click="act('refresh', '/api/hivemind/outcomes', { action: 'refresh' })">Check now</button>
+          <button :disabled="busy === 'refresh'" @click="act('refresh', '/api/network/outcomes', { action: 'refresh' })">Check now</button>
         </div>
       </div>
     </header>

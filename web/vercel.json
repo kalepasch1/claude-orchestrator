@@ -11,7 +11,7 @@
       "schedule": "0 6 * * *"
     },
     {
-      "path": "/api/hivemind/autopilot/run",
+      "path": "/api/network/autopilot/run",
       "schedule": "17 * * * *"
     }
   ],

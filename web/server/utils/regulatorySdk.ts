@@ -13,7 +13,7 @@ export type RegulatoryGateReceipt = {
 export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSecret: string; organizationId: string }) {
   if (!options.baseUrl || !options.fleetSecret || !options.organizationId) throw new Error('regulatory_sdk_configuration_required')
   const invoke = async <T>(body: Record<string, any>): Promise<T> => {
-    const response = await fetch(`${options.baseUrl.replace(/\/$/, '')}/api/hivemind/regulatory/runtime`, {
+    const response = await fetch(`${options.baseUrl.replace(/\/$/, '')}/api/network/regulatory/runtime`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-fleet-secret': options.fleetSecret },
       body: JSON.stringify({ organization_id: options.organizationId, ...body }),
     })

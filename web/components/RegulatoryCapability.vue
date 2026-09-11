@@ -17,12 +17,12 @@ async function authed<T>(url: string, options: any = {}) {
   return $fetch<T>(url, { ...options, headers: session?.access_token ? { authorization: `Bearer ${session.access_token}` } : {} })
 }
 async function load() {
-  try { state.value = await authed('/api/hivemind/regulatory') }
+  try { state.value = await authed('/api/network/regulatory') }
   catch (error: any) { notice.value = error?.data?.message || error?.message || 'Regulatory capability status is temporarily unavailable.' }
 }
 async function act(key: string, body: any, success: string) {
   busy.value = key; notice.value = ''
-  try { await authed('/api/hivemind/regulatory', { method: 'POST', body }); notice.value = success; await load() }
+  try { await authed('/api/network/regulatory', { method: 'POST', body }); notice.value = success; await load() }
   catch (error: any) { notice.value = error?.data?.message || error?.message || 'That action could not be completed safely.' }
   finally { busy.value = '' }
 }
