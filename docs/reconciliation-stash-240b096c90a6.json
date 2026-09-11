@@ -1,0 +1,105 @@
+{
+  "audit_fingerprint": "240b096c90a670f51bdce54df6a75070512deb43718ba09cd8553e3c048fc79f",
+  "total": 13,
+  "summary": {
+    "RECOVERABLE_VALUE": 2,
+    "ALREADY_PRESENT": 1,
+    "SUPERSEDED_BY_NEWER": 8,
+    "ACTIVE_IN_ANOTHER_TASK": 1,
+    "UNKNOWN": 0
+  },
+  "note": "RECOVERABLE_VALUE items already applied in sibling task 23dc7a68bc61",
+  "items": [
+    {
+      "index": 0,
+      "sha": "793e4b527273",
+      "subject": "WIP: stop unit tests walking home dir",
+      "class": "RECOVERABLE_VALUE",
+      "note": "autoclear_policy.py fix + rules. Applied in sibling task 23dc7a68bc61."
+    },
+    {
+      "index": 1,
+      "sha": "67d82ea9d929",
+      "subject": "other agent work set aside for 65a2caba",
+      "class": "RECOVERABLE_VALUE",
+      "note": "counterfactual_replay validation + tests. Applied in sibling task 23dc7a68bc61."
+    },
+    {
+      "index": 2,
+      "sha": "f5d33f4a1334",
+      "subject": "foreign test_diagnostic_missing_branch.py",
+      "class": "ALREADY_PRESENT",
+      "note": "Empty diff."
+    },
+    {
+      "index": 3,
+      "sha": "12f9e378c343",
+      "subject": "other agent work set aside for f9ffdc45",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "Duplicate of stash@{1}."
+    },
+    {
+      "index": 4,
+      "sha": "2ba3d61789e5",
+      "subject": "WIP chatgpt-local-reconcile merge",
+      "class": "ACTIVE_IN_ANOTHER_TASK",
+      "note": "Has rescue branch."
+    },
+    {
+      "index": 5,
+      "sha": "97156da4105c",
+      "subject": "WIP canary-deepseek-1-conftest-restore",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "2 commits touched files since."
+    },
+    {
+      "index": 6,
+      "sha": "d9cf03a32ca3",
+      "subject": "WIP human-decision-git-lock",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "Has rescue branch. 5 commits since."
+    },
+    {
+      "index": 7,
+      "sha": "fabf9fe23d45",
+      "subject": "WIP canary-deepseek-1",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "6 commits touched file since."
+    },
+    {
+      "index": 8,
+      "sha": "baedc106cce6",
+      "subject": "strays-2159",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "3 commits since."
+    },
+    {
+      "index": 9,
+      "sha": "738179e46f91",
+      "subject": "strays-20260901-2140",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "5 commits since."
+    },
+    {
+      "index": 10,
+      "sha": "80740fe5fd5f",
+      "subject": "WIP resource_governor env-var reads",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "Has rescue branch. 9 commits since."
+    },
+    {
+      "index": 11,
+      "sha": "a9f38fd798b8",
+      "subject": "WIP opportunity_scout tests",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "Has rescue branch. 49 commits since."
+    },
+    {
+      "index": 12,
+      "sha": "6ca51b977b01",
+      "subject": "WIP cost intelligence docs",
+      "class": "SUPERSEDED_BY_NEWER",
+      "note": "Has rescue branch. 4 commits since."
+    }
+  ]
+}
