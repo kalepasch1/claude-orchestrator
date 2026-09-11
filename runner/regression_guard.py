@@ -520,7 +520,27 @@ def _ts_stub_kind(slice_text):
     # not part of this one's body, and leaving it attached makes a stub unrecognisable.
     s = re.sub(r"(?:/\*.*?\*/|//[^\n]*)\s*$", "", s).strip()
     m = _TS_STUB_RX.match(s)
-    return ("constant body `%s`" % s[:60]) if m else None
+    if not m:
+        return None
+    # FALSE-POSITIVE FIX 2026-09-11: an arrow function returning a parenthesised object
+    # literal `=> ({...})` is only a stub when the values are truly constant.  A mapper
+    # like `(x: T) => ({id: x.id, name: x.name})` references the parameter in every
+    # value — it is a real implementation, not a stub.  `assertionRow` in smarter's
+    # gaming-data-steering repository.ts was flagged because `[^{}]*` matched the 27-field
+    # object body without checking whether those values came from the parameter.
+    _arrow_obj = re.match(
+        r"=\s*(?:async\s+)?(?:\(([^)]*)\)|(" + _TSID + r"))\s*(?::[^=>]*)?=>\s*"
+        r"\(\s*\{([^{}]*)\}\s*\)", s, re.S)
+    if _arrow_obj:
+        params_raw = _arrow_obj.group(1) or _arrow_obj.group(2) or ""
+        body = _arrow_obj.group(3)
+        # Extract leading identifier from each parameter (handles typed, destructured,
+        # default-valued params: `assertion: Assertion`, `{a, b}: T`, `x = 0`).
+        for p in params_raw.split(","):
+            nm = re.match(r"\s*(\w+)", p.strip())
+            if nm and re.search(r"\b" + re.escape(nm.group(1)) + r"\b", body):
+                return None
+    return ("constant body `%s`" % s[:60])
 
 
 def check_ts_symbols(path, pre_src, post_src, moved=None):
