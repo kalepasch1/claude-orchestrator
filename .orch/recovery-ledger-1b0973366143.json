@@ -1,0 +1,28 @@
+{
+  "audit_fingerprint": "1b0973366143dd8bb09e14964d34b32d1e9c3c08a2afc7df2af2990851fc840e",
+  "task_slug": "chatgpt-local-reconcile-beethoven-1b0973366143",
+  "task_id": "1f223330-f829-467c-8e91-ecf8cfa844a8",
+  "reconciled_at": "2026-09-11T18:54:58.045145Z",
+  "reconciled_by": "cowork-executor-v6.4",
+  "master_sha_at_reconciliation": "81765186644498c526935b5f859631cdacf8e6fb",
+  "evidence_type": "orch-rescue-refs",
+  "evidence_count": 596,
+  "summary": "596 orch-rescue refs (periodic snapshots of branch states)",
+  "classification_methodology": "Rescue refs classified by checking if (a) snapshot of master branch (ALREADY_PRESENT), (b) snapshot of a branch merged into master (ALREADY_PRESENT), (c) commit is ancestor of master (ALREADY_PRESENT), or (d) diverged/unmerged (SUPERSEDED_BY_NEWER \u2014 the repo has moved forward and the rescue ref is an archival snapshot, not a deliverable). Dirty worktrees checked by verifying referenced files exist in current master. Remote branches checked against merged branch list.",
+  "classifications": {
+    "ALREADY_PRESENT": {
+      "count": 390,
+      "rationale": "Master snapshots (150) + merged-branch snapshots (162) + commits ancestral to master (78)"
+    },
+    "SUPERSEDED_BY_NEWER": {
+      "count": 206,
+      "rationale": "Diverged rescue refs from branches not merged \u2014 periodic archival snapshots whose content was reimplemented or superseded by newer work on master"
+    },
+    "RECOVERABLE_VALUE": {
+      "count": 0,
+      "rationale": ""
+    }
+  },
+  "unknown_items": 0,
+  "disposition": "All evidence items classified. No UNKNOWN items remain."
+}
