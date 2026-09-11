@@ -52,6 +52,8 @@ BREAK_GLASS = os.environ.get("ORCH_WORKTREE_GUARD_BREAK_GLASS", "false").lower()
 OWNER_FILE = "orch-worktree-owner"
 RESCUE_PREFIX = "refs/orch-rescue"
 GIT_TIMEOUT = int(os.environ.get("ORCH_WORKTREE_GIT_TIMEOUT", "60"))
+RUN_BUDGET_S = int(os.environ.get("ORCH_WORKTREE_GUARD_RUN_BUDGET_S", "780"))
+DEDUPE_LIMIT = int(os.environ.get("ORCH_WORKTREE_RESCUE_DEDUPE_LIMIT", "5"))
 
 # Operations that can annihilate uncommitted work. Naming them explicitly keeps the guard's
 # contract legible at every call site.
@@ -305,7 +307,12 @@ def rescue(path, reason="pre-destructive"):
     # tree, not by timestamp.
     rc_t, tree, _ = _git(path, "rev-parse", sha + "^{tree}")
     if rc_t == 0 and tree:
-        for existing in _rescue_refs(path):
+        # Cap the dedupe scan so a worktree with many rescue refs doesn't turn this into
+        # an unbounded git-rev-parse loop. The refs are newest-first, so the most recent
+        # (most likely match) is checked first.
+        for i, existing in enumerate(_rescue_refs(path)):
+            if i >= DEDUPE_LIMIT:
+                break
             rc_e, prev, _ = _git(path, "rev-parse", existing["ref"] + "^{tree}")
             if rc_e == 0 and prev.strip() == tree.strip():
                 return {"ref": existing["ref"], "sha": existing["sha"], "entries": entries,
@@ -395,13 +402,27 @@ def run(project=None):
     if project:
         params["name"] = "eq.%s" % project
     projects = db.select("projects", params) or []
-    summary = {"projects": 0, "worktrees": 0, "dirty": 0, "rescued": 0, "unowned_dirty": 0}
+    summary = {"projects": 0, "worktrees": 0, "dirty": 0, "rescued": 0,
+               "unowned_dirty": 0, "time_capped": False}
+    t0 = time.monotonic()
     for p in projects:
+        elapsed = time.monotonic() - t0
+        if elapsed >= RUN_BUDGET_S:
+            summary["time_capped"] = True
+            print("worktree_ownership_guard: time budget exhausted (%.0fs >= %ds), "
+                  "stopping early" % (elapsed, RUN_BUDGET_S))
+            break
         repo = p.get("repo_path") or ""
         if not repo or not os.path.isdir(repo):
             continue
         summary["projects"] += 1
         for wt in worktrees(repo):
+            elapsed = time.monotonic() - t0
+            if elapsed >= RUN_BUDGET_S:
+                summary["time_capped"] = True
+                print("worktree_ownership_guard: time budget exhausted (%.0fs >= %ds), "
+                      "stopping early" % (elapsed, RUN_BUDGET_S))
+                break
             if not os.path.isdir(wt):
                 continue
             summary["worktrees"] += 1
@@ -418,9 +439,13 @@ def run(project=None):
             print("  %-14s %-52s %2d change(s) owner=%s %s"
                   % (p.get("name"), wt[-52:], len(entries), owner or "UNKNOWN",
                      saved["ref"] if saved else "(rescue failed)"), flush=True)
+        if summary["time_capped"]:
+            break
     _log_event({"event": "sweep", **summary})
+    elapsed_total = time.monotonic() - t0
     print("worktree_ownership_guard: %(worktrees)d worktree(s), %(dirty)d dirty, "
-          "%(rescued)d rescued, %(unowned_dirty)d dirty-and-unowned" % summary)
+          "%(rescued)d rescued, %(unowned_dirty)d dirty-and-unowned" % summary
+          + (" [time-capped at %.0fs]" % elapsed_total if summary["time_capped"] else ""))
     return summary
 
 
