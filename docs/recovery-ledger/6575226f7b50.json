@@ -1,0 +1,37 @@
+{
+  "audit_fingerprint": "6575226f7b5053440ca6bed43c1ffc086cecb74d097f600f738f2e53ad0b8e63",
+  "source": "chatgpt_bridge_artifacts + worktree evidence",
+  "reconciled": "2026-09-11",
+  "total": 4,
+  "summary": {"ALREADY_PRESENT": 1, "RECOVERABLE_VALUE": 3},
+  "items": [
+    {
+      "ref": "origin/chatgpt/operator-output-truth-session-fabric-20260812-08120203",
+      "kind": "chatgpt_bridge_artifact",
+      "pr": 23,
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "Branch and PR exist on origin, not merged to master"
+    },
+    {
+      "ref": "origin/chatgpt/promotion-and-funnel-fixes-20260817-08171915",
+      "kind": "chatgpt_bridge_artifact",
+      "pr": 25,
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "Branch and PR exist on origin, not merged to master; subset of PR #27"
+    },
+    {
+      "ref": "origin/chatgpt/promotion-funnel-and-prod-urls-20260817-08171936",
+      "kind": "chatgpt_bridge_artifact",
+      "pr": 27,
+      "classification": "RECOVERABLE_VALUE",
+      "disposition": "Branch and PR exist on origin, not merged to master; superset of PR #25"
+    },
+    {
+      "ref": "origin/agent/backlog-batch-beethoven-22ee5bc-convention-conform-slice-2",
+      "kind": "worktree_evidence",
+      "sha": "8309febb",
+      "classification": "ALREADY_PRESENT",
+      "disposition": "Merged into master"
+    }
+  ]
+}
