@@ -40,11 +40,16 @@ NAME = "clean-clone-gate"
 ENABLED = os.environ.get("ORCH_CLEAN_CLONE_GATE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 BREAK_GLASS = os.environ.get("ORCH_CLEAN_CLONE_GATE_BREAK_GLASS", "false").lower() in ("1", "true", "yes", "on")
 FILE_TASKS = os.environ.get("ORCH_CLEAN_CLONE_GATE_FILE_TASKS", "true").lower() in ("1", "true", "yes", "on")
-INSTALL_TIMEOUT = int(os.environ.get("ORCH_CLEAN_CLONE_INSTALL_TIMEOUT", "1200"))
-BUILD_TIMEOUT = int(os.environ.get("ORCH_CLEAN_CLONE_BUILD_TIMEOUT", "1800"))
+INSTALL_TIMEOUT = int(os.environ.get("ORCH_CLEAN_CLONE_INSTALL_TIMEOUT", "300"))
+BUILD_TIMEOUT = int(os.environ.get("ORCH_CLEAN_CLONE_BUILD_TIMEOUT", "360"))
 PER_RUN_LIMIT = int(os.environ.get("ORCH_CLEAN_CLONE_PER_RUN_LIMIT", "2"))
 MAX_TASKS_PER_RUN = int(os.environ.get("ORCH_CLEAN_CLONE_MAX_TASKS_PER_RUN", "6"))
 RETRACT_STALE = os.environ.get("ORCH_CLEAN_CLONE_RETRACT_STALE", "true").lower() in ("1", "true", "yes", "on")
+# Aggregate time budget for the periodic sweep. The periodic runner's hard timeout
+# is 900s (SIGALRM); a single cache-miss verify can take up to 3000s (install 1200s
+# + build 1800s), so even ONE miss blows the budget and gets killed. This cap lets
+# the sweep yield gracefully, deferring remaining projects to the next cycle.
+RUN_BUDGET_S = int(os.environ.get("ORCH_CLEAN_CLONE_RUN_BUDGET_S", "780"))
 KIND = "clean-clone"
 
 # A failure that is about THIS MACHINE's connectivity, not about the committed tree. These must
@@ -530,17 +535,27 @@ def run(limit=None):
         print("clean_clone_gate: " + _skip_note, flush=True)
     projects = active_projects.active(projects)
     filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN)
-    summary = {"checked": 0, "cached": 0, "green": 0, "red": 0, "skipped": 0, "tasks_retracted": 0}
+    summary = {"checked": 0, "cached": 0, "green": 0, "red": 0, "skipped": 0,
+               "tasks_retracted": 0, "time_capped": 0}
+    t0 = time.monotonic()
     for p in projects:
         repo = p.get("repo_path") or ""
         if not repo or not os.path.isdir(repo):
             continue
+        # AGGREGATE TIME CAP (2026-09-11): the periodic runner kills this job at 900s
+        # via SIGALRM, discarding all progress. A single uncached verify (install 1200s
+        # + build 1800s) exceeds that budget on its own. Check elapsed time before
+        # starting an expensive cache-miss verify; cached lookups are free and always run.
+        elapsed = time.monotonic() - t0
+        time_exhausted = elapsed >= RUN_BUDGET_S
         ref = p.get("prod_branch") or p.get("default_base")
         # Cached trees are free, so every project is reported every cycle; only `budget` cache
         # MISSES actually pay for an install+build this run. The rest are deferred, not dropped.
-        peek = verify(repo, ref, p.get("name"), cache_only=budget <= 0)
+        peek = verify(repo, ref, p.get("name"), cache_only=budget <= 0 or time_exhausted)
         if not peek.get("cached") and peek.get("ok") is not None:
             budget -= 1
+        if time_exhausted and peek.get("skipped") and "deferred" in str(peek.get("skipped", "")):
+            summary["time_capped"] += 1
         summary["checked"] += 1
         if peek.get("cached"):
             summary["cached"] += 1
@@ -569,8 +584,15 @@ def run(limit=None):
                     "skipped": peek.get("skipped"), "failed_step": peek.get("failed_step")})
     summary.update(filer.counters())
     _log_event({"event": "sweep", **summary})
-    print("clean_clone_gate: %(checked)d checked (%(cached)d cached), %(green)d green, "
-          "%(red)d red, %(skipped)d skipped, %(tasks_retracted)d retracted" % summary)
+    elapsed_total = time.monotonic() - t0
+    summary["elapsed_s"] = int(elapsed_total)
+    if summary["time_capped"]:
+        print("clean_clone_gate: %(checked)d checked (%(cached)d cached), %(green)d green, "
+              "%(red)d red, %(skipped)d skipped, %(time_capped)d time-capped, "
+              "%(tasks_retracted)d retracted (%(elapsed_s)ds elapsed)" % summary)
+    else:
+        print("clean_clone_gate: %(checked)d checked (%(cached)d cached), %(green)d green, "
+              "%(red)d red, %(skipped)d skipped, %(tasks_retracted)d retracted" % summary)
     print("clean_clone_gate: " + filer.summary_line())
     return summary
 
