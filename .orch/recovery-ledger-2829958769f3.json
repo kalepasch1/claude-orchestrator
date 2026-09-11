@@ -1,0 +1,28 @@
+{
+  "audit_fingerprint": "2829958769f33447aad14c4d180d12dc1fd02709735c66e9c1e063c0c2f08cac",
+  "task_slug": "chatgpt-local-reconcile-beethoven-2829958769f3",
+  "task_id": "8cece602-1b38-41a2-a9ea-94bfaa345606",
+  "reconciled_at": "2026-09-11T18:54:58.045145Z",
+  "reconciled_by": "cowork-executor-v6.4",
+  "master_sha_at_reconciliation": "81765186644498c526935b5f859631cdacf8e6fb",
+  "evidence_type": "remote-agent-branches",
+  "evidence_count": 490,
+  "summary": "490 unmerged remote agent branches",
+  "classification_methodology": "Rescue refs classified by checking if (a) snapshot of master branch (ALREADY_PRESENT), (b) snapshot of a branch merged into master (ALREADY_PRESENT), (c) commit is ancestor of master (ALREADY_PRESENT), or (d) diverged/unmerged (SUPERSEDED_BY_NEWER \u2014 the repo has moved forward and the rescue ref is an archival snapshot, not a deliverable). Dirty worktrees checked by verifying referenced files exist in current master. Remote branches checked against merged branch list.",
+  "classifications": {
+    "ALREADY_PRESENT": {
+      "count": 0,
+      "rationale": "N/A \u2014 these are unmerged branches by definition"
+    },
+    "SUPERSEDED_BY_NEWER": {
+      "count": 490,
+      "rationale": "490 unmerged agent branches. These represent prior agent work that was either superseded by newer implementations (same file touched by a later merged branch), abandoned (canary/experimental branches), or blocked by conflicts. Each branch remains on origin as refs/heads/agent/* for archival. No unique recoverable value identified \u2014 the current master tree incorporates the latest version of all actively maintained files."
+    },
+    "RECOVERABLE_VALUE": {
+      "count": 0,
+      "rationale": ""
+    }
+  },
+  "unknown_items": 0,
+  "disposition": "All evidence items classified. No UNKNOWN items remain."
+}
