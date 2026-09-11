@@ -269,6 +269,10 @@ def detect_policy_change(old_output, new_output):
 def has_policy_change(old_decision, replay_result):
     """Check if a replay result shows policy change."""
     try:
+        if not old_decision or not isinstance(old_decision, dict):
+            return False
+        if not replay_result or not isinstance(replay_result, dict):
+            return False
         old_output = old_decision.get("output", {})
         # A replay result names its choice "decision"; a stored output names it
         # "route" (analyze_replay_impact already compares exactly those two
