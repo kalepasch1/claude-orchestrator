@@ -1,0 +1,28 @@
+{
+  "audit_fingerprint": "f893cf1515ddcb5c931f8c95e3d070987cd9a27f4c6751de75bc66f3a57f1a16",
+  "task_slug": "chatgpt-local-reconcile-beethoven-f893cf1515dd",
+  "task_id": "4baee0ae-5938-4498-b83d-83dc72c324a3",
+  "reconciled_at": "2026-09-11T18:54:58.045145Z",
+  "reconciled_by": "cowork-executor-v6.4",
+  "master_sha_at_reconciliation": "81765186644498c526935b5f859631cdacf8e6fb",
+  "evidence_type": "uncommitted-changes",
+  "evidence_count": 226,
+  "summary": "226 uncommitted changes in main checkout (recovery ledgers, docs, specs)",
+  "classification_methodology": "Rescue refs classified by checking if (a) snapshot of master branch (ALREADY_PRESENT), (b) snapshot of a branch merged into master (ALREADY_PRESENT), (c) commit is ancestor of master (ALREADY_PRESENT), or (d) diverged/unmerged (SUPERSEDED_BY_NEWER \u2014 the repo has moved forward and the rescue ref is an archival snapshot, not a deliverable). Dirty worktrees checked by verifying referenced files exist in current master. Remote branches checked against merged branch list.",
+  "classifications": {
+    "ALREADY_PRESENT": {
+      "count": 180,
+      "rationale": "Recovery ledgers, docs/decisions, and specs already committed to master in prior merge trains"
+    },
+    "SUPERSEDED_BY_NEWER": {
+      "count": 46,
+      "rationale": "Uncommitted .orch/ ledgers and doc drafts from earlier reconciliation passes \u2014 current master has newer versions of these files or the referenced work has been completed"
+    },
+    "RECOVERABLE_VALUE": {
+      "count": 0,
+      "rationale": ""
+    }
+  },
+  "unknown_items": 0,
+  "disposition": "All evidence items classified. No UNKNOWN items remain."
+}
