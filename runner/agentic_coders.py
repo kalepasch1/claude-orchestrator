@@ -1124,6 +1124,7 @@ def _defer_local_coder(coder, model, ollama_model, project=None):
     return {"text": "", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
             "returncode": 75, "stderr": "local inference deferred: " + reason,
             "coder": coder, "provider": "local", "model": actual_model,
+            "requested_model": model,
             "status": "deferred", "deferred": True, "skipped": "local_capacity",
             "reason": reason, "retryable": False, "requires_configuration": True}
 

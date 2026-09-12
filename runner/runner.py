@@ -2164,7 +2164,7 @@ def run_task(t):
                 reason = r.get("reason", "capacity_unavailable")
                 if not isinstance(reason, str) or not re.fullmatch(r"[a-z_]{1,80}", reason):
                     reason = "capacity_unavailable"
-                set_state(t["id"], state="BLOCKED", force_coder=coder, model=r.get("model") or model,
+                set_state(t["id"], state="BLOCKED", force_coder=coder, model=r.get("requested_model") or r.get("model") or model,
                           note=f"local inference deferred: {reason}; no coder ran; "
                                "awaiting verified local-coder transport before operator requeue")
                 return
