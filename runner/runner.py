@@ -2157,6 +2157,17 @@ def run_task(t):
             if r.get("skipped") == "kill_switch":
                 set_state(t["id"], state="QUEUED", note="paused by kill switch (mid-run)")
                 time.sleep(5); return
+            if r.get("deferred") is True and r.get("skipped") == "local_capacity":
+                # No coder ran. This CLI still lacks a verified per-request
+                # transport even if pressure clears; RETRY/QUEUED would spin or
+                # select another model. Hold the actual route for configuration.
+                reason = r.get("reason", "capacity_unavailable")
+                if not isinstance(reason, str) or not re.fullmatch(r"[a-z_]{1,80}", reason):
+                    reason = "capacity_unavailable"
+                set_state(t["id"], state="BLOCKED", force_coder=coder, model=r.get("model") or model,
+                          note=f"local inference deferred: {reason}; no coder ran; "
+                               "awaiting verified local-coder transport before operator requeue")
+                return
             rc = r["returncode"]
             run_cost = {"usd": r["cost_usd"], "input_tokens": r["input_tokens"],
                         "output_tokens": r["output_tokens"]}

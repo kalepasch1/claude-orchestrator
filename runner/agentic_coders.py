@@ -22,7 +22,6 @@ est_usd (nominal $/call used for the daily-cap accounting when the CLI doesn't r
 Backward compatible: with no extra coders, behavior is the prior claude -> codex cascade.
 """
 import os, sys, json, re, shlex, subprocess, time, hashlib
-import contextlib
 # `logging` was never imported here, yet three call sites already used
 # `logging.getLogger(__name__)` — all of them inside `except` blocks, so the
 # NameError was swallowed and the message never printed. One of those is
@@ -1079,11 +1078,54 @@ def route(task):
 
 def _ollama_model_for(spec, model):
     raw = str(model or "")
-    if raw.startswith("ollama/"):
+    if raw.startswith(("ollama/", "ollama_chat/")):
         return raw.split("/", 1)[1]
     cmd = str((spec or {}).get("cmd") or "")
-    m = re.search(r"--model\s+['\"]?ollama/([^ '\"]+)", cmd)
+    # Aider recommends ollama_chat/, and weak/editor models are inference too.
+    m = re.search(r"--(?:model|weak-model|editor-model)(?:\s+|=)['\"]?ollama(?:_chat)?/([^ '\"]+)", cmd)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:^|\s)(?:[^\s]*/)?ollama\s+run\s+['\"]?([^ '\"]+)", cmd)
     return m.group(1) if m else ""
+
+
+def _defer_local_coder(coder, model, ollama_model, project=None):
+    """Do not launch a CLI whose per-request resource bounds cannot be enforced.
+
+    Aider expands Ollama context to the prompt plus 8k reply tokens by default;
+    its metadata limits are informational, not enforced. Merely pinning num_ctx
+    risks silent input truncation. Until this subprocess has a verified guarded
+    transport, local coding defers; bounded utility calls still use model_gateway.
+    See https://aider.chat/docs/llms/ollama.html and
+    https://aider.chat/docs/config/adv-model-settings.html.
+    """
+    reason = "guard_unavailable"
+    try:
+        import local_model_slots
+        capacity_error = local_model_slots.LocalCapacityError
+        try:
+            with local_model_slots.slot(ollama_model, operation=f"agentic:{coder}") as admission:
+                if not isinstance(admission, dict) or admission.get("admitted") is not True \
+                        or admission.get("locked") is not True:
+                    raise capacity_error("guard_unavailable")
+                # No opt-out: server environment defaults can be overridden by
+                # Aider/LiteLLM, and a slot alone cannot constrain those requests.
+                raise capacity_error("local_coder_policy_unverified")
+        except capacity_error as exc:
+            reason = getattr(exc, "reason", "capacity_unavailable")
+    except Exception:
+        # A missing/broken guard must not silently become a nullcontext.
+        reason = "guard_unavailable"
+    if not isinstance(reason, str) or not re.fullmatch(r"[a-z_]{1,80}", reason):
+        reason = "capacity_unavailable"
+    logging.getLogger(__name__).warning("local coder deferred (%s)", reason)
+    actual_model = "ollama/" + ollama_model
+    _agentic_event("agentic_coder_deferred", coder, actual_model, project=project, action=reason)
+    return {"text": "", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+            "returncode": 75, "stderr": "local inference deferred: " + reason,
+            "coder": coder, "provider": "local", "model": actual_model,
+            "status": "deferred", "deferred": True, "skipped": "local_capacity",
+            "reason": reason, "retryable": False, "requires_configuration": True}
 
 
 def _agentic_event(kind, coder, model="", project=None, value=0, action=""):
@@ -1186,18 +1228,13 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
     tmpl = _normalize_aider_cmd(spec["cmd"] if spec else "")
     if not tmpl:
         raise RuntimeError(f"coder '{coder}' command not configured")
-    cmd = tmpl.replace("{prompt}", shlex.quote(prompt)).replace("{model}", shlex.quote(model or ""))
     ollama_model = _ollama_model_for(spec, model)
+    if ollama_model:
+        return _defer_local_coder(coder, model, ollama_model, project=project)
+    cmd = tmpl.replace("{prompt}", shlex.quote(prompt)).replace("{model}", shlex.quote(model or ""))
     t0 = time.time()
     try:
         _agentic_event("agentic_coder_start", coder, model, project=project, action="subprocess_start")
-        slot = contextlib.nullcontext({"locked": False, "unloaded": []})
-        if ollama_model:
-            try:
-                import local_model_slots
-                slot = local_model_slots.slot(ollama_model, operation=f"agentic:{coder}")
-            except Exception:
-                slot = contextlib.nullcontext({"locked": False, "unloaded": []})
         argv = shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd]
         # subprocess.run(timeout=) kills the DIRECT CHILD only. When the lane is
         # `bash -lc "<coder> ..."`, that reaps the shell and reparents the coder
@@ -1205,13 +1242,12 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
         # became >1h zombies on 2026-08-02. lane_guard runs the lane in its own
         # process group and signals the GROUP, and additionally kills a lane that
         # has produced no output for ORCH_LANE_IDLE_TIMEOUT.
-        with slot:
-            proc = lane_guard.run_supervised(
-                argv,
-                cwd=cwd, env=_aider_env(env), timeout=timeout,
-                idle_timeout=int(os.environ.get("ORCH_LANE_IDLE_TIMEOUT", "600") or 600),
-                task_class=kwargs.get("task_class") or kwargs.get("kind"),
-            )
+        proc = lane_guard.run_supervised(
+            argv,
+            cwd=cwd, env=_aider_env(env), timeout=timeout,
+            idle_timeout=int(os.environ.get("ORCH_LANE_IDLE_TIMEOUT", "600") or 600),
+            task_class=kwargs.get("task_class") or kwargs.get("kind"),
+        )
         # REAL cost from aider's own output (per-message $), so paid-coder daily caps are exact; fall
         # back to the coder's nominal est_usd only when the CLI reported no cost (e.g. a free local model).
         stdout = proc.get("stdout", "") or ""
