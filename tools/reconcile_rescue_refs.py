@@ -165,6 +165,61 @@ def diff_applies(diff_text: str, base: str = "HEAD", cwd: str = ".") -> bool:
     return apply_verdict(diff_text, base, cwd) in LANDABLE
 
 
+# blob-hash -> [paths] for the base tree.  Built once per base per run so the
+# relocation check does not re-walk the entire tree for every rescue ref.
+_BASE_BLOB_INDEX: "dict[str, dict[str, list[str]]]" = {}
+
+
+def _get_base_blob_index(base: str) -> "dict[str, list[str]]":
+    """Reverse index: blob hash -> [paths] in the base tree."""
+    if base in _BASE_BLOB_INDEX:
+        return _BASE_BLOB_INDEX[base]
+    out = git("ls-tree", "-r", base, check=False)
+    index: "dict[str, list[str]]" = {}
+    for line in out.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        fields = parts[0].split()
+        if len(fields) >= 3:
+            index.setdefault(fields[2], []).append(parts[1])
+    _BASE_BLOB_INDEX[base] = index
+    return index
+
+
+def _blob_at(sha: str, path: str) -> str:
+    """Blob hash for *path* in the tree of *sha*.  Returns '' if absent."""
+    out = git("rev-parse", "--verify", "--quiet",
+              f"{sha}:{path}", check=False).strip()
+    if len(out) == 40 and all(c in "0123456789abcdef" for c in out):
+        return out
+    return ""
+
+
+def _all_files_relocated(item_sha: str, files: "list[str]",
+                         base: str) -> "dict[str, str] | None":
+    """If EVERY changed file's blob exists at a different path in *base*,
+    return a {old_path: new_path} mapping.  Otherwise return None.
+
+    Files deleted by the commit (no blob in the commit tree) are skipped —
+    they carry no content to relocate.  If every file is either deleted or
+    relocated the result is the relocation map (which may be empty if ALL
+    files were deletions; caller should check).
+    """
+    blob_index = _get_base_blob_index(base)
+    relocations: "dict[str, str]" = {}
+    for f in files:
+        blob = _blob_at(item_sha, f)
+        if not blob:
+            continue  # deleted in this commit — nothing to match
+        base_paths = blob_index.get(blob, [])
+        new_paths = [p for p in base_paths if p != f]
+        if not new_paths:
+            return None  # this file's content is not anywhere else in base
+        relocations[f] = new_paths[0]
+    return relocations
+
+
 def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
     # 1. Reachable from base -> already merged.
     if git_ok("merge-base", "--is-ancestor", item.sha, base):
@@ -183,6 +238,19 @@ def classify(item: Item, base: str, known_patch_ids: "set[str]") -> None:
         item.disposition = "patch-id " + pid[:12] + " already in " + base
         item.evidence = "patch-id=" + pid
         return
+
+    # 2.5. Every changed file's content exists at a DIFFERENT path in base
+    #      (the file moved — e.g. into a layer directory during absorption).
+    if item.files:
+        relocations = _all_files_relocated(item.sha, item.files, base)
+        if relocations is not None and relocations:
+            moves = "; ".join(
+                f"{old} → {new}" for old, new in relocations.items()
+            )
+            item.classification = "ALREADY_PRESENT"
+            item.disposition = "content relocated in " + base + ": " + moves
+            item.evidence = "blob-hash relocation match"
+            return
 
     # 3. Empty sweep commits carry no recoverable content.
     if not item.files:
