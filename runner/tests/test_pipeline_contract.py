@@ -90,6 +90,27 @@ class PipelineContractTest(unittest.TestCase):
             result = pipeline_contract.artifact("anything")
         self.assertEqual(result, "{}")
 
+    def test_deferred_artifact_returns_valid_json_with_expected_keys(self):
+        result = pipeline_contract.deferred_artifact(
+            "Implement the intake improvement.",
+            project="beethoven",
+            kind="build",
+            source="intake-file",
+            slug="intake-improvement",
+        )
+        data = json.loads(result)
+        for key in ("task_class", "need", "risk", "source", "project", "slug", "kind"):
+            self.assertIn(key, data)
+        self.assertEqual(data["source"], "intake-file")
+        self.assertEqual(data["project"], "beethoven")
+        self.assertEqual(data["coder"], "selected-at-claim")
+        self.assertEqual(data["author_model"], "selected-at-claim")
+
+    def test_deferred_artifact_is_fail_soft(self):
+        with patch.object(pipeline_contract, "build_deferred_plan", side_effect=RuntimeError("boom")):
+            result = pipeline_contract.deferred_artifact("anything")
+        self.assertEqual(result, "{}")
+
 
 if __name__ == "__main__":
     unittest.main()

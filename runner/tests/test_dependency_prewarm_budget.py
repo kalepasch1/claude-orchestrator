@@ -64,7 +64,14 @@ def test_activation_degrades_to_symlink_once_budget_spent(tmp_path, monkeypatch)
 
 
 def test_clone_timeout_is_clamped_to_remaining_budget(tmp_path, monkeypatch):
-    """The timeout handed to subprocess.run is min(per-call, remaining)."""
+    """The timeout handed to subprocess.run is min(per-call, remaining).
+
+    This is about the `cp` fallback specifically. activate_modules now tries a
+    single-syscall clonefile() first, which has no subprocess and therefore no
+    timeout to clamp, so the clone is disabled here to exercise the path under
+    test. tests/test_clonefile_activation.py covers the fast path.
+    """
+    monkeypatch.setenv("ORCH_DEPS_CLONEFILE", "false")
     repo = tmp_path / "repo"
     repo.mkdir()
     _make_root(repo, "a")

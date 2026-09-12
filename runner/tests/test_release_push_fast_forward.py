@@ -260,8 +260,23 @@ class ReleasePushFastForwardTest(unittest.TestCase):
         pushed, _to_sha, log = self._push()
 
         self.assertFalse(pushed)
-        push_failures = [f for f in self.failed if f["gate"] == "push"]
-        self.assertTrue(push_failures, f"expected a push failure row, got {self.failed}")
+        # 89906b82 made the train publish the integrated tip to origin/orchestrator/dev
+        # BEFORE pushing production -- because promoting a commit that exists only on
+        # this machine's disk is what production_push_guard refused 45 times. With an
+        # unreachable origin the failure therefore surfaces one gate earlier, at
+        # `staging-publish`, and never reaches `push` at all.
+        #
+        # What this test is FOR is unchanged and is what it now asserts: a non-conflict
+        # push failure records a row carrying the REAL stderr rather than a placeholder,
+        # and queues a self-heal. Pinning the gate LABEL rather than the property was
+        # what made a correct behaviour change look like a regression.
+        PUSH_FAMILY = {"push", "staging-publish"}
+        push_failures = [f for f in self.failed if f["gate"] in PUSH_FAMILY]
+        self.assertTrue(push_failures,
+                        f"expected a push-family failure row, got {self.failed}")
+        self.assertIn("does not appear to be a git repository",
+                      push_failures[0]["note"],
+                      "the row must carry git's own words, not a swallowed placeholder")
         self.assertTrue(log.strip(), "the real push stderr must be captured, not a placeholder")
         self.assertTrue(self.healed, "a failed push must queue a self-heal")
 
@@ -285,7 +300,18 @@ class ReleasePushFastForwardTest(unittest.TestCase):
         pushed, _to_sha, log = self._push(attempts=2)
 
         self.assertTrue(pushed, log)
-        self.assertEqual(2, state["attempts"], "the rejected push must be retried once")
+        # Three `push` invocations, not two, since 89906b82: the sequence is now
+        # publish STAGING -> origin/STAGING, then push STAGING -> prod. Counting every
+        # push argv counts the publish too. What this test is for is that a rejected
+        # production push is RETRIED ONCE after re-integrating, so count that directly.
+        prod_pushes = [c for c in self.git_calls
+                       if c and c[0] == "push" and any(":" in str(a) and
+                                                       str(a).endswith((":main", ":master"))
+                                                       for a in c)]
+        self.assertEqual(2, len(prod_pushes),
+                         f"the rejected production push must be retried once; saw {self.git_calls}")
+        self.assertEqual(3, state["attempts"],
+                         "one staging publish plus two production pushes")
         self.assertIn("prod moved under us", self._origin_log())
         self.assertIn("staged work", self._origin_log())
         self.assertEqual([], self.failed)
@@ -306,7 +332,14 @@ class ReleasePushFastForwardTest(unittest.TestCase):
 
         self.assertFalse(pushed)
         self.assertIn("rejected", log)
-        self.assertTrue(any(f["gate"] == "push" for f in self.failed))
+        # A push rejected everywhere now stops at the staging publish 89906b82 added,
+        # so the recorded gate is `staging-publish` rather than `push`. Both are in
+        # _PUSH_FAMILY_GATES and both are honoured by the red-gate cooldown; the
+        # property under test is that exhausting the retries RECORDS a push-family
+        # failure rather than failing silently.
+        self.assertTrue(
+            any(f["gate"] in set(release_train._PUSH_FAMILY_GATES) for f in self.failed),
+            f"exhausted retries must record a push-family failure, got {self.failed}")
 
     def test_the_prod_push_asks_the_delivery_lease_for_authority(self):
         """The fence is stubbed above so the file is hermetic — prove it is still called.

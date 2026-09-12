@@ -177,9 +177,25 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "_ceiling", return_value=12), \
              patch.object(resource_governor, "_per_task_gb", return_value=5.0), \
              patch.object(resource_governor, "effective_floor_gb", return_value=4.0), \
-             patch.object(resource_governor, "current_limit", side_effect=[8, 2, 10]):
+             patch.object(resource_governor, "load_per_core", return_value=0.5), \
+             patch.object(resource_governor, "current_limit",
+                          side_effect=lambda: throttle[-1] if throttle else 8):
             gauge = resource_governor.govern()
 
+        # TWO THINGS ARE MOCKED HERE THAT USED NOT TO BE, both for the same reason:
+        # this test was pinning govern()'s internals rather than its behaviour.
+        #
+        # current_limit() was `side_effect=[8, 2, 10]` -- a fixed list of THREE answers.
+        # f5568585 added the CPU clamp, which calls current_limit() twice more, so the
+        # list ran out and the test died on StopIteration inside govern(). A list of
+        # answers is a bet on how many times a function will be called; the fake now
+        # just reports the current throttle, which is what current_limit() means.
+        #
+        # load_per_core() was unmocked, so the CPU clamp read THIS MACHINE's load. On a
+        # busy host it would clamp to 1 and change what this test observes. 0.5 is below
+        # the 1.5 soft threshold, which makes the CPU clamp a deliberate no-op and keeps
+        # the test about memory, which is what it is named for.
+        #
         # mem-clamp: free 14.0 - floor 4.0 = 10.0 of budget, 5.0GB per task -> 2 lanes,
         # below the current limit of 8, so the clamp fires. PER_TASK_GB's default has
         # since dropped to 0.15, which made the budget larger than the limit and the

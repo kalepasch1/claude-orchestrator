@@ -56,8 +56,17 @@ class TestAlreadyWrapped:
         assert not pc.already_wrapped("")
         assert not pc.already_wrapped(None)
 
-    def test_partial_marker(self):
-        assert not pc.already_wrapped(f"## {pc.MARKER}")  # Missing END marker
+    def test_opening_marker_alone_counts_as_wrapped(self):
+        # WAS `test_partial_marker`, asserting that a prompt carrying only the opening
+        # marker is NOT already wrapped. already_wrapped() is `MARKER in prompt` and has
+        # never required the END marker — deliberately: original_request() carries an
+        # explicit "Fallback for partially copied prompts" branch, so a truncated or
+        # hand-edited contract must still be recognised. Requiring both markers would
+        # make wrap_prompt() prepend a SECOND contract to a prompt that already has one,
+        # which is the exact duplication this guard exists to prevent.
+        partial = f"## {pc.MARKER}\n- source: manual"
+        assert pc.already_wrapped(partial)
+        assert pc.wrap_prompt(partial, project="app") == partial
 
 
 class TestOriginalRequest:
@@ -179,9 +188,24 @@ class TestOperationAuthorized:
         assert not pc._operation_authorized("task_strategy", "build")
 
     def test_malformed_env_fails_soft(self):
-        with patch.dict(os.environ, {"ORCH_BUILD_ALLOWED_OPERATIONS": "bad,ops"}):
-            # Should fail-soft and allow
+        # WAS: env value "bad,ops". That is not malformed — both names satisfy
+        # ^[a-z_][a-z0-9_]*$, so no ValueError was raised and the function correctly
+        # DENIED "any_op" for not being on the list. The test asserted the fail-soft
+        # branch while supplying input that never reaches it.
+        # A name that fails the validation regex is what trips the fail-soft path.
+        with patch.dict(os.environ, {"ORCH_BUILD_ALLOWED_OPERATIONS": "Bad-Op!,task_qa"}):
             assert pc._operation_authorized("any_op", "build") is True
+
+    def test_well_formed_env_still_denies_unlisted_operations(self):
+        # The half the old test actually exercised, kept and stated honestly.
+        with patch.dict(os.environ, {"ORCH_BUILD_ALLOWED_OPERATIONS": "bad,ops"}):
+            assert pc._operation_authorized("any_op", "build") is False
+            assert pc._operation_authorized("ops", "build") is True
+
+    def test_empty_env_denies_every_operation(self):
+        # An explicitly empty allowlist means "allow nothing", not "allow everything".
+        with patch.dict(os.environ, {"ORCH_BUILD_ALLOWED_OPERATIONS": ""}):
+            assert pc._operation_authorized("task_qa", "build") is False
 
     def test_exception_fails_soft(self):
         with patch("os.environ.get", side_effect=Exception("test error")):
@@ -243,14 +267,24 @@ class TestAuthorModel:
             result = pc._author_model("write code", "build")
             assert result == "claude-opus-5"
 
+    # WAS (both tests): patch("pipeline_contract.model_router", side_effect=...). That
+    # sets side_effect on the *module* mock, so calling the module would raise — but the
+    # code calls model_router.route(), which happily returned an auto-created MagicMock.
+    # The router never failed, the fallback never ran, and the assertion compared a
+    # string to `<MagicMock name='model_router.route().__getitem__()'>`. The exception
+    # belongs on .route.
     def test_model_router_exception_uses_env_default(self):
-        with patch("pipeline_contract.model_router", side_effect=Exception("error")):
+        mock_router = MagicMock()
+        mock_router.route.side_effect = Exception("error")
+        with patch("pipeline_contract.model_router", mock_router):
             with patch.dict(os.environ, {"ORCH_DEFAULT_MODEL": "claude-sonnet-5"}):
                 result = pc._author_model("prompt", "build")
                 assert result == "claude-sonnet-5"
 
     def test_model_router_exception_uses_hardcoded_default(self):
-        with patch("pipeline_contract.model_router", side_effect=Exception("error")):
+        mock_router = MagicMock()
+        mock_router.route.side_effect = Exception("error")
+        with patch("pipeline_contract.model_router", mock_router):
             with patch.dict(os.environ, {}, clear=True):
                 result = pc._author_model("prompt", "build")
                 assert "haiku" in result
@@ -266,7 +300,12 @@ class TestCoder:
             assert result == "anthropic"
 
     def test_coder_selection_exception_defaults_to_claude(self):
-        with patch("pipeline_contract.agentic_coders", side_effect=Exception("error")):
+        # WAS: side_effect on the agentic_coders MODULE mock, so .pick() returned a
+        # MagicMock and the fallback never ran; the assertion compared "claude" to
+        # `<MagicMock name='agentic_coders.pick()'>`. Put the failure on .pick.
+        mock_coders = MagicMock()
+        mock_coders.pick.side_effect = Exception("error")
+        with patch("pipeline_contract.agentic_coders", mock_coders):
             result = pc._coder("slug", "prompt", False)
             assert result == "claude"
 
@@ -297,8 +336,13 @@ class TestQaPanel:
                 assert len(result) >= 1
 
     def test_all_failures_hardcoded_default(self):
+        # WAS: side_effect on the mg MODULE mock. mg.available() then returned a
+        # MagicMock which only blew up later, inside set(), so the right branch was
+        # reached by accident. Fail the call that _qa_panel actually makes.
+        mock_mg = MagicMock()
+        mock_mg.available.side_effect = Exception("error")
         with patch("pipeline_contract.judge", None):
-            with patch("pipeline_contract.mg", side_effect=Exception("error")):
+            with patch("pipeline_contract.mg", mock_mg):
                 result = pc._qa_panel("claude", "build")
                 assert result == ["claude:claude-haiku-4-5-20251001"]
 
@@ -314,10 +358,26 @@ class TestRecentContext:
         result = pc._recent_context(None)
         assert result == []
 
-    def test_db_import_failure_returns_empty(self):
-        with patch.dict(sys.modules, {"db": None}):
+    def test_reads_the_module_level_db_seam_not_a_local_reimport(self):
+        # WAS `test_db_import_failure_returns_empty`: set sys.modules["db"] = None and
+        # expected []. It passed only because _recent_context re-imported db into its own
+        # scope, and that shadowing import is precisely what made `pipeline_contract.db`
+        # unpatchable — three sibling tests in this class could never reach their
+        # fixtures. The guarded local import was also dead code: `import db` at module
+        # scope has already run, so it cannot fail there. It has been removed from the
+        # module; this pins the seam so it does not come back.
+        seam = MagicMock()
+        seam.select.side_effect = [
+            [{"model": "claude", "tests_passed": True, "integrated": True, "usd": 1.0}],
+            [],
+            [],
+        ]
+        decoy = MagicMock()
+        decoy.select.return_value = []
+        with patch("pipeline_contract.db", seam), patch.dict(sys.modules, {"db": decoy}):
             result = pc._recent_context("myapp")
-            assert result == []
+        assert any("recent outcome signal" in item for item in result)
+        assert decoy.select.call_count == 0, "a local `import db` has been reintroduced"
 
     def test_outcomes_query_success(self):
         mock_db = MagicMock()
@@ -333,19 +393,26 @@ class TestRecentContext:
             result = pc._recent_context("myapp")
             assert any("merged" in item for item in result)
 
+    # WAS (both): `assert isinstance(result, list)`. _recent_context is annotated
+    # -> List[str] and every return statement is a list, so that held even when the
+    # function raised nothing at all and even before the db seam was patchable. What
+    # the fail-soft contract actually promises is an EMPTY bundle, with all three
+    # queries attempted rather than the first failure aborting the rest.
     def test_permission_error_fails_soft(self):
         mock_db = MagicMock()
         mock_db.select.side_effect = PermissionError("denied")
         with patch("pipeline_contract.db", mock_db):
             result = pc._recent_context("myapp")
-            assert isinstance(result, list)
+        assert result == []
+        assert mock_db.select.call_count == 3, "each query is guarded independently"
 
     def test_generic_exception_fails_soft(self):
         mock_db = MagicMock()
         mock_db.select.side_effect = RuntimeError("crash")
         with patch("pipeline_contract.db", mock_db):
             result = pc._recent_context("myapp")
-            assert isinstance(result, list)
+        assert result == []
+        assert mock_db.select.call_count == 3
 
 
 class TestBuildPlan:
@@ -390,13 +457,23 @@ class TestRenderPlan:
         assert f"## {pc.MARKER}" in rendered
         assert f"## END {pc.MARKER}" in rendered
 
-    def test_render_includes_all_keys(self):
-        plan = pc.build_plan("test", project="app", slug="slug123")
+    def test_render_includes_all_rendered_keys(self):
+        # WAS `test_render_includes_all_keys`, which also required the slug to appear.
+        # render_plan() has never emitted the slug: the contract block is prepended to
+        # the agent's own prompt, where the slug is already known, and build_plan's
+        # default slug is the placeholder "(auto)". Assert the fields render_plan really
+        # is responsible for, including the ones the old test skipped.
+        plan = pc.build_plan("test", project="app", slug="slug123", source="intake")
         rendered = pc.render_plan(plan)
-        assert "app" in rendered
-        assert "slug123" in rendered
+        assert "- project: app" in rendered
+        assert "- source: intake" in rendered
         assert "preflight triage" in rendered
         assert "strategy planner" in rendered
+        assert "independent QA route" in rendered
+        assert f"agentic coder: {plan['coder']}" in rendered
+        assert f"author model {plan['author_model']}" in rendered
+        assert "- QA panel:" in rendered
+        assert "- merge/release:" in rendered
 
     def test_render_with_collaboration_context(self):
         plan = pc.build_plan("test", project="app")
@@ -424,11 +501,17 @@ class TestWrapPrompt:
         result = pc.wrap_prompt(control)
         assert result == control
 
-    def test_wrap_empty_prompt_unchanged(self):
-        result = pc.wrap_prompt("")
-        assert result == ""
-        result = pc.wrap_prompt(None)
-        assert result == None
+    def test_wrap_empty_prompt_is_not_wrapped(self):
+        # WAS `test_wrap_empty_prompt_unchanged`, which required wrap_prompt(None) to
+        # return None. It returns "": the function normalises with `text = prompt or ""`
+        # before doing anything, exactly as original_request() does, and every caller
+        # concatenates the result into a prompt string. Handing None back would push a
+        # None into those call sites. What matters — and what the name meant — is that an
+        # empty prompt gets no contract prepended.
+        assert pc.wrap_prompt("") == ""
+        assert pc.wrap_prompt(None) == ""
+        assert pc.wrap_prompt("   \n ") == "   \n "
+        assert pc.MARKER not in pc.wrap_prompt(None)
 
     def test_wrap_includes_contract_before_original(self):
         prompt = "Build something"
@@ -496,12 +579,19 @@ class TestIntegration:
         assert plan["need"] <= 5
 
     def test_routing_fallback_chain(self):
-        # Simulate all routing layers failing
+        # WAS: side_effect on the model_policy MODULE mock (so .choose() returned a
+        # MagicMock and only blew up later while unpacking), plus two `is not None`
+        # assertions that a dict literal in build_plan satisfies unconditionally.
+        # Fail model_policy.choose for real and pin the documented hardcoded fallback.
+        mock_policy = MagicMock()
+        mock_policy.choose.side_effect = Exception("fail")
         with patch("pipeline_contract.app_triage", None):
-            with patch("pipeline_contract.model_policy", side_effect=Exception("fail")):
+            with patch("pipeline_contract.model_policy", mock_policy):
                 plan = pc.build_plan("test")
-                assert plan["preflight"]["model"] is not None
-                assert plan["strategy"]["provider"] is not None
+        for leg in ("preflight", "strategy", "qa"):
+            assert plan[leg]["provider"] == "claude", leg
+            assert plan[leg]["model"] == "claude-haiku-4-5-20251001", leg
+            assert plan[leg]["reason"] == "fallback policy", leg
 
     def test_permission_denied_at_each_layer(self):
         # Ensure each layer fails soft on PermissionError

@@ -9,6 +9,23 @@ Before a task branch merges into its base, this gate:
 
 Integrates with merge_validator, ci_dispatch, and the existing test framework.
 Fail-soft: on import/config errors, degrades to pass-through.
+
+Branch preflight (added 2026-08-24)
+-----------------------------------
+Step 1 used to be the *only* step, and it could not tell "this branch changed
+nothing" apart from "this branch does not exist". `_find_changed_modules` runs
+`git diff base...branch` and returns [] on every failure path — bad repo path,
+non-zero exit, timeout, exception — and `check_merge` reads [] as
+`{"passed": True, "reason": "no changed modules"}`. So a task whose agent/
+branch was never pushed, or whose base ref is gone, produced a *green* merge
+gate. A missing branch is the one thing this gate is supposed to catch before a
+merge into a main branch, and it was the one thing it waved through.
+
+`_preflight()` now answers three questions before any test is discovered:
+does the base ref resolve, does the task branch resolve, and do the two merge
+cleanly. Each answer is tri-state. Only a *positive* "no" blocks the merge;
+"could not determine" (no git, no repo checkout, timeout) still degrades to
+pass-through, so a broken toolchain on one host does not stall the fleet.
 """
 import os
 import sys
@@ -22,15 +39,129 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 log = logging.getLogger("merge_test_gate")
 
 ENABLED = os.environ.get("ORCH_MERGE_TEST_GATE", "true").lower() == "true"
+PREFLIGHT_ENABLED = os.environ.get(
+    "ORCH_MERGE_GATE_BRANCH_PREFLIGHT", "true").lower() == "true"
 TEST_TIMEOUT_S = int(os.environ.get("ORCH_MERGE_TEST_TIMEOUT_S", "120"))
+GIT_TIMEOUT_S = int(os.environ.get("ORCH_MERGE_GATE_GIT_TIMEOUT_S", "30"))
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 RESULTS_DIR = os.path.join(HOME, "merge-test-results")
 
-_stats = {"runs": 0, "passed": 0, "failed": 0, "skipped": 0}
+_stats = {"runs": 0, "passed": 0, "failed": 0, "skipped": 0,
+          "blocked_missing_branch": 0, "blocked_conflict": 0,
+          "preflight_undetermined": 0}
 
 
 def stats():
     return dict(_stats)
+
+
+# ---------------------------------------------------------------------------
+# Branch preflight
+#
+# Every helper below is tri-state on purpose: True / False / None.
+#   True  — verified good
+#   False — verified bad, block the merge
+#   None  — could not determine, keep the historical pass-through behaviour
+# Collapsing None into either extreme is what produced the original defect
+# (everything collapsed to "fine"), so resist the urge to tidy it away.
+# ---------------------------------------------------------------------------
+
+def _git(repo, args, timeout=None):
+    """Run a git command. Returns CompletedProcess, or None if it could not run."""
+    if not repo or not os.path.isdir(repo):
+        return None
+    try:
+        return subprocess.run(["git"] + list(args), cwd=repo,
+                              capture_output=True, text=True,
+                              timeout=timeout or GIT_TIMEOUT_S)
+    except Exception:
+        return None
+
+
+def _ref_exists(repo, ref):
+    """Does `ref` resolve in this repo? True / False / None (undetermined).
+
+    Prefers branch_availability_check, which already owns this question and
+    caches the answer fleet-wide; falls back to a direct rev-parse so the gate
+    keeps working if that module is unavailable.
+    """
+    if not ref:
+        return None
+    try:
+        import branch_availability_check as bac
+        got = bac.branch_exists_local(repo, ref)
+        if got is not None:
+            return bool(got)
+    except Exception:
+        pass
+    r = _git(repo, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    if r is None:
+        return None
+    return r.returncode == 0
+
+
+def _resolve_ref(repo, ref):
+    """First form of `ref` that resolves: itself, then origin/<ref>. None if neither."""
+    for cand in (ref, f"origin/{ref}"):
+        if _ref_exists(repo, cand):
+            return cand
+    return None
+
+
+def _merges_cleanly(repo, base, branch):
+    """Would merging `branch` into `base` conflict? True / False / None.
+
+    `git merge-tree --write-tree` (git >= 2.38) does this without touching the
+    working tree, which matters because this gate runs on hosts that have live
+    worktrees checked out. Exit 0 = clean, 1 = conflicts, anything else (or an
+    older git that rejects the flag) = undetermined.
+    """
+    r = _git(repo, ["merge-tree", "--write-tree", "--name-only", base, branch])
+    if r is None:
+        return None
+    if r.returncode == 0:
+        return True
+    if r.returncode == 1:
+        return False
+    return None
+
+
+def _preflight(repo_path, branch, base):
+    """Verify the merge is even possible. Returns a failure dict, or None if OK."""
+    if not PREFLIGHT_ENABLED:
+        return None
+
+    def _fail(reason, detail):
+        return {"passed": False, "tests_run": 0, "tests_passed": 0,
+                "tests_failed": 0, "details": [], "reason": reason,
+                "preflight": detail}
+
+    if not repo_path or not os.path.isdir(repo_path):
+        # No checkout on this host — genuinely undetermined, not a bad branch.
+        _stats["preflight_undetermined"] += 1
+        return None
+
+    base_ref = _resolve_ref(repo_path, base)
+    if base_ref is None and _ref_exists(repo_path, base) is False:
+        _stats["blocked_missing_branch"] += 1
+        return _fail("base branch missing",
+                     f"base ref {base!r} does not resolve in {repo_path}")
+    if base_ref is None:
+        _stats["preflight_undetermined"] += 1
+        return None
+
+    if _ref_exists(repo_path, branch) is False:
+        _stats["blocked_missing_branch"] += 1
+        return _fail("task branch missing",
+                     f"branch {branch!r} does not exist in {repo_path}; "
+                     "there is nothing to merge and no diff to test")
+
+    if _merges_cleanly(repo_path, base_ref, branch) is False:
+        _stats["blocked_conflict"] += 1
+        return _fail("merge conflict",
+                     f"{branch!r} does not merge cleanly into {base_ref!r}")
+
+    return None
 
 
 def _find_changed_modules(repo_path, branch, base):
@@ -128,6 +259,17 @@ def check_merge(task, repo_path=""):
                 repo_path = db.localize_repo_path(repo_path)
         except Exception:
             pass
+
+    # Preflight BEFORE diffing. `_find_changed_modules` cannot distinguish an
+    # empty diff from a failed one, so if the branch is missing this is the
+    # only place the difference is still visible.
+    blocked = _preflight(repo_path, branch, base)
+    if blocked is not None:
+        _stats["failed"] += 1
+        log.warning("merge gate blocked %s: %s (%s)", slug,
+                    blocked.get("reason"), blocked.get("preflight"))
+        _persist_result(slug, blocked)
+        return blocked
 
     changed = _find_changed_modules(repo_path, branch, base)
     if not changed:

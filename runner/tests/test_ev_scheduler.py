@@ -209,7 +209,7 @@ class TestParkZeroEV(_MockDB):
                  {"id": "good", "project_id": "p1", "kind": "build", "prompt": "x",
                   "slug": "good", "attempt": 5, "created_at": "2026-01-02"}]
         self.install(_queue_select(tasks))
-        parked = ev_scheduler.park_zero_ev(ev_scheduler._scored_queue(ctx=_ctx()))
+        parked = ev_scheduler.park_zero_ev(ev_scheduler._scored_queue(ctx=_ctx()), ctx=_ctx())
         self.assertEqual(parked, 1)
         table, match, patch = self.updates[0]
         self.assertEqual(match, {"id": "z0"})
@@ -221,7 +221,7 @@ class TestParkZeroEV(_MockDB):
     def test_park_cap_respected(self):
         tasks = [self._zero_task(i) for i in range(30)]
         self.install(_queue_select(tasks))
-        parked = ev_scheduler.park_zero_ev(ev_scheduler._scored_queue(ctx=_ctx()))
+        parked = ev_scheduler.park_zero_ev(ev_scheduler._scored_queue(ctx=_ctx()), ctx=_ctx())
         self.assertEqual(parked, ev_scheduler.PARK_CAP)
 
     def test_run_never_raises(self):

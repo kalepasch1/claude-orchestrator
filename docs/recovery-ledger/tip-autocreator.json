@@ -1,0 +1,61 @@
+{
+  "base": "origin/master",
+  "base_sha": "8a2e2e16327fafdeeb4cc0637a7e728eecba783d",
+  "counts": {
+    "DIVERGED": 3,
+    "IDENTICAL": 1
+  },
+  "items": [
+    {
+      "base_blob": "af715d94f88c9ce1b5b7bc06c47ae703af1f0754",
+      "disposition": "snapshot blob equals base blob; nothing was lost",
+      "path": "CLAUDE.md",
+      "snapshot_blob": "af715d94f88c9ce1b5b7bc06c47ae703af1f0754",
+      "verdict": "IDENTICAL"
+    },
+    {
+      "base_blob": "de8c3f373011ee00d2fe6b98f3d1e396e6e63ed1",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+201/-5 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/periodic.py",
+      "snapshot_blob": "44f366207a161ce5b7561ed7d90d3bf3ebdaf67b",
+      "snapshot_to_base": {
+        "added": 201,
+        "deleted": 5
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "89483097f2e860dd5a83ce67ce0ada145c65fe50",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+106/-3 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/repo_setup_repair.py",
+      "snapshot_blob": "b74118e5e1f129e773f5d9a051149adf4f8ebc66",
+      "snapshot_to_base": {
+        "added": 106,
+        "deleted": 3
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "1a4a095535413c5b915bcf199649129f9e57a2f9",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+380/-23 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/runner.py",
+      "snapshot_blob": "d7d31f8596a524dd5efb5912487c55fa8b0e3052",
+      "snapshot_to_base": {
+        "added": 380,
+        "deleted": 23
+      },
+      "verdict": "DIVERGED"
+    }
+  ],
+  "needs_human_review": [
+    "runner/periodic.py",
+    "runner/repo_setup_repair.py",
+    "runner/runner.py"
+  ],
+  "nothing_recoverable": false,
+  "snapshot": "dc65c542",
+  "snapshot_sha": "dc65c5428c7ca2d3de8d2cf017ced6fa513e438c"
+}

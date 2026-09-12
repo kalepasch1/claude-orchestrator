@@ -31,6 +31,20 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
+_RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _RUNNER_DIR)
+
+# Load runner/runner.py by path: a bare `import runner` resolves to the runner
+# PACKAGE, not the scheduler module. Same loader dance as
+# test_sched_no_duplicate_jobs.py.
+import importlib.util as _ilu
+
+_spec = _ilu.spec_from_file_location(
+    "_runner_module_for_timeout_tests", os.path.join(_RUNNER_DIR, "runner.py"))
+R = _ilu.module_from_spec(_spec)
+sys.modules["_runner_module_for_timeout_tests"] = R
+_spec.loader.exec_module(R)
+
 
 class TestTimeoutConfigurationDefaults:
     """Tests for default timeout configuration values."""
@@ -87,24 +101,36 @@ class TestTimeoutStringConversion:
                 assert result == expected_int
                 assert isinstance(result, int)
 
-    def test_invalid_timeout_string_raises_value_error(self):
-        """Invalid timeout strings should raise ValueError during conversion."""
-        invalid_values = ["abc", "3600.5", "-1", "", "null"]
-        for invalid_val in invalid_values:
-            with patch.dict(os.environ, {"TASK_TIMEOUT": invalid_val}):
-                timeout_str = os.environ.get("TASK_TIMEOUT", "3600")
-                if invalid_val == "":
-                    # Empty string falls back to default
-                    result = int(os.environ.get("TASK_TIMEOUT", "3600"))
-                    assert result == 3600
-                else:
-                    try:
-                        result = int(timeout_str)
-                        if invalid_val in ["3600.5"]:
-                            # 3600.5 should raise ValueError due to float
-                            pass
-                    except ValueError:
-                        pass  # Expected for invalid integers
+    def test_unparseable_timeout_falls_back_to_the_default(self):
+        """An unusable TASK_TIMEOUT must not stop the fleet from launching agents.
+
+        This used to assert on a copy of the expression rather than on the
+        product, and the copy was wrong: it claimed `TASK_TIMEOUT=""` "falls back
+        to default", but os.environ.get returns its default only when the key is
+        ABSENT. With the key present and empty it returns "", and int("") raises
+        ValueError -- inside the call that launches the coder subprocess, so one
+        blank value in fleet_config stopped every task on the fleet.
+
+        TASK_TIMEOUT is operator-tunable through the control plane, so every one
+        of these is a value a human can actually set. runner._task_timeout()
+        now absorbs all of them.
+        """
+        for bad in ["abc", "3600.5", "-1", "0", "", "   ", "null"]:
+            with patch.dict(os.environ, {"TASK_TIMEOUT": bad}):
+                assert R._task_timeout() == R.TASK_TIMEOUT_DEFAULT, bad
+
+    def test_a_usable_timeout_is_still_honoured(self):
+        """The fail-soft path must not swallow good values along with bad ones."""
+        for good, expected in [("7200", 7200), (" 900 ", 900), ("60", 60)]:
+            with patch.dict(os.environ, {"TASK_TIMEOUT": good}):
+                assert R._task_timeout() == expected
+
+    def test_absent_timeout_uses_the_default(self):
+        """No TASK_TIMEOUT at all is the ordinary case, not an error."""
+        env = dict(os.environ)
+        env.pop("TASK_TIMEOUT", None)
+        with patch.dict(os.environ, env, clear=True):
+            assert R._task_timeout() == R.TASK_TIMEOUT_DEFAULT
 
     def test_timeout_large_values_supported(self):
         """Large timeout values (>1 hour) should be supported."""
@@ -159,7 +185,12 @@ class TestNYDeadlineCompliance:
         """Calculate duration from typical session start to 11:10pm NY."""
         # Typical session start: 10:00pm NY
         # 11:10pm NY - 10:00pm NY = 70 minutes = 4200 seconds
-        deadline_seconds = 11 * 3600 + 10 * 60  # 83400
+        # 11:10 PM is hour 23 on the clock these seconds-since-midnight numbers
+        # use -- the start below is already written as 22 * 3600. Writing the
+        # deadline as 11 * 3600 made it 11:10 AM, i.e. eleven hours BEFORE the
+        # start, so the duration came out negative (-39000). The trailing
+        # comment said 83400 all along, which is 23 * 3600 + 10 * 60.
+        deadline_seconds = 23 * 3600 + 10 * 60  # 83400
         start_time_seconds = 22 * 3600  # 10:00pm = 79200
         duration_available = deadline_seconds - start_time_seconds
 

@@ -36,6 +36,50 @@ def _log_warn(msg):
     print(f"git_auto_branch [WARN]: {msg}")
 
 
+# ── Slice-4 ledger shims ────────────────────────────────────────────────────
+# The ledger is observability, not a dependency. Every call is wrapped so a missing
+# module, a down DB or a schema drift degrades to a printed line — a sweep that wedges
+# because it could not write a log row would be strictly worse than an unlogged sweep.
+
+def _ledger():
+    try:
+        import branch_recovery_ledger
+        return branch_recovery_ledger
+    except Exception as exc:  # noqa: BLE001 — fail-soft
+        _log_warn(f"recovery ledger unavailable: {exc}")
+        return None
+
+
+def _ledger_safe_delete(result, repo="", slug=""):
+    ledger = _ledger()
+    if ledger is None:
+        return
+    try:
+        ledger.log_safe_delete(result, repo=repo, slug=slug)
+    except Exception as exc:  # noqa: BLE001 — fail-soft
+        _log_warn(f"recovery ledger write failed: {exc}")
+
+
+def _ledger_action(action, branch, **kwargs):
+    ledger = _ledger()
+    if ledger is None:
+        return
+    try:
+        ledger.log_recovery_action(action, branch, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — fail-soft
+        _log_warn(f"recovery ledger write failed: {exc}")
+
+
+def _ledger_summary(counts, repo=""):
+    ledger = _ledger()
+    if ledger is None:
+        return
+    try:
+        ledger.log_sweep_summary(counts, repo=repo)
+    except Exception as exc:  # noqa: BLE001 — fail-soft
+        _log_warn(f"recovery ledger summary failed: {exc}")
+
+
 def _git(args, repo):
     """Run a git command, return (stdout, ok)."""
     try:
@@ -216,11 +260,16 @@ def cleanup_merged_branches(repo):
         # of a phantom MERGED destroyed the only copy of real work. Archive first.
         try:
             import branch_durability
-            ok = branch_durability.safe_delete(
-                repo, branch, reason="git_auto_branch grace sweep").get("local_deleted")
+            result = branch_durability.safe_delete(
+                repo, branch, reason="git_auto_branch grace sweep")
+            ok = result.get("local_deleted")
         except Exception as exc:
             _log_info(f"branch durability guard unavailable for {branch} ({exc}); NOT deleting")
             continue
+        # Slice-4: safe_delete returns its dict "so callers can log it" and no caller
+        # ever did, so every archive vanished with the process and the next sweep had
+        # to rediscover the loss. Persist it.
+        _ledger_safe_delete(result, repo=repo, slug=slug)
         if ok:
             removed += 1
             _log_info(f"deleted branch: {branch}")
@@ -305,9 +354,18 @@ def rebase_stale_branches(repo, base="master"):
         if ok:
             rebased += 1
             _log_info(f"rebased {branch} onto {base} (was {behind} commits behind)")
+            _ledger_action("rebased", branch, repo=repo, slug=slug, ok=True,
+                           reason=f"stale sweep: {behind} commits behind {base}",
+                           extra={"base": base, "behind": behind})
         else:
             _git(["rebase", "--abort"], repo)  # clean up failed rebase
             _log_warn(f"rebase failed for {branch}, aborted")
+            # An aborted rebase is the interesting case: it is the early warning that
+            # this branch will conflict at merge time. Silently dropping it is how a
+            # predictable conflict becomes a surprise in the merge train.
+            _ledger_action("skipped", branch, repo=repo, slug=slug, ok=False,
+                           reason=f"rebase onto {base} failed and was aborted",
+                           extra={"base": base, "behind": behind})
     return rebased
 
 
@@ -330,9 +388,17 @@ def run():
             continue
         base = p.get("default_base") or "master"
         # Clean worktrees first — this unblocks branch deletion
-        total_cleaned += cleanup_merged_branches(repo)
-        total_rebased += rebase_stale_branches(repo, base)
-        total_wt_pruned += cleanup_stale_worktrees(repo)
+        cleaned = cleanup_merged_branches(repo)
+        rebased = rebase_stale_branches(repo, base)
+        pruned = cleanup_stale_worktrees(repo)
+        total_cleaned += cleaned
+        total_rebased += rebased
+        total_wt_pruned += pruned
+        # Per-project row: an empty sweep and a sweep that never ran look identical
+        # from the aggregate counts, and only one of those is a problem.
+        _ledger_summary({"cleaned": cleaned, "rebased": rebased,
+                         "worktrees_pruned": pruned, "project": p.get("name") or "",
+                         "base": base}, repo=repo)
     print(f"git_auto_branch: cleaned {total_cleaned}, rebased {total_rebased}, worktrees_pruned {total_wt_pruned}")
     return {"cleaned": total_cleaned, "rebased": total_rebased, "worktrees_pruned": total_wt_pruned}
 

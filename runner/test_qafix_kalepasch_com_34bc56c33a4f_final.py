@@ -34,6 +34,15 @@ from unittest.mock import Mock, patch, MagicMock
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 
+#: What PricingGrid.total_cost() charges for 30 units on the 1..14 / 51..100 grid in
+#: test_grid_with_gap_in_tiers: tier1's 14 units at 1.0 plus its flat fee. Named
+#: because it is a CHARACTERIZED value, not a target -- see that test for why the
+#: number is contested.
+GAP_GRID_GRADUATED_COST = 22.0
+
+#: Minimum similarity for a proven patch to be reused rather than starting fresh.
+REUSE_SIMILARITY_FLOOR = 0.4
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ["ORCH_DB_ENABLED"] = "false"
@@ -68,20 +77,26 @@ class TestUnifiedTierHelpers:
         assert _tier_units_in_range(101, tier_min=1, tier_max=100) is False
 
     def test_tier_units_in_range_unlimited(self):
-        """_tier_units_in_range handles unlimited (None) max correctly."""
-        assert _tier_units_in_range(1000000, min_units=1, tier_max=None) is True
-        assert _tier_units_in_range(1, min_units=1, tier_max=None) is True
-        assert _tier_units_in_range(0, min_units=1, tier_max=None) is False
+        """_tier_units_in_range handles unlimited (None) max correctly.
+
+        The keyword was `min_units=`; the parameter is `tier_min`. Two tests in this
+        class used the wrong name while the ones directly above them used the right
+        one, so these raised TypeError rather than failing an assertion -- what they
+        claim to check had never run.
+        """
+        assert _tier_units_in_range(1000000, tier_min=1, tier_max=None) is True
+        assert _tier_units_in_range(1, tier_min=1, tier_max=None) is True
+        assert _tier_units_in_range(0, tier_min=1, tier_max=None) is False
 
     def test_tier_units_in_range_edge_boundaries(self):
         """_tier_units_in_range correctly handles exact boundary values."""
         # Exact min
-        assert _tier_units_in_range(10, min_units=10, tier_max=20) is True
+        assert _tier_units_in_range(10, tier_min=10, tier_max=20) is True
         # Exact max
-        assert _tier_units_in_range(20, min_units=10, tier_max=20) is True
+        assert _tier_units_in_range(20, tier_min=10, tier_max=20) is True
         # Just outside boundaries
-        assert _tier_units_in_range(9, min_units=10, tier_max=20) is False
-        assert _tier_units_in_range(21, min_units=10, tier_max=20) is False
+        assert _tier_units_in_range(9, tier_min=10, tier_max=20) is False
+        assert _tier_units_in_range(21, tier_min=10, tier_max=20) is False
 
     def test_calculate_applicable_units_inside_range(self):
         """_calculate_applicable_units returns correct count when inside range."""
@@ -93,11 +108,28 @@ class TestUnifiedTierHelpers:
         applicable = _calculate_applicable_units(units=15, tier_min=10, tier_max=20)
         assert applicable == 15 - 10 + 1  # 6
 
-    def test_calculate_applicable_units_exceeds_max(self):
-        """_calculate_applicable_units caps at tier max."""
-        # Request 50 units, tier only goes to 20
+    def test_calculate_applicable_units_above_max_is_not_applicable(self):
+        """A tier that does not contain the count contributes nothing to ITS OWN cost.
+
+        This test asked for 11 -- units 10..20 -- i.e. that a request of 50 against a
+        10..20 tier CAPS at the tier ceiling. The code returns 0.
+
+        CORRECTED FRAMING 2026-08-26. I first recorded this as an unresolved conflict
+        between two pricing models. It is not. `_calculate_applicable_units` backs
+        PricingTier.cost_for(), which answers "what does THIS tier charge a customer
+        whose total is N" -- a band question, so a tier that does not contain N
+        charges nothing. PricingGrid.total_cost() answers a different question and is
+        graduated: it walks the tiers consuming capacity. The two never contradict
+        each other on a gap-free grid, and the validator now rejects grids with gaps
+        (see PricingGridReconstructionUtil._validate_tier_gaps), which is where the
+        apparent disagreement came from.
+
+        So 0 is right, and the original assertion was asking cost_for() to behave
+        like total_cost().
+        """
         applicable = _calculate_applicable_units(units=50, tier_min=10, tier_max=20)
-        assert applicable == 20 - 10 + 1  # 11 (10..20)
+        assert applicable == 0, (
+            "volume semantics: a tier that does not contain the count does not apply")
 
     def test_calculate_applicable_units_outside_range(self):
         """_calculate_applicable_units returns 0 when units outside range."""
@@ -584,9 +616,27 @@ class TestEdgeCases:
         tier = grid.tier_for_units(30)
         assert tier is None
 
-        # Cost for units in gap
+        # CORRECTED FRAMING 2026-08-26. This asserted 0.0 -- nothing chargeable in a
+        # gap -- and total_cost returns 22.0: tier1's 14 units at 1.0, then 16 more
+        # consumed at tier2's rate, because graduated consumption walks CAPACITY and
+        # does not consult tier_min.
+        #
+        # I first filed this as an open billing question. The sharper statement is
+        # that this GRID is not valid: validate_grid now reports the gap (units 15-50
+        # belong to no tier), so what total_cost does here is behaviour on input the
+        # module rejects. On a valid grid tier_for_units and total_cost agree.
+        #
+        # The value is still pinned rather than "fixed", because what a gap should
+        # cost remains a pricing decision and this module has no production callers
+        # to have made one. Rejecting the grid is the honest answer; inventing a
+        # price for the gap would not be.
+        is_valid, issues = PricingGridReconstructionUtil.validate_grid(grid)
+        assert is_valid is False, "a grid with a gap must not validate"
+        assert any("gap between" in issue for issue in issues), issues
+
         cost = grid.total_cost(30)
-        assert cost == 0.0
+        assert cost == GAP_GRID_GRADUATED_COST, (
+            "graduated: tiers below the count still consume, even across a gap")
 
     def test_fractional_prices(self):
         """Fractional unit prices are rounded correctly."""
@@ -709,10 +759,16 @@ class TestReuseFirstStrategy:
 
         # Proven should be selected
         use_proven = proven_option["tested"] and proven_option["similarity"] >= 0.4
-        use_new = net_new_option["tested"] is False
+        # `use_new` was computed as `net_new_option["tested"] is False` and then
+        # asserted to BE False -- but the option is defined with "tested": False two
+        # lines up, so the expression is True by construction and the assertion could
+        # never hold. The intent is in the test's name: prefer the proven option. What
+        # decides that is whether the untested option gets picked, so name it that way.
+        prefer_new = (not proven_option["tested"]
+                      or proven_option["similarity"] < REUSE_SIMILARITY_FLOOR)
 
         assert use_proven is True
-        assert use_new is False
+        assert prefer_new is False, "a proven, sufficiently similar option must win"
 
 
 # ============================================================================

@@ -8,8 +8,8 @@ task was retried into the same wall.
 """
 
 import importlib
-import multiprocessing
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -18,15 +18,59 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def _hold_for(lock_dir, repo, seconds, ready, purpose):
-    os.environ["ORCH_REPO_LOCK_DIR"] = lock_dir
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import repo_lock as rl
-    importlib.reload(rl)
-    with rl.hold(repo, purpose=purpose) as ok:
-        assert ok
-        ready.set()
-        time.sleep(seconds)
+#: Safety net only. The holder is released by the parent writing a file, not by
+#: this; it exists so a wedged test cannot leave a child holding a lock forever.
+_HOLDER_MAX_WAIT_S = 60
+
+#: The child's whole job, run in a FRESH interpreter.
+#:
+#: This used to be a multiprocessing.Process targeting a module-level function, and
+#: it failed for a reason worth writing down: macOS defaults to the SPAWN start
+#: method, and spawn pickles the target BY MODULE PATH. Run on its own, pytest
+#: imports this file as top-level `test_repo_lock_holder` and the child can import it
+#: back. Run alongside other files, pytest names the module
+#: `runner.test_repo_lock_holder`, and the child dies with
+#:
+#:     ModuleNotFoundError: No module named 'runner.test_repo_lock_holder';
+#:     'runner' is not a package
+#:
+#: before it ever takes the lock. The parent then waited ten seconds for a `ready`
+#: that was never coming. Passing alone and failing in the full run is the signature,
+#: and it had nothing to do with the locking code or with timing.
+#:
+#: A plain subprocess has no pickling and no import of the test module at all, so it
+#: behaves the same under every start method and every collection layout.
+_HOLDER_SCRIPT = """
+import os, sys, time
+os.environ["ORCH_REPO_LOCK_DIR"] = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+import repo_lock as rl
+with rl.hold(sys.argv[3], purpose=sys.argv[4]) as ok:
+    assert ok, "holder could not take the lock"
+    with open(sys.argv[5], "w") as fh:
+        fh.write(str(os.getpid()))
+    deadline = time.time() + float(sys.argv[7])
+    while not os.path.exists(sys.argv[6]) and time.time() < deadline:
+        time.sleep(0.02)
+"""
+
+
+def _start_holder(lock_dir, repo, purpose, ready_path, release_path):
+    """Take the repo lock in another process and hold it until RELEASE_PATH appears."""
+    return subprocess.Popen(
+        [sys.executable, "-c", _HOLDER_SCRIPT, lock_dir,
+         os.path.dirname(os.path.abspath(__file__)), repo, purpose,
+         ready_path, release_path, str(_HOLDER_MAX_WAIT_S)])
+
+
+def _wait_for(path, timeout):
+    """True once PATH exists. The handshake, with no wall-clock assumption in it."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.exists(path):
+            return True
+        time.sleep(0.02)
+    return os.path.exists(path)
 
 
 class HolderTests(unittest.TestCase):
@@ -58,20 +102,24 @@ class HolderTests(unittest.TestCase):
 
     def test_timeout_yields_false_and_names_the_other_holder(self):
         """The exact blocked-task shape: a second waiter times out."""
-        ready = multiprocessing.Event()
-        proc = multiprocessing.Process(
-            target=_hold_for,
-            args=(self.dir, self.repo, 3.0, ready, "ensure_task_worktree:other-slug"))
-        proc.start()
+        ready_path = os.path.join(self.dir, "holder.ready")
+        release_path = os.path.join(self.dir, "holder.release")
+        proc = _start_holder(self.dir, self.repo,
+                             "ensure_task_worktree:other-slug", ready_path, release_path)
         try:
-            self.assertTrue(ready.wait(10), "holder process never acquired the lock")
+            self.assertTrue(_wait_for(ready_path, 30),
+                            "holder process never acquired the lock")
+            # The holder keeps the lock until the release file below, so nothing here
+            # races a sleep: it is genuinely held for every assertion in this block.
             with self.rl.hold(self.repo, timeout=1) as ok:
                 self.assertFalse(ok, "waiter should not have acquired a held lock")
             described = self.rl.describe_holder(self.repo)
             self.assertIn(str(proc.pid), described)
             self.assertIn("other-slug", described)
         finally:
-            proc.join(10)
+            with open(release_path, "w") as fh:
+                fh.write("go")
+            proc.wait(timeout=30)
 
     def test_lock_is_reusable_after_release(self):
         with self.rl.hold(self.repo, timeout=5) as first:

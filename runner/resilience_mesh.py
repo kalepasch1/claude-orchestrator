@@ -13,6 +13,7 @@ import datetime
 import importlib.util
 import json
 import os
+import tempfile
 import signal
 import subprocess
 import sys
@@ -84,11 +85,46 @@ def _read_json(path: str, default: Any = None) -> Any:
 
 
 def _write_json(path: str, data: Any) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
-    os.replace(tmp, path)
+    """Atomically write JSON.
+
+    The temp name is PID-unique. With a fixed "<path>.tmp" two concurrent writers
+    race on the same file: the first os.replace() consumes it and the second dies
+    with FileNotFoundError on a temp file it had just created. This module is on a
+    60-second interval (runner.py, "resmesh-60") and also runs standalone, so
+    overlap is routine rather than exotic, and the crash was the LAST line of
+    .runtime/logs/resilience-mesh.err:
+
+        os.replace(tmp, path)
+        FileNotFoundError: [Errno 2] No such file or directory:
+          '.runtime/db_health.json.tmp' -> '.runtime/db_health.json'
+
+    db_recovery_sprint._write_json was fixed for exactly this in 2026-08, and its
+    comment names THIS module as the victim ("that is what kept db_health.json
+    missing, which in turn made resilience_mesh fail on every cycle") — but the
+    same one-line change was never applied here, so the file the note is about
+    kept crashing. Last-writer-wins is the intended semantics for a health
+    snapshot; the `finally` clears the temp so a failure mid-write cannot leave
+    one behind.
+
+    Unique PER CALL rather than per process. A pid-suffixed name — the shape
+    db_recovery_sprint uses — closes the cross-process race that produced the
+    production crash, but two THREADS in one process share a pid and collide
+    again. mkstemp in the destination directory is unique against both, and
+    being on the same filesystem keeps os.replace atomic.
+    """
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError as exc:
+                print("resilience_mesh: could not remove temp %s (%s)" % (tmp, exc))
 
 
 def _append_spool(action: dict[str, Any]) -> None:

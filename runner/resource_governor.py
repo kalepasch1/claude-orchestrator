@@ -54,6 +54,82 @@ def _ram_hard():
     return float(os.environ.get("RAM_HARD_PCT", "82"))
 
 
+# ── THE CPU BRAKE ───────────────────────────────────────────────────────────────
+#
+# This governor could not see the resource that was actually exhausted.
+#
+# Every brake above measures disk or RAM. On 2026-09-01 this Mac sat at load
+# average 82-92 across 18 cores — five times oversubscribed, git and node
+# processes fighting for CPU, build proofs stretching from 14 minutes to 25+ —
+# while the governor held the throttle at the TOP of its lane band and reported
+# healthy. It was right about everything it measured: 48GB of RAM, disk fine.
+# There was simply no CPU signal anywhere in the file.
+#
+# That is the same failure shape as a posture check auditing the wrong database
+# or a confidence gate clamped so it cannot reject: the instrument reports a
+# clean number because it is not pointed at the problem.
+#
+# Load average per core is the right metric, and it is the one that means
+# "oversubscribed" rather than "busy". A machine at 1.0/core is fully used and
+# fine; sustained 3.0/core means every runnable process waits three times its
+# own length. Sampling is 1-minute load, so a brief spike from one build does
+# not clamp the fleet.
+def _cpu_soft():
+    """Load-per-core at which the fleet stops easing up. Default 1.5."""
+    return float(os.environ.get("CPU_SOFT_LOAD", "1.5"))
+
+
+def _cpu_hard():
+    """Load-per-core at which concurrency is clamped hard. Default 3.0."""
+    return float(os.environ.get("CPU_HARD_LOAD", "3.0"))
+
+
+def load_per_core():
+    """1-minute load average divided by CPU count, or None if unreadable.
+
+    None means "no signal", and every caller treats that as "do not brake" —
+    an unreadable probe must not throttle the fleet to a stop.
+    """
+    try:
+        cores = os.cpu_count() or 1
+        return round(os.getloadavg()[0] / max(1, cores), 2)
+    except (OSError, AttributeError, IndexError):
+        return None
+
+
+#: "Caller did not supply a reading", as distinct from load_per_core()'s None,
+#: which means "the machine could not be read". Collapsing those two into one
+#: None made an explicitly-unreadable probe go and measure the real machine and
+#: then clamp on it — the opposite of failing soft. Caught by the test for it.
+_MEASURE = object()
+
+
+def cpu_budget(limit, per_core=_MEASURE):
+    """Lanes the CPU can carry right now, given `limit` as the ask.
+
+    Proportional rather than a cliff. At or below soft, the ask stands. Between
+    soft and hard it scales down linearly, so the fleet eases off a loaded
+    machine instead of slamming to one lane and starving. At or above hard it is
+    one lane — the machine is thrashing and more concurrency makes it slower,
+    not faster.
+
+    Pass per_core=None to say the probe FAILED; the ask stands untouched.
+    """
+    if per_core is _MEASURE:
+        per_core = load_per_core()
+    if per_core is None:
+        return limit
+    soft, hard = _cpu_soft(), _cpu_hard()
+    if hard <= soft:
+        hard = soft + 0.1
+    if per_core <= soft:
+        return limit
+    if per_core >= hard:
+        return 1
+    scale = (hard - per_core) / (hard - soft)
+    return max(1, int(limit * scale))
+
+
 # Fleet-wide default, overridable centrally via the ORCH_RAM_FLOOR_GB fleet_config key
 # (fleet_control.load_config() pushes ORCH_* keys into os.environ every loop). Not a secret,
 # not a per-machine constant — one number both Macs converge on.
@@ -149,13 +225,39 @@ def _per_task_gb():
 
 
 # --- Pruning knobs (opt-in per category) ---
-LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
-PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
-PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
-PRUNE_LIB_CACHES = os.environ.get("PRUNE_LIB_CACHES", "false").lower() == "true"
-# Predictive throttling: fit a trend line to recent disk_pct samples and throttle
-# preemptively if extrapolation breaches DISK_HARD within this many hours.
-PREDICT_WINDOW_H = float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
+# 2026-08-27: these five were the last import-time snapshots left in this module. The
+# throttling knobs above (_ceiling/_disk_soft/_disk_hard/_ram_hard/...) were converted to
+# live env reads on 2026-07-11 for exactly this reason, but the pruning knobs were missed,
+# so half of fleet_control.load_config()'s per-loop push took effect on a running governor
+# and half did not: raising LOG_KEEP_DAYS or flipping PRUNE_DOCKER centrally changed nothing
+# until every governor process was restarted, while a DISK_SOFT_PCT change applied at once.
+# Same fix, same shape — read from env on each call.
+def _log_keep_days():
+    """Age (days) beyond which rotated logs are pruned. Read live from LOG_KEEP_DAYS."""
+    return int(os.environ.get("LOG_KEEP_DAYS", "7"))
+
+
+def _prune_node_modules():
+    """Opt-in: prune node_modules in inactive worktrees. Read live from PRUNE_NODE_MODULES."""
+    return os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
+
+
+def _prune_docker():
+    """Opt-in: run `docker image prune`. Read live from PRUNE_DOCKER."""
+    return os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
+
+
+def _prune_lib_caches():
+    """Opt-in (aggressive): prune ~/Library/Caches. Read live from PRUNE_LIB_CACHES."""
+    return os.environ.get("PRUNE_LIB_CACHES", "false").lower() == "true"
+
+
+def _predict_window_h():
+    """Predictive throttling: fit a trend line to recent disk_pct samples and throttle
+    preemptively if extrapolation breaches DISK_HARD within this many hours."""
+    return float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
+
+
 os.makedirs(HOME, exist_ok=True)
 
 
@@ -321,7 +423,7 @@ def _predicted_disk_pct(horizon_seconds=None):
     Returns (predicted_pct_at_horizon, hours_to_hard) or (None, None) if insufficient data.
     """
     if horizon_seconds is None:
-        horizon_seconds = PREDICT_WINDOW_H * 3600
+        horizon_seconds = _predict_window_h() * 3600
     try:
         rows = db.select("resource_events", {"select": "value,created_at", "kind": "eq.disk",
                                               "order": "created_at.desc", "limit": "20"}) or []
@@ -466,9 +568,30 @@ def prune():
             continue
         subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
         try:
-            merged = subprocess.check_output(["git", "branch", "--merged", "main"], cwd=repo, text=True)
+            merged = subprocess.check_output(["git", "branch", "--merged", "main"],
+                                             cwd=repo, text=True, timeout=30)
         except Exception:
             merged = ""
+        #: The SAME listing the loop below iterates, as a set. _is_branch_unmerged(b, repo)
+        #: re-ran `git branch --merged main` IN FULL for every branch -- inside a loop fed
+        #: by that exact command's output -- so the work was quadratic in a listing already
+        #: in hand. Measured 2026-09-07: 0.25-1.26s per call per repo; `smarter` has 113
+        #: merged agent branches, which is ~142s inside a job runner.py schedules every 60
+        #: SECONDS and that is in _SAFE_WHEN_PAUSED, i.e. it runs even while the fleet is
+        #: paused.
+        #:
+        #: Re-querying was never a real double-check either. The bug that comment guards
+        #: against was a SUBSTRING match mis-classifying a branch as merged; that was fixed
+        #: by matching names exactly, and running the identical command against the same
+        #: repo microseconds later cannot discover anything the first run missed. Reading
+        #: the snapshot the loop is already walking is also strictly more consistent: the
+        #: iteration and the safety check now come from one observation instead of two that
+        #: can disagree.
+        #:
+        #: _is_branch_unmerged is left in place -- runner/tests/test_safety.py tests it
+        #: directly, and it is the right helper for a caller that does not already hold a
+        #: listing.
+        merged_names = {l.strip().lstrip("* ").strip() for l in merged.splitlines()}
         wt_root = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt")
         for b in [l.strip().lstrip("* ").strip() for l in merged.splitlines()]:
             if b.startswith("agent/"):
@@ -478,8 +601,11 @@ def prune():
                     if _has_uncommitted_changes(wt, repo):
                         freed_notes.append(f"SKIPPED (dirty) {b}")
                         continue
-                    # SAFETY: double-check branch is truly merged
-                    if _is_branch_unmerged(b, repo):
+                    # SAFETY: branch must be merged. Same exact-name test
+                    # _is_branch_unmerged applies, against the listing already fetched
+                    # above; an empty listing (the fetch failed) means the loop never
+                    # runs at all, so the fail-safe direction is unchanged.
+                    if b not in merged_names:
                         freed_notes.append(f"SKIPPED (unmerged) {b}")
                         continue
                     # SAFETY: a branch whose tip == main's tip looks 'merged' but is really a
@@ -511,13 +637,13 @@ def prune():
                     shutil.rmtree(d, ignore_errors=True); freed_notes.append(os.path.relpath(d, repo))
 
         # 3) node_modules (opt-in — large but rebuildable with npm install)
-        if PRUNE_NODE_MODULES:
+        if _prune_node_modules():
             for d in glob.glob(os.path.join(repo, "**/node_modules"), recursive=True):
                 if os.path.isdir(d) and "-wt" not in d:
                     shutil.rmtree(d, ignore_errors=True); freed_notes.append("node_modules:" + os.path.relpath(d, repo))
 
     # 4) stale logs
-    cutoff = time.time() - LOG_KEEP_DAYS * 86400
+    cutoff = time.time() - _log_keep_days() * 86400
     for f in glob.glob(os.path.join(HOME, "logs", "*")):
         try:
             if os.path.getmtime(f) < cutoff:
@@ -526,7 +652,7 @@ def prune():
             pass
 
     # 5) Docker (opt-in — removes dangling images + stopped containers)
-    if PRUNE_DOCKER:
+    if _prune_docker():
         try:
             subprocess.run(["docker", "system", "prune", "-f", "--filter", "until=48h"],
                            capture_output=True, timeout=60)
@@ -535,7 +661,7 @@ def prune():
             pass
 
     # 6) ~/Library/Caches (opt-in — aggressive, removes Xcode DerivedData etc.)
-    if PRUNE_LIB_CACHES:
+    if _prune_lib_caches():
         lib_cache = os.path.expanduser("~/Library/Caches")
         safe_targets = ["com.apple.dt.Xcode", "Homebrew"]
         for target in safe_targets:
@@ -589,6 +715,7 @@ def dashboard_gauge():
         "ram_free_gb": ram_free_gb(), "ollama_loaded": ollama_loaded,
         "predicted_disk_pct_2h": pred_pct, "hours_to_hard": hours_to_hard,
         "disk_soft": _disk_soft(), "disk_hard": _disk_hard(),
+        "load_per_core": load_per_core(), "cpu_soft": _cpu_soft(), "cpu_hard": _cpu_hard(),
     }
 
 
@@ -618,6 +745,8 @@ def govern():
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()
+    per_core = load_per_core()
+    _cpu_gate_disabled = os.environ.get("ORCH_DISABLE_CPU_GATE", "").lower() in ("1", "true", "yes")
     _t_sample = time.monotonic()
     _event("disk", used, f"{free_gb}GB free")
     action = "ok"
@@ -709,7 +838,7 @@ def govern():
 
     # Predictive check: prune now if trend says we'll hit DISK_HARD within the window
     pred_pct, hours_to_hard = _predicted_disk_pct()
-    if hours_to_hard is not None and 0 < hours_to_hard < PREDICT_WINDOW_H and used < disk_hard:
+    if hours_to_hard is not None and 0 < hours_to_hard < _predict_window_h() and used < disk_hard:
         print(f"governor: predictive prune — at trend rate disk will hit {disk_hard}% in {hours_to_hard:.1f}h")
         _event("predict", pred_pct, f"will breach {disk_hard}% in {hours_to_hard:.1f}h", "predictive prune")
         prune()
@@ -734,7 +863,12 @@ def govern():
         _target = lane_target(free_ram, ceiling)
         set_throttle(_target); action = f"throttle->{_target}"
     elif (ram is None or ram < ram_hard - 3) and (free_ram is None or free_ram > eff_floor + 0.5):
-        set_throttle(current_limit() + 1); action = "ease up"
+        # Easing up is a RAM decision, so it needs the CPU's consent too: adding a
+        # lane to a machine already past soft load makes every running task slower.
+        if per_core is not None and per_core >= _cpu_soft():
+            action = f"hold (load/core {per_core})"
+        else:
+            set_throttle(current_limit() + 1); action = "ease up"
     else:
         action = "hold (memory elevated)"
     # Memory-budget clamp: never allow more concurrent tasks than free RAM can hold,
@@ -744,6 +878,17 @@ def govern():
         if current_limit() > mem_budget:
             set_throttle(mem_budget)
             action += f"; mem-clamp->{mem_budget}"
+    # CPU clamp: the same idea for the resource this governor could not previously
+    # see. It runs AFTER the memory clamp and after every branch above, so no
+    # healthy-path decision can route around it — which is exactly how the fleet
+    # held its band maximum at load 92.
+    if per_core is not None and not _cpu_gate_disabled:
+        cpu_lanes = cpu_budget(current_limit(), per_core)
+        if cpu_lanes < current_limit():
+            set_throttle(cpu_lanes)
+            action += f"; cpu-clamp->{cpu_lanes}"
+            _event("cpu", per_core, f"load/core {per_core} (soft {_cpu_soft()} hard {_cpu_hard()})",
+                   f"clamp to {cpu_lanes}")
     g = dashboard_gauge()
     latest_free = g.get("ram_free_gb")
     latest_ram = g.get("ram_pct")

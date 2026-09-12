@@ -42,7 +42,23 @@ MAX_WORKTREES = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
 REMOTE_GC_DAYS = int(os.environ.get("ORCH_REMOTE_BRANCH_GC_DAYS", "7"))
 REMOTE_GC_ENABLED = os.environ.get("ORCH_REMOTE_BRANCH_GC_ENABLED", "true").lower() in ("1", "true", "yes")
 REMOTE_GC_DRY_RUN = os.environ.get("ORCH_REMOTE_BRANCH_GC_DRY_RUN", "true").lower() in ("1", "true", "yes")
-GIT_TIMEOUT = 30
+# 30s until 2026-09-08, and that number left 2,642 abandoned lockfiles in the repo.
+#
+# `git fetch --prune` takes a lock on EVERY ref it intends to delete, all at once, and
+# holds them until the batch commits -- measured here at 2,000 concurrent locks. When
+# subprocess.run's timeout fires, CPython SIGKILLs the child, and a SIGKILL between
+# hold_lock_file_for_update() and commit_lock_file() leaves every one of those locks on
+# disk. On 2026-09-02 that is precisely what happened: the lock mtimes are a single
+# 13-second burst in git's sorted ref order, ending where the process died. The fallout
+# ran for five days -- every later prune aborted its whole deletion batch on the first
+# lock it could not take, so the local branch view sat 95 branches out of date and
+# runner.log filled with 27 `fleet_control: auto-pull failed ... cannot lock ref` lines.
+#
+# 300s is the ceiling every other git call in runner/ already uses, and a prune over
+# ~1,700 stale refs on a loaded machine needs far more than 30. This does not make a
+# mid-transaction kill impossible -- it makes it rare, and queue_janitor's lock sweep now
+# cleans up after the cases it cannot prevent.
+GIT_TIMEOUT = int(os.environ.get("ORCH_GUARDRAIL_GIT_TIMEOUT_S", "300"))
 
 # ── Internal state ─────────────────────────────────────────────────────────
 _branch_creates = []   # timestamps of recent branch creations
@@ -223,7 +239,17 @@ def gc_remote_branches(repo_path, terminal=None):
                      "any origin/agent/* branch (a QUEUED/RUNNING task's branch could be among "
                      "them, and push --delete is irreversible)")
         return {"deleted": 0, "skipped": 0, "errors": 0, "reason": "no terminal slugs — fail safe"}
-    _git(repo_path, "fetch", "--prune", "origin")
+    # Checked, not discarded. This call's failure was silent for five days: it is the
+    # exact prune that could not take its locks, and nothing read its exit code, so the
+    # branch view drifted 95 branches behind with no signal anywhere. A prune that cannot
+    # lock is a broken repo, not a slow one, and deleting remote branches from a stale
+    # view is worse than not deleting them -- so this returns rather than continuing.
+    prune_rc, _prune_out, prune_err = _git(repo_path, "fetch", "--prune", "origin")
+    if prune_rc != 0:
+        _violation("stale_ref_locks" if "cannot lock ref" in prune_err else "prune_failed",
+                   f"fetch --prune failed in {repo_path}: {prune_err[:300]}",
+                   {"repo": repo_path, "returncode": prune_rc})
+        return {"deleted": 0, "errors": 1, "reason": f"fetch --prune failed: {prune_err[:120]}"}
     rc, out, _ = _git(repo_path, "branch", "-r", "--list", "origin/agent/*")
     if rc != 0:
         return {"deleted": 0, "errors": 1, "reason": "git branch -r failed"}

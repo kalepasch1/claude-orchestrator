@@ -21,6 +21,34 @@ from unittest.mock import MagicMock, patch, call
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _load_runner_entrypoint():
+    """Load runner/runner.py by path, under a private module name.
+
+    `import runner` is ambiguous in this repository: runner/ is a package with an
+    __init__.py AND contains runner.py, so the bare name resolves to whichever of
+    the two comes first on sys.path — which is decided by whichever test file
+    inserted its path most recently. These tests want the ENTRYPOINT (they poke
+    _ZOMBIE_REAP_T), and used to get it only because some earlier test module had
+    put runner/ ahead of the repo root; conftest now keeps the root first so that
+    `from runner.X import Y` works suite-wide, which took that accident away.
+
+    Same fix, same reason, as runner/tests/test_prompt_evolver_pipeline.py. Loaded
+    once at module scope so setUp/test/tearDown all mutate the same object.
+    """
+    import importlib.util
+    name = "runner_entrypoint_task_lifecycle"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -160,17 +188,17 @@ class TestZombieDetection(unittest.TestCase):
 
     def setUp(self):
         """Reset the zombie reaper timer so it runs every call."""
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         self._orig_zombie_t = _runner._ZOMBIE_REAP_T
         _runner._ZOMBIE_REAP_T = 0  # force the reaper to run
 
     def tearDown(self):
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         _runner._ZOMBIE_REAP_T = self._orig_zombie_t
 
     def test_stale_running_task_is_reclaimed(self):
         """A RUNNING task not updated for >30 min should be reclaimed."""
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         import db
         import agentic_repair
 
@@ -209,7 +237,7 @@ class TestZombieDetection(unittest.TestCase):
 
     def test_fresh_running_task_is_not_reclaimed(self):
         """A RUNNING task updated recently should NOT be reclaimed."""
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         import db
 
         fresh_task = _make_task(
@@ -247,7 +275,7 @@ class TestZombieDetection(unittest.TestCase):
 
     def test_cowork_tasks_skipped_by_reaper(self):
         """Tasks claimed by cowork sessions should be skipped entirely."""
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         import db
 
         cowork_task = _make_task(
@@ -289,17 +317,17 @@ class TestRetryPromotion(unittest.TestCase):
     """RETRY tasks should be promoted back to QUEUED after grace period."""
 
     def setUp(self):
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         self._orig_zombie_t = _runner._ZOMBIE_REAP_T
         _runner._ZOMBIE_REAP_T = 0
 
     def tearDown(self):
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         _runner._ZOMBIE_REAP_T = self._orig_zombie_t
 
     def test_expired_retry_promoted_to_queued(self):
         """A RETRY task past the grace period should become QUEUED."""
-        import runner as _runner
+        _runner = _load_runner_entrypoint()
         import db
 
         retry_task = _make_task(

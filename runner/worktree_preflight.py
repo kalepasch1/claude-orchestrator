@@ -449,14 +449,47 @@ def blocked_reason(project):
     return None
 
 
+def prepare_worktree_report(repo_path, worktree):
+    """Prepare a worktree and say what happened. {"linked": [...], "error": str|None}.
+
+    Same fail-soft behaviour as prepare_worktree — it never raises — but the
+    failure is no longer indistinguishable from success.
+
+    WHY THE REPORT EXISTS
+    ---------------------
+    prepare_worktree returned `[]` for BOTH "this repo needed nothing" and "the
+    preparation blew up". Those are opposite facts. When the second one happened
+    the worktree went on to be handed to a task with no node_modules and no
+    .nuxt, and the run died on ERR_MODULE_NOT_FOUND — which reads as broken
+    code, not as an unprepared checkout, so the agent debugged source it never
+    touched.
+
+    That is the same shape as the .nuxt gap one layer down: a setup problem
+    wearing a source problem's clothes. Silence is what let it wear the costume.
+    Nothing here changes the fail-soft contract; a bug in preparation still must
+    not block a project. It just says so out loud.
+    """
+    try:
+        import dependency_prewarm
+        return {"linked": dependency_prewarm.link_shared_runtime(repo_path, worktree) or [],
+                "error": None}
+    except Exception as exc:
+        detail = "%s: %s" % (type(exc).__name__, exc)
+        print("[worktree-preflight] preparation FAILED for %s (repo %s): %s — "
+              "the worktree has no warmed dependencies and any failure in it "
+              "will look like broken code" % (worktree, repo_path, detail),
+              flush=True)
+        return {"linked": [], "error": detail}
+
+
 def prepare_worktree(repo_path, worktree):
     """Give a freshly created worktree the warmed dependencies.
 
     Thin delegation to dependency_prewarm.link_shared_runtime so worktrees share one
     install instead of each running their own `npm ci`.
+
+    Returns the list of prepared paths. Callers that need to tell a failure from
+    a no-op should use prepare_worktree_report; this signature is kept for the
+    ones that do not.
     """
-    try:
-        import dependency_prewarm
-        return dependency_prewarm.link_shared_runtime(repo_path, worktree) or []
-    except Exception:
-        return []
+    return prepare_worktree_report(repo_path, worktree)["linked"]

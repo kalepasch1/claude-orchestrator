@@ -65,6 +65,27 @@ def stats():
     return dict(_stats)
 
 
+def reset_stats():
+    """Zero every counter and return the snapshot taken just before zeroing.
+
+    These counters are module-level and monotonic: in a long-lived process they
+    only ever grow, so "recover_errors: 412" answers "since this process
+    started", which is a question nobody asks. A caller that wants per-sweep
+    numbers had no way to get them, and a test that wants to assert on a fresh
+    module had no way to get that either -- which is why test_stats_initial_state
+    asserted zero and read 21, having inherited whatever the tests before it in
+    the same process had counted.
+
+    Returning the pre-reset snapshot rather than None makes read-and-zero one
+    atomic-looking step, so a reporter cannot lose the counts between the two
+    calls it would otherwise have to make.
+    """
+    previous = dict(_stats)
+    for key in _stats:
+        _stats[key] = 0
+    return previous
+
+
 # ── git helpers ────────────────────────────────────────────────────
 def _git(repo, *args):
     """Run a git command; return (returncode, stdout, stderr)."""

@@ -199,15 +199,39 @@ Some commit message.
         assert result["merged_count"] >= 2 or result["patterns_count"] >= 0  # may have found patterns
 
 
-def test_main_cli_parsing():
-    """Main block parses args correctly."""
+def test_main_cli_parsing(tmp_path):
+    """Main block parses args correctly -- against an EMPTY repo, not this one.
+
+    What this test asserts is in its own two assertions: the module imports and the
+    argument parses. It does not inspect a single pattern. But it ran the script with
+    cwd=runner/, so `run(repo=".")` pointed at THIS checkout, and
+    _extract_patterns_from_commit spends three git subprocesses plus a diff PER COMMIT.
+    On this repo's history that is minutes; conftest bounds an un-timeout'd subprocess in
+    a test at 30s, so it died with subprocess.TimeoutExpired -- a timeout reported as a
+    failure of "main block parses args correctly", which is not what broke.
+
+    merged_diff_memory.py inserts its own directory into sys.path (line 26), so an
+    absolute script path runs correctly from anywhere and `repo="."` becomes the empty
+    temp repo. Measured 2026-09-07: >60s against this checkout, EXIT=0 in 1s against an
+    empty one, same clean JSON on stdout. An empty repo exercises the import and the
+    parse exactly as well, and it is the same every time.
+    """
     import subprocess
-    runner_dir = os.path.dirname(os.path.dirname(__file__))
-    result = subprocess.run([sys.executable, "merged_diff_memory.py", "--dry-run"],
-        cwd=runner_dir, capture_output=True, text=True)
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "merged_diff_memory.py")
+    repo = tmp_path / "empty_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, timeout=30)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "init"],
+                   cwd=repo, check=True, timeout=30)
+
+    result = subprocess.run([sys.executable, script, "--dry-run"],
+                            cwd=repo, capture_output=True, text=True, timeout=60)
     # Should either succeed or fail gracefully with a valid error (not import error)
     assert "ImportError" not in result.stderr
     assert "ModuleNotFoundError" not in result.stderr
+    assert result.returncode == 0, result.stderr[-500:]
 
 
 if __name__ == "__main__":

@@ -31,3 +31,8 @@ anthropic>=0.40
 sqlglot>=25.0
 cryptography>=42.0
 pyflakes>=3.0
+
+# Git operations used by scripts/delete_remote_branches.py — imported at
+# runtime (guarded by try/except ImportError with an install hint), so it was
+# easy to miss here even though the script hard-fails without it.
+GitPython>=3.1

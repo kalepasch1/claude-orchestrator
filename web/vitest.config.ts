@@ -31,6 +31,11 @@ export default defineConfig({
       'server/**/*.spec.ts',
       'composables/**/*.test.ts',
       'composables/**/*.spec.ts',
+      // components/ was in the same position server/ used to be in: a test
+      // placed next to a component was never collected, so the terminal's
+      // proof projection had no way to be covered.
+      'components/**/*.test.ts',
+      'components/**/*.spec.ts',
     ],
     exclude: ['node_modules', 'dist', '.idea', '.git', '.cache'],
   },

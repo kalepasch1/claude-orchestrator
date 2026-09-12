@@ -161,15 +161,16 @@ def heal_and_requeue(task_id):
         healthy, diagnosis = diagnose_repo(projects[0].get("repo_path"))
         if healthy:
             # Repo is actually fine — just requeue
-            db.update("tasks", {"state": "QUEUED", "note": f"{note} | healer: repo accessible, requeued"},
-                      id=task_id)
+            # update(table, match, patch); was (table, patch, id=...) -> TypeError.
+            db.update("tasks", {"id": task_id},
+                      {"state": "QUEUED", "note": f"{note} | healer: repo accessible, requeued"})
             return True, f"repo already accessible ({diagnosis}), requeued"
 
     # Try to heal
     healed, action = heal_repo_access(project_id)
     if healed:
-        db.update("tasks", {"state": "QUEUED", "note": f"{note} | healer: {action}"},
-                  id=task_id)
+        db.update("tasks", {"id": task_id},
+                  {"state": "QUEUED", "note": f"{note} | healer: {action}"})
         return True, f"healed and requeued: {action}"
 
     return False, f"could not heal: {action}"

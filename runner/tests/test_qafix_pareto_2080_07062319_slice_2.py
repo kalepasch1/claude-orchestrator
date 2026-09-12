@@ -87,18 +87,36 @@ class OrchestrationPipeline:
         self.stages.append(stage)
 
     def execute_task(self, task: TaskSpec) -> Dict[str, Any]:
-        """Execute a task through the pipeline. Never raises."""
+        """Execute a task through the pipeline. Never raises.
+
+        The recovery path used to assume the task was well-formed: on any
+        failure it did `task.status = "failed"`, which is an AttributeError when
+        the reason for the failure was that `task` is None or a plain object.
+        An error handler that only works on inputs that did not error is not an
+        error handler, and it turned a graceful degradation into a raise out of
+        the very method whose contract is "never raises". Both status writes go
+        through _mark, which records what it can and drops what it cannot.
+        """
         self.task = task
         results = {}
         try:
             for stage in self.stages:
                 result = stage.execute(task)
                 results[stage.name] = result
-            task.status = "complete"
-            task.results = results
+            self._mark(task, "complete", results)
         except Exception:
-            task.status = "failed"
+            self._mark(task, "failed", None)
         return results
+
+    @staticmethod
+    def _mark(task: Any, status: str, results: Optional[Dict[str, Any]]) -> None:
+        """Best-effort status stamp. A task that cannot carry one is not an error."""
+        try:
+            task.status = status
+            if results is not None:
+                task.results = results
+        except AttributeError:
+            return None
 
     def reconcile_with_active_loops(self) -> bool:
         """Reconcile with active loop-generated work. Returns success."""
@@ -232,24 +250,44 @@ def test_pipeline_continues_on_stage_failure(pipeline, sample_task):
     assert len(result) > 0
 
 
+class _ExplodingName:
+    """A stage name that raises when the stage tries to format it into a result."""
+
+    def __format__(self, spec):
+        raise RuntimeError("name formatting blew up")
+
+
 def test_stage_execution_returns_none_on_error():
-    """Stage.execute must return None on error, never raise."""
+    """Stage.execute must return None on error, never raise.
+
+    The failure has to come from INSIDE execute for this to mean anything. This
+    used to do `stage.execute = Mock(side_effect=RuntimeError("error"))` and
+    then assert that calling it did not raise -- it replaced the method under
+    test with one whose entire job is to raise, so the assertion could not pass
+    and, had it passed, would have been describing unittest.mock rather than the
+    pipeline. Making self.name unformattable trips the real try/except inside
+    execute, which is the fail-soft path the docstring is about.
+    """
     stage = PipelineStage("test", "test-model")
-    stage.execute = Mock(side_effect=RuntimeError("error"))
-    try:
-        result = stage.execute("input")
-    except Exception:
-        pytest.fail("Stage.execute must not raise on error")
+    stage.name = _ExplodingName()
+    result = stage.execute("input")
+    assert result is None, "a stage that fails must return None, not a partial result"
+    assert stage.error, "the swallowed exception must be recorded on the stage"
 
 
 def test_pipeline_malformed_task_is_handled():
-    """Pipeline must handle None or malformed task gracefully."""
+    """Pipeline must handle None or malformed task gracefully.
+
+    execute_task promises "Never raises" and did not: its except handler wrote
+    `task.status = "failed"` on the very object whose malformedness put it in
+    the handler, so a None task raised AttributeError out of the recovery path.
+    The `except TypeError: pass` here hid nothing, because the escaping
+    exception was an AttributeError.
+    """
     pipeline = OrchestrationPipeline()
     for bad_task in (None, {}, object()):
-        try:
-            pipeline.execute_task(bad_task)
-        except TypeError:
-            pass
+        result = pipeline.execute_task(bad_task)
+        assert result == {}, f"expected an empty result for {bad_task!r}"
 
 
 def test_empty_pipeline_executes_safely():

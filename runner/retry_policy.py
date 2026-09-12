@@ -45,6 +45,42 @@ _TRANSIENT = re.compile(
     re.I,
 )
 
+# Provider credit / spend exhaustion, specifically.
+#
+# These are a SUBSET of _TRANSIENT and stay there: the work is still retryable, because
+# another provider or the monthly reset can serve it. What they are NOT is a defect in the
+# task's code, and telling the two apart matters at exactly one place — the agentic repair
+# chokepoint, which otherwise rewrites the task's prompt into engineering instructions.
+#
+# That rewrite is not hypothetical. It produced a queued task whose entire body read:
+#
+#   "The task failed due to an API error indicating that the team has either used all
+#    available credits or reached its monthly spending limit. ... Modify the relevant
+#    configuration or source code to use a different API key, increase the spending limit,
+#    or purchase additional credits if necessary."
+#
+# No coding agent can buy credits, and none should try. Kept as one named pattern here
+# rather than a second copy next to the consumer, because a duplicated table of phrases is
+# a table that drifts.
+_PROVIDER_QUOTA = re.compile(
+    r"(spending limit|available credits|out of credits|insufficient credits|"
+    r"quota exceeded|credit balance|billing|payment required|402)",
+    re.I,
+)
+
+
+def is_provider_quota(note: str) -> bool:
+    """True when a failure is the provider refusing on credit/spend, not the work failing.
+
+    Never raises: an unreadable note is simply not a quota signal, and a guess in either
+    direction is worse than deferring to the caller's existing behaviour.
+    """
+    try:
+        return bool(note and _PROVIDER_QUOTA.search(str(note)))
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
 # Terminal (do NOT auto-retry) signatures — genuine work failures / gated decisions.
 _TERMINAL = re.compile(
     r"(agent run failed|no committable|changed nothing|no file changes|"
@@ -65,6 +101,14 @@ def classify(note: str) -> str:
     # terminal signatures always win — judge/verify/legal are never transient
     if _TERMINAL.search(n):
         return "terminal"
+    # A provider refusing on credit is always retryable, and it must be checked HERE rather
+    # than left to _TRANSIENT's phrase list. That list carried "available credits" and
+    # "insufficient credits" but not "credit balance", which is the wording Anthropic
+    # actually returns — so `Your credit balance is too low` matched nothing, fell through
+    # to the terminal default, and permanently blocked the task over a billing blip. One
+    # predicate, consulted before the fallthrough, closes the whole family.
+    if is_provider_quota(n):
+        return "transient"
     # adaptive layer: learned outcome history overrides the default before regex
     try:
         import error_outcome_tracker

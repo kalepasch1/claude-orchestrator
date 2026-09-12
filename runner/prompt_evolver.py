@@ -199,6 +199,10 @@ class _PromptEvolver:
             reward = 0.0
 
         try:
+            # `resolution="merge-duplicates"` is the PostgREST Prefer value, not a
+            # parameter of db.insert — passing it raised TypeError, so no trial
+            # reward was ever recorded and the evolver's bandit had no input.
+            # db.insert(..., upsert=True) is what sends that header.
             db.insert(
                 "prompt_templates",
                 {
@@ -207,7 +211,7 @@ class _PromptEvolver:
                     "total_reward": reward,
                     "n_trials": 1,
                 },
-                resolution="merge-duplicates",
+                upsert=True,
             )
         except Exception as e:
             logger.warning(f"Failed to record outcome: {e}")

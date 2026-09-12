@@ -29,6 +29,7 @@ entry becomes a failing check rather than an undocumented setting.
 """
 import argparse
 import ast
+import collections
 import os
 import sys
 
@@ -66,13 +67,74 @@ def is_secret(name):
     return any(marker in upper for marker in SECRET_MARKERS)
 
 
-def _literal(node):
+def _is_constant_name(name):
+    """True for UPPER_SNAKE_CASE — the convention that means "this does not change"."""
+    return bool(name) and name.upper() == name and name.strip("_") != ""
+
+
+def _module_constants(tree):
+    """{NAME: literal node} for module-level `NAME = <literal>` constants.
+
+    Deliberately narrow, because the cost of being wrong here is a template that
+    documents a default the code does not use — worse than documenting none:
+
+      * module scope only, single Name target, literal value;
+      * UPPER_SNAKE_CASE only, so an ordinary variable (`d = "x"`) is left alone.
+        A lowercase name carries no promise of staying put;
+      * assigned EXACTLY ONCE anywhere in the module. A name rebound in a branch,
+        a loop or a function is not resolvable by reading top-level statements, and
+        a second binding this scan cannot see is exactly how it would lie.
+    """
+    assignment_count = collections.Counter()
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                assignment_count[target.id] += 1
+
+    constants = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if (isinstance(target, ast.Name) and isinstance(node.value, ast.Constant)
+                and _is_constant_name(target.id)
+                and assignment_count[target.id] == 1):
+            constants[target.id] = node.value
+    return constants
+
+
+def _literal(node, constants=None):
     """Render a default-value AST node as a string, or None when it is not a literal.
 
-    Non-literal defaults (a computed expression, another variable) are deliberately
-    reported as "no literal default" rather than guessed at — a template that invents a
-    default is a template that lies.
+    Non-literal defaults (a computed expression, a call) are deliberately reported as
+    "no literal default" rather than guessed at — a template that invents a default is
+    a template that lies.
+
+    A bare module-level CONSTANT is the one exception, and it is not an exception to
+    that principle: resolving TEST_GATE_TIMEOUT_DEFAULT to the 3600 assigned two
+    screens up is exact, not a guess — it is the same value the code will use. The
+    exception earns its keep because the codebase is actively moving defaults OUT of
+    `os.environ.get(NAME, "3600")` and into named constants: convention-lint's
+    MAGIC_NUMBERS rule pushes every author that way. Without this, each such
+    improvement silently blanked the knob's documented default in .env.example, which
+    is where an operator goes to find out what a knob does when unset. Three had
+    already gone that way (TASK_TIMEOUT, ORCH_TEST_GATE_TIMEOUT,
+    MERGE_TRAIN_TEST_TIMEOUT) before this was noticed.
+
+    `str(CONSTANT)` is resolved too, because a string-typed knob whose default lives
+    in an int constant is written exactly that way.
     """
+    if isinstance(node, ast.Call) and len(node.args) == 1:
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "str":
+            return _literal(node.args[0], constants)
+    if isinstance(node, ast.Name) and constants and node.id in constants:
+        return _literal(constants[node.id], constants)
     if isinstance(node, ast.Constant):
         if node.value is None:
             return ""
@@ -89,6 +151,7 @@ def scan_source(source, filename=""):
         tree = ast.parse(source)
     except SyntaxError:
         return found
+    constants = _module_constants(tree)
 
     def record(name, required, default):
         if not name or name in SYSTEM_VARS:
@@ -116,7 +179,7 @@ def scan_source(source, filename=""):
         name_node = node.args[0]
         if not (isinstance(name_node, ast.Constant) and isinstance(name_node.value, str)):
             continue
-        default = _literal(node.args[1]) if len(node.args) > 1 else None
+        default = _literal(node.args[1], constants) if len(node.args) > 1 else None
 
         # os.environ.get("NAME", default)
         if (isinstance(func, ast.Attribute) and func.attr == "get"

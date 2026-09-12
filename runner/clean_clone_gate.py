@@ -30,6 +30,8 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import active_projects  # the sweep below is the fleet's most expensive bot
+import build_slots     # the pristine build below is a real one; it needs a slot
 import db
 import guard_tasks
 import proof_graph
@@ -383,7 +385,14 @@ def verify(repo, ref=None, project=None, force=False, cache_only=False):
                     result["failed_step"] = "install"
                     return result
         if bcmd:
-            rc, out = _step(bcmd, work, BUILD_TIMEOUT, env)
+            # This is the fleet's most expensive build: a pristine export, a real
+            # install, then the project's real build command. It ran with no bound on
+            # how many of its peers were building at the same moment -- the periodic
+            # sweep is one of the three producers behind the four-concurrent-build
+            # measurement in build_slots. Fails open, so a busy machine still gets a
+            # verdict; it just gets it one build at a time. See build_slots.
+            with build_slots.hold("clean-clone %s" % os.path.basename(str(repo))):
+                rc, out = _step(bcmd, work, BUILD_TIMEOUT, env)
             parts.append("$ %s\n%s" % (bcmd, out))
             if rc != 0:
                 result["log"] = "\n\n".join(parts)
@@ -513,6 +522,13 @@ def run(limit=None):
         return {"enabled": False}
     budget = PER_RUN_LIMIT if limit is None else int(limit)
     projects = db.select("projects", {"select": "*"}) or []
+    # This is the expensive bot by its own docstring: a pristine export, a real install
+    # and the project's real build. Spending that budget on a repo nothing may claim
+    # also starves the live ones, because PER_RUN_LIMIT is shared across all of them.
+    _skip_note = active_projects.note(projects)
+    if _skip_note:
+        print("clean_clone_gate: " + _skip_note, flush=True)
+    projects = active_projects.active(projects)
     filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN)
     summary = {"checked": 0, "cached": 0, "green": 0, "red": 0, "skipped": 0, "tasks_retracted": 0}
     for p in projects:

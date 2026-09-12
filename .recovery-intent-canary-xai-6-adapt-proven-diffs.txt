@@ -1,4 +1,0 @@
-recovery-intent: canary-xai-6-adapt-proven-diffs
-template: e29ddc013c75
-intent: 07130635 07190257 1042d0 20251001 53375a0cecde acceptance active adapt adapted advice after agent agentic analysis apierror artifacts author available b4fa25c7 batch beethoven before behavior below branch broad bugfix build build_fix canary category cause change changes changing cheap checks claim class claud claude coder commit completion concrete config conflict context continue contract coordination could credits criteria cross current custody debate_compress deepseek delete denied dependencies deployfix diffs directive drafting either ensure equivalent error excerpt existing exists fable failure files final finish first flash
-base: main

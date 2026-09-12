@@ -1,0 +1,53 @@
+{
+  "base": "origin/master",
+  "base_sha": "8a2e2e16327fafdeeb4cc0637a7e728eecba783d",
+  "counts": {
+    "DIVERGED": 3
+  },
+  "items": [
+    {
+      "base_blob": "",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+0/-67 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "tests/runner_modules.py",
+      "snapshot_blob": "d27c07f3e9c67ec9ef4f6f460a26ad1b511b171d",
+      "snapshot_to_base": {
+        "added": 0,
+        "deleted": 67
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "521d9880fa2dfa5a697c50ba58cd8629a9808532",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+73/-112 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "tests/test_db_connectivity.py",
+      "snapshot_blob": "676c69458ca9ff7fcc483fb9e7cbf7807acfb53a",
+      "snapshot_to_base": {
+        "added": 73,
+        "deleted": 112
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "4cfd098ed92fe1eb7d3615a2c53cdf4b57dfa285",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+340/-62 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "tools/convention_lint.py",
+      "snapshot_blob": "2f9830ef60ea821353ccffcf8b5cbf8217c5fd02",
+      "snapshot_to_base": {
+        "added": 340,
+        "deleted": 62
+      },
+      "verdict": "DIVERGED"
+    }
+  ],
+  "needs_human_review": [
+    "tests/runner_modules.py",
+    "tests/test_db_connectivity.py",
+    "tools/convention_lint.py"
+  ],
+  "nothing_recoverable": false,
+  "snapshot": "a9e98fc3",
+  "snapshot_sha": "a9e98fc3c705ebcb705617f1111c1396230ef915"
+}

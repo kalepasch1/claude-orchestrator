@@ -17,9 +17,29 @@ def _is_remote_quarantine(row):
 
 
 def _host_aliases():
-    # a host pause may be written as "Mac-2" or "Mac-2.local"; match either form.
+    """Every name this machine is known by, so a pause written under any of them holds.
+
+    This used to cover a `.local` suffix and nothing else. macOS reassigns the mDNS
+    name -- this Mac appears in `releases.host` as Kales-MacBook-Pro.local, Mac-215.lan,
+    Mac-4.lan, Mac-39.lan, Mac-172.lan and Mac-213.lan across 30 hours -- so a pause
+    written against one of those stopped applying the moment the network renamed the
+    machine, and a host an operator had deliberately stopped came back under a new name
+    and resumed writing failed-release rows. That is the exact poisoning
+    paused_host_guard exists to prevent, arriving through the guard's own front door.
+
+    Widening a pause match is the safe direction: it can only ever stop more work.
+    """
+    # HOST first, and always. It is the name this process actually writes and
+    # answers to, and callers (including the pause tests) set it deliberately;
+    # host_identity ADDS the machine's other names, it does not replace this one.
     aliases = {HOST}
     aliases.add(HOST[:-6] if HOST.endswith(".local") else HOST + ".local")
+    try:
+        import host_identity
+        aliases.update(host_identity._variants(HOST))
+        aliases.update(host_identity.aliases())
+    except Exception:
+        pass
     return aliases
 
 
@@ -84,7 +104,30 @@ def is_paused(project=None):
     return False
 
 
-def pause(scope="global", project=None, reason="manual stop", by="dashboard"):
+def _with_expiry_marker(reason, ttl_hours):
+    """Append an advisory [expires ...] marker. Never blocks the pause itself."""
+    if not ttl_hours:
+        return reason
+    try:
+        import pause_ttl
+        return pause_ttl.embed_expiry(reason, ttl_hours)
+    except Exception:
+        return reason
+
+
+def pause(scope="global", project=None, reason="manual stop", by="dashboard",
+          ttl_hours=None):
+    """Pause a scope. `ttl_hours` states when the author expects to lift it.
+
+    The TTL is advisory and is stored as an `[expires ...]` marker inside `reason`
+    (see pause_ttl.py). It does NOT auto-resume: a pause is the control that stops
+    spend and stops autonomous merging, so lifting it stays a human decision. What
+    the TTL buys is that `pause_ttl.report()` can tell a hold that is still within
+    its stated window from one that expired 22 days ago — which is exactly the
+    distinction that was invisible when apparently sat paused behind the word
+    "(reversible)" from 2026-08-08 to 2026-08-30.
+    """
+    reason = _with_expiry_marker(reason, ttl_hours)
     row = {"scope": scope, "project": project, "paused": True,
            "reason": reason, "updated_by": by,
            "updated_at": datetime.datetime.utcnow().isoformat()}

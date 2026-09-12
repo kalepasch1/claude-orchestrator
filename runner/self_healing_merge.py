@@ -30,18 +30,33 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    # Bound to the module-level name `db`, deliberately, not to a private alias.
-    # `unittest.mock.patch("self_healing_merge.db")` can only reach a name that exists
-    # on this module; when this was `import db as _db`, every test that patched the DB
-    # raised "module ... does not have the attribute 'db'" and the call sites went on
-    # reading the real client. Same fix as 983dfd67 ("add module-level task_refs import
-    # for test patching"). Call sites below must reference `db`, not a captured local,
-    # so a patch actually takes effect.
+    # Imported under BOTH names on purpose, and `_db` is the one the call sites use.
+    #
+    # The patched name and the called name have to be the same name. `_db = db` is a
+    # plain rebinding, so patching one leaves the other pointing at the real client:
+    # whichever name the call sites do NOT use is a patch that silently does nothing.
+    # That is not a symmetric mistake. `_create_repair_tasks` guards on truthiness and
+    # then wraps `insert("tasks", ...)` in `except Exception: pass`, so a test that
+    # believes it isolated the DB but did not gets no error — it attempts a real INSERT
+    # against the production tasks table and reports an empty list either way.
+    #
+    # `_db` wins because it is what the suite actually patches: 17 live
+    # `patch.object(self_healing_merge, "_db")` sites across
+    # test_relfix_pareto_2080_release_conflict_healing.py and
+    # test_relfix_pareto_2080_07171927_comprehensive.py, and ZERO tests patch the bare
+    # name. Every `self_healing_merge.db` left in the suite is a docstring recording
+    # what a test used to do ("Was: patched `self_healing_merge.db` (the handle is
+    # `_db`)"). An earlier revision of this comment asserted the opposite and told call
+    # sites to reference `db`; it was written against a previous generation of those
+    # tests and had gone stale.
+    #
+    # `db` stays bound so `patch("self_healing_merge.db")` still resolves instead of
+    # raising AttributeError, but it is not read by this module.
     import db
 except Exception:
     db = None
 
-#: Backwards-compatible alias for callers that imported the old private name.
+#: The handle every call site in this module reads. Patch THIS in tests.
 _db = db
 
 _TRUTHY = ("true", "1", "yes", "on")
@@ -163,6 +178,18 @@ def _classify_files(repo: str, branch: str, base: str) -> dict:
                     conflict_set.add(f)
 
     _cleanup()
+
+    if not conflict_set:
+        # The merge FAILED but named no conflicting file: a timeout (_git returns 124),
+        # a locked index, "not something we can merge", a hook refusal. "Clean" here is
+        # defined as "not named in the conflict output", so falling through classified
+        # EVERY changed file as clean — and heal() then reported "no conflicts found
+        # (branch may be mergeable)", set healed=True and merged nothing, which
+        # continuous_merger logs as a successful self-heal and stops retrying. Unknown
+        # means conflicting, exactly as the worktree-creation failure above already
+        # decides; the branch then stays CONFLICT for the normal path.
+        result["conflicting"] = changed_files
+        return result
 
     for f in changed_files:
         if f in conflict_set:
@@ -425,7 +452,7 @@ def _create_repair_tasks(
 
     Returns list of created task dicts.
     """
-    if not db or not conflicting_files:
+    if not _db or not conflicting_files:
         return []
 
     tasks = []
@@ -462,7 +489,7 @@ def _create_repair_tasks(
                 "model_hint": "sonnet",
                 "note": f"self-healing repair for {branch}",
             }
-            db.insert("tasks", task_data)
+            _db.insert("tasks", task_data)
             tasks.append(task_data)
         except Exception:
             pass
@@ -502,7 +529,11 @@ def heal(
     }
 
     if not _enabled():
-        result["reason"] = "disabled"
+        # Wording is master's ("self-healing disabled"), not the shorter "disabled" this
+        # branch had introduced: it is what callers and tests already match on, and the
+        # value of this hunk is _enabled() reading the switch at CALL time, not the
+        # string. Keep the behaviour change, drop the gratuitous rename.
+        result["reason"] = "self-healing disabled"
         return result
 
     with _lock:

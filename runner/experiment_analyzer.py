@@ -81,12 +81,13 @@ def analyze_experiment(experiment_id):
     cm, canm = _mean(ctrl_scores), _mean(cand_scores)
     cc, canc = _mean(ctrl_costs), _mean(cand_costs)
 
-    improvement = (canm - cm) / max(cm, 0.001)
+    improvement = _relative_improvement(cm, canm)
     cost_ok = canc <= cc * COST_TOLERANCE if cc > 0 else True
+    separated, sep_detail = _separated_from_noise(ctrl_scores, cand_scores)
 
-    if improvement >= MIN_IMPROVEMENT and cost_ok:
+    if improvement >= MIN_IMPROVEMENT and cost_ok and separated:
         status, rec = "significant_win", "adopt"
-    elif improvement <= -MIN_IMPROVEMENT:
+    elif improvement <= -MIN_IMPROVEMENT and separated:
         status, rec = "significant_loss", "reject"
     else:
         status, rec = "inconclusive", "continue"
@@ -100,8 +101,65 @@ def analyze_experiment(experiment_id):
         "candidate_cost_mean": round(canc, 4),
         "improvement_pct": round(improvement * 100, 2),
         "cost_ok": cost_ok,
-        "detail": f"ctrl={cm:.3f} cand={canm:.3f} improve={improvement*100:.1f}% cost_ok={cost_ok}"
+        "separated": separated,
+        "detail": (f"ctrl={cm:.3f} cand={canm:.3f} improve={improvement*100:.1f}% "
+                   f"cost_ok={cost_ok} {sep_detail}")
     }
+
+
+#: How many pooled standard errors the two means must be apart before a verdict may be
+#: called "significant". 1.0 is intentionally permissive — this is a guard against calling
+#: pure noise a win, not a publication-grade test on samples this small (MIN_SAMPLES=3).
+SEPARATION_SIGMAS = float(os.environ.get("ORCH_EXPERIMENT_SEPARATION_SIGMAS", "1.0"))
+
+
+def _relative_improvement(control_mean, candidate_mean):
+    """Candidate lift over control, as a ratio. 0.0 when there is nothing to compare to.
+
+    THE BUG THIS FIXES. The old expression was `(canm - cm) / max(cm, 0.001)`. When the
+    control mean is 0 — every control run failed its tests, which is common early in an
+    experiment — the divisor collapses to 0.001 and a single passing candidate test reads
+    as a 100,000% improvement. That clears MIN_IMPROVEMENT by five orders of magnitude, so
+    the arm is adopted on one observation. Same class as the `deadlineDays` /
+    `jd.deadlineDays` slip in the pareto-2080 patch this task points at: a value that
+    looks defensive but silently substitutes a meaningless number.
+
+    With no control signal there is no ratio to compute, so this reports the absolute
+    difference's SIGN as a unit lift only when the candidate actually scored, and 0.0
+    otherwise — leaving the noise test below to decide.
+    """
+    if control_mean > 0:
+        return (candidate_mean - control_mean) / control_mean
+    if candidate_mean > 0:
+        return 1.0
+    return 0.0
+
+
+def _separated_from_noise(control, candidate):
+    """(bool, detail) — are the two sample means further apart than their own spread?
+
+    WHY THIS EXISTS. The module's docstring promises it "identifies statistically
+    significant winners" and it defines _stddev, but nothing ever called it: the verdict
+    was a bare effect-size threshold, so `significant_win` carried no significance at all
+    and two noisy arms differing by 5% were adopted. This is the missing term, the same
+    shape as the intercept fit the pareto-2080 patch added because predictions were not
+    otherwise faithful to the observations.
+
+    Deliberately weak: with MIN_SAMPLES as low as 3 a real t-test would reject almost
+    everything, so this only asks that the gap exceed SEPARATION_SIGMAS pooled standard
+    errors. When both arms are perfectly consistent (zero spread) any real difference
+    separates, which is the correct answer for deterministic outcomes.
+    """
+    n_c, n_k = len(control), len(candidate)
+    if n_c < 2 or n_k < 2:
+        # Not enough data to estimate spread. Do not block on an unmeasurable test.
+        return True, "sep=unmeasured"
+    gap = abs(_mean(candidate) - _mean(control))
+    se = math.sqrt((_stddev(control) ** 2) / n_c + (_stddev(candidate) ** 2) / n_k)
+    if se == 0:
+        return gap > 0, "sep=exact(spread=0)"
+    sigmas = gap / se
+    return sigmas >= SEPARATION_SIGMAS, f"sep={sigmas:.2f}sigma"
 
 
 def recommend_next_experiments():

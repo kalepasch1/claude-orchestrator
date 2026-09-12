@@ -105,15 +105,31 @@ def _lead_times(outcomes):
 
 
 def _deploy_success_rate(outcomes):
-    """Fraction of completed tasks whose deploy succeeded (deploy_ok flag)."""
-    deployed = [r for r in outcomes if r.get("integrated") or r.get("deployed")]
-    if not deployed:
-        return {"rate": None, "succeeded": 0, "attempted": 0}
-    succeeded = sum(1 for r in deployed if r.get("deploy_ok", True))
+    """Fraction of merged tasks whose deploy is KNOWN to have succeeded.
+
+    The rate is computed only over rows that actually carry a deploy_ok signal;
+    rows without one are counted separately as `unknown` and are not evidence
+    either way.
+
+    This used to be `r.get("deploy_ok", True)` — a missing flag counted as a
+    SUCCESS. Nothing in the repository writes deploy_ok to an outcomes row
+    (`git grep deploy_ok` finds only this module and kpi_regression_watchdog's
+    own fixture data), so every real row is missing it and the rate was
+    structurally incapable of being anything but 1.0. A number that can only
+    look good is not a measurement.
+
+    `rate` is None when nothing is known, rather than 0.0: "no deploy has been
+    observed" and "every observed deploy failed" are opposite facts and must not
+    share a value.
+    """
+    merged = [r for r in outcomes if r.get("integrated") or r.get("deployed")]
+    known = [r for r in merged if r.get("deploy_ok") is not None]
+    succeeded = sum(1 for r in known if r.get("deploy_ok"))
     return {
-        "rate": round(succeeded / len(deployed), 4),
+        "rate": round(succeeded / len(known), 4) if known else None,
         "succeeded": succeeded,
-        "attempted": len(deployed),
+        "attempted": len(known),
+        "unknown": len(merged) - len(known),
     }
 
 

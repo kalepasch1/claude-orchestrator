@@ -18,6 +18,7 @@ Deliberately not a golden-file snapshot: adding a rule should be a one-line edit
 a reason, not a blind `--update-snapshot`.
 """
 import ast
+import importlib.util
 import os
 import re
 import sys
@@ -25,9 +26,33 @@ import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(REPO, "tools"))
 
-import lint_conventions  # noqa: E402
+
+def _load_linter(module_path, module_name):
+    """Load the hook's linter from its path, WITHOUT touching sys.path/sys.modules.
+
+    This file used to do `sys.path.insert(REPO/tools)` + `import lint_conventions`,
+    and the repo has a SECOND module of that name at runner/tools/. sys.path is
+    process-global under pytest, and -- the part that is easy to miss -- a
+    `from lint_conventions import <name that does not exist>` still leaves the
+    module it loaded in sys.modules even though the import statement raised.
+    test_convention_conformance_comprehensive.py does exactly that with
+    runner/tools' copy, so by the time this file ran, `import lint_conventions`
+    was a cache hit on the OTHER linter and the rule fixtures below were being
+    checked against rules this file does not own. Alone it passed; after that
+    file, test_magic_numbers_fires failed.
+
+    Same loader, same reasoning, as test_convention_lint_ratchet.py and
+    test_annotated_secret_detection.py.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+lint_conventions = _load_linter(os.path.join(REPO, "tools", "lint_conventions.py"),
+                                "tools_lint_conventions_rule_registry")
 
 #: Every rule the canonical linter is expected to emit. Adding one here without adding the
 #: check (or vice versa) fails, so the registry and the implementation cannot drift apart.
@@ -42,13 +67,34 @@ EXPECTED_RULES = {
     # loss would silently turn an unparseable file into a clean one.
     "PARSE_ERROR",
     "SYNTAX_ERROR",
+    # Credentials were purged from fleet_config, so a read of a credential key there
+    # yields an empty value rather than an error — a silent one, which is why it earns
+    # a rule. Registered here when the linter gained it.
+    "CREDENTIAL_CONFIG_READ",
 }
 
 
 def emitted_rule_names():
-    """Rule strings the module actually constructs, read from its source."""
+    """Rule strings the module actually constructs, read from its source.
+
+    A rule may be reported either as a quoted literal or through a module-level
+    ``RULE_<NAME> = '<NAME>'`` constant. Only the literal form used to count, so
+    when HARDCODED_SECRET moved to RULE_HARDCODED_SECRET — added deliberately, so
+    four test modules could import the id instead of hardcoding it — this
+    function stopped seeing it and reported the fleet's secret rule as REMOVED.
+    A registry that loses a rule the moment someone gives it a name is worse than
+    no registry, because the failure looks like the rule was deleted.
+    """
     source = open(os.path.join(REPO, "tools", "lint_conventions.py"), encoding="utf-8").read()
-    return set(re.findall(r"ConventionViolation\(\s*[^,]+,\s*[^,]+,\s*'([A-Z_]+)'", source))
+    literal = set(re.findall(r"ConventionViolation\(\s*[^,]+,\s*[^,]+,\s*'([A-Z_]+)'", source))
+    # RULE_X = 'X' at module scope, then referenced positionally at a report site.
+    constants = dict(re.findall(r"^(RULE_[A-Z_]+)\s*=\s*'([A-Z_]+)'", source, re.M))
+    via_constant = {
+        constants[name]
+        for name in re.findall(r"ConventionViolation\(\s*[^,]+,\s*[^,]+,\s*(RULE_[A-Z_]+)", source)
+        if name in constants
+    }
+    return literal | via_constant
 
 
 def check(code, filename="probe.py"):
@@ -79,7 +125,8 @@ class TestRuleRegistry(unittest.TestCase):
     def test_the_count_is_pinned_too(self):
         # A same-sized swap (one rule renamed into another) passes both set checks above
         # only if the names match; this makes an accidental net change loud.
-        self.assertEqual(len(EXPECTED_RULES), 8)
+        # 8 -> 9 when CREDENTIAL_CONFIG_READ was registered.
+        self.assertEqual(len(EXPECTED_RULES), 9)
 
 
 class TestEachRuleStillFires(unittest.TestCase):

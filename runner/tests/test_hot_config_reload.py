@@ -13,9 +13,16 @@ def _fake_select(table, params=None):
         return list(_fake_db._controls)
     return []
 _fake_db.select = _fake_select
-sys.modules["db"] = _fake_db
 
-import hot_config_reload as hcr
+# WAS a bare `sys.modules["db"] = _fake_db` before this import. pytest imports
+# every test module during COLLECTION, so it was not scoped to this file -- the
+# real database client was replaced for every test that ran afterwards in the
+# same process, with no way to put it back. See
+# runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
+
+with modules_during_import(db=_fake_db):
+    import hot_config_reload as hcr
 
 
 @pytest.fixture(autouse=True)

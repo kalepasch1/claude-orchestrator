@@ -94,7 +94,7 @@ function timeAgo(ts: number) {
       </div>
       <div class="bg-slate-800 rounded-lg p-3 text-center">
         <div class="text-2xl font-bold text-sky-400">{{ (stats.tokens_avoided || 0).toLocaleString() }}</div>
-        <div class="text-xs text-slate-400">Tokens Avoided</div>
+        <div class="text-xs text-slate-400">Tokens Saved</div>
       </div>
       <div class="bg-slate-800 rounded-lg p-3 text-center">
         <div class="text-2xl font-bold text-amber-400">{{ (stats.minutes_saved || 0).toFixed(1) }}m</div>

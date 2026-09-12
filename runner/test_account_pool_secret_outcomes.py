@@ -13,17 +13,78 @@ Tests validate:
 """
 
 import os
+import shutil
 import sys
 import time
 import json
 import tempfile
 import threading
 
+import pytest
+
 RUNNER = os.path.dirname(os.path.abspath(__file__))
 if RUNNER not in sys.path:
     sys.path.insert(0, RUNNER)
 
 import account_pool
+import subscription_guard
+
+
+@pytest.fixture(autouse=True)
+def _isolated_account_pool_paths():
+    """Point account_pool's import-time path constants at a fresh temp directory.
+
+    ISOLATION NOTE
+    --------------
+    account_pool resolves its file paths ONCE, at import time:
+
+        HOME  = os.environ.get("CLAUDE_ORCH_HOME", ~/.claude-orchestrator)
+        CFG / STATE / EXHAUSTED_FLAG = os.path.join(HOME, ...)
+
+    Nearly every test below calls account_pool.AccountPool(), which reads CFG and STATE,
+    and the mark_exhausted/mark_ok/record_use tests then write STATE and EXHAUSTED_FLAG
+    back through those same constants. Nothing here redirected them, so the suite read and
+    wrote shared on-disk state: <repo>/.runtime under pytest (db.py sets CLAUDE_ORCH_HOME
+    there at import time), or the operator's REAL ~/.claude-orchestrator under any entry
+    point that imports account_pool before db -- this file's own __main__ block, a direct
+    import, or ORCH_CANONICAL_RUNTIME_HOME=false. In the last case a test run created that
+    directory and parked accounts on multi-hour cooldowns.
+
+    Setting CLAUDE_ORCH_HOME from a fixture cannot fix that: the constants are already
+    bound. The convention in this repo -- runner/test_account_pool.py's _TempPaths, and
+    the monkeypatch.setattr(account_pool, "EXHAUSTED_FLAG", ...) already used piecemeal
+    further down this file -- is to rebind the MODULE CONSTANTS and restore os.environ
+    afterwards, which is what this does for every test at once.
+
+    _EXH_CACHE is reset alongside the paths: claude_exhausted() memoises its answer on a
+    module global for ~15s, so without this a cached True/False from one test decided the
+    result of the next one (and of the next file).
+    """
+    tmpdir = tempfile.mkdtemp(prefix="account-pool-secrets-")
+    env_backup = dict(os.environ)
+    orig = (account_pool.HOME, account_pool.CFG, account_pool.STATE,
+            account_pool.EXHAUSTED_FLAG)
+    orig_singleton = account_pool._pool
+    orig_cache = dict(account_pool._EXH_CACHE)
+
+    account_pool.HOME = tmpdir
+    account_pool.CFG = os.path.join(tmpdir, "accounts.json")
+    account_pool.STATE = os.path.join(tmpdir, "accounts_state.json")
+    account_pool.EXHAUSTED_FLAG = os.path.join(tmpdir, "claude_exhausted.json")
+    account_pool._pool = None          # singleton would otherwise cache the real paths
+    account_pool._EXH_CACHE.update({"t": 0.0, "v": False})
+    os.environ["CLAUDE_ORCH_HOME"] = tmpdir
+
+    try:
+        yield tmpdir
+    finally:
+        (account_pool.HOME, account_pool.CFG, account_pool.STATE,
+         account_pool.EXHAUSTED_FLAG) = orig
+        account_pool._pool = orig_singleton
+        account_pool._EXH_CACHE.update(orig_cache)
+        os.environ.clear()
+        os.environ.update(env_backup)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 class TestEnvForSecretExposure:
@@ -36,7 +97,15 @@ class TestEnvForSecretExposure:
 
     def test_env_for_api_with_guard_disabled_withholds_key(self, monkeypatch):
         """env_for() withholds ANTHROPIC_API_KEY when billing guard disables API."""
-        monkeypatch.setattr(account_pool, "_api_billing_allowed", lambda: False)
+        # Was patching account_pool._api_billing_allowed, which env_for() never calls --
+        # env_for consults subscription_guard.is_api_allowed() directly
+        # (account_pool.py:277-283). _api_billing_allowed is the seam for
+        # _usable_accounts()/all_exhausted(). This test passed only because the ambient
+        # guard denies by default, so it would have kept passing even if env_for's guard
+        # were deleted. Patch the seam env_for really reads, and pin the
+        # ORCH_ALLOW_API_BILLING fallback off so the except branch cannot re-open the key.
+        monkeypatch.setattr(subscription_guard, "is_api_allowed", lambda: False)
+        monkeypatch.setenv("ORCH_ALLOW_API_BILLING", "false")
         monkeypatch.setenv("TEST_API_KEY", "sk-test-secret-1234567890abcdef")
 
         pool = account_pool.AccountPool()
@@ -49,8 +118,11 @@ class TestEnvForSecretExposure:
 
     def test_env_for_api_with_guard_enabled_injects_key(self, monkeypatch):
         """env_for() injects ANTHROPIC_API_KEY only when billing guard enables API."""
+        # Seam fix (see test_env_for_api_with_guard_disabled_withholds_key): patching
+        # account_pool._api_billing_allowed did nothing, the real guard denied, and no key
+        # was ever injected -- this test failed with KeyError: 'ANTHROPIC_API_KEY'.
         test_key = "sk-test-secret-1234567890abcdef"
-        monkeypatch.setattr(account_pool, "_api_billing_allowed", lambda: True)
+        monkeypatch.setattr(subscription_guard, "is_api_allowed", lambda: True)
         monkeypatch.setenv("MY_API_KEY_ENV", test_key)
 
         pool = account_pool.AccountPool()
@@ -63,7 +135,9 @@ class TestEnvForSecretExposure:
 
     def test_env_for_api_missing_key_returns_empty(self, monkeypatch):
         """env_for() returns empty dict when API key env var is not set."""
-        monkeypatch.setattr(account_pool, "_api_billing_allowed", lambda: True)
+        # Seam fix (see above): with the wrong seam the guard denied first, so the test
+        # never reached the "key env var is unset" path it is named for.
+        monkeypatch.setattr(subscription_guard, "is_api_allowed", lambda: True)
         monkeypatch.delenv("MISSING_API_KEY", raising=False)
 
         pool = account_pool.AccountPool()
@@ -99,9 +173,13 @@ class TestEnvForSecretExposure:
 
     def test_env_for_api_guard_exception_defaults_to_deny(self, monkeypatch):
         """env_for() denies API injection if billing guard raises exception."""
+        # Was making account_pool._api_billing_allowed raise. env_for() never calls it, so
+        # no exception ever reached env_for's `except` branch and the assertion passed for
+        # the wrong reason -- the ordinary deny path returned {} first. Raise from the
+        # function env_for actually calls, so the fail-soft branch is the one under test.
         def guard_error():
-            raise RuntimeError("subscription_guard import failed")
-        monkeypatch.setattr(account_pool, "_api_billing_allowed", guard_error)
+            raise RuntimeError("subscription_guard blew up")
+        monkeypatch.setattr(subscription_guard, "is_api_allowed", guard_error)
         monkeypatch.delenv("ORCH_ALLOW_API_BILLING", raising=False)
 
         pool = account_pool.AccountPool()
@@ -113,9 +191,12 @@ class TestEnvForSecretExposure:
 
     def test_env_for_api_guard_exception_with_env_override(self, monkeypatch):
         """env_for() allows API when guard errors but ORCH_ALLOW_API_BILLING=true."""
+        # Same seam fix: _api_billing_allowed is not on env_for's path, so the guard never
+        # raised, env_for took the normal deny return, and this test failed with
+        # `assert 'ANTHROPIC_API_KEY' in {}`.
         def guard_error():
-            raise RuntimeError("subscription_guard import failed")
-        monkeypatch.setattr(account_pool, "_api_billing_allowed", guard_error)
+            raise RuntimeError("subscription_guard blew up")
+        monkeypatch.setattr(subscription_guard, "is_api_allowed", guard_error)
         monkeypatch.setenv("ORCH_ALLOW_API_BILLING", "true")
         monkeypatch.setenv("FALLBACK_KEY_ENV", "sk-fallback-key")
 
@@ -210,8 +291,21 @@ class TestMarkExhaustedOutcomes:
 
         assert result == "acct2", f"Expected next account name, got {result}"
 
-    def test_mark_exhausted_all_accounts_exhausted_returns_none(self):
-        """mark_exhausted() returns None when all accounts are now exhausted."""
+    def test_mark_exhausted_sole_account_returns_its_own_name(self, monkeypatch):
+        """Exhausting the only account hands its own name back: no rotation is available."""
+        # Was: `assert result is None`. mark_exhausted() returns current()["name"], and
+        # current() is documented to return "the one that frees up soonest" when everything
+        # is cooling (account_pool.py:226-229); it returns None only for an EMPTY pool, so
+        # None was unreachable here and the test asserted a contract the product does not
+        # have. The real caller uses the actual one: runner.py:2001 is
+        # `if nxt and nxt != (acct or {}).get("name"): attempt -= 1` -- it detects "no
+        # rotation" by comparing names, which is also why account_pool.py:317-320 insists on
+        # comparing names rather than a name against a dict. Assert that, plus the
+        # all_exhausted() signal that is what actually means "no capacity left".
+        sent = []
+        import notify
+        monkeypatch.setattr(notify, "send", lambda msg, *a, **kw: sent.append(msg))
+
         pool = account_pool.AccountPool()
         pool.accts = [{"name": "acct1", "type": "login"}]
         pool.state = {}
@@ -220,7 +314,9 @@ class TestMarkExhaustedOutcomes:
 
         result = pool.mark_exhausted(pool.accts[0])
 
-        assert result is None, f"Only account exhausted should return None, got {result}"
+        assert result == "acct1", f"Sole account should be handed back, got {result}"
+        assert pool.all_exhausted() is True
+        assert any("ALL accounts exhausted" in m for m in sent)
 
     def test_mark_exhausted_does_not_expose_config_in_state(self):
         """mark_exhausted() updates state without storing config_dir or secrets."""
@@ -379,26 +475,35 @@ class TestClaudeExhaustedSignal:
     """Verify claude_exhausted() correctly signals exhaustion without exposing secrets."""
 
     def test_claude_exhausted_flag_file_missing_falls_through(self, monkeypatch, tmp_path):
-        """claude_exhausted() falls back to pool check if flag file missing."""
+        """claude_exhausted() falls back to the live pool check if the flag file is missing."""
+        # Was `assert isinstance(result, bool)` -- true of every return value the function
+        # could possibly produce, so the test could not fail. It was written that way
+        # because the answer genuinely was not knowable: claude_exhausted() builds an
+        # AccountPool from the module's CFG/STATE constants, which pointed at shared
+        # on-disk state, so the result depended on whatever cooldowns happened to be
+        # sitting on the machine. With the paths isolated there is no config, _load_cfg()
+        # falls back to the implicit healthy "default" account (account_pool.py:171-172),
+        # and the expected answer is exactly False.
         flag_path = tmp_path / "claude_exhausted.json"
         monkeypatch.setattr(account_pool, "EXHAUSTED_FLAG", str(flag_path))
 
-        # Flag doesn't exist, pool is healthy
         result = account_pool.claude_exhausted()
 
-        # Without other setup, should fall through to pool.all_exhausted() which is False
-        assert isinstance(result, bool)
+        assert result is False
 
     def test_claude_exhausted_flag_file_expired_falls_through(self, monkeypatch, tmp_path):
-        """claude_exhausted() ignores expired flag file."""
+        """claude_exhausted() ignores an expired flag file."""
+        # Was `assert isinstance(result, bool)`, a tautology (see
+        # test_claude_exhausted_flag_file_missing_falls_through for why it was unavoidable
+        # before the paths were isolated). An expired flag must NOT keep the fail-over
+        # latched on, so with a healthy pool behind it the answer is False.
         flag_path = tmp_path / "claude_exhausted.json"
         flag_path.write_text(json.dumps({"until": time.time() - 100}))
         monkeypatch.setattr(account_pool, "EXHAUSTED_FLAG", str(flag_path))
 
         result = account_pool.claude_exhausted()
 
-        # Flag expired, pool is healthy
-        assert isinstance(result, bool)
+        assert result is False
 
     def test_claude_exhausted_flag_file_valid_returns_true(self, monkeypatch, tmp_path):
         """claude_exhausted() returns True when valid flag file exists."""
@@ -411,14 +516,18 @@ class TestClaudeExhaustedSignal:
         assert result is True
 
     def test_claude_exhausted_corrupt_flag_file_falls_through(self, monkeypatch, tmp_path):
-        """claude_exhausted() ignores corrupt/malformed flag file."""
+        """claude_exhausted() ignores a corrupt/malformed flag file."""
+        # Was `assert isinstance(result, bool)`, a tautology (see
+        # test_claude_exhausted_flag_file_missing_falls_through). An unparseable flag must
+        # fail soft to the live pool check rather than raise or latch on, so the answer for
+        # a healthy pool is False.
         flag_path = tmp_path / "claude_exhausted.json"
         flag_path.write_text("{invalid json")
         monkeypatch.setattr(account_pool, "EXHAUSTED_FLAG", str(flag_path))
 
         result = account_pool.claude_exhausted()
 
-        assert isinstance(result, bool)
+        assert result is False
 
     def test_claude_exhausted_cache_behavior(self, monkeypatch, tmp_path):
         """claude_exhausted() caches result for ~15s to avoid repeated pool checks."""
@@ -436,6 +545,10 @@ class TestClaudeExhaustedSignal:
         result2 = account_pool.claude_exhausted()
         # Cache time should not have advanced (still using cached value)
         assert account_pool._EXH_CACHE["t"] == initial_cache_time
+        # ...and the cached value is what the second call returns. `result2` was computed
+        # and then never asserted on, so the test proved the timestamp was reused without
+        # ever checking the answer was.
+        assert result2 == result1 == account_pool._EXH_CACHE["v"]
 
     def test_claude_exhausted_fail_soft_on_exception(self, monkeypatch):
         """claude_exhausted() returns False (fail-soft) on any exception."""
@@ -454,6 +567,14 @@ class TestWriteExhaustedFlag:
 
     def test_write_exhausted_flag_only_stores_until_time(self, monkeypatch, tmp_path):
         """_write_exhausted_flag() persists only 'until' timestamp, no secrets."""
+        # The pool used to hold a single api-type row. _write_exhausted_flag() goes through
+        # all_exhausted() -> _usable_accounts(), which drops api rows while the billing
+        # guard denies (account_pool.py:209-212) -- leaving zero usable accounts, so
+        # all_exhausted() was False, no flag was written, and the test died on
+        # FileNotFoundError before reaching its actual subject. The subject is "the flag
+        # file carries a timestamp and nothing else", so give the pool a subscription row
+        # that really is cooling (and keep secret-bearing fields on it, which is the part
+        # the assertions below check for).
         flag_path = tmp_path / "claude_exhausted.json"
         monkeypatch.setattr(account_pool, "EXHAUSTED_FLAG", str(flag_path))
 
@@ -461,7 +582,7 @@ class TestWriteExhaustedFlag:
         pool.accts = [
             {
                 "name": "acct1",
-                "type": "api",
+                "type": "login",
                 "api_key_env": "SECRET_API_KEY",
                 "config_dir": "~/.secret",
             }
@@ -600,17 +721,26 @@ class TestInvalidateMethod:
     """Verify invalidate() clears state safely and reloads config without exposing secrets."""
 
     def test_invalidate_resets_cooldowns(self):
-        """invalidate(name) clears cooldown for specific account."""
+        """invalidate(name) re-reads state from disk, then clears that account's cooldown."""
+        # Was: set the cooldowns on pool.state only. invalidate() starts by replacing
+        # self.state with _load_state() (account_pool.py:372), so the in-memory rows were
+        # discarded before anything could be cleared; the assertions held only because
+        # earlier tests in this file had persisted acct1/acct2 rows into the shared state
+        # file that _load_state() read back. On a clean machine the reload returned {} and
+        # the test raised KeyError. Persist the cooldowns to the (now temp) state file --
+        # that is the state invalidate() operates on.
+        future = time.time() + 3600
+        with open(account_pool.STATE, "w") as f:
+            json.dump({
+                "acct1": {"cooldown_until": future, "exh_hits": 2},
+                "acct2": {"cooldown_until": future, "exh_hits": 1},
+            }, f)
+
         pool = account_pool.AccountPool()
         pool.accts = [
             {"name": "acct1", "type": "login"},
             {"name": "acct2", "type": "login"},
         ]
-        future = time.time() + 3600
-        pool.state = {
-            "acct1": {"cooldown_until": future, "exh_hits": 2},
-            "acct2": {"cooldown_until": future, "exh_hits": 1},
-        }
         pool._cfg_ts = time.time()
         pool._state_ts = time.time()
 

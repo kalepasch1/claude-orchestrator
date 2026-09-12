@@ -150,10 +150,12 @@ def on_decomposition_complete(parent_task, child_task_ids):
     try:
         slug = parent_task.get("slug", "unknown")
         mode = "greedy" if _use_greedy_routing(project_id) else "affinity"
-        db.insert("fleet_config", {
+        # No such keywords on db.insert -> TypeError, so this observability
+        # record has never been written.
+        db.upsert("fleet_config", {
             "key": f"greedy_dispatch:{slug}",
             "value": f"dispatched {dispatched}/{len(child_task_ids)} children, mode={mode}",
-        }, on_conflict="key", merge_patch={"value": "EXCLUDED.value"})
+        })
     except Exception:
         pass
 

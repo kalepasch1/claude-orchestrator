@@ -16,9 +16,14 @@ def _fake_insert(table, row, **kw):
 _db_mod.select = _fake_select
 _db_mod.insert = _fake_insert
 _db_mod.update = lambda *a, **k: None
-sys.modules["db"] = _db_mod
+# WAS a bare `sys.modules["db"] = _db_mod` here. pytest imports every test module
+# during COLLECTION, so it was not scoped to this file -- the real database client
+# was replaced for every test that ran afterwards in the same process, with no way
+# to put it back. See runner/tests/test_sys_modules_shadowing.py.
+from env_during_import import modules_during_import
 
-import objective_intake
+with modules_during_import(db=_db_mod):
+    import objective_intake
 
 
 class TestParseObjectives(unittest.TestCase):

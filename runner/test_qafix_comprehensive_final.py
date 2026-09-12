@@ -74,15 +74,19 @@ class TestZombieDetectionAndRecovery:
 
     def test_zombie_reaper_threshold(self):
         """Verify zombie-reaper uses correct timeout threshold."""
+        # The second case read {"threshold_minutes": 10, "is_zombie": False} against a
+        # heartbeat 35 minutes old -- but 35 > 10, so that row asserted True == False
+        # and could not pass. The intent is one threshold BELOW the heartbeat age and
+        # one ABOVE it; the second threshold simply needed to be above 35.
+        heartbeat_age = 35  # minutes
         zombie_configs = [
             {"threshold_minutes": 30, "status": "RUNNING", "is_zombie": True},
-            {"threshold_minutes": 10, "status": "RUNNING", "is_zombie": False},
+            {"threshold_minutes": 40, "status": "RUNNING", "is_zombie": False},
         ]
 
         for config in zombie_configs:
-            heartbeat_age = 35  # 35 minutes
             is_zombie = heartbeat_age > config["threshold_minutes"]
-            assert is_zombie == config["is_zombie"]
+            assert is_zombie == config["is_zombie"], config
 
     def test_orphaned_task_lacks_recent_progress(self):
         """Orphaned task shows no recent progress updates."""

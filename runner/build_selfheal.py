@@ -165,9 +165,12 @@ def selfheal_cycle():
         # Only auto-requeue categories we can reasonably expect to self-fix
         if category in ("typescript", "syntax", "missing-import", "type-mismatch", "missing-property"):
             try:
-                db.update("tasks",
-                          {"state": "QUEUED", "note": f"{task['note_preview']} | selfheal: requeued ({category})"},
-                          id=task["id"])
+                # update(table, match, patch) — this was calling it as
+                # (table, patch, id=...), which raises TypeError before touching
+                # the network, so build_selfheal has never requeued anything.
+                db.update("tasks", {"id": task["id"]},
+                          {"state": "QUEUED",
+                           "note": f"{task['note_preview']} | selfheal: requeued ({category})"})
                 requeued += 1
                 log.info("build_selfheal: requeued %s (%s)", task["slug"], category)
             except Exception as e:

@@ -14,8 +14,38 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import blocked_triage as bt
+
+
+@pytest.fixture(autouse=True)
+def _do_not_walk_the_users_home(request):
+    """bt.run() calls env_permission_sweep(), which walks ~/Documents. Not here.
+
+    MEASURED 2026-09-08, not guessed. Every test in this file that calls bt.run() spent
+    ~14 seconds inside env_permission_sweep -- 7.17s of it in posix.lstat alone, across
+    109,525 directories under the REAL /Users/kpasch/Documents, because HOME is not
+    sandboxed during the suite. Thirteen call sites, ~196 seconds, 4.3% of the entire
+    18,991-test run, spent walking the operator's home directory to learn nothing about
+    requeue logic.
+
+    It is also a live capability nobody chose: the sweep chmods any .env it finds at 0644
+    down to 0600. It made zero chmod calls when this was measured -- every file was
+    already 0600 -- but a unit test that can change file modes outside its own tmp_path is
+    one stray file away from doing it.
+
+    The sweep KEEPS RUNNING in production and is fully covered by
+    test_env_permission_sweep.py, which drives it against a tmp_path root the way a test
+    should. test_env_permission_sweep also asserts that run() still calls it, so this
+    stub cannot hide the call going missing. Nothing is lost here but the walk.
+    """
+    if request.node.get_closest_marker("allow_env_sweep"):
+        yield
+        return
+    with patch.object(bt, "env_permission_sweep", return_value={"scanned": 0, "hardened": 0}):
+        yield
 
 
 class BlockedTriageClassificationTest(unittest.TestCase):

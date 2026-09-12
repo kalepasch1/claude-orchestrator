@@ -71,6 +71,10 @@ _SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_"
                   # anything key/token-shaped regardless of prefix.
                   "OLLAMA_", "COMMITTEE_", "LEGAL_DOCKET", "SEMANTIC_DEDUPE", "SWARM_", "CADE_")
 _DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT")
+# Suffix families. Model-selection keys are spelled per provider (GEMINI_MODEL,
+# OPENAI_STRONG_MODEL, CLAUDE_MODEL...) so no prefix reaches them. See
+# fleet_contracts.SAFE_SUFFIXES for why, and for the retired-model outage that gap cost.
+_SAFE_SUFFIXES = ("_MODEL", "_MODELS")
 
 
 def _safe_key(k):
@@ -90,7 +94,9 @@ def _safe_key(k):
         return False
     if any(m in ku for m in _DENY_MARKERS):
         return False
-    return any(ku.startswith(p) for p in _SAFE_PREFIXES)
+    if any(ku.startswith(p) for p in _SAFE_PREFIXES):
+        return True
+    return any(ku.endswith(s) for s in _SAFE_SUFFIXES)
 
 
 # CONFIG PRECEDENCE (2026-08-03). fleet_config (the DB) is the fleet-wide SOURCE OF TRUTH and
@@ -121,6 +127,14 @@ _applied_config = {}
 # GEMINI_CHEAP_MODEL, OPENAI_STRONG_MODEL, OPENAI_FAST_MODEL, OPENAI_CHEAP_MODEL,
 # PROMOTION_STATE, PREWARM_N and PREVIEW_FEATURE_X all match no safe prefix and are
 # therefore stored and ignored.
+#
+# RESOLVED for the *_MODEL family, 2026-08-24. Those five model keys are now consumed
+# via fleet_contracts.SAFE_SUFFIXES — see there for why a suffix and not a provider
+# prefix. The gap was not theoretical: the fleet's default agentic coder was pinned to
+# a model Google had retired, agentic_coders.py reads that pin from GEMINI_MODEL, and
+# the single row that would have re-pointed every machine was one this loader dropped.
+# The rest of the list above stands, and stands for the same reason: which of them are
+# safe is a policy question for the owner, not something to widen quietly.
 #
 # The fix is reporting, not widening the allowlist: which keys are unsafe is a policy
 # question for the owner, and quietly applying them would be the security regression the
@@ -175,12 +189,66 @@ def _env_pins():
     return {p.strip().upper() for p in raw.split(",") if p.strip()}
 
 
-def load_config():
+#: A full reload happens at most this often when nothing has changed. It is a
+#: convergence floor, not the refresh rate: a real config change is picked up on
+#: the next tick via the stamp probe. The floor exists because the probe reads
+#: fleet_config's newest updated_at, which a DELETE does not move, and because
+#: blocked_keys() lives in a different table that the probe does not watch.
+DEFAULT_CONFIG_PROBE_TTL_S = 300.0
+CONFIG_PROBE_TTL_S = float(
+    os.environ.get("ORCH_CONFIG_PROBE_TTL_S", DEFAULT_CONFIG_PROBE_TTL_S))
+
+_config_stamp = None      # newest updated_at seen in fleet_config
+_config_loaded_at = 0.0   # monotonic time of the last FULL load
+_config_last_n = 0        # key count from the last full load, for the skip path
+
+
+def _fleet_config_stamp():
+    """Newest `updated_at` in fleet_config — one row, not the whole table.
+
+    Returns None when the probe cannot be trusted (query failed, column absent,
+    empty table), which forces the caller to take the full path rather than
+    treat "I could not tell" as "nothing changed".
+    """
+    try:
+        rows = db.select("fleet_config", {
+            "select": "updated_at", "order": "updated_at.desc", "limit": "1",
+        }) or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return rows[0].get("updated_at") or None
+
+
+def load_config(force=False):
     """Apply central fleet_config into this process's env (safe keys only, gated keys skipped).
 
     Precedence: fleet_config (DB) > runner/.env, EXCEPT for keys named in ORCH_CONFIG_ENV_PINS,
     where the local .env wins. Every change is logged to stderr with both values.
+
+    ROUND-TRIP COST. tick() calls this every coordination cycle, and it used to
+    read the ENTIRE fleet_config table plus the entire pending-approvals list
+    every time — two unfiltered selects per host per cycle, across every runner
+    in the fleet, to discover on almost every cycle that nothing had changed.
+    Config changes are rare; the polling was not.
+
+    A one-row probe for the newest `updated_at` now gates the full read. When
+    the stamp has not moved and the TTL floor has not expired, the work is
+    skipped and the previously applied values stand — which is correct, because
+    "nothing changed" is exactly what the probe established. `force=True`
+    bypasses the probe for callers that must not observe a stale view.
     """
+    global _config_stamp, _config_loaded_at, _config_last_n
+
+    if not force:
+        stamp = _fleet_config_stamp()
+        fresh = (time.time() - _config_loaded_at) < CONFIG_PROBE_TTL_S
+        # A None stamp means the probe failed or could not answer; that is not
+        # evidence of no change, so it falls through to the full read.
+        if stamp is not None and stamp == _config_stamp and fresh:
+            return _config_last_n
+
     n = 0
     applied, ignored = {}, {}
     try:
@@ -223,8 +291,29 @@ def load_config():
         # "local variable 'sys' referenced before assignment" — aborting load_config partway and
         # leaving config half-applied. sys is already imported at module scope; do not re-import.
         sys.stderr.write(f"[fleet_control] fleet_config load failed: {e}\n")
+        # A failed load must not be recorded as a successful one, or the probe
+        # would skip the retry and this host would run on whatever it last
+        # managed to apply until the TTL expired.
+        _last_consumption.update(applied=applied, ignored=ignored, at=time.time())
+        return n
     _last_consumption.update(applied=applied, ignored=ignored, at=time.time())
+    _config_stamp = _fleet_config_stamp()
+    _config_loaded_at = time.time()
+    _config_last_n = n
     return n
+
+
+def invalidate_config_cache():
+    """Force the next load_config() to take the full path.
+
+    Any code path that writes fleet_config from THIS process should call it:
+    the writer already knows the config changed, and should not have to wait for
+    a probe to rediscover its own write. Also the seam tests use to reset state.
+    """
+    global _config_stamp, _config_loaded_at, _config_last_n
+    _config_stamp = None
+    _config_loaded_at = 0.0
+    _config_last_n = 0
 
 
 def get_fleet_config(key, default=""):
@@ -235,6 +324,22 @@ def get_fleet_config(key, default=""):
     """
     if not key or not isinstance(key, str):
         return default
+    # THE CONFIG-CONSUMPTION LAYER NOW HAS A CONSUMER.
+    #
+    # runner/config_consumer.py implements exactly this read — ORCH_ prefix, whitespace
+    # stripped, empty treated as absent, never raises — with a TTL cache whose TTL is
+    # itself fleet-pushable. It had FIVE test files and ZERO production callers: a
+    # module grepped for outside its own tests returns nothing. A config layer nobody
+    # consumes cannot deliver a config change, however well tested it is.
+    #
+    # Delegating here is semantics-preserving (the local fallback below is the previous
+    # implementation, byte for byte) and fail-soft: if the module is unavailable for any
+    # reason, this function behaves exactly as it did before.
+    try:
+        import config_consumer
+        return config_consumer.get(key.upper(), default)
+    except Exception:
+        pass
     try:
         env_key = f"ORCH_{key}".upper()
         value = os.environ.get(env_key, "").strip()
@@ -269,6 +374,9 @@ def update_fleet_config(key, value):
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     db.insert("fleet_config", row, upsert=True)
+    # This process just changed the config; it must not wait for a probe to
+    # rediscover its own write on some later tick.
+    invalidate_config_cache()
     if _ws_server is not None and key.upper().startswith("ORCH_") and new_value != old_value:
         try:
             _ws_server.publish_event("config/*", {
@@ -621,7 +729,10 @@ def process_controls():
         action = str(r.get("action") or "").lower()
         try:
             if action == "reload_config":
-                load_config()
+                # An explicit reload command exists precisely to bypass any
+                # freshness heuristic. Skipping it because a probe said nothing
+                # changed would make the operator's control a no-op.
+                load_config(force=True)
             elif action == "git_pull":
                 ok, reason = _pull_safe()
                 if not ok:

@@ -110,33 +110,47 @@ class TestSettingsHygiene(unittest.TestCase):
         )
 
     def test_settings_local_not_in_recent_history(self):
-        """Verify .claude/settings.local.json was removed from git history.
+        """.claude/settings.local.json must not be RE-ADDED after its removal.
 
-        This test detects the security regression where settings.local.json
-        (containing overly permissive allowlists) was accidentally committed.
+        WHAT THIS USED TO DO, AND WHY IT COULD NOT PASS. It ran
+        `git log --all --full-history --name-only --pretty=format:` — every path
+        of every commit on every ref — with a 10-second timeout, then filtered in
+        Python. On this repo that command takes ~13s, so the test's usual outcome
+        was TimeoutExpired rather than an assertion. And when it did finish it
+        asserted zero occurrences in ALL history, which is false and will stay
+        false: the file was committed in June 2026 and removed on 2026-08-06 by
+        5eebf131 ("fix(security): .gitignore never untracked the allowlist it
+        lists"). Sixteen commits across all refs still touch it.
+
+        Purging those needs `git filter-repo`, which rewrites every SHA in the
+        repository — breaking every clone, every recorded build/test proof and
+        every branch on the fleet. That is an operator decision, not something a
+        unit test can assert into existence, so this test no longer pretends it
+        has happened.
+
+        What it asserts instead is the regression that CAN recur and that the
+        removal was for: nothing has added the file back since. Its companion
+        test_settings_local_json_not_tracked covers the state at HEAD; this covers
+        the interval. Scoped with a pathspec so git does the filtering, which also
+        takes it from ~13s to under a second.
         """
         result = subprocess.run(
-            ["git", "log", "--all", "--full-history", "--name-only", "--pretty=format:"],
+            ["git", "log", "--diff-filter=A", "--format=%H",
+             "5eebf131..HEAD", "--", ".claude/settings.local.json"],
             cwd=self.repo_root,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
-        all_files_in_history = result.stdout.strip().split("\n")
-
-        # Filter to settings files only
-        settings_in_history = [
-            f for f in all_files_in_history
-            if ".claude/settings.local.json" in f and f.strip()
-        ]
+        readded = [line for line in result.stdout.splitlines() if line.strip()]
 
         self.assertEqual(
-            len(settings_in_history),
-            0,
-            ".claude/settings.local.json found in git history (security regression). "
-            "This file contains overly permissive allowlists with kill commands and "
-            "database access. It must be removed via git filter-repo. "
-            f"Found in {len(settings_in_history)} commits.",
+            readded,
+            [],
+            ".claude/settings.local.json was added back after 5eebf131 removed it "
+            "(security regression). This file carries an overly permissive allowlist "
+            "with kill commands and database access, and must stay untracked. "
+            f"Re-added by: {', '.join(readded)}",
         )
 
     def test_no_allowlist_with_dangerous_commands(self):

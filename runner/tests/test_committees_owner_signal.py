@@ -71,5 +71,84 @@ class TestMatchesOwnerCalls(unittest.TestCase):
         self.assertIn("recommendation", agg)
 
 
+class TestGenericTitlesDoNotFabricateAMatch(unittest.TestCase):
+    """The signal is presented to the aggregate as evidence of owner intent.
+
+    Matching on any three shared four-letter words made almost every pair of
+    this fleet's titles "similar" — they are all built from the same words
+    (task, slice, branch, recover, improve, build, deploy, the project names).
+    The newest override then matched nearly every subject, and the aggregate was
+    told the owner had a prior call on something they had never seen. A quoted
+    claim about what the owner wants, invented, is worse than silence.
+    """
+
+    def _call(self, overrides, title, recommendation):
+        with patch.object(committees, "db") as mdb:
+            mdb.select.return_value = overrides
+            return committees._matches_owner_calls(title, recommendation)
+
+    def test_two_unrelated_fleet_titles_do_not_match(self):
+        rows = [_override(
+            "recover missing branch for improve-automate-branch-management slice 2",
+            "approved")]
+        sig = self._call(
+            rows,
+            "recover missing branch for improve-quarantine-auto-triage slice 3",
+            "GO")
+        self.assertIsNone(
+            sig,
+            "boilerplate words shared by every task title are not evidence "
+            "that the owner has ruled on this subject",
+        )
+
+    def test_project_names_alone_do_not_match(self):
+        rows = [_override("beethoven tomorrow apparently release train", "approved")]
+        sig = self._call(rows, "beethoven tomorrow apparently deploy queue", "GO")
+        self.assertIsNone(sig)
+
+    def test_a_genuinely_similar_subject_still_matches(self):
+        rows = [_override("ship the billing invoice feature", "approved")]
+        sig = self._call(rows, "ship the billing invoice feature now", "GO")
+        self.assertIsNotNone(sig)
+        self.assertIn("matches", sig)
+
+    def test_the_best_match_wins_not_the_newest(self):
+        rows = [
+            _override("billing invoice export rollout", "denied"),      # newest, weaker
+            _override("ship the billing invoice export feature", "approved"),
+        ]
+        sig = self._call(rows, "ship the billing invoice export feature", "GO")
+        self.assertIsNotNone(sig)
+        self.assertIn("ship the billing invoice export feature", sig)
+        self.assertIn("approved", sig)
+
+    def test_three_shared_words_between_two_long_titles_is_not_enough(self):
+        # Both titles are long and detailed; they happen to share three words.
+        # Three out of twenty is a collision, not a subject the owner ruled on.
+        past = ("billing invoice export alpha bravo charlie delta echo foxtrot "
+                "golf hotel india juliet kilo lima mike november oscar papa")
+        current = ("billing invoice export quebec romeo sierra tango uniform "
+                   "victor whiskey xray yankee zulu ardent bequest cipher dovetail")
+        sig = self._call([_override(past, "approved")], current, "GO")
+        self.assertIsNone(sig)
+
+    def test_a_short_specific_title_fully_contained_in_a_longer_one_does_match(self):
+        # The complement of the case above, stated so the ratio's denominator
+        # choice is a decision on the record rather than an accident: when the
+        # whole of the shorter subject appears in the longer one, that IS the
+        # same subject.
+        past = ("ship the billing invoice export feature to the enterprise tier "
+                "for the january launch")
+        sig = self._call([_override(past, "approved")],
+                         "billing invoice export", "GO")
+        self.assertIsNotNone(sig)
+        self.assertIn("matches", sig)
+
+    def test_a_title_with_too_few_meaningful_words_returns_none(self):
+        rows = [_override("recover the task branch", "approved")]
+        sig = self._call(rows, "recover the task branch", "GO")
+        self.assertIsNone(sig)
+
+
 if __name__ == "__main__":
     unittest.main()

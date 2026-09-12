@@ -365,10 +365,114 @@ class TestClaimTaskOrder(unittest.TestCase):
 
         db.select = select
         db._req = req
+        # The reserved recovery lane outranks release fixes, by design and since
+        # 2026-07-15 ("reserve capacity for missing-branch recovery"), which is a
+        # week after this test was written. _recovery_reserve_rank sits one line
+        # above _release_fix_rank in the sort tuple: one lane goes to recovery so
+        # it cannot starve behind a release-fix backlog that is never empty, and
+        # every other lane goes to release fixes first.
+        #
+        # So with the reserve OPEN, recovery wins — that is the reserve working,
+        # not release fixes losing.
         with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
-                                     "ORCH_RECOVERY_JUMP_QUEUE": "true"}, clear=False):
+                                     "ORCH_RECOVERY_JUMP_QUEUE": "true",
+                                     "ORCH_RECOVERY_RESERVED_LANES": "1"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "recover",
+                         "the one reserved recovery lane claims first")
+
+    def test_release_fix_beats_recovery_once_the_reserved_lane_is_taken(self):
+        """The other half, and the one _release_fix_rank's comment is about.
+
+        A reserve is not a priority. Once a recovery task is actually RUNNING the
+        lane is occupied, recovery_reserve_open goes False, and release fixes
+        drain ahead of the rest of the recovery backlog as intended.
+        """
+        tasks = [
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-old-work",
+             "deps": [], "created_at": "2026-01-01"},
+            {"id": "relfix", "project_id": "p1", "slug": "relfix-app-07070200",
+             "deps": [], "created_at": "2026-01-02",
+             "note": "auto-queued by release_train build-red self-heal"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
+                    return [dict(t) for t in tasks]
+                if state == "in.(RUNNING,RETRY)":
+                    # A recovery task already holds the reserved lane.
+                    return [{"project_id": "p2", "slug": "recover-missing-branch-other",
+                             "kind": "recovery", "note": ""}]
+                if state in ("in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_RECOVERY_JUMP_QUEUE": "true",
+                                     "ORCH_RECOVERY_RESERVED_LANES": "1",
+                                     "ORCH_PRIORITY_APP_FLOOR": "0"}, clear=False):
             task = db.claim_task("runner-1")
         self.assertEqual(task["id"], "relfix")
+
+    def test_the_priority_app_floor_outranks_release_fix_ordering(self):
+        """Pin the floor itself, because it silently decided three tests.
+
+        It replaces the whole queue with priority-app work when those apps are
+        under their share of running lanes, ahead of every rank in the sort
+        tuple. Three tests in this file were written five weeks before it landed
+        and had been red ever since, each looking like a release-fix ordering
+        failure rather than a floor.
+        """
+        tasks = [
+            {"id": "priority-plain", "project_id": "p1", "slug": "net-new-thing",
+             "deps": [], "created_at": "2026-01-01", "kind": "feature"},
+            {"id": "other-qafix", "project_id": "p2", "slug": "qafix-racefeed-a1b2c3d4e5f6",
+             "deps": [], "created_at": "2026-01-02", "kind": "bugfix"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "tomorrow", "priority": 5, "concurrency_weight": 1},
+                        {"id": "p2", "name": "racefeed", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                if params.get("state") in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
+                    return [dict(t) for t in tasks]
+                return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        env = {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true", "ORCH_EVIDENCE_RESERVED_LANES": "0"}
+        with patch.dict(os.environ, dict(env, ORCH_PRIORITY_APP_FLOOR="0.6"), clear=False):
+            held = db.claim_task("runner-1")
+        self.assertEqual(held["id"], "priority-plain",
+                         "the floor should discard non-priority work before the sort")
+        with patch.dict(os.environ, dict(env, ORCH_PRIORITY_APP_FLOOR="0"), clear=False):
+            released = db.claim_task("runner-1")
+        self.assertEqual(released["id"], "other-qafix",
+                         "with the floor off, the release fix wins on its own rank")
 
     def test_evidence_reserved_lane_can_beat_release_fix_once(self):
         tasks = [
@@ -513,8 +617,18 @@ class TestClaimTaskOrder(unittest.TestCase):
 
         db.select = select
         db._req = req
+        # ORCH_PRIORITY_APP_FLOOR=0 disables the priority-app floor for this test.
+        # Without it this test does not measure what it says. The floor (db.py,
+        # owner directive 2026-08-15) replaces `queued` wholesale with only the
+        # tasks belonging to named priority apps whenever those apps hold less
+        # than their share of the running lanes — and with nothing running, that
+        # is always. "tomorrow" is a named priority app and "racefeed" is not, so
+        # the racefeed task was discarded BEFORE the sort and no ranking below
+        # ever ran. The p1 task won every arrangement of these slugs, including
+        # a plain non-release-fix one against an exact-signature qafix.
         with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
-                                     "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
+                                     "ORCH_EVIDENCE_RESERVED_LANES": "0",
+                                     "ORCH_PRIORITY_APP_FLOOR": "0"}, clear=False):
             task = db.claim_task("runner-1")
         self.assertEqual(task["id"], "qafix")
 
@@ -544,8 +658,18 @@ class TestClaimTaskOrder(unittest.TestCase):
 
         db.select = select
         db._req = req
+        # ORCH_PRIORITY_APP_FLOOR=0 disables the priority-app floor for this test.
+        # Without it this test does not measure what it says. The floor (db.py,
+        # owner directive 2026-08-15) replaces `queued` wholesale with only the
+        # tasks belonging to named priority apps whenever those apps hold less
+        # than their share of the running lanes — and with nothing running, that
+        # is always. "tomorrow" is a named priority app and "racefeed" is not, so
+        # the racefeed task was discarded BEFORE the sort and no ranking below
+        # ever ran. The p1 task won every arrangement of these slugs, including
+        # a plain non-release-fix one against an exact-signature qafix.
         with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
-                                     "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
+                                     "ORCH_EVIDENCE_RESERVED_LANES": "0",
+                                     "ORCH_PRIORITY_APP_FLOOR": "0"}, clear=False):
             task = db.claim_task("runner-1")
         self.assertEqual(task["id"], "exact")
 

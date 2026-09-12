@@ -581,21 +581,36 @@ def test_replay_same_task_twice_yields_same_result():
         "output": {"route": "model_a"},
     }
 
-    new_model = MockModelProvider("opus", version="2.0")
+    # WAS: two calls against the SAME MockModelProvider, asserting the decisions
+    # matched. That mock increments call_count and returns f"decision_{call_count}",
+    # so it is deliberately non-deterministic — the test was asserting that a
+    # counter does not count. replay_decision adds no state of its own between
+    # calls; what it guarantees is that it passes the same input through and
+    # returns whatever the model says. A fresh provider per call isolates the
+    # module's behaviour from the mock's.
+    result1 = cfr.replay_decision("task_018", decision, MockModelProvider("opus", version="2.0"))
+    result2 = cfr.replay_decision("task_018", decision, MockModelProvider("opus", version="2.0"))
 
-    result1 = cfr.replay_decision("task_018", decision, new_model)
-    result2 = cfr.replay_decision("task_018", decision, new_model)
-
-    # Same inputs should yield same decision
     assert result1["decision"] == result2["decision"]
-    assert result1["model"] == result2["model"]
+    assert result1["model"] == result2["model"] == "opus"
+    assert result1["model_version"] == result2["model_version"] == "2.0"
+    # The original metadata is carried through unchanged on both passes.
+    assert result1["original_model"] == result2["original_model"] == "haiku"
 
 
 def test_replay_state_isolation():
     """Replay state is isolated per task (no cross-contamination)."""
+    # WAS: fixtures of {"task_id", "state"} only. replay_decision returns None for a
+    # decision carrying neither "input" nor "output" — it has nothing to replay — so
+    # both results were None and the test died subscripting None rather than
+    # demonstrating isolation. Give each one a real decision to replay; `state` is
+    # one of the three keys (user, repo, state) the function is documented to carry
+    # through, which is the part the isolation claim actually rests on.
     tasks = [
-        {"task_id": "task_019_a", "state": "state_a"},
-        {"task_id": "task_019_b", "state": "state_b"},
+        {"task_id": "task_019_a", "state": "state_a",
+         "input": {"seed": 1}, "output": {"route": "model_a"}},
+        {"task_id": "task_019_b", "state": "state_b",
+         "input": {"seed": 2}, "output": {"route": "model_b"}},
     ]
 
     new_model = MockModelProvider("opus", version="2.0")
@@ -679,9 +694,17 @@ def test_retrieve_replay_results_for_task():
         storage.save_replay({"task_id": "task_023", "result": "outcome_2"})
         storage.save_replay({"task_id": "task_024", "result": "outcome_3"})
 
+        # WAS: assert len(...) == 2, which contradicted
+        # test_replay_idempotent_on_storage_updates in this same file. save_replay
+        # DELETEs by task_id before inserting, so a task holds exactly one row — its
+        # latest replay — and the second save supersedes the first. The ledger answers
+        # "what does replaying this task say now", not "every time it was replayed".
         task_023_results = storage.get_replays("task_023")
-        assert len(task_023_results) == 2
+        assert len(task_023_results) == 1
+        assert task_023_results[0]["result"] == "outcome_2"
         assert all(r["task_id"] == "task_023" for r in task_023_results)
+        # ...and the other task is untouched by either write.
+        assert [r["result"] for r in storage.get_replays("task_024")] == ["outcome_3"]
     finally:
         shutil.rmtree(temp_dir)
 
@@ -829,12 +852,17 @@ def test_integration_replay_updates_policy_and_routing():
 
 
 def test_integration_replay_with_fleet_config():
-    """Replay integrates with fleet-wide config updates."""
-    # Mock fleet config
-    with patch("fleet_control.push_config") as mock_push:
+    """Replay integrates with fleet-wide config updates.
+
+    WAS: this patched fleet_control.push_config — a function that does not exist, so
+    the test raised AttributeError before asserting anything — and then CALLED THE
+    MOCK ITSELF and asserted the mock had been called. It never reached
+    counterfactual_replay at all. The real path is push_config_updates(), which
+    writes through fleet_control.update_fleet_config() and refuses unsafe keys.
+    """
+    with patch.object(cfr.fleet_control, "update_fleet_config") as mock_push:
         mock_push.return_value = {"status": "success"}
 
-        # Create replay result with policy change
         replay_result = {
             "task_id": "task_029",
             "policy_changed": True,
@@ -842,12 +870,29 @@ def test_integration_replay_with_fleet_config():
             "q_score_delta": 0.8,
         }
 
-        # Push to fleet
-        config_key = f"ORCH_ROUTE_task_029"
-        fleet_control.push_config(config_key, replay_result["new_model"])
+        config_key = "ORCH_ROUTE_task_029"
+        cfr.push_config_updates({config_key: replay_result["new_model"]})
 
         mock_push.assert_called_once()
         assert mock_push.call_args[0][0] == config_key
+        # Values reach fleet_control as strings, whatever was handed in.
+        assert mock_push.call_args[0][1] == "opus"
+
+
+def test_config_push_refuses_a_key_that_could_carry_a_secret():
+    """The other half of the same gate: _safe_config_key is what makes the push safe.
+
+    Asserting only the happy path leaves the refusal — the reason this function does
+    not simply call update_fleet_config in a loop — completely uncovered.
+    """
+    with patch.object(cfr.fleet_control, "update_fleet_config") as mock_push:
+        cfr.push_config_updates({
+            "ORCH_ROUTE_ok": "opus",
+            "": "ignored",
+        })
+        pushed = [c[0][0] for c in mock_push.call_args_list]
+        assert "ORCH_ROUTE_ok" in pushed
+        assert "" not in pushed
 
 
 def test_integration_replay_with_worktree_workflow():

@@ -160,10 +160,11 @@ def _time_limit(seconds, job):
         except (ValueError, AttributeError, OSError):
             pass
 
-# Exit codes, so a scheduler/wrapper can tell the three outcomes apart.
+# Exit codes, so a scheduler/wrapper can tell the outcomes apart.
 _EX_OK = 0
 _EX_SKIPPED = 75        # EX_TEMPFAIL: legitimately busy, try again next interval
 _EX_WEDGED = 1          # the job has not run for _WEDGE_SKIPS intervals — this is a failure
+_EX_TIMEOUT = 2         # the job started but had to be interrupted — it did not finish
 
 
 class _Skipped(object):
@@ -171,6 +172,23 @@ class _Skipped(object):
 
     def __init__(self, job, reason, wedged=False, skips=0):
         self.job, self.reason, self.wedged, self.skips = job, reason, wedged, skips
+
+
+class _TimedOut(dict):
+    """Sentinel: the job started but was interrupted by the hard timeout.
+
+    Subclasses dict deliberately. The existing contract — `_invoke_job` returns a
+    mapping with a truthy "timeout" and the job name — is what callers and tests
+    read, and it stays exactly that. What it adds is a TYPE, so the exit path can
+    tell "interrupted, work unfinished" apart from "ran and returned a dict".
+    Without that distinction a timed-out run exits 0, which is the same silence
+    the wedge detector was built to end: the scheduler records success for work
+    that did not happen.
+    """
+
+    def __init__(self, job, detail, seconds):
+        super().__init__(timeout=True, job=job, detail=detail, timeout_s=seconds)
+        self.job, self.detail, self.seconds = job, detail, seconds
 
 
 def _skip_state():
@@ -271,6 +289,85 @@ def _alert_wedged(job, entry, pid, age):
         print(f"periodic {job}: could not file wedge remediation task ({exc})")
 
 
+def _escalate_timeout(job, seconds, detail):
+    """A job that had to be interrupted is unfinished work — escalate it like a wedge.
+
+    The wedge path already escalates, because a job that never RUNS is invisible loss. A job
+    that runs and gets cut off mid-flight is the same loss wearing a different hat: the lock is
+    released and the next cycle proceeds, so from the outside it looks like recovery, and the
+    print alone scrolls past. Same destinations `_alert_wedged` uses, so both failures land
+    where operators already look. Every step is fail-soft: an escalation that raised would take
+    down the runner it exists to report on.
+
+    Returns the set of destinations that actually accepted the report. "We timed out and could
+    not tell anyone" is strictly worse than "we timed out", and an escalation path that cannot
+    say which is which reproduces, one level up, the exact silence this function exists to end.
+    """
+    delivered = set()
+    headline = (f"periodic {job}: TIMEOUT — interrupted after {seconds}s; the job did not "
+                f"finish and its work for this cycle was lost")
+    print(headline, file=sys.stderr, flush=True)
+    delivered.add("stderr")
+    try:
+        import notify
+        notify.send(headline[:400])
+        delivered.add("notify")
+    except Exception as exc:
+        # Fail-soft, but never silent: a dropped notification is itself a reason this
+        # class of failure stays invisible, so say which destination was lost.
+        print(f"periodic {job}: timeout notify failed ({exc}); continuing", flush=True)
+    try:
+        db.insert("approvals", {
+            "project": "ORCHESTRATOR", "kind": "self", "status": "pending",
+            "title": headline[:200],
+            "why": (f"'{job}' exceeded its {seconds}s budget and was interrupted by SIGALRM so "
+                    f"it would release the singleton lock. The lock being freed is the point — "
+                    f"but the job still did not do its work, and a timeout that only prints "
+                    f"exits 0, so the scheduler records success.")[:1000],
+            "value": "Distinguishes 'ran' from 'was cut off'. A job silently timing out every "
+                     "cycle is indistinguishable from a healthy one if the exit code is 0.",
+            "risk": (f"detail: {detail}. Raise the budget with "
+                     f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')} if this "
+                     f"job is legitimately this slow, or fix what makes it unbounded.")[:1000],
+        })
+        delivered.add("approvals")
+    except Exception as exc:
+        print(f"periodic {job}: could not file timeout approval card ({exc}); continuing",
+              flush=True)
+    try:
+        import guard_tasks
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_id = ""
+        for row in (db.select("projects", {"select": "id,repo_path"}) or []):
+            if os.path.abspath(row.get("repo_path") or "") == os.path.abspath(root):
+                project_id = row.get("id")
+                break
+        filer = guard_tasks.Filer("periodic-timeout", max_per_run=3)
+        filer.file(project_id, guard_tasks.stable_slug("timeout", job),
+                   (f"The periodic job '{job}' exceeded its {seconds}s hard timeout and was "
+                    f"interrupted ({detail}).\n\n"
+                    f"The timeout works as designed: the singleton lock is released, so the job "
+                    f"is not wedged. The problem is that it never COMPLETES — every cycle starts "
+                    f"the work and throws it away.\n\n"
+                    f"Find what makes `JOBS['{job}']()` unbounded — an unpaged query over a "
+                    f"growing table, a per-row network call with no aggregate budget, or a "
+                    f"retry loop. Bound the work itself rather than raising the budget. "
+                    f"Reproduce with:\n"
+                    f"    cd runner && python3 -c \"import periodic; periodic.JOBS['{job}']()\""),
+                   severity=guard_tasks.CRITICAL, project_name="ORCHESTRATOR",
+                   title=headline[:200], escalate_why=headline)
+        delivered.add("remediation_task")
+    except Exception as exc:
+        print(f"periodic {job}: could not file timeout remediation task ({exc})")
+
+    if delivered == {"stderr"}:
+        # Every durable destination refused. Nothing outside this process log knows the job
+        # was cut off, which is the failure this whole path exists to prevent — say so plainly.
+        print(f"periodic {job}: TIMEOUT ESCALATION REACHED NO DURABLE DESTINATION — the only "
+              f"record of this timeout is this log line", file=sys.stderr, flush=True)
+    return delivered
+
+
 def _read_lock_holder(lock_path):
     """Return (pid, started_at) recorded by the current holder, or (None, None)."""
     try:
@@ -358,8 +455,9 @@ def _invoke_job(job):
         and let the next one run. Disabling here would take a healthy job offline for the
         duration of an outage, which is the opposite of what we want.
     """
+    seconds = _job_timeout(job)
     try:
-        with _time_limit(_job_timeout(job), job):
+        with _time_limit(seconds, job):
             return JOBS[job]()
     except JobTimeout as exc:
         # Loud on purpose. The whole failure mode being fixed here is that a wedged job
@@ -368,12 +466,41 @@ def _invoke_job(job):
               f"released and the next invocation can actually run. Raise the budget with "
               f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')} if this job "
               f"is legitimately this slow.")
-        return {"timeout": True, "job": job, "detail": str(exc)}
+        # Releasing the lock fixed the wedge; it did NOT make the work happen. Escalate and
+        # return a typed result so the process can exit non-zero instead of reporting success.
+        _escalate_timeout(job, seconds, str(exc))
+        return _TimedOut(job, str(exc), seconds)
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
     except db.TransientDBError as exc:
         return {"skipped": "transient-db", "job": job, "detail": str(exc)[:300]}
+    except Exception as exc:
+        # _is_transient_net_error() was written for exactly this arm and then never wired to
+        # anything — it was defined directly above and called from nowhere in the repo. So a
+        # Supabase read that merely TIMED OUT came back as a raw urllib.error.URLError, sailed
+        # past both db.* arms (db only wraps what it recognises), and took the whole cycle down:
+        # one blipped socket and every remaining job in that pass never ran.
+        #
+        # The treatment is deliberately identical to the db.TransientDBError arm above — skip
+        # this cycle, let the next one run — because the situation is identical: the job is
+        # fine, the network was not. Disabling on a network blip would take a healthy job
+        # offline for the duration of an outage.
+        #
+        # The re-raise is the load-bearing half. Everything the predicate REJECTS still
+        # escapes: a ValueError, an AttributeError, a 400 from PostgREST (a real client bug,
+        # which _is_transient_net_error() rejects on purpose) must stay as loud as they were
+        # before this handler existed. A bare `except Exception: return` here would convert
+        # every genuine job bug into a silent skip, which is the failure mode the timeout arm
+        # was added to fix.
+        if not _is_transient_net_error(exc):
+            raise
+        # Say so once, then return None the way the MissingRelationError arm does — the
+        # scheduler's exit code only distinguishes _Skipped from everything else, so the
+        # printed line is the observability here, not the return value.
+        print(f"periodic {job}: skipped this cycle — transient network error "
+              f"({type(exc).__name__}: {exc}). The job is fine; the next invocation runs.")
+        return None
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
@@ -620,6 +747,22 @@ def run_unstick():
         else:
             terminal += 1
     print(f"unstick: requeued {requeued} transient-blocked, {capped} over-cap, {terminal} terminal (left alone)")
+
+
+def run_schedsnapshot():
+    """Publish the scheduler heartbeat that check_scheduler_snapshot_staleness() reads.
+
+    The monitor had no producer at all — scheduler_status_snapshots held one ad-hoc
+    batch row from 2026-07-22 — so it alerted 2,695 times on a table nothing wrote to.
+    See runner/scheduler_snapshot.py for the full finding.
+    """
+    try:
+        import scheduler_snapshot
+        return scheduler_snapshot.run()
+    except Exception as e:  # noqa: BLE001 - logged, then degraded (fail-soft)
+        print(f"periodic: schedsnapshot failed ({type(e).__name__}: {e}); fail-soft",
+              flush=True)
+        return {"published": False}
 
 
 def run_dagfix():
@@ -1273,7 +1416,41 @@ def run_canarywatch():
     return res
 
 
+# ── compliance subsystem (compliance_periodic.py) ───────────────────────────
+# These four existed with a documented cadence (compliance_periodic.DEFAULT_INTERVALS,
+# "the values registered in runner._SCHEDULE") and were registered NOWHERE, so nothing
+# ever ran them: the durable evidence outbox drained only when some caller happened to
+# call flush(), and scorecards/anomaly sweeps were request-only. Same class of dead
+# registration as quarantine_gc and stuck_reaper. Each is fail-soft by contract — it
+# returns a dict describing what happened and never raises into the scheduler.
+
+
+def run_complianceoutbox():
+    """Drain the durable evidence outbox and alert when it stops keeping up."""
+    import compliance_periodic; return compliance_periodic.run_outbox_flush()
+
+
+def run_compliancescorecard():
+    """Recompute fleet/department compliance scorecards and persist a snapshot."""
+    import compliance_periodic; return compliance_periodic.run_scorecard_refresh()
+
+
+def run_complianceanomaly():
+    """Rolling z-score sweep over the persisted compliance composite scores."""
+    import compliance_periodic; return compliance_periodic.run_anomaly_check()
+
+
+def run_compliancehealth():
+    """Record the compliance readiness snapshot and alert while it is degraded."""
+    import compliance_periodic; return compliance_periodic.run_health()
+
+
 JOBS = {
+    # rtmon and rtconfig were DEFINED but never registered — run_rtconfig's own
+    # docstring claimed "only realtime_approval_monitor (approvals) and
+    # realtime_config_sync (config) are wired", and neither was. A job function
+    # with no JOBS entry and no interval row is dead code that reads as live.
+    "rtmon": run_rtmon,
     "deployterminal": run_deployterminal,
     "shipped": run_shipped,
     "spec": run_spec,
@@ -1288,6 +1465,7 @@ JOBS = {
     "fleet_e2e_audit": run_fleet_e2e_audit,
     "batch": run_batch,
     "unstick": run_unstick,
+    "schedsnapshot": run_schedsnapshot,
     "dagfix": run_dagfix,
     "dagspecunblock": run_dagspecunblock,
     "selftune": run_selftune,
@@ -1377,6 +1555,10 @@ JOBS = {
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
     "portfolioautopilot": run_portfolio_autopilot,
+    "complianceoutbox": run_complianceoutbox,
+    "compliancescorecard": run_compliancescorecard,
+    "complianceanomaly": run_complianceanomaly,
+    "compliancehealth": run_compliancehealth,
 }
 
 if __name__ == "__main__":
@@ -1390,6 +1572,12 @@ if __name__ == "__main__":
         reason = drain_policy.skip_reason(job)
         if reason:
             print(f"periodic {job}: skipped ({reason}; draining backlog first)")
+            try:
+                import skip_visibility
+                print(skip_visibility.render_build_summary([
+                    skip_visibility.build_record(job, reason)]))
+            except Exception:
+                pass
             sys.exit(0)
     except Exception as e:
         print(f"periodic {job}: drain policy unavailable ({e})")
@@ -1405,7 +1593,14 @@ if __name__ == "__main__":
         "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "remotegc",
         "priority_scorer", "quarantine_gc", "markersentinel",
+        # Polling fallback for approvals, and fleet_config sync. Neither spends
+        # tokens, and a paused fleet is exactly when an approval must still be
+        # seen and a config change must still land.
+        "rtmon", "rtconfig",
         "relationshipcrm",
+        # Observation must not stop when the fleet pauses: a paused fleet is exactly when
+        # an undrained evidence outbox goes unnoticed. None of these spend tokens.
+        "complianceoutbox", "compliancescorecard", "complianceanomaly", "compliancehealth",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:
@@ -1418,12 +1613,70 @@ if __name__ == "__main__":
             pass
     outcome = _run_job_locked(job)
     # rc 0 = the job ran. rc 75 = legitimately busy, retry next interval. rc 1 = WEDGED.
+    # rc 2 = started but had to be interrupted, so its work for this cycle did not happen.
     # Returning 0 for a skip is what let three of four jobs no-op through a verification pass
-    # while every caller recorded success.
+    # while every caller recorded success; a timeout reported success the same way.
     if isinstance(outcome, _Skipped):
         if outcome.wedged:
             print(f"periodic {job}: exiting {_EX_WEDGED} — WEDGED ({outcome.skips} consecutive "
                   f"skips, reason: {outcome.reason})", file=sys.stderr, flush=True)
             sys.exit(_EX_WEDGED)
         sys.exit(_EX_SKIPPED)
+    if isinstance(outcome, _TimedOut):
+        print(f"periodic {job}: exiting {_EX_TIMEOUT} — TIMEOUT after {outcome.seconds}s "
+              f"({outcome.detail})", file=sys.stderr, flush=True)
+        sys.exit(_EX_TIMEOUT)
     sys.exit(_EX_OK)
+
+def _declared_job_handler_names(path: str | None = None) -> list[str]:
+    """Handler function names referenced by the JOBS literal, read from this file's source.
+
+    Read via ast so the guard stays correct when jobs are added/removed — nobody has to
+    remember to update a hand-maintained list. Fail-soft: any parse problem yields [] so
+    the guard degrades to today's behavior rather than blocking startup.
+    """
+    try:
+        import ast
+        src = open(path or os.path.abspath(__file__), "r", encoding="utf-8", errors="replace").read()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "JOBS" for t in node.targets
+            ) and isinstance(node.value, ast.Dict):
+                return [v.id for v in node.value.values if isinstance(v, ast.Name)]
+    except Exception:
+        pass
+    return []
+
+def _require_job_handlers(names, namespace=None) -> list[str]:
+    """Fail loudly, and by name, when a JOBS entry has no handler function.
+
+    Without this the JOBS dict literal raises a bare `NameError: name 'run_x' is not
+    defined` at module scope — which every caller sees as an unexplained import crash
+    (the decisionbriefs crashloop). Returns the missing names; raises if any.
+    """
+    ns = globals() if namespace is None else namespace
+    missing = sorted({n for n in names if not callable(ns.get(n))})
+    if missing:
+        raise RuntimeError(
+            "periodic.py: job dispatch table references handler function(s) that are not "
+            "defined: " + ", ".join(missing) + ". Define them, or remove their JOBS entry, "
+            "before startup."
+        )
+    return missing
+
+def run_rtconfig():
+    """Realtime fleet_config sync: one poll+apply cycle (canonical module).
+
+    runner/ holds five rival real-time sync modules; only realtime_approval_monitor
+    (approvals) and realtime_config_sync (config) are wired. The other three are
+    deprecated shells with zero importers.
+    """
+    import realtime_config_sync
+    print(f"rtconfig: {realtime_config_sync.run()}")
+
+
+# Registered here rather than in the JOBS literal above because this function is
+# defined below it. Moving the definition would be a larger diff for no gain; what
+# matters is that the name is in JOBS before anything reads it.
+JOBS["rtconfig"] = run_rtconfig
+

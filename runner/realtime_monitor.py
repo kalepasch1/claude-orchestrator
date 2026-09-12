@@ -2,6 +2,10 @@
 """
 realtime_monitor.py – Real-time task monitoring and approval dashboard data provider.
 
+DEPRECATED — zero importers. `realtime_approval_monitor.py` is the canonical
+approval monitor and is the one periodic.py/runner.py schedule (job "rtmon").
+Do not extend this file.
+
 Aggregates live orchestrator state into dashboard-ready snapshots: queue depths,
 throughput rates, pending approvals, and per-project health. Powers the ops
 approval dashboard with sub-minute data.
@@ -27,69 +31,116 @@ def _queue_depths():
     """Current task counts by state."""
     try:
         import db
-        rows = db.sql(
-            "SELECT state, count(*)::int AS cnt FROM tasks GROUP BY state"
-        ) or []
-        return {r["state"]: r["cnt"] for r in rows}
+        # Was `db.sql("SELECT state, count(*) ... GROUP BY state")`. db is a
+        # PostgREST client and has never had a raw-SQL channel, so this raised
+        # AttributeError on every call and the handler below returned None — the
+        # monitor's queue depths have been UNKNOWN on every machine, for the whole
+        # life of this function, and the dashboard has rendered that as unknown
+        # rather than as a number nobody noticed was missing.
+        #
+        # This is the second function in this module with that defect;
+        # _project_summary had it too. Same fix: ask PostgREST for the rows and
+        # group them here.
+        rows = db.select_all("tasks", {"select": "state"}) or []
+        depths = {}
+        for r in rows:
+            state = r.get("state") or "?"
+            depths[state] = depths.get(state, 0) + 1
+        return depths
     except Exception:
-        return {}
+        # None, not {}. An empty queue and an unreachable control plane are opposite
+        # facts; a monitor that renders them identically is worse than no monitor.
+        return None
 
 
 def _throughput(window_hours=1):
-    """Tasks completed in the last N hours."""
+    """Tasks completed in the last N hours. None when the count is unavailable.
+
+    Two bugs lived in one line here.
+
+    COUNT BY FETCH. This selected rows and returned len(). PostgREST caps a response at
+    1000 rows whatever the query asks for, so throughput SATURATED at 1000 — past that
+    the dashboard showed the same number no matter how much the fleet actually did, and
+    the 24h window hit the ceiling long before the 1h window did, making 24h look *worse*
+    than 1h. db.count asks the server for the exact number and transfers no rows.
+
+    OUTAGE RENDERED AS ZERO. The except returned 0, which on a MONITORING surface is the
+    worst possible default: a control-plane outage and a fleet that completed nothing
+    produce the identical reading, so the dashboard is calmest exactly when it should be
+    loudest. None means UNKNOWN and callers must not render it as 0.
+    """
     try:
         import db
-        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(hours=window_hours)).isoformat() + "Z"
-        rows = db.select("tasks", {
-            "select": "id",
-            "state": "eq.DONE",
-            "updated_at": f"gte.{cutoff}",
-        }) or []
-        return len(rows)
+        cutoff = (datetime.datetime.utcnow()
+                  - datetime.timedelta(hours=window_hours)).isoformat() + "Z"
+        got = db.count("tasks", {"state": "eq.DONE", "updated_at": f"gte.{cutoff}"})
+        return int(got or 0)
     except Exception:
-        return 0
+        return None
 
 
 def _pending_approvals():
-    """Tasks waiting for human approval."""
+    """Approvals waiting on a human.
+
+    This asked the TASKS table for rows in state PENDING_REVIEW or NEEDS_APPROVAL.
+    Neither is a value of the task_state enum, so PostgREST answered
+
+        400: invalid input value for enum task_state: "PENDING_REVIEW"
+
+    on every call, and the handler below returned None. The monitor has reported
+    pending approvals as UNKNOWN for the whole life of this function, and
+    snapshot() has been permanently degraded because of it.
+
+    Approvals are their own table with their own lowercase status enum — the same
+    mistake, and the same correction, as alert_rules_engine's pending_approvals
+    metric. The returned shape is unchanged so no caller has to move.
+    """
     try:
         import db
-        rows = db.select("tasks", {
-            "select": "slug,kind,project_id,note,updated_at",
-            "or": ",".join(f"(state.eq.{s})" for s in APPROVAL_STATES),
-            "order": "updated_at.asc",
+        rows = db.select("approvals", {
+            "select": "slug,kind,project,title,detail,created_at",
+            "status": "eq.pending",
+            "order": "created_at.asc",
             "limit": "50",
         }) or []
         return [
             {
                 "slug": r.get("slug"),
                 "kind": r.get("kind"),
-                "project_id": r.get("project_id"),
-                "waiting_since": r.get("updated_at"),
-                "note_preview": (r.get("note") or "")[:100],
+                "project_id": r.get("project"),
+                "waiting_since": r.get("created_at"),
+                "note_preview": (r.get("detail") or r.get("title") or "")[:100],
             }
             for r in rows
         ]
     except Exception:
-        return []
+        return None  # UNKNOWN, not "nothing is waiting" — see _throughput.
 
 
 def _project_summary():
     """Per-project task state breakdown."""
     try:
         import db
-        rows = db.sql(
-            "SELECT p.name, t.state, count(*)::int AS cnt "
-            "FROM tasks t JOIN projects p ON t.project_id = p.id "
-            "GROUP BY p.name, t.state ORDER BY p.name"
+        # This was a db.sql GROUP BY over a join. db is a PostgREST client with no
+        # raw-SQL channel, so the call raised AttributeError and this function has
+        # only ever returned None — which snapshot() renders as UNKNOWN. PostgREST
+        # does the join through the foreign key, so ask for the state and the
+        # project's name together and group the rows here.
+        rows = db.select_all(
+            "tasks", {"select": "state,projects(name)"}
         ) or []
         summary = {}
         for r in rows:
-            name = r.get("name", "unknown")
-            summary.setdefault(name, {})[r.get("state", "?")] = r.get("cnt", 0)
+            project = r.get("projects") or {}
+            if isinstance(project, list):  # PostgREST returns a list for some rels
+                project = project[0] if project else {}
+            name = project.get("name") or "unknown"
+            state = r.get("state") or "?"
+            per_project = summary.setdefault(name, {})
+            per_project[state] = per_project.get(state, 0) + 1
         return summary
     except Exception:
-        return {}
+        return None  # UNKNOWN, not "no projects" — see _throughput.
 
 
 def snapshot():
@@ -111,17 +162,29 @@ def snapshot():
             return _STATE["last_snapshot"]
 
     depths = _queue_depths()
+    approvals = _pending_approvals()
     result = {
-        "queue_depths": depths,
-        "total_tasks": sum(depths.values()),
+        "queue_depths": depths if depths is not None else {},
+        # `is not None`, not truthiness: an EMPTY depths dict means a genuinely empty
+        # queue and must total 0, while None means we could not ask.
+        "total_tasks": sum(depths.values()) if depths is not None else None,
         "throughput_1h": _throughput(1),
         "throughput_24h": _throughput(24),
-        "pending_approvals": _pending_approvals(),
-        "pending_count": 0,
+        "pending_approvals": approvals if approvals is not None else [],
+        "pending_count": len(approvals) if approvals is not None else None,
         "project_summary": _project_summary(),
         "snapshot_at": now,
     }
-    result["pending_count"] = len(result["pending_approvals"])
+    # DEGRADED is the field a dashboard must read before it renders anything. Every
+    # metric that could not be measured is named here, so an outage is visible as an
+    # outage instead of as a very quiet fleet. A snapshot with a non-empty `degraded`
+    # list must never be presented as a healthy reading.
+    result["degraded"] = sorted(
+        name for name in ("queue_depths", "throughput_1h", "throughput_24h",
+                          "pending_count", "project_summary")
+        if (depths is None and name == "queue_depths")
+        or (result.get(name) is None and name != "queue_depths"))
+    result["ok"] = not result["degraded"]
 
     with _lock:
         _STATE["last_snapshot"] = result
@@ -132,8 +195,14 @@ def snapshot():
 
 
 def approval_queue():
-    """Return just the pending approvals for the dashboard widget."""
-    return _pending_approvals()
+    """Pending approvals for the dashboard widget. [] when unavailable.
+
+    This one keeps the list contract because the widget iterates it directly; callers
+    that need to distinguish "none waiting" from "could not ask" should read
+    `snapshot()["degraded"]`.
+    """
+    got = _pending_approvals()
+    return got if got is not None else []
 
 
 def stats():
@@ -150,12 +219,18 @@ def run():
     snap = snapshot()
     try:
         import db
+        def _fmt(value):
+            # "unknown" is spelled out. "None tasks" in an inbox title reads like a
+            # formatting bug and gets ignored; "unknown" reads like an outage.
+            return "unknown" if value is None else value
+
         depths_str = ", ".join(f"{k}={v}" for k, v in snap["queue_depths"].items())
+        prefix = "Monitor" if snap.get("ok", True) else "Monitor DEGRADED"
         db.insert("inbox", {
             "kind": "monitor_snapshot",
-            "title": f"Monitor: {snap['total_tasks']} tasks, "
-                     f"{snap['throughput_1h']} done/1h, "
-                     f"{snap['pending_count']} awaiting approval",
+            "title": f"{prefix}: {_fmt(snap['total_tasks'])} tasks, "
+                     f"{_fmt(snap['throughput_1h'])} done/1h, "
+                     f"{_fmt(snap['pending_count'])} awaiting approval",
             "body": f"Queue: {depths_str}\n"
                     f"Throughput 24h: {snap['throughput_24h']}\n"
                     f"Pending approvals: {snap['pending_count']}",

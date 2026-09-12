@@ -20,7 +20,7 @@ async function authedFetch<T = any>(url: string, opts: any = {}) {
 }
 async function refresh() {
   try { data.value = await authedFetch('/api/improvement/recommendations', { query: { scope_type: scopeType.value, scope_ref: scopeRef.value, label: label.value } }) }
-  catch { data.value = { recommendation: { score: 84, expectedLift: 17, targetKpi: 'first_pass_rate', rationale: 'Connect telemetry to receive a live CADE recommendation.', mode: 'observe' }, loops: [], credits: 0 } }
+  catch { data.value = { recommendation: { score: 84, expectedLift: 17, targetKpi: 'first_pass_rate', rationale: 'Connect telemetry to receive a live recommendation.', mode: 'observe' }, loops: [], credits: 0 } }
 }
 async function activate() {
   busy.value = true; notice.value = ''
@@ -41,7 +41,7 @@ onUnmounted(() => clearInterval(motion))
     <div class="compound-copy">
       <span class="eyebrow"><i /> Compounding intelligence</span>
       <h2>Every objective can improve the system that completed it.</h2>
-      <p>CADE identifies high-leverage surfaces, creates a bounded candidate loop, shadow-tests it against the current system, independently verifies the gain, and rolls back automatically if a protected KPI moves the wrong way.</p>
+      <p>You see the evidence, the affected systems, the tradeoffs, and the exact action — then implement, adjust, or reject it in one place. Nothing changes until a measured gain is independently verified, and a change that moves a protected result the wrong way is reversed on its own.</p>
       <div class="scope-form">
         <label>Improve
           <select v-model="scopeType">
@@ -53,14 +53,14 @@ onUnmounted(() => clearInterval(motion))
       </div>
       <div class="recommendation">
         <div><strong>{{ data?.recommendation?.score ?? 84 }}</strong><span>/100</span></div>
-        <p><b>CADE recommends {{ data?.recommendation?.mode ?? 'shadow' }} mode</b><small>{{ data?.recommendation?.rationale }} Expected lift: +{{ data?.recommendation?.expectedLift ?? 17 }}% on {{ data?.recommendation?.targetKpi?.replaceAll('_', ' ') }}.</small></p>
+        <p><b>Recommended: {{ data?.recommendation?.mode ?? 'shadow' }} mode</b><small>{{ data?.recommendation?.rationale }} Expected lift: +{{ data?.recommendation?.expectedLift ?? 17 }}% on {{ data?.recommendation?.targetKpi?.replaceAll('_', ' ') }}.</small></p>
       </div>
       <div class="actions"><button :disabled="busy || !scopeRef.trim()" @click="activate">{{ busy ? 'Binding safeguards…' : 'Activate verified loop' }} <span>↗</span></button><NuxtLink to="/loops">Open improvement control center</NuxtLink></div>
       <p v-if="notice" class="notice">{{ notice }}</p>
     </div>
 
     <div class="compound-visual" aria-label="Dynamic self-improvement lifecycle">
-      <header><span>CADE / improvement fabric</span><b><i /> SHADOW LIVE</b></header>
+      <header><span>Improvement fabric</span><b><i /> SHADOW LIVE</b></header>
       <div class="orbit">
         <div class="core"><span>+{{ data?.recommendation?.expectedLift ?? 17 }}%</span><small>verified candidate</small></div>
         <i v-for="n in 3" :key="n" :class="`ring r${n}`" />
@@ -71,7 +71,7 @@ onUnmounted(() => clearInterval(motion))
         <div><span>CANDIDATE</span><b>Adaptive route</b><i><em class="green" style="width:94%" /></i></div>
       </div>
       <div class="guardrail"><span>Locked invariants</span><b>Authority</b><b>Secrets</b><b>Privacy</b><b>Budget</b><b>Independent QA</b></div>
-      <footer><div><span>HIVEMIND VALUE</span><strong>{{ data?.credits ?? 0 }} credits</strong></div><p>Share only the privacy-safe pattern after blind validation. Verified downstream value earns platform rebates.</p><button>Contribution policy ↗</button></footer>
+      <footer><div><span>SHARED VALUE</span><strong>{{ data?.credits ?? 0 }} credits</strong></div><p>Share only the privacy-safe pattern after blind validation. Verified downstream value earns platform rebates.</p><button>Contribution policy ↗</button></footer>
     </div>
   </section>
 </template>

@@ -170,6 +170,34 @@ def express_lane_utilization():
 EXPRESS_PRIORITY_AT_OR_BELOW = 100
 
 
+#: Slug prefix used by the operator drop-box. Kept as an ORCH_ env var so the
+#: convention can move fleet-wide via fleet_control.py rather than by code edit.
+ORCH_OPERATOR_SLUG_PREFIX = os.environ.get("ORCH_OPERATOR_SLUG_PREFIX", "dropbox-")
+
+
+def is_operator_origin(task):
+    """Did a human put this in the queue? Returns (bool, reason).
+
+    The single definition of "the owner asked for this", so claim ordering, express
+    routing and shelve protection cannot drift apart — they did, and operator work
+    fell through the gap between them.
+
+    Fail-soft: anything unreadable answers False, because wrongly promoting machine
+    work is a smaller error than raising inside the scheduler.
+    """
+    if not isinstance(task, dict):
+        return False, "not_a_task"
+    slug = task.get("slug")
+    if isinstance(slug, str) and slug.startswith(ORCH_OPERATOR_SLUG_PREFIX):
+        return True, "operator_dropbox"
+    if task.get("submitted_by") not in (None, ""):
+        return True, "operator_submitted"
+    label = task.get("submitted_by_label")
+    if isinstance(label, str) and label.strip():
+        return True, "operator_submitted_label"
+    return False, "not_operator_origin"
+
+
 def is_express_task(task):
     """Is this task express, per the REAL tasks schema? Returns (bool, reason).
 
@@ -178,13 +206,32 @@ def is_express_task(task):
     "not_express_priority", should_use_express_lane() always returned False, and the whole
     module was inert — which is also why nothing outside its own tests ever imported it.
 
-    The two express signals the schema actually provides:
+    The express signals the schema actually provides:
+      * OPERATOR ORIGIN — a drop-box slug, or a task carrying submitted_by /
+        submitted_by_label. These are the owner's own directives and already sort
+        ahead of everything at claim time; see below for why that was not enough.
       * pinned=true with a non-zero pin_rank — the operator's explicit "this goes first"
         marker, already honoured by claim ordering.
       * priority <= EXPRESS_PRIORITY_AT_OR_BELOW — an explicitly urgent numeric rank.
+
+    WHY OPERATOR ORIGIN IS HERE. Claim ordering ranks drop-box and attributed-submitter
+    tasks at 0, ahead of every machine-generated repair task, because 16 executors once
+    burned their budget on the fleet's own self-repair loop while the operator's queue
+    never moved. But claim ORDER is not the only thing that decides whether operator work
+    runs: queue_velocity's PID shelves the lowest-EV slice of the queue when the integral
+    is over threshold, and it exempted only `pinned`. An operator drop-box task carries no
+    pin and often has no confidence score yet, so it sorted to the front of the claim
+    order and was simultaneously eligible to be shelved out of the queue entirely. That is
+    not hypothetical — "shelved by queue-velocity PID (low EV, integral too high)" is the
+    recorded failure on this very task. Recognising operator origin here, and refusing to
+    shelve it in queue_velocity._shelve_lowest_ev(), closes that gap from both ends.
     """
     if not isinstance(task, dict):
         return False, "not_a_task"
+
+    ok, reason = is_operator_origin(task)
+    if ok:
+        return True, reason
 
     if task.get("pinned"):
         rank = task.get("pin_rank")

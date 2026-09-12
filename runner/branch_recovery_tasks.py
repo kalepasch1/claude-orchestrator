@@ -86,6 +86,13 @@ def _get_branch_status(repo_path, branch_name):
         rc, _, _ = _git(repo_path, "cat-file", "-t", last_commit_sha)
         if rc != 0:
             corruption_flags.append("commit_object_missing")
+    elif rc == 0:
+        # rev-parse SUCCEEDED and printed nothing. A ref that resolves to the
+        # empty string is not a healthy branch, and the `if last_commit_sha`
+        # above quietly skipped the cat-file check for it -- so this was the one
+        # shape of damage that came back with no corruption flags at all, i.e.
+        # reported as clean. Name it instead.
+        corruption_flags.append("empty_commit_sha")
 
     # Check if orphaned (no common ancestor with master)
     rc, _, _ = _git(repo_path, "merge-base", "--is-ancestor", "refs/heads/master", f"refs/heads/{branch_name}")

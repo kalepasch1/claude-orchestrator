@@ -2,13 +2,29 @@
 """
 counterfactual-replay module - re-evaluate past routing/policy decisions with current models.
 
-Periodically replays past task routing and policy decisions (from last 7 days, configurable)
-through the current model state to detect where decisions would diverge, then updates
-ORCH_RUNNER_ROUTE_* / ORCH_RUNNER_POLICY_* config keys via fleet_control.update_fleet_config().
+WHAT THIS MODULE IS (corrected 2026-08-24). It is a LIBRARY, not a job. Callers
+supply a decision history and a model handle; it replays each decision, reports
+where the new model would route differently, turns those divergences into route
+updates, persists them, and — via push_config_updates() — pushes
+ORCH_RUNNER_ROUTE_* / ORCH_RUNNER_POLICY_* keys through
+fleet_control.update_fleet_config(). It does not fetch decisions, does not read
+the tasks table (it imports no db), and has no run/main entry point; nothing in
+runner._SCHEDULE runs it. The scheduled "routereplay-1800" job is
+route_counterfactual.py, which is a different thing: it sweeps routing-policy
+weights over one captured outcome trace and never touches this module.
+
+This docstring previously described the design in
+SPEC-RUNNER-COUNTERFACTUAL-REPLAY.md — a periodic sweep that queried the last 7
+days of tasks and applied fleet_control.apply_config_batch(). That design was
+never built (fleet_control has no apply_config_batch), and five generated test
+suites were written against it. See the ownership notes at the top of
+runner/test_counterfactual_replay_{comprehensive,spec,impl}.py and
+runner/tests/test_counterfactual_replay{,_e2e}.py.
 
 No task re-execution—replay-only. Fail-soft error handling throughout. Thread-safe.
 
-Env vars:
+Env vars (read at import; DAYS_BACK/BATCH_SIZE are advisory — the module exposes
+them for callers that page through a history, it does not window one itself):
     ORCH_COUNTERFACTUAL_DAYS_BACK   default 7 (how far back to replay)
     ORCH_COUNTERFACTUAL_BATCH_SIZE  default 50 (replay batch size)
     ORCH_COUNTERFACTUAL_ENABLED     default true (master kill switch)
@@ -36,6 +52,20 @@ ENABLED = os.environ.get("ORCH_COUNTERFACTUAL_ENABLED", "true").lower() == "true
 _lock = threading.Lock()
 _stats = {"replayed": 0, "changed": 0, "errors": 0}
 _storage_singleton = None
+
+
+def _bump(key, n=1):
+    """Record replay activity in the module counters.
+
+    stats()/invalidate() have always exposed and reset these three counters,
+    but nothing ever incremented them, so stats() could only ever report zeros
+    and the kill-switch/observability story in the module docstring was
+    unobservable. Counting happens here, under the same lock stats() reads.
+    """
+    if n <= 0:
+        return
+    with _lock:
+        _stats[key] = _stats.get(key, 0) + n
 
 
 def _acquire_storage(base_dir=None):
@@ -94,8 +124,10 @@ def replay_decision(task_id, old_decision, new_model):
             if key in old_decision:
                 result[key] = old_decision[key]
 
+        _bump("replayed")
         return result
     except Exception as e:
+        _bump("errors")
         ehu.wrap_error(e, category="transient", context=f"replay_decision({task_id})")
         return None
 
@@ -184,8 +216,14 @@ def analyze_replay_impact(old_decision, replay_result):
     """Analyze the impact of a replayed decision."""
     try:
         old_output = old_decision.get("output", {})
+        if not isinstance(old_output, dict):
+            # The confidence lookup below already guarded for a non-dict output,
+            # but the route lookup further down did not — so a corrupted output
+            # raised AttributeError and the except dropped the entire impact
+            # record, which is precisely the case the guard existed for.
+            old_output = {}
         new_conf = replay_result.get("confidence", 0.0)
-        old_conf = old_output.get("confidence", 0.0) if isinstance(old_output, dict) else 0.0
+        old_conf = old_output.get("confidence", 0.0)
 
         return {
             "confidence_change": calculate_confidence_change(old_conf, new_conf),
@@ -232,7 +270,16 @@ def has_policy_change(old_decision, replay_result):
     """Check if a replay result shows policy change."""
     try:
         old_output = old_decision.get("output", {})
-        policy = detect_policy_change(old_output, replay_result)
+        # A replay result names its choice "decision"; a stored output names it
+        # "route" (analyze_replay_impact already compares exactly those two
+        # fields). Normalise before handing it to detect_policy_change, which
+        # expects two route-shaped outputs — otherwise new_route is always None
+        # and every replayed decision looks like a divergence.
+        new_output = {
+            "route": replay_result.get("decision", replay_result.get("route")),
+            "confidence": replay_result.get("confidence", 0.5),
+        }
+        policy = detect_policy_change(old_output, new_output)
         return policy.get("changed", False)
     except Exception:
         return False
@@ -291,6 +338,16 @@ def replay_batch_with_summary(decisions, new_model):
     """Batch replay with summary statistics."""
     results = replay_batch(decisions, new_model)
 
+    # Index the source decisions so each result can be scored against the
+    # decision it replays. Without this pairing "policy_changes" stayed at the
+    # 0 it was initialised with and the confidence delta was measured against
+    # an "original_confidence" key that replay_decision never emits — i.e. it
+    # was the mean new confidence, not a delta.
+    originals = {}
+    for decision in (decisions or []):
+        if isinstance(decision, dict):
+            originals.setdefault(decision.get("task_id", "unknown"), decision)
+
     summary = {
         "total_replayed": len(results),
         "policy_changes": 0,
@@ -300,20 +357,29 @@ def replay_batch_with_summary(decisions, new_model):
 
     confidence_deltas = []
     models_seen = set()
+    changes = 0
 
     for result in results:
         if result.get("model"):
             models_seen.add(result["model"])
 
-        delta = result.get("confidence", 0.0) - (
-            result.get("original_confidence", 0.0) if hasattr(result, 'get') else 0.0
-        )
-        confidence_deltas.append(abs(delta))
+        original = originals.get(
+            result.get("original_task_id", result.get("task_id"))
+        ) or {}
+        old_output = original.get("output")
+        old_conf = old_output.get("confidence", 0.0) if isinstance(old_output, dict) else 0.0
+
+        confidence_deltas.append(abs(result.get("confidence", 0.0) - old_conf))
+
+        if has_policy_change(original, result):
+            changes += 1
 
     if confidence_deltas:
         summary["avg_confidence_delta"] = sum(confidence_deltas) / len(confidence_deltas)
 
+    summary["policy_changes"] = changes
     summary["models_tested"] = sorted(list(models_seen))
+    _bump("changed", changes)
 
     return results, summary
 

@@ -14,6 +14,7 @@ export type * from "./common.ts";
 export type * from "./compound.ts";
 export type * from "./wave.ts";
 export type * from "./event.ts";
+export type * from "./pipeline.ts";
 
 import type { CancelCompound, CreateCompound, GetCompound } from "./compound.ts";
 import type { GetWave, ListWaves, TriggerWave } from "./wave.ts";

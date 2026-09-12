@@ -123,6 +123,133 @@ def detect_alerts(states=None):
     return alerts
 
 
+# ── alert delivery ────────────────────────────────────────────────────────────────────
+# detect_alerts() has always found prolonged waits, stuck RUNNING tasks and a stalled
+# queue — and then only written them to a log file nobody is watching. An alert that is
+# only logged is not an alert. These deliver criticals through notify.py (Slack + email
+# via scripts/notify.sh), with a per-condition cooldown so a condition that persists for
+# hours pages once per window instead of once per run.
+ALERTS_ENABLED = os.environ.get("ORCH_MONITOR_ALERTS_ENABLED", "true").lower() in (
+    "1", "true", "yes", "on")
+ALERT_COOLDOWN_MIN = float(os.environ.get("ORCH_MONITOR_ALERT_COOLDOWN_MIN", "60") or 60)
+#: Only these severities are delivered. Warnings stay in the log by design — paging on
+#: every warning is how an alert channel gets muted, which costs more than it saves.
+ALERT_SEVERITIES = tuple(
+    s.strip().lower()
+    for s in os.environ.get("ORCH_MONITOR_ALERT_SEVERITIES", "critical").split(",")
+    if s.strip()
+)
+_HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
+ALERT_STATE_FILE = os.path.join(_HOME, "queue_monitor_alerts.json")
+
+
+def alert_fingerprint(alert):
+    """Stable identity of a CONDITION, not of one observation.
+
+    Deliberately excludes `details` and the counts inside `message`: "3 tasks stuck" and
+    "4 tasks stuck" are the same ongoing incident, and keying on the exact wording would
+    defeat the cooldown every time one more task piles on.
+    """
+    if not isinstance(alert, dict):
+        return ""
+    return f"{alert.get('severity', '')}:{alert.get('category', '')}"
+
+
+def _load_alert_state(path=None):
+    try:
+        with open(path or ALERT_STATE_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_alert_state(state, path=None):
+    path = path or ALERT_STATE_FILE
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        return True
+    except Exception as exc:
+        log.debug("queue_monitor: could not persist alert state: %s", exc)
+        return False
+
+
+def alerts_to_deliver(alerts, state=None, now=None, cooldown_min=None):
+    """Which alerts are due for delivery. Pure — no I/O, no clock, fully testable.
+
+    Returns (to_send, next_state). An unknown/garbage severity is never delivered:
+    guessing that an unrecognised level is critical would page on parser bugs.
+    """
+    state = dict(state or {})
+    now = time.time() if now is None else now
+    window = (ALERT_COOLDOWN_MIN if cooldown_min is None else cooldown_min) * 60.0
+    to_send = []
+    for alert in alerts or []:
+        if not isinstance(alert, dict):
+            continue
+        if str(alert.get("severity", "")).lower() not in ALERT_SEVERITIES:
+            continue
+        key = alert_fingerprint(alert)
+        # Absent or unreadable means NEVER SENT, not "sent at epoch 0" — a corrupt
+        # bookkeeping entry must fail towards delivering the alert, never towards
+        # silencing it.
+        raw = state.get(key)
+        try:
+            last = None if raw in (None, "") else float(raw)
+        except (TypeError, ValueError):
+            last = None
+        if last is not None and now - last < window:
+            continue
+        to_send.append(alert)
+        state[key] = now
+    return to_send, state
+
+
+def format_alert(alert):
+    """One-line, channel-agnostic rendering. Never raises on an odd alert shape."""
+    if not isinstance(alert, dict):
+        return "queue-monitor: malformed alert"
+    severity = str(alert.get("severity", "alert")).upper()
+    message = str(alert.get("message", "")).strip() or str(alert.get("category", "?"))
+    return f"[queue-monitor {severity}] {message}"
+
+
+def dispatch_alerts(alerts, state_path=None, sender=None):
+    """Deliver due alerts through notify.py. Fail-soft — monitoring never wedges a run.
+
+    Returns the list of messages actually sent.
+    """
+    if not ALERTS_ENABLED or not alerts:
+        return []
+    path = state_path or ALERT_STATE_FILE
+    state = _load_alert_state(path)
+    due, next_state = alerts_to_deliver(alerts, state)
+    if not due:
+        return []
+    if sender is None:
+        try:
+            import notify
+            sender = notify.send
+        except Exception as exc:
+            log.warning("queue_monitor: notify unavailable (%s); alerts logged only", exc)
+            return []
+    sent = []
+    for alert in due:
+        message = format_alert(alert)
+        try:
+            sender(message)
+            sent.append(message)
+        except Exception as exc:
+            # Drop this one from the state so the next run retries rather than
+            # swallowing an alert that was never actually delivered.
+            next_state.pop(alert_fingerprint(alert), None)
+            log.warning("queue_monitor: alert delivery failed (%s): %s", exc, message)
+    _save_alert_state(next_state, path)
+    return sent
+
+
 def log_snapshot(states=None, alerts=None):
     """Log a queue health snapshot with any active alerts."""
     if states is None:
@@ -156,6 +283,13 @@ def run():
     states = snapshot_queue_states()
     alerts = detect_alerts(states)
     snapshot = log_snapshot(states, alerts)
+    # Deliver, don't just log. Fail-soft: a broken notification channel must not turn a
+    # monitoring run into a failed job.
+    try:
+        snapshot["delivered"] = dispatch_alerts(alerts)
+    except Exception as exc:
+        log.warning("queue_monitor: alert dispatch failed: %s", exc)
+        snapshot["delivered"] = []
     return snapshot
 
 

@@ -32,7 +32,12 @@ _SIGNATURES = [
     (re.compile(r"rebase conflict|merge conflict", re.I), "merge-conflict"),
     (re.compile(r"tests? failed|test failure", re.I), "test-failure"),
     (re.compile(r"build fail|compilation error|tsc.*error", re.I), "build-failure"),
-    (re.compile(r"timeout|timed out|max.turns", re.I), "timeout"),
+    # `max.turns` matched "max_turns" and "max-turns" but NOT the phrase the Claude CLI
+    # actually emits — "Reached maximum number of turns" — so every real turn-budget
+    # exhaustion was classified "unknown" and got no remediation. That is the single
+    # most common agent failure, and RCA was blind to it.
+    (re.compile(r"timeout|timed out|max.turns|maximum number of turns|error_max_turns",
+                re.I), "timeout"),
     (re.compile(r"missing.branch|branch.*not found", re.I), "missing-branch"),
     (re.compile(r"rate.limit|quota|throttl", re.I), "rate-limited"),
     (re.compile(r"disk.space|no space left", re.I), "disk-space"),
@@ -84,7 +89,26 @@ def analyze(project_id=None):
     filters = {"select": "id,slug,note,kind,attempt", "state": "in.(QUARANTINED,BLOCKED)"}
     if project_id:
         filters["project_id"] = f"eq.{project_id}"
-    rows = db.select("tasks", filters) or []
+
+    # PAGE THE SCAN, AND SURVIVE A DB BLIP.
+    #
+    # Two bugs in one line. `db.select` is capped by PostgREST at 1,000 rows however many
+    # match (see the scan-window note in db.py), and this is a COUNTING function: a
+    # truncated read does not fail, it silently under-counts every cluster and can reorder
+    # which root cause looks biggest. `select_all` pages to exhaustion.
+    #
+    # And the read was unguarded, while `analyze()` is called from a scheduled job whose
+    # whole contract is fail-soft. A transient DB error (db raises TransientDBError by
+    # design, precisely so callers can classify it) propagated out and crashed the RCA
+    # pass. Returning [] means "no clusters found this cycle", which is what every caller
+    # already handles.
+    try:
+        reader = getattr(db, "select_all", None)
+        rows = (reader("tasks", filters, order="id.asc") if callable(reader)
+                else db.select("tasks", filters)) or []
+    except Exception as exc:
+        print(f"rca_engine: task read failed ({exc}); reporting no clusters this cycle")
+        return []
 
     clusters = collections.Counter()
     samples = collections.defaultdict(list)

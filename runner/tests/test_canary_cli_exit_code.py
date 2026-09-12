@@ -13,7 +13,20 @@ import canary
 
 
 def test_promote_exits_zero(monkeypatch, capsys):
-    # No metrics endpoint configured -> evaluate() returns 'promote'
+    """No metrics endpoint configured -> evaluate() returns 'promote'.
+
+    Deleting the env var is not enough to establish that precondition. main()
+    calls load_env() — deliberately, so an operator can configure the CLI from a
+    .env — and this repo HAS one with a METRICS_URL in it. So the var came
+    straight back, the test made a real network call to a live endpoint, and the
+    verdict was 'rollback: metrics unreachable (HTTP 401)'. It was failing on the
+    machine's configuration and a credential, not on the exit-code contract it is
+    named for.
+
+    Neutralising load_env is what makes "unconfigured" actually true here. It
+    also stops a unit test reaching the network.
+    """
+    monkeypatch.setattr(canary, "load_env", lambda *a, **k: False)
     monkeypatch.delenv("METRICS_URL", raising=False)
     assert canary.main([]) == 0
     out = json.loads(capsys.readouterr().out)

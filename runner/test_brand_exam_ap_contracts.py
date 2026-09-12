@@ -40,12 +40,20 @@ os.environ["ORCH_DB_URL"] = ""
 
 # Import runner module
 import importlib.util
-_spec = importlib.util.spec_from_file_location(
-    "runner",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py")
-)
+# LOADED UNDER A PRIVATE NAME, NOT "runner".
+#
+# This used to be `spec_from_file_location("runner", .../runner.py)` followed by
+# `sys.modules["runner"] = runner`, at module scope and never undone. runner/ is
+# BOTH a package and a directory containing runner.py, so installing the
+# entrypoint under the bare name replaced the PACKAGE for every test collected
+# afterwards -- and `from runner.X import Y` then fails with "runner is not a
+# package". runner/tests/conftest.py carries a per-test fixture
+# (_runner_stays_a_package) whose entire job is to undo this; the fix is to stop
+# doing it. Same pattern as runner/tests/test_run_task_safe.py.
+_ENTRYPOINT = "runner_entrypoint_brand_exam_ap"
+_spec = importlib.util.spec_from_file_location(_ENTRYPOINT, os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py"))
 runner = importlib.util.module_from_spec(_spec)
-sys.modules["runner"] = runner
+sys.modules[_ENTRYPOINT] = runner
 _spec.loader.exec_module(runner)
 
 
@@ -93,8 +101,17 @@ class MockAPContract:
         brand_tier="standard",
         updated_at_offset_min=0,
         updated_at_iso=None,
+        stage="initiation",
     ):
-        """Create a brand exam AP contract task."""
+        """Create a brand exam AP contract task.
+
+        `stage` is a real parameter, not decoration: seven callers below build a
+        task at a named point in the initiation -> brand_exam -> validation ->
+        think_tank_setup -> launch progression and then assert task["stage"] is
+        that point. The factory used to hardcode "initiation" and accept no
+        override, so every one of those calls raised TypeError before it could
+        assert anything.
+        """
         if updated_at_iso is None:
             now = datetime.datetime.now(datetime.timezone.utc)
             updated_at = (now - datetime.timedelta(minutes=updated_at_offset_min)).isoformat()
@@ -111,7 +128,7 @@ class MockAPContract:
             "exam_type": "brand_exam_ap",
             "dropbox_pmi_think_tank": True,
             "updated_at": updated_at,
-            "stage": "initiation",
+            "stage": stage,
         }
 
     @staticmethod

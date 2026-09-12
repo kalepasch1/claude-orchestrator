@@ -17,6 +17,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db, judge, model_gateway as mg
 
 SAMPLE = int(os.environ.get("APP_REVIEW_SAMPLE", "40"))
+# Cap on the backlog probe. Counting ~875k rows every 30 minutes to print one number is not
+# worth it; probing up to this many answers the only question that matters — is the queue
+# still deep — and reports the answer as ">= N" rather than pretending to be exact.
+BACKLOG_PROBE = int(os.environ.get("APP_REVIEW_BACKLOG_PROBE", "1000"))
 QUALITY_BAR = float(os.environ.get("APP_QUALITY_BAR", "7.0"))   # min avg score to keep a route
 # rough ascending cost rank for tie-breaking when quality is comparable
 COST_RANK = {"local": 0, "groq": 1, "deepseek": 2, "google": 3,
@@ -55,11 +59,26 @@ def _heuristic_score(op):
 
 
 def _rate_unscored():
-    """Score a batch of unreviewed operations with a cheap cross-model reviewer."""
+    """Score a batch of unreviewed operations with a cheap cross-model reviewer.
+
+    OLDEST FIRST. This is a queue drain, not a recent sample: every row it touches is
+    written back with a quality_score, so a row it never selects is never scored by
+    anything, ever. Ordered newest-first with a cap, the far end of the queue was
+    unreachable by construction — the batch always refilled from the front. Measured on
+    the live table before this change: 874,805 unscored operations against 99,986 scored,
+    861,838 of them older than a week, the oldest 52 days old, while the job scored the
+    newest 40 each run. The database layer had been logging TRUNCATED SCAN against this
+    exact line, and its wording named the consequence: "if the caller acts on work, the
+    far end of the queue is being starved."
+
+    Ascending order makes the drain FIFO, so the backlog is reachable and no row can be
+    starved indefinitely. `_unscored_backlog` reports what remains, because a queue that
+    cannot keep up should say so rather than look busy.
+    """
     rows = db.select("app_operations",
                      {"select": "*", "quality_score": "is.null",
-                      "order": "created_at.desc", "limit": str(SAMPLE)}) or []
-    scored = 0
+                      "order": "created_at.asc", "limit": str(SAMPLE)}) or []
+    scored, failed = 0, []
     for op in rows:
         if os.environ.get("ORCH_APP_REVIEW_USE_MODEL", "false").lower() not in ("1", "true", "yes", "on"):
             try:
@@ -67,8 +86,12 @@ def _rate_unscored():
                 db.update("app_operations", {"id": op["id"]},
                           {"quality_score": score, "verdict": "pass" if score >= QUALITY_BAR else "review"})
                 scored += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                # Head-of-line hazard, and it is new with FIFO ordering. Newest-first
+                # happened to step over a row that always fails to write; oldest-first
+                # re-selects it at the front of every run and everything behind it waits.
+                # A silently swallowed failure here would stall the whole drain invisibly.
+                failed.append((op.get("id"), str(exc)[:120]))
             continue
         # nothing to grade if we didn't capture output text (we log metadata, not payloads);
         # grade on a compact descriptor so we never store customer data in the orchestrator.
@@ -88,9 +111,32 @@ def _rate_unscored():
                 db.update("app_operations", {"id": op["id"]},
                           {"quality_score": score, "verdict": "pass" if score >= QUALITY_BAR else "review"})
                 scored += 1
-            except Exception:
+            except Exception as exc:
+                failed.append((op.get("id"), str(exc)[:120]))
                 continue
+    if failed:
+        print(f"app_triage_review: {len(failed)} row(s) could not be scored and will be "
+              f"retried at the FRONT of the next run — a persistently failing row blocks the "
+              f"queue behind it. First: id={failed[0][0]} {failed[0][1]}")
     return scored
+
+
+def _unscored_backlog():
+    """How much unscored work is left, and whether the drain is keeping up.
+
+    The backlog was invisible: the job printed how many rows it scored, which looks like
+    progress whether the queue is emptying or growing. Reported as a count so 'scored 40'
+    can be read against 'and 874,765 remain'.
+    """
+    try:
+        rows = db.select("app_operations",
+                         {"select": "id", "quality_score": "is.null",
+                          "limit": str(BACKLOG_PROBE)}) or []
+        n = len(rows)
+        return {"remaining": n, "at_least": n >= BACKLOG_PROBE}
+    except Exception as exc:
+        print(f"app_triage_review: could not measure the unscored backlog ({exc})")
+        return {"remaining": None, "at_least": False}
 
 
 def _aggregate_and_route():
@@ -159,9 +205,18 @@ def _aggregate_and_route():
 
 def run():
     scored = _rate_unscored()
+    backlog = _unscored_backlog()
     routes = _aggregate_and_route()
-    print(f"app_triage_review: scored {scored} ops, updated {routes} app/operation routes")
-    return {"scored": scored, "routes": routes}
+    left = backlog.get("remaining")
+    tail = ""
+    if left is not None:
+        tail = f", {'>=' if backlog.get('at_least') else ''}{left} unscored remaining"
+        if scored and left >= BACKLOG_PROBE:
+            # Draining at SAMPLE per run against a backlog this size is not draining.
+            tail += (f" (batch is {SAMPLE}/run — raise APP_REVIEW_SAMPLE or the queue keeps "
+                     f"growing)")
+    print(f"app_triage_review: scored {scored} ops, updated {routes} app/operation routes{tail}")
+    return {"scored": scored, "routes": routes, "backlog": left}
 
 
 if __name__ == "__main__":

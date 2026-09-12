@@ -9,6 +9,7 @@ alignment recall/surprise, override failure-rate) and produce:
 No live HTTP — all data passed in.
 """
 from __future__ import annotations
+import os
 from typing import Any
 
 
@@ -66,6 +67,12 @@ def normalize_dimension(name: str, raw: float) -> float:
     return _clamp(raw * 100)
 
 
+def _strict_dimensions():
+    """Report an all-dimensions-missing app as unmeasured rather than scoring it 50.0."""
+    return os.environ.get("ORCH_CADE_STRICT_DIMENSIONS", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def score_app(telemetry: dict[str, float]) -> dict[str, Any]:
     """Score a single app across all CADE dimensions.
 
@@ -77,17 +84,39 @@ def score_app(telemetry: dict[str, float]) -> dict[str, Any]:
         and 'weakest_dimension' (name of lowest-scoring dimension).
     """
     dims: dict[str, float] = {}
+    missing: list[str] = []
     for dim in DIMENSION_WEIGHTS:
-        raw = telemetry.get(dim, 0.0)
+        if telemetry.get(dim) is None:
+            missing.append(dim)
+        raw = telemetry.get(dim, 0.0) or 0.0
         dims[dim] = normalize_dimension(dim, raw)
 
     composite = sum(dims[d] * DIMENSION_WEIGHTS[d] for d in DIMENSION_WEIGHTS)
     weakest = min(dims, key=lambda d: dims[d] * DIMENSION_WEIGHTS[d])
 
+    # 2026-09-01: when NOT ONE dimension is supplied, this used to return a confident
+    # 50.0 -- the three "lower is better" dimensions score 100 on a raw of 0.0 and carry
+    # exactly 0.50 of the weight, so 25 + 10 + 15 = 50.00 every time. That is what
+    # compliance_periodic had been recording for all 16 projects across 292 samples: it
+    # feeds throughput/backlog/completion_rate, which are not dimensions this scorer
+    # knows. A constant series also has zero variance, so the z-score anomaly detector
+    # can never flag it, and weakest_app ties on every project and falls back to
+    # alphabetical order. Unmeasured is not the same as average -- say so.
+    unmeasured = len(missing) == len(DIMENSION_WEIGHTS)
+    if unmeasured and _strict_dimensions():
+        return {
+            "dimensions": dims,
+            "composite": None,
+            "weakest_dimension": None,
+            "missing_dimensions": missing,
+            "unmeasured": True,
+        }
+
     return {
         "dimensions": dims,
         "composite": round(composite, 2),
         "weakest_dimension": weakest,
+        "missing_dimensions": missing,
     }
 
 

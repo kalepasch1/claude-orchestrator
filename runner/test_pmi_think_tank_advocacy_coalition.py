@@ -17,6 +17,7 @@ Focuses on:
 """
 import pytest
 import os
+import re
 import json
 import sys
 from unittest.mock import Mock, patch, MagicMock, call
@@ -803,8 +804,19 @@ class TestAccessibility:
         from pmi_site import render_advocacy_page
 
         content = render_advocacy_page()
-        # Should have semantic tags
-        assert any(tag in content for tag in ["<section>", "<article>", "<header>", "<nav>"])
+        # Should have semantic tags.
+        #
+        # This looked for the literal strings "<section>", "<header>" and friends --
+        # attribute-less tags. render_advocacy_page emits `<header class=
+        # "advocacy-header">` and `<section class="advocacy-mission">`, which is
+        # semantic HTML and rather better than the bare form, so the check failed on a
+        # page that does exactly what it asks for. Any real page carrying a class,
+        # id or aria-* attribute would have failed the same way.
+        #
+        # Match the TAG, not one attribute-less spelling of it: `<section` followed by
+        # a word boundary, so `<sectionish>` still does not count.
+        semantic = re.search(r"<(section|article|header|nav|main|footer|aside)\b", content)
+        assert semantic, "advocacy page should use semantic HTML tags"
 
     def test_coalition_member_list_structured_data(self):
         """Coalition member list should have structured data for accessibility."""

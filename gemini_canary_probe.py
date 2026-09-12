@@ -23,6 +23,7 @@ Env:
 import json
 import logging
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -71,8 +72,77 @@ RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 #: page for the one failure an operator must act on personally.
 AUTH_STATUSES = frozenset({400, 401, 403})
 
-MAX_ATTEMPTS = int(os.environ.get("GEMINI_MAX_ATTEMPTS", "3"))
-BACKOFF_BASE_S = float(os.environ.get("GEMINI_BACKOFF_BASE_S", "1.0"))
+def _env_number(name, default, cast=int, minimum=None):
+    """Read a numeric knob without ever raising at import.
+
+    These two used to be a bare int()/float() at module scope, so
+    GEMINI_MAX_ATTEMPTS=oops raised ValueError while the module was being imported —
+    the canary then failed to start at all, which reads exactly like the outage it
+    exists to detect.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = cast(str(raw).strip())
+    except Exception:
+        logger.warning("%s=%r is not a %s; using %s", name, raw, cast.__name__, default)
+        return default
+    if minimum is not None and value < minimum:
+        logger.warning("%s=%s below minimum %s; using %s", name, value, minimum, default)
+        return default
+    return value
+
+
+MAX_ATTEMPTS = _env_number("GEMINI_MAX_ATTEMPTS", 3, int, minimum=1)
+BACKOFF_BASE_S = _env_number("GEMINI_BACKOFF_BASE_S", 1.0, float, minimum=0.0)
+
+#: A model id we know the v1beta generateContent endpoint serves under this name.
+#: `gemini-2.5` on its own is NOT one: the served ids carry a variant suffix
+#: (`-flash`, `-pro`). Typing the family name gets a 404, which in the 05:00 log is
+#: indistinguishable from the provider being down — the exact ambiguity this module
+#: was written to remove. Checked offline, before any request is made.
+_MODEL_ID_RE = re.compile(r"^gemini-\d+(?:\.\d+)?-(?:flash|pro)(?:-[a-z0-9.-]+)?$", re.I)
+
+#: Exit code for "the environment is misconfigured", kept distinct from 1 ("the call
+#: failed") so a scheduler can tell a human error from a provider error without parsing
+#: log text.
+EXIT_MISCONFIGURED = 2
+
+
+def validate_environment(env=None):
+    """Check the canary's environment WITHOUT making a network call.
+
+    Returns a list of human-readable problems; empty means "go ahead and probe".
+    A misconfiguration found here is a human error, and reporting it as one is the
+    difference between "fix your env var" and "page the provider". Never raises.
+    """
+    problems = []
+    try:
+        source = os.environ if env is None else env
+        key = str(source.get("GEMINI_API_KEY") or "").strip()
+        if not key:
+            problems.append("GEMINI_API_KEY is empty or unset")
+        elif len(key) < 20:
+            problems.append(
+                f"GEMINI_API_KEY looks truncated ({len(key)} chars) — likely a partial paste")
+
+        model = str(source.get("GEMINI_MODEL") or "").strip()
+        if model and not _MODEL_ID_RE.match(model):
+            problems.append(
+                f"GEMINI_MODEL={model!r} is not a served model id; the endpoint needs a "
+                f"variant suffix (e.g. {model}-flash or {model}-pro)")
+
+        raw_timeout = str(source.get("GEMINI_TIMEOUT") or "").strip()
+        if raw_timeout:
+            try:
+                if int(raw_timeout) <= 0:
+                    problems.append(f"GEMINI_TIMEOUT={raw_timeout!r} must be positive")
+            except ValueError:
+                problems.append(f"GEMINI_TIMEOUT={raw_timeout!r} is not an integer")
+    except Exception as exc:  # noqa: BLE001 — validation must never be the thing that breaks
+        return [f"environment validation failed: {type(exc).__name__}: {exc}"]
+    return problems
 
 
 class InvalidKeyError(RuntimeError):
@@ -138,6 +208,15 @@ def probe_gemini(api_key: str, model: str = DEFAULT_MODEL, timeout: int = DEFAUL
 
 def main(argv=None) -> int:
     """Print the model's reply on stdout; non-zero exit means the call itself failed."""
+    # Offline first. Reporting a typo'd model id or a truncated key as a *provider*
+    # failure is the failure mode this module exists to prevent, and no request needs to
+    # be made to catch either.
+    problems = validate_environment()
+    if problems:
+        for problem in problems:
+            logger.error("gemini probe: environment: %s", problem)
+        return EXIT_MISCONFIGURED
+
     model = os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
     try:
         timeout = int(os.environ.get("GEMINI_TIMEOUT") or DEFAULT_TIMEOUT)

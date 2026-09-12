@@ -54,6 +54,25 @@ def _env_number(name: str, default: float, cast=float, minimum=None):
         return default
 
 
+class _Absent:
+    """Cache sentinel: no configuration source defines this key.
+
+    A distinct object rather than None or "", both of which a source could legitimately
+    produce, and which is what let a caller's default get cached as if it were a value.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):  # pragma: no cover - debugging aid
+        return "<config_consumer.ABSENT>"
+
+    def __bool__(self):
+        return False
+
+
+_ABSENT = _Absent()
+
+
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
 
@@ -101,17 +120,43 @@ class _ConfigConsumer:
         except Exception:
             return {}
 
+    def _env_lookup(self, key: str) -> str:
+        """Resolve ORCH_{key} from the environment, upper-case first.
+
+        Recovered defect (orch-config-consumption, 2026-08-24): this consumer
+        read `f"ORCH_{key}"` verbatim while fleet_control.get_fleet_config reads
+        `f"ORCH_{key}".upper()`. Environment variables are conventionally
+        upper-case and fleet_control writes them that way, so any caller passing
+        a lower- or mixed-case key silently got the DEFAULT here while the very
+        same key resolved correctly through fleet_control — a fleet-wide config
+        push would appear to apply on one path and be ignored on the other.
+
+        Upper-case is tried first so the two paths agree; the verbatim key is
+        kept as a fallback so an existing exactly-cased ORCH_ variable that is
+        NOT upper-case keeps working. Fail-soft: never raises.
+        """
+        try:
+            if not key or not isinstance(key, str):
+                return ""
+            for env_key in (f"ORCH_{key}".upper(), f"ORCH_{key}"):
+                value = os.environ.get(env_key, "").strip()
+                if value:
+                    return value
+            return ""
+        except Exception:
+            return ""
+
     def get(self, key: str, default: str = "") -> str:
         """Get ORCH_{key} from environment, stripping whitespace.
 
-        Returns default if key is None/empty/not found/whitespace-only.
-        Never raises — fail-soft by design.
+        Case-insensitive on the key (see _env_lookup) so this agrees with
+        fleet_control.get_fleet_config. Returns default if key is
+        None/empty/not found/whitespace-only. Never raises — fail-soft by design.
         """
         try:
             if not key or not isinstance(key, str):
                 return default
-            env_key = f"ORCH_{key}"
-            value = os.environ.get(env_key, "").strip()
+            value = self._env_lookup(key)
             return value if value else default
         except Exception:
             return default
@@ -161,12 +206,23 @@ class _ConfigConsumer:
             if not key or not isinstance(key, str):
                 return default
 
-            # Check cache first
+            # Check cache first.
+            #
+            # A cache entry records what the SOURCES said, never what a caller passed as
+            # its default. The cache is keyed by key alone, so caching the resolved
+            # default meant the first caller's default leaked to every later one:
+            #
+            #     load_config("MAX_RETRIES", "3")   -> "3"   (absent everywhere)
+            #     load_config("MAX_RETRIES", "10")  -> "3"   <-- someone else's default
+            #
+            # Silent, and near-impossible to trace from the call site. _ABSENT keeps the
+            # negative caching (a missing key still costs one DB read per TTL) while
+            # letting each caller apply its own default at return time.
             with self._lock:
                 if key in self._cache:
                     cached_value, cached_time = self._cache[key]
                     if time.time() - cached_time < self._cache_ttl_sec:
-                        return cached_value
+                        return default if cached_value is _ABSENT else cached_value
 
             # Read through the fleet_control gateway. CLAUDE.md is explicit that
             # fleet-wide config goes through that in-process gateway rather than
@@ -191,17 +247,19 @@ class _ConfigConsumer:
                 except Exception:
                     pass
 
-            # Fall back to environment
-            if value is None or not value:
-                value = self.get(key, default).strip()
-                if not value:
-                    value = default
+            # Fall back to environment. `get(key, "")` rather than `get(key, default)`
+            # so an absent env var is distinguishable from one that happens to hold the
+            # caller's default — the cache needs to know which of those it saw.
+            if not value:
+                value = self.get(key, "").strip()
 
-            # Cache and return
+            # Cache what the sources said. _ABSENT records "no source has this key",
+            # which is worth caching (it saves the DB read) but must never be confused
+            # with a real value.
             with self._lock:
-                self._cache[key] = (value, time.time())
+                self._cache[key] = (value if value else _ABSENT, time.time())
                 self._evict_locked()
-            return value
+            return value if value else default
         except Exception:
             return default
 
@@ -271,3 +329,81 @@ def invalidate_cache(key: Optional[str] = None) -> None:
 if __name__ == "__main__":
     print("config_consumer module loaded successfully")
     print(f"All ORCH_* keys: {load_all()}")
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """Boolean env knob.
+
+    Unlike get_bool, an unrecognised word returns ``default`` rather than False —
+    at module scope a knob is often a kill switch, and silently flipping a
+    default-on switch off because someone typed "maybe" is worse than ignoring them.
+    """
+    raw = env_str(name, "").lower()
+    if not raw:
+        return default
+    if raw in ("true", "1", "yes", "on"):
+        return True
+    if raw in ("false", "0", "no", "off"):
+        return False
+    print(f"[config_consumer] {name}={raw!r} is not a bool; using {default}", flush=True)
+    return default
+
+def env_int(name: str, default: int = 0, minimum: Optional[int] = None) -> int:
+    """Integer env knob. Returns ``default`` on anything unparseable or below minimum."""
+    raw = env_str(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (ValueError, TypeError):
+        print(f"[config_consumer] {name}={raw!r} is not an int; using {default}", flush=True)
+        return default
+    except Exception:
+        return default
+    if minimum is not None and value < minimum:
+        print(f"[config_consumer] {name}={value} below minimum {minimum}; using {default}",
+              flush=True)
+        return default
+    return value
+
+def env_str(name: str, default: str = "") -> str:
+    """Read an environment variable by its FULL name, fail-soft.
+
+    The get/get_int/... family reads ORCH_-prefixed keys. These four read the literal
+    name instead, because ~1000 module-scope constants across runner/ are spelled
+    `int(os.environ.get("ORCH_X", "8"))` — a bare cast that runs at *import* time.
+    A single malformed fleet push of any one of those keys raises ValueError while the
+    module is being imported, which takes down every importer, not just the caller of
+    that constant. That is the exact failure this configuration layer exists to prevent,
+    and it cannot be fixed by the ORCH_-prefixed getters because the call sites are not
+    prefixed uniformly and are evaluated before any consumer object exists.
+
+    Use these at module scope: `MAX = config_consumer.env_int("ORCH_MAX", 8)`.
+    Never raises.
+    """
+    try:
+        if not name or not isinstance(name, str):
+            return default
+        value = os.environ.get(name, "")
+        value = value.strip() if isinstance(value, str) else ""
+        return value if value else default
+    except Exception:
+        return default
+
+def env_float(name: str, default: float = 0.0, minimum: Optional[float] = None) -> float:
+    """Float env knob. Returns ``default`` on anything unparseable or below minimum."""
+    raw = env_str(name, "")
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        print(f"[config_consumer] {name}={raw!r} is not a float; using {default}", flush=True)
+        return default
+    except Exception:
+        return default
+    if minimum is not None and value < minimum:
+        print(f"[config_consumer] {name}={value} below minimum {minimum}; using {default}",
+              flush=True)
+        return default
+    return value
+

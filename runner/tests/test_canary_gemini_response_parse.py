@@ -8,7 +8,21 @@ Acceptance for canary-gemini-25-request-parse-response-text:
 The live API call is deliberately out of scope — see canary.request_only.__doc__. The
 response body comes from a path or stdin, so these tests need no key and no network and
 cover the parsing the original slice never reached.
+
+IMPORT NOTE: `import canary` is ambiguous in this repo — there are two of them,
+<repo>/canary.py (marker validation + the Gemini response parsing tested here) and
+<repo>/runner/canary.py (metric-gated deploys, a completely different module). Both
+answer to the bare name `canary`, and half the suite puts <repo>/runner at sys.path[0]
+while the other half puts <repo> there, so whichever file is imported FIRST in a session
+wins for every later importer. This file used to do `sys.path.insert(0, <repo>)` and
+`import canary`; alone that resolved to the right module, but runner/tests/
+test_canary_cli_exit_code.py sorts earlier, binds sys.modules["canary"] to
+runner/canary.py, and then all 31 tests here failed with AttributeError on a module that
+never had parse_gemini_text. Loading the file we actually mean by PATH is
+order-independent, and deliberately does not register a "canary" name of its own, so this
+file neither depends on nor contributes to the collision.
 """
+import importlib.util
 import io
 import json
 import os
@@ -16,8 +30,24 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-import canary
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_CANARY_PATH = os.path.join(_REPO_ROOT, "canary.py")
+
+
+def _load_root_canary():
+    spec = importlib.util.spec_from_file_location("_root_canary_under_test", _CANARY_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # not stored in sys.modules: nothing left behind
+    return module
+
+
+canary = _load_root_canary()
+
+
+def test_the_module_under_test_is_the_repo_root_canary():
+    """Guard the import above: the collision is silent, so assert which file we loaded."""
+    assert os.path.realpath(canary.__file__) == os.path.realpath(_CANARY_PATH)
+    assert os.path.dirname(os.path.realpath(canary.__file__)) == os.path.realpath(_REPO_ROOT)
 
 
 def _response(text="canary"):

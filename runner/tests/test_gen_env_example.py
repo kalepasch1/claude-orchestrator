@@ -47,6 +47,46 @@ class ScannerTests(unittest.TestCase):
         found = gee.scan_source('import os\nd = "x"\nv = os.environ.get("ORCH_X", d)\n')
         self.assertEqual(found["ORCH_X"]["defaults"], set())
 
+    def test_an_upper_snake_constant_default_is_resolved(self):
+        """Resolving a named constant is exact, not a guess — it is the same value.
+
+        The codebase is actively moving defaults OUT of `os.environ.get(N, "3600")`
+        and into named constants, because convention-lint's MAGIC_NUMBERS rule pushes
+        every author that way. Without this, each such improvement silently blanked
+        the knob's documented default in .env.example — which is where an operator
+        goes to learn what a knob does when unset. Twelve had already gone that way.
+        """
+        found = gee.scan_source(
+            'import os\nGATE_TIMEOUT_DEFAULT = 3600\n'
+            'v = os.environ.get("ORCH_X", GATE_TIMEOUT_DEFAULT)\n')
+        self.assertEqual(found["ORCH_X"]["defaults"], {"3600"})
+
+    def test_str_around_a_constant_is_resolved(self):
+        """A string-typed knob whose default lives in an int constant is written so."""
+        found = gee.scan_source(
+            'import os\nGATE_TIMEOUT_DEFAULT = 3600\n'
+            'v = os.environ.get("ORCH_X", str(GATE_TIMEOUT_DEFAULT))\n')
+        self.assertEqual(found["ORCH_X"]["defaults"], {"3600"})
+
+    def test_a_constant_rebound_anywhere_is_not_resolved(self):
+        """A second binding this scan cannot see is exactly how it would lie."""
+        found = gee.scan_source(
+            'import os\nGATE_TIMEOUT_DEFAULT = 3600\n'
+            'if os.getenv("Y"):\n    GATE_TIMEOUT_DEFAULT = 60\n'
+            'v = os.environ.get("ORCH_X", GATE_TIMEOUT_DEFAULT)\n')
+        self.assertEqual(found["ORCH_X"]["defaults"], set())
+
+    def test_a_lowercase_variable_is_still_not_resolved(self):
+        """Only UPPER_SNAKE promises not to move; an ordinary variable does not."""
+        found = gee.scan_source(
+            'import os\ntimeout = 3600\nv = os.environ.get("ORCH_X", timeout)\n')
+        self.assertEqual(found["ORCH_X"]["defaults"], set())
+
+    def test_a_computed_default_is_still_not_guessed_at(self):
+        found = gee.scan_source(
+            'import os\nA = 60\nv = os.environ.get("ORCH_X", A * 60)\n')
+        self.assertEqual(found["ORCH_X"]["defaults"], set())
+
     def test_a_dynamic_name_is_not_reported(self):
         found = gee.scan_source('import os\nn = "ORCH_X"\nv = os.environ.get(n)\n')
         self.assertEqual(found, {})

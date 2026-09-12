@@ -45,6 +45,10 @@ def _branch_exists(repo, branch):
 # treat EVERY passed task as a lost branch and file endless recovery churn. Text is taken
 # verbatim from the last pyflakes-clean revision of this file (commit 5ef15641).
 _FETCHED_AGENT_REFS = set()
+#: repo_path -> did the agent-ref fetch actually succeed this process? A repo absent from
+#: this map has not been fetched; False means origin/agent/* cannot be trusted to prove a
+#: branch is GONE. See agent_refs_trustworthy().
+_AGENT_REFS_OK = {}
 
 
 def _fetch_agent_refs(repo):
@@ -56,15 +60,57 @@ def _fetch_agent_refs(repo):
     refs/heads/agent/* into refs/remotes/origin/agent/* makes the check fleet-aware.
     Fail-soft: offline / no remote just means we fall back to local-only visibility.
     """
-    if not repo or repo in _FETCHED_AGENT_REFS or not os.path.isdir(repo):
-        return
+    if not repo or not os.path.isdir(repo):
+        return False
+    if repo in _FETCHED_AGENT_REFS:
+        return _AGENT_REFS_OK.get(repo, False)
     _FETCHED_AGENT_REFS.add(repo)
+    ok = False
     try:
-        subprocess.run(["git", "fetch", "origin",
-                        "+refs/heads/agent/*:refs/remotes/origin/agent/*", "--prune"],
-                       cwd=repo, capture_output=True, timeout=120)
-    except Exception:
-        pass
+        proc = subprocess.run(["git", "fetch", "origin",
+                               "+refs/heads/agent/*:refs/remotes/origin/agent/*", "--prune"],
+                              cwd=repo, capture_output=True, timeout=120)
+        ok = proc.returncode == 0
+        if not ok:
+            print(f"integration_sweeper: agent-ref fetch FAILED in {repo} "
+                  f"(rc={proc.returncode}); origin/agent/* is not trustworthy this run",
+                  flush=True)
+    except Exception as e:  # noqa: BLE001 - logged, then degraded (fail-soft)
+        print(f"integration_sweeper: agent-ref fetch raised in {repo} "
+              f"({type(e).__name__}: {e}); origin/agent/* is not trustworthy this run",
+              flush=True)
+    _AGENT_REFS_OK[repo] = ok
+    return ok
+
+
+def agent_refs_trustworthy(repo):
+    """True when origin/agent/* in *repo* reflects the fleet, so ABSENCE means absent.
+
+    THE 226-TASK BURST (2026-08-23 20:00–23:00 UTC, 9+ projects at once: beethoven 37,
+    smarter 34, pareto-2080 30, darwn 28, racefeed 24, prediction-markets-institute 19,
+    kalepasch-com 19, santas-secret-workshop 17, sustainable-barks 17). Total rows carrying
+    this note across ALL history: 236 — so 96% of it happened in one four-hour window,
+    simultaneously, in every project. Nothing task-shaped is simultaneous across nine
+    unrelated repositories; only something repo- or host-level is.
+
+    The mechanism: _fetch_agent_refs() swallowed EVERY failure and returned nothing, so a
+    network blip, an auth expiry or a timeout was indistinguishable from a clean fetch. The
+    fleet runs on two Macs and agent branches live on whichever machine ran the task, so
+    with origin/agent/* unpopulated `_branch_exists_anywhere` answers False for every task
+    in the sweep. `--prune` makes it worse: a fetch that fails partway can drop the
+    remote-tracking refs that were the only local evidence those branches exist. Then the
+    once-per-process memo pins that verdict for the rest of the run, across every project.
+    The sweep concluded "branch lost and recovery exhausted" 226 times and closed the tasks.
+
+    The module already states the right rule for the sibling predicate: "FAIL CLOSED:
+    unable to prove integration => not integrated." The same rule belongs here — unable to
+    prove a branch is GONE must not mean it is gone. Callers use this before taking any
+    destructive action on missing-branch evidence.
+    """
+    if not repo or not os.path.isdir(repo):
+        return False
+    _fetch_agent_refs(repo)
+    return bool(_AGENT_REFS_OK.get(repo, False))
 
 
 def _branch_exists_anywhere(repo, branch):
@@ -254,17 +300,48 @@ def _merged_branch_evidence(repo, branch):
     """
     if not repo or not os.path.isdir(repo) or not branch:
         return None
+    # HOISTED: the upstream refs do not depend on `candidate`, and they are expensive.
+    #
+    # This call sat inside the candidate loop below, so it ran once per candidate, per
+    # task, for the whole sweep. It resolves to _upstream_refs(repo), which spawns EIGHT
+    # `git rev-parse` processes and is memoized nowhere: measured 2026-09-07 at 465ms a
+    # call, i.e. 930ms per task spent recomputing an answer that cannot vary between the
+    # two candidates for the same repo.
+    #
+    # Measured on one real branch, this function cost 5,825ms for a SINGLE task. The
+    # sweeper is scheduled by runner.py every 90 SECONDS and pages its task list to
+    # exhaustion, so a job that overruns its own interval is not a tail risk -- it is the
+    # steady state. ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S defaulting to 7200 on a
+    # 90-second job is the scar tissue from precisely this.
+    #
+    # LAZY, not merely hoisted -- measured, because the first version of this fix was
+    # wrong. Computing it eagerly here made the MISSING-branch case worse: a slug whose
+    # branch resolves to nothing went from 2 git spawns to 10, paying for upstream refs
+    # it never consults. That case is not rare; it is the entire reason this function
+    # exists, since the sweeper's whole missing-branch path runs on branches that are
+    # gone. Counting spawns rather than timing it is what exposed that -- wall clock on
+    # this box is dominated by load.
+    #
+    # Deferring to first use gets both: an unresolvable branch pays nothing, and a
+    # resolvable one computes the refs once instead of once per candidate.
+    #
+    #   agent/approval-digest-batching   26 -> 18 spawns   (the 8 rev-parses of one
+    #                                                       redundant _upstream_refs)
+    #   a branch that does not exist      2 ->  2 spawns   (unchanged)
+    targets = None
     for candidate in (branch, f"refs/remotes/origin/{branch}"):
         rev = subprocess.run(["git", "rev-parse", "--verify", "--quiet", candidate],
-                             cwd=repo, capture_output=True, text=True)
+                             cwd=repo, capture_output=True, text=True, timeout=30)
         if rev.returncode != 0:
             continue
         sha = (rev.stdout or "").strip()
         if not sha:
             continue
-        for ref in _integration_targets(repo):
+        if targets is None:
+            targets = _integration_targets(repo)
+        for ref in targets:
             merged = subprocess.run(["git", "merge-base", "--is-ancestor", sha, ref],
-                                    cwd=repo, capture_output=True)
+                                    cwd=repo, capture_output=True, timeout=30)
             if merged.returncode == 0:
                 return sha, ref
     return None
@@ -399,15 +476,28 @@ def _existing_recovery(project_id, slug):
         return False
 
 
-def _active_recovery_index(limit=5000):
-    """Load active recovery/rework rows once so sweep does not do N DB reads."""
+def _active_recovery_index(limit=None):
+    """Load active recovery/rework rows once so sweep does not do N DB reads.
+
+    FULL SCAN, not SAMPLE: a slug missing from this index is not merely under-counted,
+    it is re-filed as a brand-new recovery task.  This used to read
+    `db.select(..., "limit": "5000")`, and PostgREST caps a single response at 1,000 rows
+    regardless of the requested limit (see db.PAGE_SIZE).  With 1,264 active
+    recover-missing-branch-* rows on 2026-08-25 the tail ~287 slugs — the most recently
+    quarantined ones — were invisible to the dedup check, so every sweep re-filed the
+    identical set, queue_bankruptcy quarantined them minutes later as "original task
+    <slug> is already DONE/MERGED", and they stayed invisible for the next sweep: a
+    closed ~80min recreate/quarantine loop that produced 14 rows across 2 identical
+    batches for canary-fleet-verify-20260824-a1..a7 alone.  db.select_all pages to
+    exhaustion, so the index is complete and the loop cannot re-form as the table grows.
+    """
     rows = []
     for pattern in (f"{RECOVERY_PREFIX}%", f"rework-%-{RECOVERY_PREFIX}%"):
         try:
-            rows.extend(db.select("tasks", {"select": "slug,state,project_id",
-                                            "slug": f"like.{pattern}",
-                                            "state": ACTIVE_STATES,
-                                            "limit": str(limit)}) or [])
+            rows.extend(db.select_all("tasks", {"select": "slug,state,project_id",
+                                                "slug": f"like.{pattern}",
+                                                "state": ACTIVE_STATES},
+                                      max_rows=limit) or [])
         except Exception:
             continue
     exact = set()
@@ -459,10 +549,42 @@ def _has_live_recovery(project_id, slug):
     return False
 
 
+def _original_already_integrated(task):
+    """True when the original task has since reached MERGED — nothing left to recover.
+
+    The sweep reads a batch of tasks and then processes them one at a time, so a task
+    that was DONE-with-missing-branch when the batch was read can be MERGED by the time
+    it is handled: the merge train landed it and branch_cleanup deleted the branch, which
+    is *why* the branch is missing.  Filing a recovery for it is guaranteed waste —
+    queue_bankruptcy quarantines such rows on sight with "original task <slug> is already
+    DONE/MERGED".
+
+    Deliberately scoped to MERGED, not DONE.  Recovering DONE-but-never-integrated work
+    is this module's entire purpose, so excluding DONE here would silently disable it.
+    (queue_bankruptcy currently quarantines DONE-original recoveries too; that policy
+    disagreement is real but is a separate decision from this loop fix.)
+    """
+    slug = task.get("slug")
+    project_id = task.get("project_id")
+    if not slug or not project_id:
+        return False
+    try:
+        rows = db.select("tasks", {"select": "id,state",
+                                   "project_id": f"eq.{project_id}",
+                                   "slug": f"eq.{slug}",
+                                   "state": "in.(MERGED)",
+                                   "limit": "1"}) or []
+        return bool(rows)
+    except Exception:
+        return False    # fail-open: a DB blip must never stall the sweep
+
+
 # Added function to handle missing agent branches
 def _handle_missing_branch(task, proj, recovery_index=None):
     slug = task.get("slug")
     if not slug or _existing_recovery_indexed(task.get("project_id"), slug, recovery_index):
+        return False
+    if _original_already_integrated(task):
         return False
     repo = proj.get("repo_path", "")
     base = _normalize_base(repo, proj, task.get("base_branch") or proj.get("default_base") or proj.get("prod_branch") or "main")
@@ -547,11 +669,28 @@ def _age_seconds(ts):
 
 
 def pressure(limit=1000):
+    """Per-project backlog pressure: how much passed work is waiting to integrate.
+
+    Reads EVERY matching row, not the first `limit` of them. This was a capped
+    `db.select(..., order=updated_at.asc, limit=200)`, and db's own truncated-scan
+    detector had been flagging it: "tasks returned exactly its limit (200) ordered
+    by updated_at.asc. Anything past the cap is invisible to this caller."
+
+    Ascending order made that worse than an undercount. The cap always fell on the
+    OLDEST rows, so once the backlog exceeded it the newest waiting work could not
+    appear in the pressure figure at all — no matter how long it waited, or how
+    much of it there was. Pressure is the signal for how starved a project is, so
+    a number that saturates and then stops responding is the one thing it must not
+    be.
+
+    `limit` is now the paging budget rather than a silent horizon: select_all pages
+    to exhaustion and says so out loud if it ever reaches the cap.
+    """
     projects = {p["id"]: p for p in (db.select("projects") or [])}
-    rows = db.select("tasks", {"select": "id,slug,project_id,state,note,updated_at",
-                               "state": "in.(DONE,BLOCKED,RUNNING)",
-                               "order": "updated_at.asc",
-                               "limit": str(limit)}) or []
+    rows = db.select_all("tasks", {"select": "id,slug,project_id,state,note,updated_at",
+                                   "state": "in.(DONE,BLOCKED,RUNNING)"},
+                         order="updated_at.asc",
+                         max_rows=max(int(limit or 0), 1000)) or []
     out = {}
     for t in rows:
         if not _looks_passed(t):
@@ -698,7 +837,14 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         # upstream ref, the whole branch is upstream.
         # Resolve once against every legitimate branch-name form for this slug (see the
         # TRUNCATION FIX block above) so an over-80-char slug is not mistaken for lost work.
-        _agent_branch = _resolve_agent_branch(repo, slug) or f"agent/{slug}"
+        # Resolved ONCE and reused below. _agent_branch_exists(repo, slug) is literally
+        # `_resolve_agent_branch(repo, slug) is not None`, and the branch-gone check further
+        # down called it again for the same repo and slug -- re-spawning the same git
+        # lookups to re-derive a value already in hand. Keeping the raw result (rather than
+        # only the `or f"agent/{slug}"` fallback) is what lets that check read it, because
+        # the fallback cannot distinguish "resolved" from "not found".
+        _resolved_branch = _resolve_agent_branch(repo, slug)
+        _agent_branch = _resolved_branch or f"agent/{slug}"
 
         _merged = _merged_branch_evidence(repo, _agent_branch)
         if _merged:
@@ -715,7 +861,7 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
             skipped += 1
             continue
 
-        if not _agent_branch_exists(repo, slug):
+        if _resolved_branch is None:
             # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
             # kills the phantom missing_branch recount + endless recovery churn on merged work.
             evidence = _integration_evidence(repo, slug)
@@ -740,6 +886,14 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                                  f"({subject[:80]}); closed (branch GC'd)"},
                         repo=repo)
                 continue
+            if _is_recovery and not agent_refs_trustworthy(repo):
+                # Same fail-closed rule as the branch below: with origin/agent/* unreadable
+                # this run, "gone with no upstream evidence" is unproven, and this path
+                # closes the task outright.
+                skipped += 1
+                print(f"integration_sweeper: not closing recovery task {slug!r} — agent "
+                      f"refs unreadable in {repo}", flush=True)
+                continue
             if _is_recovery:
                 # This IS recovery work and its branch is gone with no upstream evidence.
                 # Filing recovery-for-recovery is the churn the nesting guard exists to stop,
@@ -755,6 +909,14 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                 recovery += 1
             elif _has_live_recovery(t.get("project_id"), slug):
                 missing += 1  # rebuild still in flight — leave the original open
+            elif not agent_refs_trustworthy(repo):
+                # FAIL CLOSED. We cannot see origin/agent/* this run, so "the branch is
+                # gone" is not a finding — it is the absence of one. Closing here is what
+                # produced the 226-task burst of 2026-08-23; leave the task open and let a
+                # later sweep with a working fetch decide.
+                skipped += 1
+                print(f"integration_sweeper: not closing {t.get('slug')!r} — agent refs "
+                      f"unreadable in {repo}, cannot prove the branch is gone", flush=True)
             else:
                 # branch gone, not integrated, and recovery is exhausted (quarantined/dead): stop
                 # re-counting + re-sweeping this forever. Close it so pressure reflects reality.

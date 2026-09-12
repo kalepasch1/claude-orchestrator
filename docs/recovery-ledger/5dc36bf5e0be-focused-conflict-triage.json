@@ -1,0 +1,208 @@
+{
+  "audit_fingerprint": "5dc36bf5e0bed6f108545572d49189cbfbc558ee98ae1290254e2e125f7e5918",
+  "base": "origin/master",
+  "evidence_mutated": false,
+  "hunks_deletion_only": 13991,
+  "hunks_examined": 14300,
+  "hunks_missing": 1,
+  "kind": "orchestrator_rescue_refs",
+  "outcomes": {
+    "FULLY_ACCOUNTED_FOR": 12,
+    "PARTIAL_REIMPLEMENT": 1
+  },
+  "refs": [
+    {
+      "counts": {
+        "HUNK_ALREADY_PRESENT": 1,
+        "HUNK_DELETION_ONLY": 1955,
+        "HUNK_PATH_GONE": 24
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (1955 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 1993,
+      "hunks": 1980,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260805T191227-cc-mutual-default-fund-1d7e8d9a",
+      "sha": "1d7e8d9a0f"
+    },
+    {
+      "counts": {
+        "HUNK_ALREADY_PRESENT": 1,
+        "HUNK_DELETION_ONLY": 341,
+        "HUNK_PATH_GONE": 11
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (341 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 355,
+      "hunks": 353,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260805T191228-cc-solvency-passport-6138fffd",
+      "sha": "6138fffd67"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 1258,
+        "HUNK_MISSING": 1,
+        "HUNK_PATH_GONE": 18
+      },
+      "disposition": "1 of 1277 hunk(s) are genuinely missing and apply cleanly; reimplement only those, minimally, on top of current code",
+      "error": "",
+      "files": 1289,
+      "hunks": 1277,
+      "missing": [
+        {
+          "header": "@@ -63,6 +63,25 @@ def score_task(task_row):",
+          "path": "runner/priority_scorer.py",
+          "reason": "hunk applies cleanly to base and its content is absent",
+          "verdict": "HUNK_MISSING"
+        }
+      ],
+      "outcome": "PARTIAL_REIMPLEMENT",
+      "ref": "refs/orch-rescue/20260806T131026-improve-value-aware-test-routing-early-exit-r-slice-3-adapt-merged-patterns-d09561bf",
+      "sha": "d09561bff0"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 2520,
+        "HUNK_PATH_GONE": 45
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (2520 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 2583,
+      "hunks": 2565,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260806T131034-5bee398fbf584c3252b3-57b674c5",
+      "sha": "57b674c557"
+    },
+    {
+      "counts": {
+        "HUNK_ALREADY_PRESENT": 8,
+        "HUNK_PATH_GONE": 1
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement",
+      "error": "",
+      "files": 3,
+      "hunks": 9,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260806T161111-relfix-release-hold-deadlock-cowork-20260806-e9050616",
+      "sha": "e9050616be"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 2138,
+        "HUNK_PATH_GONE": 36
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (2138 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 2189,
+      "hunks": 2174,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260806T224945-relfix-racefeed-07060650-fix-typescript-and-build--slice-4-fix-missing-branch-7d9bd79d",
+      "sha": "7d9bd79d37"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 1408,
+        "HUNK_PATH_GONE": 19
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (1408 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 1439,
+      "hunks": 1427,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260807T015247-dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-p4-releasetrain-vercel-9c79f8f6",
+      "sha": "9c79f8f60c"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 1611,
+        "HUNK_PATH_GONE": 21
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (1611 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 1644,
+      "hunks": 1632,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260807T220546-improve-automate-branch-management-slice-3-310c54b3",
+      "sha": "310c54b335"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 219,
+        "HUNK_PATH_GONE": 36
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (219 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 256,
+      "hunks": 255,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260808T040916-improve-immediate-auto-merge-on-test-pass-low-r-slice-3-implement-test-completio-7bf524c4",
+      "sha": "7bf524c475"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 1739,
+        "HUNK_PATH_GONE": 35
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (1739 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 1786,
+      "hunks": 1774,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260808T184515-cade-mirror-negotiation-5d33743e",
+      "sha": "5d33743e80"
+    },
+    {
+      "counts": {
+        "HUNK_DELETION_ONLY": 802,
+        "HUNK_PATH_GONE": 38
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement (802 deletion-only hunk(s) reported, not proposed: recovery does not remove live code)",
+      "error": "",
+      "files": 851,
+      "hunks": 840,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260808T184519-canary-claude-27-slice-3-update-tests-checks-analyze-patch-behavior-analyze-patc-a4a7ec82",
+      "sha": "a4a7ec82a3"
+    },
+    {
+      "counts": {
+        "HUNK_ALREADY_PRESENT": 2,
+        "HUNK_SUPERSEDED": 4
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement",
+      "error": "",
+      "files": 3,
+      "hunks": 6,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260813T063106-chatgpt-local-reconcile-beethoven-6c8911116873-36ff050f",
+      "sha": "36ff050f9d"
+    },
+    {
+      "counts": {
+        "HUNK_ALREADY_PRESENT": 8
+      },
+      "disposition": "every hunk is already present, superseded, deletion-only, or targets a path that no longer exists; nothing to reimplement",
+      "error": "",
+      "files": 2,
+      "hunks": 8,
+      "missing": [],
+      "outcome": "FULLY_ACCOUNTED_FOR",
+      "ref": "refs/orch-rescue/20260813T081746-chatgpt-local-reconcile-beethoven-e0945946bd0d-45fefc8b",
+      "sha": "45fefc8b78"
+    }
+  ],
+  "source_ledger": "5dc36bf5e0be.json",
+  "total": 13
+}

@@ -10,6 +10,7 @@ Focuses on:
 - Model selection under permission constraints
 """
 import pytest
+import inspect
 import os
 import json
 import sys
@@ -18,6 +19,30 @@ from io import StringIO
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline_contract as pc
+
+#: Captured BEFORE any test patches _safe_route, so recorded calls can be resolved
+#: by PARAMETER NAME rather than by position.
+_SAFE_ROUTE_SIG = inspect.signature(pc._safe_route)
+
+
+def route_args(recorded_call):
+    """{parameter_name: value} for one recorded _safe_route call.
+
+    Three tests in this file read recorded calls by index -- `c[0][1]` for the
+    operation, `c[1].get("task_class")` for the class, `c[0][3]` for the need --
+    which bakes in WHICH arguments the caller happens to pass positionally. build_plan
+    passes app/operation/task_class positionally and need as a keyword, so
+    `c[1].get("task_class")` was always None and `c[0][3]` raised IndexError. The
+    calls were correct the whole time; the assertions were reading the wrong place,
+    so what they claimed to check had never actually been checked.
+
+    Binding against the real signature resolves every argument by name however it was
+    passed, so these tests survive the next caller that switches a keyword to
+    positional or back.
+    """
+    bound = _SAFE_ROUTE_SIG.bind(*recorded_call[0], **recorded_call[1])
+    bound.apply_defaults()
+    return bound.arguments
 
 
 class TestPreflightTriagePermissionHandling:
@@ -214,10 +239,9 @@ class TestBuildPlanPreflightStrategy:
 
                             # Find preflight call
                             preflight_calls = [c for c in mock_route.call_args_list
-                                             if c[0][1] == "task_preflight"]
+                                               if route_args(c)["operation"] == "task_preflight"]
                             assert len(preflight_calls) == 1
-                            # Check task_class parameter
-                            assert preflight_calls[0][1].get("task_class") == "rating"
+                            assert route_args(preflight_calls[0])["task_class"] == "rating"
 
     def test_build_plan_calls_strategy_with_plan_task_class(self):
         """build_plan should call _safe_route for strategy with task_class='plan'."""
@@ -236,10 +260,9 @@ class TestBuildPlanPreflightStrategy:
 
                             # Find strategy call
                             strategy_calls = [c for c in mock_route.call_args_list
-                                            if c[0][1] == "task_strategy"]
+                                              if route_args(c)["operation"] == "task_strategy"]
                             assert len(strategy_calls) == 1
-                            # Check task_class parameter
-                            assert strategy_calls[0][1].get("task_class") == "plan"
+                            assert route_args(strategy_calls[0])["task_class"] == "plan"
 
     def test_build_plan_strategy_need_minimum_7(self):
         """Strategy need should be at least 7 regardless of task classification."""
@@ -259,9 +282,11 @@ class TestBuildPlanPreflightStrategy:
 
                             # Find strategy call
                             strategy_calls = [c for c in mock_route.call_args_list
-                                            if c[0][1] == "task_strategy"]
-                            strategy_need = strategy_calls[0][0][3]  # need parameter
-                            assert strategy_need >= 7
+                                              if route_args(c)["operation"] == "task_strategy"]
+                            strategy_need = route_args(strategy_calls[0])["need"]
+                            assert strategy_need >= 7, (
+                                "a mechanical task has need=5, but strategy must still "
+                                "be planned by a capable model")
 
     def test_build_plan_preserves_existing_behavior_on_preflight_failure(self):
         """build_plan should complete even if preflight routing fails."""

@@ -336,7 +336,7 @@ def render_advocacy_letters_page() -> str:
         html = f"""
         <div class="letters-page">
             <header class="letters-header">
-                <h1>Advocacy Letters & Statements</h1>
+                <h1>PMI Advocacy Letters & Statements</h1>
                 <p class="slogan">{BRAND_SLOGAN}</p>
             </header>
 
@@ -362,7 +362,7 @@ def render_advocacy_letters_page() -> str:
         """
         return html
     except Exception:
-        return "<div class='letters-page'><h1>Advocacy Letters & Statements</h1></div>"
+        return "<div class='letters-page'><h1>PMI Advocacy Letters & Statements</h1></div>"
 
 
 def get_advocacy_letters() -> List[Dict[str, Any]]:
@@ -444,6 +444,7 @@ def render_letter_archive() -> str:
         html = f"""
         <div class="letter-archive">
             <h1>Letter Archive</h1>
+            <p class="slogan">{BRAND_SLOGAN}</p>
             <p>Historical advocacy letters and statements from PMI.</p>
         """
 
@@ -458,7 +459,7 @@ def render_letter_archive() -> str:
         """
         return html
     except Exception:
-        return "<div class='letter-archive'><h1>Letter Archive</h1></div>"
+        return f"<div class='letter-archive'><h1>Letter Archive</h1><p>{BRAND_SLOGAN}</p></div>"
 
 
 def render_coalition_program_page() -> str:
@@ -768,19 +769,34 @@ def get_api_endpoints() -> List[str]:
 
 
 def get_task_classification() -> Dict[str, Any]:
-    """Get task classification for orchestration."""
+    """Get task classification for orchestration.
+
+    The shape has to match what pipeline_contract.classify() returns for a legal
+    task — task_class/need/risk — because that classifier is what the route
+    planner and the legal gate actually read. This dict declared task_class and
+    need but no `risk`, so the legal_posture risk this task carries was invisible
+    to anything reading the module's own declaration.
+    """
     return {
         "task_class": "legal",
         "need": 9,
+        "risk": "legal_posture",
         "complexity": "high"
     }
 
 
 def get_merge_config() -> Dict[str, Any]:
-    """Get merge configuration."""
+    """Get merge configuration.
+
+    The auto-merge target is the fleet staging branch `orchestrator/dev` (see
+    resource_governor.ORCH_STAGING_BRANCH default and contract_validator's
+    pre-merge gate). "dev" is a *different* protected branch in
+    branch_cleanup.PROTECTED, so the old value pointed this task's auto-merge at
+    a branch the release train does not verify or promote.
+    """
     return {
         "auto_merge": True,
-        "target_branch": "dev",
+        "target_branch": "orchestrator/dev",
         "require_approval": True
     }
 

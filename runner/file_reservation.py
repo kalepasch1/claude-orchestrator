@@ -70,28 +70,52 @@ SHARED_FILES = {
 TABLE = "file_reservations"
 
 
-def _ensure_table():
-    """Create the file_reservations table if it doesn't exist."""
+#: Set once the table has been probed, so the warning below is printed at most
+#: once per process rather than once per reserved file.
+_TABLE_STATE = {"checked": False, "present": False}
+
+
+def _table_present():
+    """True if `file_reservations` is reachable.  Probes once per process.
+
+    This function used to be `_ensure_table()` and tried to CREATE TABLE IF NOT
+    EXISTS through `db.query(...)`.  Two things were wrong with that and both
+    were silent.  db has no query(): it speaks PostgREST, which has no DDL
+    channel at all, so the call raised AttributeError.  And the handler
+    swallowed it and returned True anyway — "Table might already exist — try to
+    proceed anyway" — so the caller was told the table was ready no matter what
+    happened.  The table did not exist on this fleet until
+    runner/migrations/003_file_reservations.sql was applied on 2026-08-25, so
+    for the whole life of the fleet before that, blocked_by() read an absent
+    relation and answered "nothing is held" every time.
+
+    Creating it is a MIGRATION, not something a runtime hot path can do.
+    Absence is now reported once, loudly, instead of being reported as success
+    forever — which still matters: a host whose credentials cannot see the table
+    must not silently fall back to running every task unguarded.
+    """
     if not db:
         return False
+    if _TABLE_STATE["checked"]:
+        return _TABLE_STATE["present"]
+    _TABLE_STATE["checked"] = True
     try:
-        db.query(f"""
-            CREATE TABLE IF NOT EXISTS {TABLE} (
-                id          uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-                task_id     text NOT NULL,
-                project_id  text NOT NULL DEFAULT '',
-                repo        text NOT NULL,
-                filepath    text NOT NULL,
-                reserved_at timestamptz DEFAULT now(),
-                ttl_seconds int DEFAULT {DEFAULT_TTL},
-                UNIQUE (repo, filepath)
-            );
-        """)
-        return True
+        db.select(TABLE, {"select": "task_id", "limit": "1"})
+        _TABLE_STATE["present"] = True
     except Exception as e:
-        _log.debug("file_reservation: table creation failed: %s", e)
-        # Table might already exist — try to proceed anyway
-        return True
+        _TABLE_STATE["present"] = False
+        print("file_reservation: table %r is unavailable (%s) — file-level mutual "
+              "exclusion is NOT in force; every task will be allowed to proceed. "
+              "Apply runner/migrations/003_file_reservations.sql, or set "
+              "ORCH_FILE_RESERVATION_ENABLED=false to say so deliberately."
+              % (TABLE, e), flush=True)
+        _log.warning("file_reservation: %s unavailable: %s", TABLE, e)
+    return _TABLE_STATE["present"]
+
+
+#: Kept as an alias: `--cleanup` and any external caller still name the old
+#: function.  It no longer claims to create anything.
+_ensure_table = _table_present
 
 
 def _ttl_for_file(filepath: str) -> int:
@@ -103,16 +127,73 @@ def _ttl_for_file(filepath: str) -> int:
 
 
 def _clean_expired():
-    """Remove expired reservations."""
-    if not db:
-        return
+    """Remove expired reservations.  Returns the number removed.
+
+    The old body was a `db.query("DELETE FROM ... WHERE reserved_at +
+    (ttl_seconds || ' seconds')::interval < now()")` against a db module with
+    no query() and no SQL channel, inside a `_log.debug` handler — so nothing
+    was ever cleaned and nothing was ever said about it.  A reservation whose
+    TTL had passed would have held its file forever.
+
+    PostgREST cannot express "reserved_at + ttl_seconds < now()" as a filter
+    because the interval is a per-row column, so expiry is computed here and
+    the expired ids are deleted by id.  Rows with an unparseable reserved_at
+    are LEFT ALONE rather than treated as expired: releasing a lock because a
+    timestamp could not be read is the dangerous direction of that mistake.
+    """
+    if not db or not _table_present():
+        return 0
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    removed = 0
     try:
-        db.query(f"""
-            DELETE FROM {TABLE}
-            WHERE reserved_at + (ttl_seconds || ' seconds')::interval < now()
-        """)
+        rows = db.select(TABLE, {"select": "id,reserved_at,ttl_seconds"}) or []
     except Exception as e:
-        _log.debug("file_reservation: cleanup failed: %s", e)
+        _log.debug("file_reservation: cleanup read failed: %s", e)
+        return 0
+
+    def _is_expired(row):
+        """True once this row's TTL has passed.
+
+        False for an unparseable reserved_at or ttl_seconds, which leaves the row
+        alone — see the docstring above on which direction of that mistake hurts.
+        """
+        raw = str(row.get("reserved_at") or "")
+        try:
+            stamp = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=_dt.timezone.utc)
+            ttl = int(row.get("ttl_seconds") or DEFAULT_TTL)
+        except (TypeError, ValueError):
+            return False
+        return (now - stamp).total_seconds() > ttl
+
+    def _delete_expired(row_id):
+        """Delete one expired row. Returns how many actually went (1 or 0)."""
+        try:
+            db.delete(TABLE, {"id": row_id})
+            return 1
+        except Exception as e:
+            _log.debug("file_reservation: cleanup delete failed: %s", e)
+            return 0
+
+    for r in rows:
+        if _is_expired(r):
+            removed += _delete_expired(r["id"])
+    return removed
+
+
+def _holder_rows(repo: str, filepath: str):
+    """Rows currently holding (repo, filepath), or None if the read itself failed.
+
+    None and [] mean different things to the caller: [] is "nobody holds it any
+    more", None is "we could not find out", and only the second one has to be
+    treated as still-blocked.
+    """
+    try:
+        return db.select(TABLE, {"repo": f"eq.{repo}", "filepath": f"eq.{filepath}"}) or []
+    except Exception:
+        return None
 
 
 def reserve(task: dict, repo: str, files: list[str]) -> dict:
@@ -132,7 +213,11 @@ def reserve(task: dict, repo: str, files: list[str]) -> dict:
     if not db:
         return {"reserved": files, "blocked": [], "error": "no db"}
 
-    _ensure_table()
+    if not _table_present():
+        # Say so in the result instead of returning "reserved: everything".
+        return {"reserved": [], "blocked": [],
+                "error": "%s unavailable — no reservation was taken" % TABLE}
+
     _clean_expired()
 
     task_id = str(task.get("id", ""))
@@ -146,36 +231,59 @@ def reserve(task: dict, repo: str, files: list[str]) -> dict:
 
         ttl = _ttl_for_file(filepath)
 
+        # The claim is the INSERT itself: UNIQUE (repo, filepath) is what makes
+        # it atomic across two Macs racing the same file.  db.insert returns the
+        # created row, or None when PostgREST answers 409 — which for this table
+        # means the unique constraint fired, i.e. somebody else holds the file.
+        #
+        # The old body sent an `INSERT ... ON CONFLICT DO UPDATE` through
+        # db.query(), which does not exist.  The AttributeError it raised said
+        # "module 'db' has no attribute 'query'" — containing none of the words
+        # "duplicate", "conflict" or "unique" the handler below looked for — so
+        # every file fell through to the `else` arm and was recorded as neither
+        # reserved nor blocked.  Nothing was ever written to the table, so
+        # blocked_by() (which uses the real db.select and works correctly) has
+        # always read an empty relation and always returned "nothing is held".
+        # runner.py:1205 re-queues a task when blocked_by is non-empty, so the
+        # fleet's file-level mutual exclusion has never once blocked anything.
+        #
+        # Note also that the old statement's ON CONFLICT DO UPDATE would have
+        # STOLEN a lock held by another task, not refused it — the WHERE clause
+        # sits on the UPDATE, so a losing race left the row untouched and the
+        # caller was told it had reserved the file regardless.
         try:
-            # Try to insert (upsert: skip if already held by same task)
-            db.query(f"""
-                INSERT INTO {TABLE} (task_id, project_id, repo, filepath, ttl_seconds)
-                VALUES ('{task_id}', '{project_id}', '{repo}', '{filepath}', {ttl})
-                ON CONFLICT (repo, filepath) DO UPDATE
-                SET task_id = EXCLUDED.task_id,
-                    project_id = EXCLUDED.project_id,
-                    reserved_at = now(),
-                    ttl_seconds = EXCLUDED.ttl_seconds
-                WHERE {TABLE}.task_id = '{task_id}'
-            """)
-            result["reserved"].append(filepath)
+            row = db.insert(TABLE, {
+                "task_id": task_id,
+                "project_id": project_id,
+                "repo": repo,
+                "filepath": filepath,
+                "ttl_seconds": ttl,
+            })
         except Exception as e:
-            # Conflict — file is held by another task
-            err_str = str(e)
-            if "duplicate" in err_str.lower() or "conflict" in err_str.lower() or "unique" in err_str.lower():
-                # Find who holds it
-                try:
-                    rows = db.select(TABLE, {"repo": f"eq.{repo}", "filepath": f"eq.{filepath}"})
-                    if rows:
-                        holder = rows[0].get("task_id", "unknown")
-                        result["blocked"].append((filepath, holder))
-                    else:
-                        result["reserved"].append(filepath)
-                except Exception:
-                    result["blocked"].append((filepath, "unknown"))
-            else:
-                _log.debug("file_reservation: reserve error: %s", e)
-                result["error"] = str(e)
+            _log.debug("file_reservation: reserve error: %s", e)
+            result["error"] = str(e)
+            continue
+
+        if row:
+            result["reserved"].append(filepath)
+            continue
+
+        # 409: somebody holds (repo, filepath).  Name them — unless it is this
+        # same task, which is a re-entry and not a conflict.
+        rows = _holder_rows(repo, filepath)
+        if rows is None:
+            # Could not read who holds it.  Blocked is the safe answer: the
+            # INSERT already told us the file is taken.
+            result["blocked"].append((filepath, "unknown"))
+            continue
+        if not rows:
+            # The holder released between the INSERT and this read.  Not ours,
+            # and claiming it here without the constraint would not be atomic.
+            result["blocked"].append((filepath, "unknown"))
+        elif str(rows[0].get("task_id", "")) == task_id:
+            result["reserved"].append(filepath)
+        else:
+            result["blocked"].append((filepath, rows[0].get("task_id", "unknown")))
 
     return result
 
@@ -196,9 +304,17 @@ def release(task: dict) -> int:
     if not task_id:
         return 0
 
+    if not _table_present():
+        return 0
     try:
-        db.query(f"DELETE FROM {TABLE} WHERE task_id = '{task_id}'")
-        return 1  # DB doesn't return count easily; approximate
+        # Was db.query("DELETE FROM ... WHERE task_id = '...'") — no such
+        # function, so this raised, was logged at debug, and returned 0 while
+        # its docstring promised a count.  It also interpolated task_id into
+        # SQL text unquoted.  db.delete returns the deleted rows, so the count
+        # is now real rather than the hardcoded 1 the old comment admitted to
+        # ("DB doesn't return count easily; approximate").
+        deleted = db.delete(TABLE, {"task_id": task_id})
+        return len(deleted or [])
     except Exception as e:
         _log.debug("file_reservation: release error: %s", e)
         return 0
@@ -215,7 +331,7 @@ def blocked_by(task: dict, repo: str, files: list[str]) -> list[tuple[str, str]]
     Returns:
         List of (filepath, holder_task_id) tuples for blocked files
     """
-    if not ENABLED or not db:
+    if not ENABLED or not db or not _table_present():
         return []
 
     _clean_expired()

@@ -1,0 +1,6 @@
+{
+  "deploymentDisabledIntentionally": true,
+  "comment": "GUARD (2026-07-30): the ONLY Vercel project for this repo is 'web' (root directory: web/). A duplicate project ('claude-orchestrator') was once auto-created by importing the repo ROOT; the sibling vercel.json disables git deployments for any project ever pointed at the repo root again, so a duplicate can exist but can never silently build/deploy. Do not remove.",
+  "why_this_file_exists": "vercel.json is schema-validated and the CLI refuses to deploy when it carries any key the schema does not define. This declaration used to live in vercel.json as `_comment` + `_deploymentDisabledIntentionally`, which made every `vercel deploy` from the repo root fail with \"should NOT have additional property `_comment`\" before uploading anything. The keys are load-bearing — runner/vercel_config_guard.py reads them so the deployment_disabled_everywhere advisory stops re-filing itself as a backlog task on every sweep — so they were moved here rather than deleted. Sidecar name and keys are read by runner/vercel_config_guard.py:_declares_intentional_no_deploy.",
+  "cli_note": "A plain `vercel deploy` from this repo also fails for an unrelated reason: the checkout is ~36k files and the CLI caps an unarchived upload at 15k. Use `npx vercel@latest deploy --archive=tgz --yes`."
+}

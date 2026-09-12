@@ -12,6 +12,15 @@ log = logging.getLogger(__name__)
 
 
 def normalize_slug(slug: str) -> str:
+    """Canonical slug form: lowercased, non-alphanumerics collapsed to hyphens.
+
+    Fail-soft on bad input (None, a non-string) rather than raising: this feeds
+    the dedup check on the auto-queue path, and one malformed row must not take
+    the whole queue pass down with an AttributeError. An unusable slug
+    normalises to "" and simply never matches.
+    """
+    if not isinstance(slug, str):
+        return ""
     s = slug.lower().strip()
     s = re.sub(r"[^a-z0-9]+", "-", s)
     return s.strip("-")
@@ -28,6 +37,12 @@ def _token_similarity(a: str, b: str) -> float:
 def is_duplicate(candidate: str, existing_slugs: Set[str],
                  similarity_threshold: float = 0.85) -> bool:
     norm_candidate = normalize_slug(candidate)
+    if not norm_candidate:
+        # An empty/unusable candidate matches nothing. Returning False here (not
+        # True) is deliberate: a "duplicate" verdict would silently DROP the row,
+        # whereas letting it through surfaces the bad slug downstream where it
+        # can be seen and fixed.
+        return False
     candidate_base = re.sub(r"-v\d+$", "", norm_candidate)
     for existing in existing_slugs:
         norm_existing = normalize_slug(existing)

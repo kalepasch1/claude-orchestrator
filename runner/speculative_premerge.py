@@ -101,6 +101,7 @@ def reconcile(task, repo_path=None):
 def track_speculative(task_id, parent_slug, speculative_base):
     """Record that a task is running speculatively against a parent branch."""
     try:
+        # on_conflict= is not a db.upsert parameter -> TypeError, swallowed.
         db.upsert("task_artifacts", {
             "task_id": task_id,
             "key": "speculative_premerge",
@@ -109,7 +110,7 @@ def track_speculative(task_id, parent_slug, speculative_base):
                 "speculative_base": speculative_base,
                 "started_at": datetime.datetime.utcnow().isoformat(),
             }),
-        }, on_conflict="task_id,key")
+        })
     except Exception:
         pass  # fail-soft
 

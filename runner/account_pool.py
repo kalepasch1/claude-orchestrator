@@ -24,7 +24,9 @@ API:
   pool.mark_exhausted(acct)             # call on "usage limit" -> rotates
   pool.mark_ok(acct)
 """
-import os, json, time
+import os, json, time, logging
+
+log = logging.getLogger(__name__)
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 CFG = os.path.join(HOME, "accounts.json")       # credential definitions (read-only)
@@ -170,13 +172,35 @@ class AccountPool:
         return [{"name": "default", "type": "login"}]
 
     def _load_state(self):
+        """Runtime rotation state, keyed by account name. Fail-soft: a missing,
+        unreadable, corrupt or wrong-shaped file yields {} rather than raising.
+
+        The isinstance check matters: every reader (_healthy, current, stats,
+        record_use) treats state as a name->dict map, so a truncated file that
+        happens to parse as a JSON list used to surface much later as
+        `AttributeError: 'list' object has no attribute 'get'` inside current()."""
         if os.path.exists(STATE):
-            try: return json.load(open(STATE))
-            except Exception: pass
+            try:
+                with open(STATE) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
         return {}
 
     def _save(self):
-        json.dump(self.state, open(STATE, "w"))
+        """Persist rotation state. Fail-soft: a read-only/full disk must not wedge
+        the runner mid-rotation (mark_exhausted/mark_ok call this on the hot path),
+        so the write is logged and swallowed rather than raised."""
+        try:
+            # On a machine that has never been configured, HOME does not exist yet and
+            # this used to raise FileNotFoundError straight out of mark_exhausted().
+            os.makedirs(os.path.dirname(STATE) or ".", exist_ok=True)
+            with open(STATE, "w") as f:
+                json.dump(self.state, f)
+        except Exception as e:
+            log.warning("account_pool: could not persist %s: %s", STATE, e)
 
     def _healthy(self, a):
         until = self.state.get(a["name"], {}).get("cooldown_until", 0)
@@ -277,26 +301,34 @@ class AccountPool:
         st["cooldown_until"] = time.time() + min(_cooldown() * (2 ** (hits - 1)), _cooldown_max())
         self._save()
         self._write_exhausted_flag()   # flip the fail-over-to-Codex signal if this was the last one
-        # best-effort: persist cooldown to Supabase so the dashboard shows the rotation
+        # best-effort: persist cooldown to Supabase so the dashboard shows the rotation.
+        # Mirror the cooldown we just computed (module-level COOLDOWN is frozen at import
+        # and ignores both the env override and the backoff, so the dashboard used to show
+        # a 20-min reset for an account actually parked for hours).
         try:
             import db, datetime
-            until = (datetime.datetime.utcnow() +
-                     datetime.timedelta(seconds=COOLDOWN)).isoformat()
+            until = datetime.datetime.utcfromtimestamp(st["cooldown_until"]).isoformat()
             db.update("accounts", {"name": a["name"]}, {"cooldown_until": until})
         except Exception:
             pass
         nxt = self.current()
-        # notify on rotation / full exhaustion so you stop babysitting
+        # notify on rotation / full exhaustion so you stop babysitting.
+        # current() returns an account DICT: comparing it to a["name"] was always
+        # unequal, so the "ALL accounts exhausted" alert could never fire and the
+        # rotation message interpolated the whole dict. Compare names, and use
+        # all_exhausted() — the same signal written to EXHAUSTED_FLAG above — to tell
+        # a real rotation apart from "everything is cooling, here's the soonest".
+        nxt_name = nxt["name"] if nxt else None
         try:
             import notify
-            if nxt and nxt != a["name"]:
-                notify.send(f"Account '{a['name']}' hit its limit -> rotated to '{nxt}'.")
-            elif not nxt or nxt == a["name"]:
+            if nxt_name and nxt_name != a["name"] and not self.all_exhausted():
+                notify.send(f"Account '{a['name']}' hit its limit -> rotated to '{nxt_name}'.")
+            else:
                 notify.send(f"ALL accounts exhausted ('{a['name']}' was last). "
                             f"Work pauses until reset or you add capacity.")
         except Exception:
             pass
-        return nxt["name"] if nxt else None
+        return nxt_name
 
     def mark_ok(self, a):
         if a and a["name"] in self.state:

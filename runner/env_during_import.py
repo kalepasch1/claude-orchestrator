@@ -29,6 +29,64 @@ import sys
 
 
 @contextlib.contextmanager
+def modules_during_import(**stubs):
+    """Install sys.modules entries for the block, restoring exactly what was there.
+
+    The sys.modules twin of during_import(), for the other half of the same bug.
+    Several runner modules do `import db` at module scope and bind what they get,
+    so a test for one of them has to have the stub in place BEFORE importing it.
+    The obvious way -- `sys.modules["db"] = fake` at the top of the test file --
+    works for that file and silently breaks every file after it: pytest imports
+    every test module during COLLECTION, so the real `db` is gone for the rest of
+    the process, and unlike an environment variable nothing can put it back.
+
+    That is not theoretical. runner/tests/test_emit_task_log.py installed a
+    three-lambda SimpleNamespace as `db` and never restored it; it was the cause
+    of all 10 failures in test_done_to_merged_conversion.py and 10 more in
+    test_eval_harness_causal.py, both of which went green the moment it was fixed
+    with no change of their own. runner/tests/test_sys_modules_shadowing.py
+    freezes the 23 remaining sites.
+
+        # before                              # after
+        sys.modules["db"] = fake              mod = import_with_stubs("mod", db=fake)
+        import mod
+
+    Restores "was absent" correctly, so a stub for a module that was never
+    imported does not leave an entry behind.
+    """
+    saved = {name: sys.modules.get(name) for name in stubs}
+    try:
+        for name, stub in stubs.items():
+            sys.modules[name] = stub
+        yield
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def import_with_stubs(module_name, **stubs):
+    """Import a PRIVATE copy of `module_name` with `stubs` in sys.modules.
+
+    Same contract as import_with_env: the module under test binds the stubs, the
+    process keeps neither them nor the private copy. Anything that already
+    imported `module_name` keeps the object it has.
+    """
+    with modules_during_import(**stubs):
+        previous = sys.modules.pop(module_name, None)
+        try:
+            fresh = importlib.import_module(module_name)
+        finally:
+            if previous is not None:
+                sys.modules[module_name] = previous
+            else:
+                sys.modules.pop(module_name, None)
+        return fresh
+
+
+@contextlib.contextmanager
 def during_import(**pairs):
     """Set env vars for the block, restoring prior values — including 'was absent'."""
     saved = {key: os.environ.get(key) for key in pairs}

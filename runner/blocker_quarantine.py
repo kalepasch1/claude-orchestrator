@@ -18,6 +18,7 @@ import pipeline_contract
 import privacy
 import agentic_repair
 import quarantine_triage
+import quarantine_reason
 
 DEFAULT_LIMIT = int(os.environ.get("ORCH_QUARANTINE_LIMIT", "120"))
 MAX_BASE_CHARS = int(os.environ.get("ORCH_QUARANTINE_PROMPT_CHARS", "12000"))
@@ -67,6 +68,26 @@ _SECRET_EXPLICIT = re.compile(
     re.I,
 )
 
+# A literal credential PREFIX in the evidence is a different class of signal from the word
+# "token", and has to be treated that way. _SECRET_TERM + _SECRET_VIOLATION_CONTEXT are built
+# to be deliberately reluctant, because this fleet's own subject matter is credential-pool
+# management and the bare words token/credential/secret are everyday vocabulary here (see
+# test_domain_vocab_token_credential_mention_is_not_secret). But "xoxb-" is not vocabulary:
+# nothing writes that string except a Slack bot token, and it showed up in the blocker log of
+# cont-801b8665 ("Await user-supplied Slack credentials (Bot Token xoxb-…, Signing Secret)")
+# with no violation word anywhere near it, so the reluctant path scored it "rework" and the
+# task got a generic rework prompt instead of the secret directive that tells the agent to wire
+# the value through env vars rather than commit it. A recognisable credential shape is evidence
+# on its own and needs no corroborating adjective.
+_SECRET_LITERAL = re.compile(
+    r"\bxox[abeprs]-|"                      # Slack bot/user/app/legacy tokens
+    r"\bgh[pousr]_[A-Za-z0-9]{6,}|"         # GitHub personal/OAuth/server/user/refresh tokens
+    r"\bAKIA[0-9A-Z]{8,}|"                  # AWS access key id
+    r"\bsk-(?:ant-|proj-|live-|test-)|"     # Anthropic / OpenAI / Stripe-style secret keys
+    r"\b-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    re.I,
+)
+
 
 # 2026-07-11: _SECRET_TERM matches the bare word "token" (routine in any auth-related codebase --
 # JWT/CSRF/session tokens) and _SECRET_VIOLATION_CONTEXT matches generic words like "detected" or
@@ -82,7 +103,7 @@ _SECRET_PROXIMITY_CHARS = 80
 
 
 def _is_secret(evidence):
-    if _SECRET_EXPLICIT.search(evidence):
+    if _SECRET_EXPLICIT.search(evidence) or _SECRET_LITERAL.search(evidence):
         return True
     for term_match in _SECRET_TERM.finditer(evidence):
         start = max(0, term_match.start() - _SECRET_PROXIMITY_CHARS)
@@ -149,12 +170,30 @@ def _clean_note_for_classification(note):
     return text
 
 
-_REWORK_PREFIX = re.compile(r"^(?:rework-[a-z]+-)+", re.I)
+# The category segment after "rework-" is OPTIONAL, and that matters at the end of a chain.
+# The pipeline builds slugs as rework-<category>-<original>, so a task that has been round-
+# tripped five times reads rework-legal-rework-legal-…-rework-<hash>: every hop but the last
+# carries its category, and the last hop is a bare "rework-" in front of the original hash.
+# `^(?:rework-[a-z]+-)+` alone stopped one hop short of the original name and left "rework-"
+# glued to it, so the "what was this task actually called" question never got a clean answer.
+_REWORK_PREFIX = re.compile(r"^(?:rework-(?:[a-z]+-)?)+", re.I)
+
+
+def _strip_rework_noise(slug):
+    """Return *slug* with the pipeline's own rework prefixes removed.
+
+    The prefixes are bookkeeping this module wrote itself; they are not part of what the task
+    is. Feeding them back into the classifier is the self-reference loop the rest of this file
+    keeps guarding against — "rework-secret-canary-ollama-5" contains the literal word "secret"
+    purely because a previous pass decided so, and matching on it re-decides the same thing
+    forever. Accepts None/"" so callers do not each have to coerce.
+    """
+    return _REWORK_PREFIX.sub("", str(slug or ""))
 
 
 def _blocker_signal(task):
     raw_slug = str(task.get("slug") or "")
-    slug = _REWORK_PREFIX.sub("", raw_slug)
+    slug = _strip_rework_noise(raw_slug)
     note = _clean_note_for_classification(task.get("note"))
     log_tail = str(task.get("log_tail") or "")
     # strip the task's own full slug from evidence so the quarantine history embedded in branch
@@ -230,6 +269,18 @@ def _identity_only_category(task, category):
     stripped = dict(task)
     stripped["note"] = ""
     stripped["log_tail"] = ""
+    # `state` is EVIDENCE and has to be blanked with the rest of it. It is a recorded outcome
+    # of the run — the runner set it to TESTFAIL because the tests actually failed — not part
+    # of the task's identity the way its slug, prompt and kind are.
+    #
+    # Leaving it behind made this probe answer "yes, identity-only" for every testfail in the
+    # fleet: _classify_raw has a literal `state == "TESTFAIL"` branch, so with note and
+    # log_tail blank the re-classification still landed on "testfail", classify() read that as
+    # a self-referential verdict and downgraded it to generic "rework". The category-specific
+    # repair directive (run the failing tests, fix them, don't touch anything else) was
+    # discarded for a vague rework prompt on every one of them — the exact opposite of what
+    # this guard exists to do, since the testfail verdict came from the run, not from the name.
+    stripped["state"] = ""
     try:
         return _classify_raw(stripped) == category
     except Exception:
@@ -378,10 +429,16 @@ def repair_misclassified(limit=300):
     """
     if os.environ.get("ORCH_QUARANTINE_REPAIR", "true").lower() not in ("1", "true", "yes", "on"):
         return {"checked": 0, "repaired": 0}
-    rows = db.select(
+    # Exhaustive for the same reason as dedupe_replacements below: this WRITES
+    # (it rewrites prompt/note/category on replacement rows), and a
+    # recency-ordered cap meant rows past it were never repaired while parking
+    # and repairing churned rows in and out of the window between passes. db's
+    # truncated-scan detector was reporting this call 3502 times.
+    rows = db.select_all(
         "tasks",
-        {"select": "id,slug,note,state,project_id,base_branch,kind",
-         "state": "eq.QUEUED", "order": "updated_at.desc", "limit": str(limit)},
+        {"select": "id,slug,note,state,project_id,base_branch,kind", "state": "eq.QUEUED"},
+        order="updated_at.desc",
+        max_rows=max(int(limit or 0), 10000),
     ) or []
     checked = repaired = 0
     for row in rows:
@@ -422,10 +479,29 @@ def repair_misclassified(limit=300):
 
 
 def dedupe_replacements(limit=1000):
-    rows = db.select(
+    """Collapse duplicate quarantine replacements, keeping the newest per slug.
+
+    Reads every QUEUED row rather than the newest `limit` of them. This was a
+    capped `select(..., order=updated_at.desc, limit=1000)` and db's truncated-scan
+    detector was reporting it 2619 times.
+
+    A partial window is particularly bad HERE because this function WRITES: it
+    parks duplicates as DECOMPOSED. Two failure modes followed from the cap. A slug
+    whose duplicates all sat past it was never deduped at all — silently, forever.
+    And because parking a row updates updated_at, rows churn in and out of a
+    recency-ordered window between runs, so which duplicates were even considered
+    varied pass to pass. A dedupe pass has to see the whole group to know which
+    member is the newest; seeing an arbitrary suffix of it is not a smaller version
+    of the same job.
+
+    The newest-first order is load-bearing below ("keep items[0]") and is
+    preserved.
+    """
+    rows = db.select_all(
         "tasks",
-        {"select": "id,slug,note,state,updated_at",
-         "state": "eq.QUEUED", "order": "updated_at.desc", "limit": str(limit)},
+        {"select": "id,slug,note,state,updated_at", "state": "eq.QUEUED"},
+        order="updated_at.desc",
+        max_rows=max(int(limit or 0), 10000),
     ) or []
     groups = collections.defaultdict(list)
     for row in rows:
@@ -620,6 +696,13 @@ def _park_original(task, new_slug, category):
         f"{MARK}: quarantined as {category}; replacement queued as {new_slug}. "
         f"Original blocker: {(task.get('note') or task.get('log_tail') or '')[:300]}"
     )[:900]
+    # Tag the event with a machine-readable reason. The prose above is only
+    # readable by the regex in quarantine_breakdown, and only for notes this
+    # module wrote; the tag is readable by anything, and names a reason that
+    # maps to one remedy. Truncate BEFORE tagging so the tag is never the part
+    # that gets cut off.
+    note = quarantine_reason.annotate(
+        note[:860], task.get("note"), task.get("log_tail"), category)
     patch = {"state": "QUARANTINED", "account": None, "updated_at": "now()", "note": note}
     try:
         db.update("tasks", {"id": task["id"]}, patch)

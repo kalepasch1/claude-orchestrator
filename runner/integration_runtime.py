@@ -21,6 +21,39 @@ class CanonicalCheckoutMutationError(IntegrationRuntimeError):
     pass
 
 
+class CanonicalCheckoutMovedExternallyError(CanonicalCheckoutMutationError):
+    """Someone else moved the canonical checkout while the pass was running.
+
+    A subclass, so every existing `except CanonicalCheckoutMutationError` keeps
+    catching it and the pass still stops for that project. Only the ATTRIBUTION
+    changes, and it was wrong in a way that costs real time: on 2026-09-01
+    merge_train logged
+
+        merge_train: apparently-law isolation blocked: merge_train changed canonical
+        checkout /Users/kpasch/Documents/apparently-law:
+        branch: refs/heads/main -> refs/heads/fix/console-record-headers
+
+    The train had not changed anything. A person was working in that repo in an
+    editor and switched branch. But the message names the train as the mutator, so
+    the obvious next move is to go looking for a bug in the train — and the actual
+    situation, that a project's whole integration lane is blocked until someone puts
+    that checkout back, is nowhere in the sentence.
+
+    The distinction is sound by construction rather than by guesswork: every git
+    call isolated_repo makes against the canonical repo is a `worktree` subcommand
+    (add/remove/prune), and none of those can switch its branch or change its root.
+    A `branch:` or `top:` change is therefore always external. `head:` is NOT, and is
+    deliberately left alone: the pass fetches into the canonical repo, so a canonical
+    checkout sitting on the integration branch can legitimately be fast-forwarded by
+    the pass itself.
+    """
+    pass
+
+
+#: Mutation kinds the pass is structurally incapable of causing. See the class above.
+_EXTERNAL_MUTATION_PREFIXES = ("branch:", "top:")
+
+
 # Generated dependency/build artifacts can make an otherwise clean persistent
 # integration slot consume gigabytes.  They are removed only after a successful
 # integration pass; failures retain their full worktree for forensic recovery.
@@ -58,7 +91,20 @@ def canonical_snapshot(repo):
 
 def _worktree_path(repo):
     key = hashlib.sha256(os.path.realpath(repo).encode()).hexdigest()[:20]
-    return os.path.join(_home(), "integration-worktrees", key)
+    parent = os.path.join(_home(), "integration-worktrees")
+    # Spotlight must not index integration worktrees. mds_stores was measured at
+    # 76.6% CPU continuously for over a day on this Mac, indexing checkouts and
+    # node_modules clones that exist for minutes -- and load is what
+    # resource_governor clamps lanes on, so that indexing costs merge throughput.
+    # Best-effort; see scratch.exclude_from_spotlight for what it does and does
+    # not guarantee.
+    try:
+        import scratch
+        os.makedirs(parent, exist_ok=True)
+        scratch.exclude_from_spotlight(parent)
+    except Exception:
+        pass
+    return os.path.join(parent, key)
 
 
 def _temporary_worktree_path(repo):
@@ -410,6 +456,15 @@ def isolated_repo(canonical_repo, owner):
                 _purge_runtime_artifacts(path)
         finally:
             if mutation:
+                if mutation.startswith(_EXTERNAL_MUTATION_PREFIXES):
+                    raise CanonicalCheckoutMovedExternallyError(
+                        f"canonical checkout {canonical_repo} was moved by something "
+                        f"other than {owner} while the pass ran ({mutation}) — most "
+                        "likely a person or another session working in that repo. "
+                        "Nothing was lost and nothing here is broken, but this "
+                        "project cannot be integrated until that checkout is put "
+                        "back."
+                    )
                 raise CanonicalCheckoutMutationError(
                     f"{owner} changed canonical checkout {canonical_repo}: {mutation}"
                 )

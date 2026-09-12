@@ -15,7 +15,7 @@ import threading
 import os
 from typing import Dict, List, Any
 from unittest.mock import Mock, patch, MagicMock, call
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -49,21 +49,25 @@ class TestHeartbeatMonitoring:
         # Boundary may be either fresh or stale depending on implementation
         assert isinstance(_fresh(boundary_ts), bool)
 
-    def test_heartbeat_record_structure(self):
-        """Heartbeat record has required fields."""
-        heartbeat_record = {
-            "runner_id": "pid-12345",
-            "hostname": "runner-1.internal",
-            "last_seen": time.time(),
-            "active": True,
-            "model_loaded": "llama3.2:3b",
-            "memory_mb": 2048,
-        }
+    @patch("db.db")
+    def test_heartbeat_record_structure(self, mock_db):
+        """The published row carries exactly the live schema's required fields."""
+        # WAS: asserted against a dict literal defined three lines above it, so it
+        # could not fail and, worse, documented a schema the table never had
+        # ("active" bool, epoch-float last_seen, model_loaded/memory_mb columns).
+        # Assert against the row db.heartbeat() actually hands to db.insert instead.
+        from db import heartbeat
 
-        assert heartbeat_record["runner_id"]
-        assert heartbeat_record["hostname"]
-        assert heartbeat_record["last_seen"] > 0
-        assert isinstance(heartbeat_record["active"], bool)
+        mock_db.insert.return_value = None
+        heartbeat("pid-12345", "runner-1.internal", active=True)
+
+        row = mock_db.insert.call_args[0][1]
+        for required in ("runner_id", "hostname", "active_tasks", "last_seen"):
+            assert required in row, f"{required} missing from published heartbeat row"
+        assert row["runner_id"] == "pid-12345"
+        assert row["hostname"] == "runner-1.internal"
+        assert isinstance(row["active_tasks"], int)
+        assert not isinstance(row["active_tasks"], bool)
 
     @patch("db.db")
     def test_heartbeat_upsert_creates_new(self, mock_db):
@@ -94,7 +98,11 @@ class TestHeartbeatMonitoring:
 
     @patch("db.db")
     def test_heartbeat_inactive_runner(self, mock_db):
-        """Heartbeat records inactive runners."""
+        """An idle runner is published as active_tasks=0, not as a boolean column."""
+        # WAS: asserted row["active"] is False, which raised KeyError. There is no
+        # "active" column: db.heartbeat() converts the bool argument to the live
+        # schema's integer `active_tasks` (db.py:2635-2637). The old shape — a bool
+        # "active" column — is precisely the one that made every insert fail for weeks.
         from db import heartbeat
 
         mock_db.insert.return_value = None
@@ -102,22 +110,49 @@ class TestHeartbeatMonitoring:
         heartbeat("pid-12345", "host1", active=False)
 
         mock_db.insert.assert_called()
-        call_args = mock_db.insert.call_args
-        row = call_args[0][1]
-        assert row["active"] is False
+        table, row = mock_db.insert.call_args[0][:2]
+        assert table == "runner_heartbeats"
+        assert "active" not in row
+        assert row["active_tasks"] == 0
+        assert row["runner_id"] == "pid-12345"
+        assert row["hostname"] == "host1"
 
     @patch("db.db")
-    def test_heartbeat_with_model_metadata(self, mock_db):
-        """Heartbeat includes model and resource metadata."""
+    def test_heartbeat_busy_runner_publishes_nonzero_active_tasks(self, mock_db):
+        """The busy/idle distinction must survive the bool -> active_tasks mapping."""
+        # New sibling of the test above: without it, a heartbeat that hard-coded
+        # active_tasks=0 would still pass.
         from db import heartbeat
 
         mock_db.insert.return_value = None
 
-        heartbeat("pid-12345", "host1", active=True, model_loaded="claude-opus-5")
+        heartbeat("pid-12345", "host1", active=True)
 
-        call_args = mock_db.insert.call_args
-        row = call_args[0][1]
-        assert "model_loaded" in row or "last_seen" in row
+        row = mock_db.insert.call_args[0][1]
+        assert row["active_tasks"] == 1
+
+    @patch("db.db")
+    def test_heartbeat_omits_columns_the_table_does_not_have(self, mock_db):
+        """model_loaded/memory_mb are accepted as arguments but never written."""
+        # WAS: `assert "model_loaded" in row or "last_seen" in row` — an or-clause that
+        # last_seen satisfied unconditionally, so it passed while asserting nothing.
+        # The real contract (db.py:2628-2634) is that the row must match the live
+        # schema exactly: runner_id, hostname, active_tasks, last_seen (+ optional
+        # identity/visibility columns). Sending model_loaded/memory_mb made every
+        # insert fail, so their absence is the property worth pinning.
+        from db import heartbeat
+
+        mock_db.insert.return_value = None
+
+        heartbeat("pid-12345", "host1", active=True,
+                  model_loaded="claude-opus-5", memory_mb=2048)
+
+        row = mock_db.insert.call_args[0][1]
+        assert "model_loaded" not in row
+        assert "memory_mb" not in row
+        # last_seen is an ISO-8601 timestamptz string, not an epoch float.
+        assert isinstance(row["last_seen"], str)
+        datetime.fromisoformat(row["last_seen"])
 
 
 class TestHeartbeatPruning:
@@ -251,171 +286,255 @@ class TestZombieProcessDetection:
         }) is False
 
 
+def _minutes_ago(minutes):
+    """tz-aware ISO-8601 timestamp, the shape `updated_at` really carries."""
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
 class TestOrphanedRunningTaskRecovery:
-    """Test recovery of tasks stuck in RUNNING/PROCESSING state."""
+    """Test recovery of tasks stuck in RUNNING state.
 
-    @patch("db.select")
-    def test_find_orphaned_running_tasks(self, mock_select):
-        """Find tasks in RUNNING state for stale runners."""
-        stale_runner_id = "pid-old-1"
+    Every test here used to assert on canned data it had just handed to a Mock
+    (`mock_select.return_value = [...]; result = mock_select()`), or on a locally
+    defined is_orphaned_task() helper — so the class tested the mock, and the columns
+    it asserted on ("status", "runner_id", "error") are not columns this schema has.
+    The importable implementation of this recovery is
+    queue_janitor.release_orphaned_running(), which is what these now drive. (The other
+    half lives in runner._reap_zombie_tasks, but `import runner` resolves to the
+    runner/ package and executing runner.py would start the world — see the note in
+    test_compliance_periodic_jobs.py.)
+    """
 
-        mock_select.return_value = [
-            {
-                "id": "task-1",
-                "project": "test",
-                "title": "Orphaned task",
-                "status": "running",
-                "runner_id": stale_runner_id,
-                "created_at": time.time() - 7200,
-            }
-        ]
+    def _run(self, rows):
+        """Run the janitor's orphan sweep over `rows`; return (fixed, updates)."""
+        import queue_janitor
 
-        result = mock_select()
+        updates = []
 
-        assert len(result) == 1
-        assert result[0]["status"] == "running"
-        assert result[0]["runner_id"] == stale_runner_id
+        def fake_select(table, params=None):
+            if table == "tasks":
+                assert params == {"select": "*", "state": "eq.RUNNING"}, params
+                return list(rows)
+            return []
+
+        with patch.object(queue_janitor.db, "select", side_effect=fake_select), \
+                patch.object(queue_janitor.db, "update",
+                             side_effect=lambda t, m, p: updates.append((m["id"], p))):
+            fixed = queue_janitor.release_orphaned_running()
+        return fixed, updates
+
+    def test_find_orphaned_running_tasks(self):
+        """Only RUNNING tasks past the orphan threshold are acted on."""
+        import queue_janitor
+
+        stale = queue_janitor.ORPHAN_RUNNING_MIN + 10
+        fresh = max(0.0, queue_janitor.ORPHAN_RUNNING_MIN - 5)
+        fixed, updates = self._run([
+            {"id": "task-1", "slug": "orphaned", "account": "Mac.lan-4171",
+             "updated_at": _minutes_ago(stale), "transient_retries": 0,
+             "attempt": 1, "remediation_count": 0},
+            {"id": "task-2", "slug": "still-running", "account": "Mac.lan-4172",
+             "updated_at": _minutes_ago(fresh), "transient_retries": 0},
+        ])
+
+        assert fixed == 1
+        assert [task_id for task_id, _ in updates] == ["task-1"]
 
     def test_orphaned_task_detection_criteria(self):
-        """Criteria for marking task as orphaned."""
-        def is_orphaned_task(task: Dict, stale_runners: List[str]) -> bool:
-            return (
-                task.get("status") in ("running", "processing")
-                and task.get("runner_id") in stale_runners
-            )
+        """Cowork claims and unreadable timestamps are never treated as orphans."""
+        import queue_janitor
 
-        stale_runners = ["pid-old-1", "pid-old-2"]
+        stale = queue_janitor.ORPHAN_RUNNING_MIN + 60
+        fixed, updates = self._run([
+            {"id": "cowork", "slug": "c", "account": "cowork-session-9",
+             "updated_at": _minutes_ago(stale), "transient_retries": 0},
+            {"id": "unparseable", "slug": "u", "account": "Mac.lan-1",
+             "updated_at": "not-a-timestamp", "transient_retries": 0},
+            {"id": "orphan", "slug": "o", "account": "Mac.lan-2",
+             "updated_at": _minutes_ago(stale), "transient_retries": 0,
+             "attempt": 1, "remediation_count": 0},
+        ])
 
-        # Is orphaned
-        assert is_orphaned_task(
-            {"status": "running", "runner_id": "pid-old-1"},
-            stale_runners
-        ) is True
+        # A Cowork task runs outside this host, so its claim is not evidence of death.
+        assert [task_id for task_id, _ in updates] == ["orphan"]
+        assert fixed == 1
 
-        # Not orphaned: wrong status
-        assert is_orphaned_task(
-            {"status": "queued", "runner_id": "pid-old-1"},
-            stale_runners
-        ) is False
+    def test_requeue_orphaned_task(self):
+        """The dead claim is released and the task goes back to QUEUED."""
+        import queue_janitor
 
-        # Not orphaned: runner alive
-        assert is_orphaned_task(
-            {"status": "running", "runner_id": "pid-new-1"},
-            stale_runners
-        ) is False
+        rows = [{"id": "task-1", "slug": "s", "account": "Mac.lan-4171",
+                 "note": "prior note", "attempt": 1, "remediation_count": 1,
+                 "updated_at": _minutes_ago(queue_janitor.ORPHAN_RUNNING_MIN + 30),
+                 "transient_retries": 0}]
+        fixed, updates = self._run(rows)
 
-    @patch("db.update")
-    def test_requeue_orphaned_task(self, mock_update):
-        """Requeue orphaned task back to QUEUED."""
-        task_id = "task-1"
+        assert fixed == 1
+        task_id, patch_out = updates[0]
+        assert task_id == "task-1"
+        assert patch_out["state"] == "QUEUED"
+        assert patch_out["account"] is None          # the lane is freed
+        assert patch_out["remediation_count"] == 2
+        assert patch_out["attempt"] == 2
+        assert patch_out["note"] == "agentic-repair:orphaned-running"
+        # The janitor's own cap counter must ADVANCE, or a task ping-pongs forever.
+        # (It currently advances by two per sweep: release_orphaned_running() passes a
+        # pre-incremented copy and _repair_task increments again. Asserting "strictly
+        # greater" states the invariant without blessing the step size.)
+        assert patch_out["transient_retries"] > rows[0]["transient_retries"]
 
-        mock_update.return_value = None
+    def test_mark_orphaned_task_failed(self):
+        """A task repair cannot converge on is parked, not requeued forever."""
+        # WAS: called db.update() itself with {"status": "failed", "error": ...} and
+        # asserted the mock had been called — it exercised nothing but Mock. The real
+        # terminal path is agentic_repair's GLOBAL_REPAIR_CEILING, reached through the
+        # same janitor sweep, and the terminal state is QUARANTINED.
+        import agentic_repair
+        import queue_janitor
 
-        # Simulate requeue
-        from db import update
-        update("tasks", {"id": task_id}, {"status": "queued", "runner_id": None})
+        fixed, updates = self._run([
+            {"id": "task-1", "slug": "s", "account": "Mac.lan-4171", "note": "n",
+             "attempt": 2, "transient_retries": 5,
+             "remediation_count": agentic_repair.GLOBAL_REPAIR_CEILING + 1,
+             "updated_at": _minutes_ago(queue_janitor.ORPHAN_RUNNING_MIN + 30)},
+        ])
 
-        mock_update.assert_called()
-        call_args = mock_update.call_args
-        assert call_args[0][0] == "tasks"
+        assert fixed == 1
+        _task_id, patch_out = updates[0]
+        assert patch_out["state"] == "QUARANTINED"
+        assert agentic_repair.is_terminal(patch_out)
+        # A terminal patch must not be post-processed by the janitor: stomping the note
+        # or the counters re-opens the unbounded requeue loop the ceiling just closed.
+        assert "transient_retries" not in patch_out
+        assert patch_out["note"].startswith(agentic_repair.TERMINAL_NOTE_PREFIX)
 
-    @patch("db.update")
-    def test_mark_orphaned_task_failed(self, mock_update):
-        """Mark orphaned task as failed after N requeue attempts."""
-        task_id = "task-1"
-        max_requeue = 3
 
-        mock_update.return_value = None
+class _FakeTaskStore:
+    """Minimal stand-in for runner/db.py's select/update surface.
 
-        # After max requeue, mark as failed
-        from db import update
-        update("tasks", {"id": task_id}, {
-            "status": "failed",
-            "error": "Orphaned task; max requeue attempts exceeded",
-        })
+    zombie_reaper.ZombieReaper documents exactly this two-method contract
+    ("store is any object exposing select(table, params) and update(table, match,
+    patch)"), so the tests below drive the real module instead of a simulation.
+    """
 
-        mock_update.assert_called()
+    def __init__(self, rows, fail_on=()):
+        self.rows = {r["id"]: dict(r) for r in rows}
+        self.fail_on = set(fail_on)
+        self.updates = []
+
+    def select(self, table, params):
+        assert table == "tasks"
+        task_id = params["id"].split("eq.", 1)[1]
+        if task_id in self.fail_on:
+            raise OSError(f"store unavailable for {task_id}")
+        row = self.rows.get(task_id)
+        return [dict(row)] if row else []
+
+    def update(self, table, match, patch):
+        assert table == "tasks"
+        task_id = match["id"]
+        if task_id in self.fail_on:
+            raise OSError(f"store unavailable for {task_id}")
+        self.rows[task_id].update(patch)
+        self.updates.append((task_id, dict(patch)))
+        return None
 
 
 class TestZombieReaperExecution:
     """Test zombie reaper process execution and cleanup."""
 
     def test_zombie_reaper_cycle(self):
-        """Full zombie reaper cycle: detect, reap, log."""
-        def run_zombie_reaper_cycle(zombies: List[str]) -> Dict[str, Any]:
-            return {
-                "detected": len(zombies),
-                "reaped": len(zombies),
-                "timestamp": time.time(),
-                "errors": [],
-            }
+        """Full zombie reaper cycle: expired RUNNING ids are written to FAILED."""
+        # WAS: defined a local run_zombie_reaper_cycle() that returned
+        # {"detected": len(zombies), "reaped": len(zombies)} and asserted on its own
+        # arithmetic — it could not fail and never touched zombie_reaper.py. Drive the
+        # real entry point (zombie_reaper.terminate_expired) against the injectable
+        # store the module documents.
+        import zombie_reaper
 
-        zombies = ["pid-old-1", "pid-old-2", "pid-old-3"]
-        result = run_zombie_reaper_cycle(zombies)
+        store = _FakeTaskStore([
+            {"id": "task-1", "state": "RUNNING", "note": ""},
+            {"id": "task-2", "state": "RUNNING", "note": ""},
+            {"id": "task-3", "state": "RUNNING", "note": ""},
+        ])
 
-        assert result["detected"] == 3
-        assert result["reaped"] == 3
-        assert "timestamp" in result
+        result = zombie_reaper.terminate_expired(
+            ["task-1", "task-2", "task-3"], store=store, dry_run=False)
+
+        assert result["terminated"] == ["task-1", "task-2", "task-3"]
+        assert result["skipped"] == [] and result["missing"] == [] and result["errored"] == []
+        assert all(r["state"] == zombie_reaper.FAILED_STATE for r in store.rows.values())
 
     def test_zombie_reaper_logging(self):
-        """Zombie reaper logs each reap event."""
-        logged_events = []
+        """Every reap is recorded — in the log and in the task's own note."""
+        # WAS: appended dicts to a local list via a local log_reap() and asserted the
+        # list had two entries. Assert the module's real record-keeping instead: a
+        # warning naming each task id, and a note that APPENDS the reason rather than
+        # overwriting the prior note (zombie_reaper._note).
+        import zombie_reaper
 
-        def log_reap(runner_id: str, reason: str):
-            logged_events.append({
-                "runner_id": runner_id,
-                "reason": reason,
-                "timestamp": time.time(),
-            })
+        store = _FakeTaskStore([
+            {"id": "pid-123", "state": "RUNNING", "note": "attempt 1 failed"},
+            {"id": "pid-456", "state": "RUNNING", "note": ""},
+        ])
 
-        log_reap("pid-123", "heartbeat_expired")
-        log_reap("pid-456", "heartbeat_expired")
+        with patch.object(zombie_reaper, "_log", MagicMock()) as mock_log:
+            zombie_reaper.terminate_expired(
+                ["pid-123", "pid-456"], reason="heartbeat_expired",
+                store=store, dry_run=False)
 
-        assert len(logged_events) == 2
-        assert all(e["reason"] == "heartbeat_expired" for e in logged_events)
+        logged = " ".join(str(c) for c in mock_log.warning.call_args_list)
+        assert "pid-123" in logged and "pid-456" in logged
+        assert "heartbeat_expired" in logged
+        assert store.rows["pid-123"]["note"] == "attempt 1 failed | heartbeat_expired"
+        assert store.rows["pid-456"]["note"] == "heartbeat_expired"
 
     def test_zombie_reaper_error_resilience(self):
-        """Zombie reaper continues on individual failures."""
-        errors = []
-        reaped = []
+        """One bad id must not abandon the rest of the batch."""
+        # WAS: a local try_reap_zombie() that appended to local lists — it tested
+        # Python's try/except, not the reaper. The real guarantee (module docstring:
+        # "It never raises") is that a store failure on one id is reported under
+        # "errored" while the surrounding ids are still terminated.
+        import zombie_reaper
 
-        def try_reap_zombie(runner_id: str):
-            try:
-                if runner_id == "bad-pid":
-                    raise OSError(f"Cannot kill {runner_id}")
-                reaped.append(runner_id)
-            except Exception as e:
-                errors.append((runner_id, str(e)))
+        store = _FakeTaskStore(
+            [{"id": "pid-1", "state": "RUNNING", "note": ""},
+             {"id": "bad-pid", "state": "RUNNING", "note": ""},
+             {"id": "pid-2", "state": "RUNNING", "note": ""}],
+            fail_on=["bad-pid"],
+        )
 
-        zombies = ["pid-1", "bad-pid", "pid-2"]
-        for z in zombies:
-            try_reap_zombie(z)
+        result = zombie_reaper.terminate_expired(
+            ["pid-1", "bad-pid", "pid-2"], store=store, dry_run=False)
 
-        assert len(reaped) == 2
-        assert len(errors) == 1
-        assert "bad-pid" in errors[0][0]
+        assert result["terminated"] == ["pid-1", "pid-2"]
+        assert result["errored"] == ["bad-pid"]
+        assert store.rows["bad-pid"]["state"] == "RUNNING"
 
-    def test_zombie_reaper_with_task_recovery(self):
-        """Zombie reaper triggers task recovery."""
-        def reap_zombie_and_recover(runner_id: str, orphaned_tasks: List[Dict]) -> Dict:
-            reaped_count = 1
-            requeued_count = len(orphaned_tasks)
+    def test_zombie_reaper_does_not_terminate_a_task_that_recovered(self):
+        """A task whose worker came back is skipped, not failed."""
+        # SUBSTITUTION: this was test_zombie_reaper_with_task_recovery, which called a
+        # locally defined reap_zombie_and_recover() and asserted it returned the counts
+        # it had just been handed. zombie_reaper does no requeueing at all — it is
+        # "terminal disposal" and detection/repair live in the reap loop (module
+        # docstring). The nearest real behaviour, and the one that protects recovered
+        # work, is the state guard: a task no longer in RUNNING is reported under
+        # "skipped" and left untouched, and a vanished task under "missing".
+        import zombie_reaper
 
-            return {
-                "runner_id": runner_id,
-                "reaped": reaped_count,
-                "tasks_requeued": requeued_count,
-                "timestamp": time.time(),
-            }
+        store = _FakeTaskStore([
+            {"id": "t1", "state": "DONE", "note": "finished after the reap query"},
+            {"id": "t2", "state": "RUNNING", "note": ""},
+        ])
 
-        orphaned = [
-            {"id": "t1", "status": "running"},
-            {"id": "t2", "status": "running"},
-        ]
-        result = reap_zombie_and_recover("pid-dead", orphaned)
+        result = zombie_reaper.terminate_expired(
+            ["t1", "t2", "t3-deleted"], store=store, dry_run=False)
 
-        assert result["reaped"] == 1
-        assert result["tasks_requeued"] == 2
+        assert result["skipped"] == ["t1"]
+        assert result["terminated"] == ["t2"]
+        assert result["missing"] == ["t3-deleted"]
+        assert store.rows["t1"]["state"] == "DONE"
+        assert store.rows["t1"]["note"] == "finished after the reap query"
 
 
 class TestHeartbeatRecoveryMechanisms:
@@ -895,49 +1014,76 @@ class TestHeartbeatFailoverScenarios:
 class TestHeartbeatTableManagement:
     """Test runner_heartbeats table lifecycle."""
 
-    def test_heartbeat_table_schema_columns(self):
-        """runner_heartbeats has required columns."""
-        expected_columns = {
-            "runner_id",
-            "hostname",
-            "active",
-            "last_seen",
-            "model_loaded",
-            "memory_mb",
-        }
+    @staticmethod
+    def _declared_columns():
+        """Columns the migrations actually declare on runner_heartbeats."""
+        import re
 
-        # Verify schema (would be actual DB check in integration tests)
-        heartbeat_fields = {
-            "runner_id": "VARCHAR",
-            "hostname": "VARCHAR",
-            "active": "BOOLEAN",
-            "last_seen": "TIMESTAMP",
-            "model_loaded": "VARCHAR",
-            "memory_mb": "INTEGER",
-        }
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        migrations = os.path.join(repo_root, "supabase", "migrations")
+        columns = set()
+        for name in sorted(os.listdir(migrations)):
+            if not name.endswith(".sql"):
+                continue
+            with open(os.path.join(migrations, name), encoding="utf-8") as fh:
+                sql = fh.read()
+            create = re.search(
+                r"create table if not exists (?:public\.)?runner_heartbeats\s*\((.*?)\);",
+                sql, re.S | re.I)
+            if create:
+                for line in create.group(1).splitlines():
+                    line = line.strip().strip(",")
+                    if line and not line.lower().startswith(("primary key", "constraint")):
+                        columns.add(line.split()[0])
+            for alter in re.finditer(
+                    r"alter table(?: if exists)? (?:public\.)?runner_heartbeats(.*?);",
+                    sql, re.S | re.I):
+                columns.update(re.findall(r"add column if not exists (\w+)",
+                                          alter.group(1), re.I))
+        return columns
 
-        assert set(heartbeat_fields.keys()) >= expected_columns
+    @patch("db.db")
+    def test_heartbeat_table_schema_columns(self, mock_db):
+        """Every column db.heartbeat() publishes is one the migrations declare."""
+        # WAS: built a dict of six field names and asserted its keys were a superset of
+        # the same six names written out again — a tautology, and it named columns that
+        # do not exist ("active", "model_loaded", "memory_mb"). Sending exactly those
+        # is what made every insert fail for weeks (db.py:2628-2634). Compare the real
+        # published row against the real DDL instead.
+        from db import heartbeat
 
-    def test_runner_id_is_primary_key(self):
-        """runner_id serves as primary key for upserts."""
-        # Upsert semantics: if runner_id exists, update; else insert
-        runner_entry = {
-            "runner_id": "pid-123",
-            "hostname": "host1",
-            "active": True,
-            "last_seen": time.time(),
-        }
+        declared = self._declared_columns()
+        assert {"runner_id", "hostname", "active_tasks", "last_seen"} <= declared, declared
+        assert "active" not in declared and "model_loaded" not in declared
 
-        # Simulating upsert: same runner_id should update, not duplicate
-        db_entries = {"pid-123": runner_entry}
+        mock_db.insert.return_value = None
+        heartbeat("pid-123", "host1", active=True, model_loaded="x", memory_mb=2048)
 
-        # Re-insert same runner_id
-        new_entry = dict(runner_entry)
-        new_entry["last_seen"] = time.time()
-        db_entries["pid-123"] = new_entry
+        published = set(mock_db.insert.call_args[0][1])
+        assert published <= declared, f"undeclared columns published: {published - declared}"
+        assert {"runner_id", "hostname", "active_tasks", "last_seen"} <= published
 
-        assert len(db_entries) == 1
-        assert db_entries["pid-123"]["last_seen"] == new_entry["last_seen"]
+    @patch("db.db")
+    def test_runner_id_is_primary_key(self, mock_db):
+        """Liveness is upserted on runner_id, so a runner never duplicates its row."""
+        # WAS: put a dict in a dict keyed by runner_id, replaced it, and asserted the
+        # dict still had one entry — it demonstrated Python dict assignment, not upsert.
+        # runner_id is the table's primary key (init_orchestrator.sql: "runner_id text
+        # primary key"), and the upsert=True flag on the insert is what relies on it.
+        from db import heartbeat
+
+        mock_db.insert.return_value = None
+        heartbeat("pid-123", "host1", active=True)
+        heartbeat("pid-123", "host1", active=False)
+
+        assert mock_db.insert.call_count == 2
+        for call_obj in mock_db.insert.call_args_list:
+            assert call_obj[0][0] == "runner_heartbeats"
+            assert call_obj[1].get("upsert") is True, "insert must upsert on the PK"
+            assert call_obj[0][1]["runner_id"] == "pid-123"
+        # Second write reflects the newer state on the same key.
+        assert mock_db.insert.call_args_list[-1][0][1]["active_tasks"] == 0
 
     @patch("db._req")
     def test_prune_query_uses_timestamp_index(self, mock_req):
@@ -998,78 +1144,95 @@ class TestHealthCheckIntegration:
 
 
 class TestZombieReaperTaskRecovery:
-    """Test zombie reaper's task recovery workflow in detail."""
+    """Test zombie reaper's task recovery workflow in detail.
 
-    def test_recovery_resets_runner_id(self):
-        """Recovered orphaned task has runner_id cleared."""
-        orphaned_task = {
+    Every test in this class used to build a task dict, mutate it in place, and then
+    assert on the mutation it had just performed — no product code was involved, and
+    the fields they asserted on ("status", "runner_id", "requeue_count") are not the
+    ones this system uses. The real recovery path is
+    runner._reap_zombie_tasks() -> agentic_repair.repair_patch(..., category=
+    "orphaned-running") -> db.update, so these now assert against the patch
+    repair_patch actually produces: state/account, remediation_count/attempt.
+    """
+
+    def _orphan(self, **overrides):
+        task = {
             "id": "t1",
-            "status": "running",
-            "runner_id": "pid-dead",
-        }
-
-        # Recovery: clear runner_id and reset status
-        recovered_task = dict(orphaned_task)
-        recovered_task.update({
-            "status": "queued",
-            "runner_id": None,
-        })
-
-        assert recovered_task["runner_id"] is None
-        assert recovered_task["status"] == "queued"
-
-    def test_recovery_preserves_task_metadata(self):
-        """Recovery preserves task project, title, slug."""
-        orphaned_task = {
-            "id": "t1",
+            "slug": "original-slug",
+            "state": "RUNNING",
+            "account": "Mac.lan-4171",      # the dead runner's claim
             "project": "test-project",
             "title": "Original title",
-            "slug": "original-slug",
-            "status": "running",
-            "runner_id": "pid-dead",
-            "created_at": time.time() - 3600,
+            "attempt": 1,
+            "remediation_count": 2,
         }
+        task.update(overrides)
+        return task
 
-        recovered_task = dict(orphaned_task)
-        recovered_task.update({
-            "status": "queued",
-            "runner_id": None,
-        })
+    SIGNAL = "zombie-reaper: expired runner heartbeat"
 
-        assert recovered_task["project"] == orphaned_task["project"]
-        assert recovered_task["title"] == orphaned_task["title"]
-        assert recovered_task["slug"] == orphaned_task["slug"]
-        assert recovered_task["created_at"] == orphaned_task["created_at"]
+    def test_recovery_resets_runner_id(self):
+        """Recovery releases the dead runner's claim and re-queues the task."""
+        # WAS: copied a dict, set runner_id=None/status="queued" by hand, then asserted
+        # those two values. The claim is held in the `account` column (see
+        # runner._reap_zombie_tasks, which matches dead runners by account), and it is
+        # repair_patch that clears it.
+        import agentic_repair
+
+        patch_out = agentic_repair.repair_patch(
+            self._orphan(), self.SIGNAL, category="orphaned-running")
+
+        assert patch_out["account"] is None
+        assert patch_out["state"] == "QUEUED"
+
+    def test_recovery_preserves_task_metadata(self):
+        """Recovery patches only what it changes, so project/title/slug survive."""
+        # WAS: asserted that a dict copy still equalled the dict it was copied from.
+        # The real guarantee is that the patch handed to db.update names no metadata
+        # column at all — and, specifically, that `prompt` is omitted unless the caller
+        # actually selected it (agentic_repair.py's note on sweeps destroying prompts).
+        import agentic_repair
+
+        task = self._orphan()
+        patch_out = agentic_repair.repair_patch(
+            task, self.SIGNAL, category="orphaned-running")
+
+        for preserved in ("project", "title", "slug", "id", "prompt"):
+            assert preserved not in patch_out, f"recovery must not rewrite {preserved}"
 
     def test_recovery_increments_requeue_count(self):
-        """Recovery tracks requeue attempts."""
-        task = {
-            "id": "t1",
-            "status": "queued",
-            "requeue_count": 2,
-        }
+        """Recovery advances both repair counters, not just the one it was handed."""
+        # WAS: task["requeue_count"] = task.get("requeue_count", 0) + 1 followed by an
+        # assertion on that addition. There is no requeue_count column; the counters are
+        # remediation_count and attempt, and both must advance or the ceilings below
+        # never bind.
+        import agentic_repair
 
-        # Simulate recovery
-        task["requeue_count"] = task.get("requeue_count", 0) + 1
+        patch_out = agentic_repair.repair_patch(
+            self._orphan(attempt=1, remediation_count=2), self.SIGNAL,
+            category="orphaned-running")
 
-        assert task["requeue_count"] == 3
+        assert patch_out["remediation_count"] == 3
+        assert patch_out["attempt"] == 2
 
     def test_recovery_max_requeue_threshold(self):
-        """Task fails permanently after max requeue attempts."""
-        max_requeue = 3
-        task = {
-            "id": "t1",
-            "status": "queued",
-            "requeue_count": 3,
-        }
+        """Past the ceiling the task is parked, not re-queued forever."""
+        # WAS: an if-statement that set status="failed" when a hand-written counter hit
+        # a hand-written max, then asserted on it. The real bound is
+        # agentic_repair.GLOBAL_REPAIR_CEILING, and the terminal state is QUARANTINED
+        # (parked for review) rather than FAILED.
+        import agentic_repair
 
-        # Check if max requeue reached
-        if task["requeue_count"] >= max_requeue:
-            task["status"] = "failed"
-            task["error"] = "Max requeue attempts exceeded"
+        at_ceiling = self._orphan(
+            remediation_count=agentic_repair.GLOBAL_REPAIR_CEILING, attempt=9)
+        patch_out = agentic_repair.repair_patch(
+            at_ceiling, self.SIGNAL, category="orphaned-running")
 
-        assert task["status"] == "failed"
-        assert "Max requeue" in task["error"]
+        assert patch_out["state"] == "QUARANTINED"
+        assert patch_out["account"] is None
+        assert patch_out["note"].startswith(agentic_repair.TERMINAL_NOTE_PREFIX)
+        # A parked task must not be handed back to a coder.
+        assert "force_coder" not in patch_out
 
 
 if __name__ == "__main__":

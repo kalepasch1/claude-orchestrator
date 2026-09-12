@@ -469,6 +469,56 @@ def _provider_healthy(coder):
         return True
 
 
+def record_run_failure(coder, output="", stderr="", returncode=1):
+    """Demote a coder's provider when its RUN says the account is out of credit.
+
+    THE HOLE THIS CLOSES. `_provider_healthy()` above gates coder selection on the
+    demote registry — but nothing in this module ever WROTE to that registry. Only
+    `model_gateway.complete()` demotes, and an agentic coder does not go through
+    model_gateway: it shells out to aider/codex/gemini, which talk to the provider
+    themselves. So the 403 arrives as text on the lane's stdout:
+
+        litellm.APIError: XaiException - Error code: 403 - {'code': 'permission-denied',
+        'error': 'Your team … has either used all available credits or reached its
+        monthly spending limit.'}
+        Retrying in 4.0s … 8.0s … 16.0s … 32.0s
+
+    …the lane burns aider's ~60s retry window, exits non-zero, the task is requeued,
+    the gate re-checks a registry nobody updated, picks the same dead provider, and
+    pays the same minute again. `improve-competitive-scanner-slice-5` failed that way
+    on four consecutive attempts with byte-identical output. The gate was correct; it
+    was reading a registry with no writer on this path.
+
+    Only exhaustion/permission classes demote — a test failure or a timeout says
+    nothing about the account, and demoting on those would empty the coder pool over
+    ordinary work failures. Fail-soft throughout: this is telemetry on a failure path
+    and must never itself become one. Returns the demote reason, or "" if none.
+    """
+    try:
+        if int(returncode or 0) == 0:
+            return ""
+        blob = f"{output or ''}\n{stderr or ''}".strip()
+        if not blob:
+            return ""
+        provider = coder_provider(coder if isinstance(coder, dict) else _spec(coder) or {"name": coder})
+        if not provider:
+            return ""
+        import error_taxonomy
+        cls = error_taxonomy.classify(blob) or {}
+        if cls.get("error_class") not in ("exhaustion", "permission_error"):
+            return ""
+        reason = f"{cls.get('error_class')}-{cls.get('subclass') or 'unknown'}"
+        import provider_failover_sla
+        provider_failover_sla.demote(provider, reason)
+        import logging
+        logging.getLogger(__name__).warning(
+            "coder run reported a dead account for provider %s (%s) — demoted so the "
+            "next task does not pay the same retry window", provider, reason)
+        return reason
+    except Exception:
+        return ""
+
+
 def _within_cap(coder):
     """A paid coder (daily_usd>0) is usable only while today's spend on it is under its cap. Free/local
     and subscription coders (daily_usd<=0) are always within cap."""
@@ -712,6 +762,18 @@ def _pick_raw(task, slot_index=0):
             if candidates:
                 return candidates[0]["name"]
         fc = _spec(forced)
+        # `_provider_healthy` is applied here too. Every other branch of this selector
+        # filters on it, but the forced-coder fast path did not — so a task pinned to a
+        # provider that is demoted for dead credits/auth kept selecting that provider on
+        # every attempt. That is exactly how the canary-gemini-25 build tasks burned five
+        # attempts each against xai's `403 permission-denied … used all available credits`
+        # while the demote registry already knew the provider was down. A pin is a routing
+        # preference, not an override of provider liveness: when the forced coder's
+        # provider is dead we fall through to normal selection, which is the same thing
+        # the non-forced paths do. `_provider_healthy` fails OPEN, so an undeterminable
+        # provider still honours the pin.
+        if fc and not _provider_healthy(fc):
+            fc = None
         if forced == "claude" and fc and fc["cap"] >= need and _within_cap(fc) and _allowed_by_terms(fc, sensitivity):
             return "claude"
         if fc and fc["cap"] >= need and _within_cap(fc) and not _heavy_ollama_saturated(fc):
@@ -1041,6 +1103,28 @@ def _agentic_event(kind, coder, model="", project=None, value=0, action=""):
 
 def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **kwargs):
     """Dispatch to the chosen agentic backend, returning claude_cli-shaped output."""
+    # THE SECOND SPEND PATH, AND IT HAD NO KILL SWITCH.
+    #
+    # claude_cli.run has always refused a call for a paused project. This function is
+    # the other half of the fleet's model spend -- cowork-skill, swarm:*, aider, gemini,
+    # codex, every local-model lane -- and it took `project` only to label its telemetry
+    # events. `grep -n is_paused agentic_coders.py` found nothing. So pausing a project
+    # stopped one of the two ways it could spend, and `beethoven`, paused since
+    # 2026-08-24, kept getting coders run against it.
+    #
+    # Same shape as claude_cli's refusal, including the 75 return code (EX_TEMPFAIL:
+    # try later, nothing is wrong with the request), so existing callers that already
+    # branch on that treat both paths identically.
+    try:
+        import claude_cli as _cc
+        _proj = _cc._effective_project(project)
+        if _cc._paused(_proj):
+            return {"text": "", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+                    "returncode": 75, "stderr": f"paused: {_proj}", "coder": coder,
+                    "skipped": "kill_switch"}
+    except Exception:
+        pass          # a guard that cannot look must not be the reason work stops
+
     # --- Cowork skill path: browser automation, document generation, etc. ---
     if coder == "cowork-skill":
         try:
@@ -1137,10 +1221,16 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
         cost = real if real is not None else float((spec or {}).get("est_usd", 0.0) or 0.0)
         latency_ms = int((time.time() - t0) * 1000)
         reaped = proc.get("timed_out") or proc.get("idle_killed")
+        # The lane's own output is the only place a dead account shows up on this path —
+        # aider/codex talk to the provider directly, so model_gateway never sees the 403
+        # and never demotes. Read it here, or the next task pays the same retry window.
+        demoted = record_run_failure(coder, stdout, stderr, rc)
         _agentic_event("agentic_coder_finish", coder, model, project=project, value=latency_ms,
                        action=f"returncode={rc} cost_usd={cost}"
-                              + (" lane_reaped=1" if reaped else ""))
+                              + (" lane_reaped=1" if reaped else "")
+                              + (f" provider_demoted={demoted}" if demoted else ""))
         return {"text": stdout, "cost_usd": cost, "input_tokens": 0, "output_tokens": 0,
+                "provider_demoted": demoted,
                 "returncode": rc, "stderr": stderr,
                 "coder": coder, "latency_ms": latency_ms,
                 "lane_timed_out": bool(proc.get("timed_out")),

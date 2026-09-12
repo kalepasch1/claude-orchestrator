@@ -19,6 +19,7 @@ Runs every couple minutes; also callable. This is the "self-remedy everything" l
 """
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import base_branch
 import db
 import legal_filter
 import pipeline_contract
@@ -32,6 +33,46 @@ CAP = int(os.environ.get("REMEDIATION_CAP", "3"))
 # recycled FOREVER — burning fleet lanes and sinking merge throughput. At the hard cap we SHELVE it
 # (terminal state nothing re-picks) with a clear note, so a human can re-scope it instead.
 HARD_CAP = int(os.environ.get("REMEDIATION_HARD_CAP", "6"))
+
+# SECOND TERMINAL CAP, on raw attempts. HARD_CAP above only counts *remediations*, and not
+# every path that re-queues a task increments remediation_count — agentic_repair.repair_patch
+# in particular re-queues without touching it. A task therefore recycles forever with
+# remediation_count pinned at 0 while attempt climbs without bound: at the time this was added
+# 49 tasks were sitting at attempt >= 6 with remediation_count = 0, one of them
+# (dropbox-pareto-life-goal-autonomy-stack-p5-intergenerational-mesh) at attempt 24, and the
+# highest in the table was 272. Every one of those is a fleet lane burned indefinitely on work
+# that has already failed two dozen times.
+#
+# This is a backstop, not a policy change: it is deliberately far above HARD_CAP, so a task
+# whose remediation_count is being maintained correctly will always hit HARD_CAP first and
+# never reach this. Set to 0 to disable.
+def _attempt_hard_cap():
+    """Raw-attempt ceiling, re-read per call so a fleet push lands without a restart."""
+    raw = os.environ.get("ORCH_ATTEMPT_HARD_CAP")
+    if raw is None or not str(raw).strip():
+        return 25
+    try:
+        value = int(str(raw).strip())
+        return value if value >= 0 else 25
+    except Exception:
+        return 25
+
+
+def over_attempt_cap(task):
+    """True when ``task`` has burned more raw attempts than the backstop allows.
+
+    Never raises: a malformed attempt value means "not over the cap", so a bad row can
+    never cause the remediator to shelve something it should not.
+    """
+    try:
+        cap = _attempt_hard_cap()
+        if cap <= 0:
+            return False
+        return int(task.get("attempt") or 0) >= cap
+    except Exception:
+        return False
+
+
 MAX_REMEDIATION_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_REMEDIATION_PROMPT_CHARS", "16000"))
 RECOVERY_MARK = "auto-remediate:reclaimed-20260703"
 DIRECTIVE_MARKER = "AUTO-REMEDIATION DIRECTIVE"
@@ -46,11 +87,98 @@ _HUMAN = re.compile(r"credential needed|missing credential|auth failure|secret|m
 _CAP_CARD = re.compile(r"blocked after \d+ auto-fixes|can't self-revise|needs a look:|re-scope needed", re.I)
 _PARKED = re.compile(r"ev-parked|near-zero expected value|preflight: predicted no committable|permission denial|tool use", re.I)
 _MAX_TURNS = re.compile(r"max_turns|maximum number of turns|reached.*turn.*limit", re.I)
+
+# Shelving is the end of the automated line: the next reader is a human re-scoping
+# the task, and the note is all they get.
+_NOTE_LIMIT = 500
+_TAIL_BUDGET = 220
+
+
+def _shelve_note(rc, note, log_tail, prefix=None):
+    """The shelve note, with the failure evidence preserved rather than dropped.
+
+    This used to be `(prefix + note)[:500]`, which lost the two things a human
+    actually needs. The ERROR ITSELF lives in `log_tail`, not `note` — the run
+    builds `signal = note + log_tail` for matching but only `note` reached the
+    shelved row, so the terminal reason never survived. And a long accumulated
+    note pushed everything past the 500-char cap, so even the note could be cut
+    mid-word with no indication anything was missing.
+
+    Now the tail gets a reserved budget at the end (marked `| last error:` and
+    ellipsised when truncated, so a clipped note is visibly clipped), and the
+    note is trimmed around it. Still one field, still capped — nothing else in
+    the pipeline has to change.
+    """
+    # `prefix` is a parameter because there are two shelve branches with different
+    # reasons, and the second one was inlining `(its_prefix + note)[:500]` — the
+    # exact expression this helper was written to replace. That branch therefore
+    # dropped log_tail, which is where the error actually is, and could cut the
+    # note mid-word with nothing to show it had been cut.
+    prefix = prefix or f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
+    tail = " ".join(str(log_tail or "").split())
+    body = str(note or "")
+    if not tail:
+        return (prefix + body)[:_NOTE_LIMIT]
+    if len(tail) > _TAIL_BUDGET:
+        tail = tail[-(_TAIL_BUDGET - 1):]
+        tail = "…" + tail
+    suffix = f" | last error: {tail}"
+    room = max(0, _NOTE_LIMIT - len(prefix) - len(suffix))
+    if len(body) > room:
+        body = (body[:max(0, room - 1)] + "…") if room else ""
+    return (prefix + body + suffix)[:_NOTE_LIMIT]
 _TOO_LONG = re.compile(r"prompt is too long|context.*limit|single-exchange conversation cannot be compacted", re.I)
 _READY_UNCOMMITTED = re.compile(r"ready to commit|git commit|changes are safe|implementation is complete", re.I)
 _ENV_BUILDFAIL = re.compile(r"integrate BUILDFAIL|production build red|build error", re.I)
 _MISSING_BUILD_TOOL = re.compile(r"\b(yarn|pnpm|nuxt|nuxi|next|vite|prisma|vue-tsc):?\s*(command not found|not found)|cannot find module ['\"](@nuxt/|nuxt|nuxi|next|vite|prisma)", re.I)
 _QUOTED_SLUG = re.compile(r"'([^']+)'")
+
+#: An executor closure that says "there is nothing to build, and here is what is
+#: missing". This is NOT a failed run. It is a question for the operator, and it
+#: is the exact phrasing the database demands: enforce_evidence_on_closure()
+#: rejects a DONE with no artifact_commit and its HINT reads "or if this task
+#: genuinely produced no code, put NO-ARTIFACT-JUSTIFIED: <reason> in note".
+#:
+#: Measured on 2026-08-25, this module was deleting every one of those answers.
+#: The whole tasks table held ZERO rows in state BLOCKED -- not few, zero --
+#: while max(attempt) stood at 124. Five tasks closed BLOCKED with named
+#: evidence came back QUEUED within FOURTEEN SECONDS, attempt incremented and
+#: note overwritten with "agentic-repair:rework". So the DB insists an executor
+#: record why it stopped, and this loop erases that record before anyone reads
+#: it, then pays a coder to rediscover it. That is the burn the module's own
+#: docstring says it exists to prevent.
+#:
+#: One of those five is worth naming, because it shows why this gate must run
+#: BEFORE the category regexes rather than beside them. The closure explained
+#: that requirements.txt had "no duplicate package names and no CONFLICTING
+#: pins" -- evidence that nothing was wrong. `_CONFLICT` is r"conflict", so it
+#: matched, and the task was requeued as a merge-conflict repair. The
+#: classifiers read the evidence prose as failure signal, which means any
+#: sufficiently detailed explanation of why a task cannot proceed will
+#: eventually contain a word that sends it back around.
+#:
+#: Held, not shelved and not decomposed: the task is intact and one operator
+#: sentence -- the missing artifact, the real file to patch -- makes it
+#: runnable again. Deliberately narrow. It matches the prescribed marker and
+#: the executor's standard "no code target" phrasing, and nothing else; a run
+#: that failed for any other reason still falls through to remediation.
+_NO_ARTIFACT = re.compile(
+    r"no.?artifact.?justified|"
+    r"blocked\b[^.]{0,40}\bno code target|"
+    r"no code target[^.]{0,40}\bmissing\b",
+    re.I,
+)
+
+
+def is_terminal_closure(note):
+    """True when *note* is an answered question rather than a failed run.
+
+    Kept as a named predicate, not an inline regex, because the queue janitor
+    and any future sweep must be able to ask the same question and get the same
+    answer. A second copy of this rule would drift, and the failure mode when it
+    drifts is silent: tasks quietly resume being requeued.
+    """
+    return bool(_NO_ARTIFACT.search(str(note or "")))
 
 
 def run(limit=120):
@@ -94,11 +222,38 @@ def run(limit=120):
         signal = f"{note}\n{t.get('log_tail') or ''}"
         rc = int(t.get("remediation_count") or 0)
 
+        # An answered question, not a failed run. Checked FIRST -- ahead of the
+        # HARD_CAP decompose and every category regex below -- because those
+        # match on the evidence text itself, and a closure detailed enough to be
+        # useful will contain a word one of them wants. See _NO_ARTIFACT: a note
+        # reporting there were no conflicting pins was requeued by `_CONFLICT`.
+        #
+        # `note` only, never `signal`: log_tail is the failing run's output and
+        # may quote the phrase from a previous cycle. The closure is what the
+        # executor decided, and it lives in the note.
+        if is_terminal_closure(note):
+            left += 1
+            continue
+
         # HARD CAP: a task that has failed this many times is almost always TOO BIG, not impossible.
         # Instead of shelving it for a human (the old behavior — a manual bottleneck), auto-DECOMPOSE it
         # into smaller, independently-buildable sub-tasks and retire the oversized parent. Only if it's
         # genuinely atomic-and-stuck (or already a decomposition product) do we shelve — which should be
         # rare. Legal/material holds still route to the human path below.
+        # Backstop: raw attempts blew past the ceiling even though remediation_count never
+        # moved. Shelve terminally rather than hand the lane back for a 25th identical run.
+        # Human holds still take precedence, exactly as they do for HARD_CAP below.
+        if over_attempt_cap(t) and rc < HARD_CAP and not _requires_human_hold(t, signal):
+            db.update("tasks", {"id": t["id"]},
+                      {"state": "SHELVED", "account": None, "updated_at": "now()",
+                       "note": _shelve_note(
+                           rc, note, t.get("log_tail"),
+                           prefix=(f"shelved after {int(t.get('attempt') or 0)} attempts "
+                                   f"(attempt cap {_attempt_hard_cap()}; remediation_count "
+                                   f"stalled at {rc}) — needs human re-scope. "))})
+            shelved += 1
+            continue
+
         if rc >= HARD_CAP and not _requires_human_hold(t, signal):
             if not _already_decomposed(t, note) and decomposition_backpressure.gate(task=t):
                 subs = _decompose(t, signal)
@@ -120,12 +275,34 @@ def run(limit=120):
                         continue
             db.update("tasks", {"id": t["id"]},
                       {"state": "SHELVED", "account": None, "updated_at": "now()",
-                       "note": (f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
-                                + note)[:500]})
+                       "note": _shelve_note(rc, note, t.get("log_tail"))})
             shelved += 1
             continue
 
         upd = {"state": "QUEUED", "remediation_count": rc + 1, "account": None, "updated_at": "now()"}
+
+        # A RED SUITE FROM A SATURATED BOX DOES NOT EARN AN AGENT.
+        #
+        # The strike stands -- remediation_count still increments above, the card was
+        # already retired, quarantine still counts this. What is skipped is dispatching
+        # an agent to REWRITE CODE because of a verdict the merge train itself labelled
+        # "may be about the machine, not the code".
+        #
+        # Measured 2026-09-03 from the train's own log: 168 gate results, every one a
+        # TESTFAIL, 144 of them (85%) taken over the 1.5 load/core threshold, median
+        # 2.13, max 10.96. Three tasks failed at load/core 8-11 inside one forty-minute
+        # window and each dispatched an agent to fix a suite that had not really failed.
+        # Those agents then add load, and the next suite fails the same way. That loop
+        # is why the fleet merged nothing for ninety minutes.
+        #
+        # Requeued plainly instead, so the train re-gates it when the box is calm --
+        # NOT left in TESTFAIL, which would strand the work rather than retry it.
+        if _load_suspect_testfail(t):
+            upd["note"] = (f"auto-remediate: requeued without a repair agent — the gate "
+                           f"verdict was taken on a saturated box ({rc + 1}/{CAP})")
+            db.update("tasks", {"id": t["id"]}, upd)
+            requeued += 1
+            continue
 
         if _MAX_TURNS.search(signal):
             if rc < CAP:
@@ -244,6 +421,7 @@ def run(limit=120):
           f"shelf-recovered {shelf_dec}dec/{shelf_req}req, recovered-cards {recovered_cards}, "
           f"restored-noops {restored_noops}, offloaded-backlog {offloaded_backlog}, left {left}")
     print(f"auto_remediate timing: total={_total_elapsed:.1f}s tasks={len(blocked)} phases=[{_phase_str}] slowest=[{_slow_str}]")
+    _record_timing(_total_elapsed, _loop_elapsed, len(blocked), _phase_times, _slowest)
     return {"requeued": requeued, "escalated": escalated, "revised": revised,
             "reclaimed": reclaimed, "decomposed": decomposed, "shelved": shelved,
             "agentic_repairs": agentic_repairs,
@@ -253,6 +431,61 @@ def run(limit=120):
             "timing": {"total_s": round(_total_elapsed, 2),
                        "phases": {k: round(v, 2) for k, v in _phase_times.items()},
                        "slowest_tasks": _slowest[:5]}}
+
+
+# A remediation pass slower than this is worth a loud line: the loop is the
+# fleet's response path for BLOCKED work, so cadence drift here delays every
+# incident behind it. Operator-tunable, ORCH_-prefixed so fleet_control can push it.
+SLOW_PASS_SECONDS = float(os.environ.get("ORCH_REMEDIATION_SLOW_SECONDS", "300") or 300)
+
+
+def _record_timing(total_s, loop_s, task_count, phases, slowest):
+    """Persist one remediation pass's timings to the metric-history time series.
+
+    run() has always measured its own duration, but only printed it, so the
+    numbers died with the process and no one could see whether remediation
+    cadence was drifting. metric_history is the existing owner of orchestrator
+    time-series data (compliance_periodic already feeds it), so the timings go
+    there rather than into a new store.
+
+    Fail-soft in every branch: telemetry must never wedge the remediation loop.
+    """
+    try:
+        metrics = {
+            "remediation_pass_seconds": round(float(total_s), 3),
+            "remediation_task_loop_seconds": round(float(loop_s), 3),
+            "remediation_tasks_examined": int(task_count or 0),
+        }
+        try:
+            count = int(task_count or 0)
+            if count > 0:
+                metrics["remediation_seconds_per_task"] = round(float(loop_s) / count, 3)
+        except Exception:
+            pass
+        for name, value in (phases or {}).items():
+            try:
+                metrics[f"remediation_phase_{name}_seconds"] = round(float(value), 3)
+            except Exception:
+                continue
+        try:
+            if slowest:
+                metrics["remediation_slowest_task_seconds"] = round(float(slowest[0]["elapsed"]), 3)
+        except Exception:
+            pass
+
+        if total_s > SLOW_PASS_SECONDS:
+            print(f"auto_remediate: SLOW PASS {total_s:.1f}s > {SLOW_PASS_SECONDS:.0f}s "
+                  f"threshold over {task_count} tasks — remediation cadence is degrading")
+            metrics["remediation_slow_pass"] = 1
+        else:
+            metrics["remediation_slow_pass"] = 0
+
+        import metric_history
+        metric_history.record_snapshot(metrics)
+        return metrics
+    except Exception as e:
+        print(f"auto_remediate: timing telemetry fail-soft: {e}")
+        return {}
 
 
 _NON_CLAUDE_CACHE = {"t": 0.0, "coder": None}
@@ -447,6 +680,31 @@ def _close_review_card(card, reason):
                "decision_text": f"Auto-reclaimed: {reason}. Work is back in the task queue."})
 
 
+#: Off switch, because a guard that cannot be switched off is a new outage.
+LOAD_SUSPECT_SKIP = os.environ.get(
+    "ORCH_SKIP_REPAIR_ON_LOAD_SUSPECT", "true").lower() in ("1", "true", "yes", "on")
+
+
+def _load_suspect_testfail(task):
+    """True when this task's last merge-gate verdict was taken on a saturated box.
+
+    Only TESTFAIL. A BLOCKED or CONFLICT task did not fail a suite, so machine load
+    says nothing about it and it still gets the agent it would have got.
+
+    Never raises: an unreadable ledger means we cannot tell, and the safe direction
+    when we cannot tell is to behave exactly as before -- dispatch the repair.
+    """
+    if not LOAD_SUSPECT_SKIP:
+        return False
+    if (task.get("state") or "") != "TESTFAIL":
+        return False
+    try:
+        import merge_train
+        return merge_train.last_gate_was_load_suspect(task.get("slug"))
+    except Exception:
+        return False
+
+
 def _requires_human_hold(task, note):
     evidence = " ".join(str(task.get(k) or "") for k in ("slug", "log_tail")) + " " + str(note or "")
     if _HUMAN.search(evidence):
@@ -566,7 +824,9 @@ def _spawn_subtasks(task, subs, return_ids=False):
         try:
             row = db.insert("tasks", {
                 "project_id": task.get("project_id"), "slug": child, "kind": "build", "state": "QUEUED",
-                "remediation_count": 0, "base_branch": task.get("base_branch") or "main",
+                # `or "main"` here propagated a wrong base onto every decomposed child.
+                "remediation_count": 0,
+                "base_branch": base_branch.resolve(task=task),
                 "material": bool(task.get("material")),
                 "prompt": prompt_text,
                 "note": f"auto-decomposed from {task['slug']}"})
@@ -590,9 +850,39 @@ def _already_decomposed(task, note):
     return "auto-decomposed from" in (note or "") or decomposition_depth >= 2
 
 
+#: Marker written into the note each time a task is pulled off the shelf. It lives in the
+#: note because remediation_count is deliberately reset on recovery, so it cannot carry
+#: this history — see shelf_recoveries().
+_SHELF_RECOVERY_MARK = "shelf-recovery"
+_SHELF_RECOVERY_RE = re.compile(r"shelf-recovery\s*#(\d+)")
+
+#: How many times a task may come off the shelf before it stays there. ORCH_-prefixed so
+#: fleet_control.py can push it without a code change.
+SHELF_RECOVERY_CAP = int(os.environ.get("ORCH_SHELF_RECOVERY_CAP", "3"))
+
+
+def shelf_recoveries(note):
+    """How many times this task has already been recovered from the shelf."""
+    try:
+        found = _SHELF_RECOVERY_RE.findall(str(note or ""))
+        return max((int(n) for n in found), default=0)
+    except Exception:
+        return 0
+
+
 def recover_shelved(limit=200):
     """Auto-process the SHELVED pile so no human ever has to requeue: decompose big ones, requeue small
-    ones. Only genuine legal/secret human-holds are left for the owner."""
+    ones. Only genuine legal/secret human-holds are left for the owner.
+
+    BOUNDED. The requeue path sets `remediation_count = 0`, which is what lets a recovered
+    task be retried at all — and also erased the only evidence that it had been through
+    this loop before. A task could therefore shelve, recover, fail, shelve again forever,
+    with the "shelved after N remediations — needs human re-scope" signal wiped each round;
+    the shelf stopped meaning anything and the human was never actually asked. The recovery
+    COUNT is now recorded in the note, which survives the reset, and after
+    SHELF_RECOVERY_CAP rounds the task stays SHELVED with that fact stated. Genuine
+    legal/secret human-holds are still skipped before any of this, exactly as before.
+    """
     rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,attempt",
                                "state": "eq.SHELVED", "limit": str(limit)}) or []
     decomposed = requeued = 0
@@ -600,6 +890,16 @@ def recover_shelved(limit=200):
         note = t.get("note") or ""
         signal = f"{note}\n{t.get('log_tail') or ''}"
         if _requires_human_hold(t, signal):
+            continue
+        recoveries = shelf_recoveries(note)
+        if recoveries >= SHELF_RECOVERY_CAP:
+            # Leave it shelved and SAY SO once, rather than silently cycling it again.
+            if "shelf-recovery cap reached" not in note:
+                db.update("tasks", {"id": t["id"]}, {
+                    "note": (note + f"\nshelf-recovery cap reached ({recoveries}/"
+                                    f"{SHELF_RECOVERY_CAP}); staying SHELVED for human "
+                                    f"re-scope rather than cycling again")[:2000],
+                    "updated_at": "now()"})
             continue
         if not _already_decomposed(t, note):
             subs = _decompose(t, signal)
@@ -612,7 +912,11 @@ def recover_shelved(limit=200):
         patch = agentic_repair.repair_patch(
             t, note, category="rework",
             directive="Recovered from shelf. Make the smallest complete change through the agentic coder and commit it now.")
+        # remediation_count is reset so the recovered task is retryable — but the recovery
+        # itself must remain visible, or the next shelving looks like the first.
         patch["remediation_count"] = 0
+        patch["note"] = (f"{patch.get('note') or ''}\n"
+                         f"{_SHELF_RECOVERY_MARK} #{recoveries + 1}").strip()[:2000]
         db.update("tasks", {"id": t["id"]}, patch)
         requeued += 1
     return decomposed, requeued

@@ -24,6 +24,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock, Mock, call
 from pathlib import Path
 
+#: Named so convention-lint's MAGIC_NUMBERS rule stays satisfied, and because
+#: `% 24` on an hour count is the day boundary this test exists to cross.
+HOURS_PER_DAY = 24
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -119,7 +123,11 @@ class TestSessionTimeoutForNYDeadline:
 
     def test_session_starting_at_10_30pm_completes_by_11_30pm(self):
         """Session starting at 10:30pm NY can complete by 11:30pm with 1-hour timeout."""
-        start_time_seconds = 10.5 * 3600  # 10:30pm
+        # 10:30pm is 22.5 hours into the day, not 10.5. The literal was a 12-hour
+        # clock reading dropped into a 24-hour calculation, so this compared 11:30 AM
+        # against an 11:10 PM deadline and could not hold. Everything else in the
+        # class -- including the deadline constant on the next line -- is 24-hour.
+        start_time_seconds = 22.5 * 3600  # 10:30pm
         timeout_seconds = 3600  # 1 hour
         completion_seconds = start_time_seconds + timeout_seconds
 
@@ -417,6 +425,11 @@ class TestTimezoneMathVerification:
         if end_minute >= 60:
             end_hour += 1
             end_minute -= 60
+        # Wrap past midnight. Without this, 11pm + 60 min produced end_hour=24 and the
+        # assertion below -- which already documents "end_hour=0 means next day" --
+        # could not match. The test's own arithmetic was missing the day boundary it
+        # was written to cross.
+        end_hour %= HOURS_PER_DAY
 
         # 11pm + 60 min = midnight (which is after 11:10pm)
         # end_hour=0 means next day

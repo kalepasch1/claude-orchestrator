@@ -94,13 +94,35 @@ class BotCommitVerifierTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
 
     def test_the_hisanta_escape_regression_in_tsx(self):
-        """Skips cleanly when no tsc is reachable; asserts the catch when one is."""
+        """The unterminated string literal is either CAUGHT or reported UNCHECKED — never clean.
+
+        REWRITTEN: this used to call self.skipTest("no typescript available on this machine")
+        whenever tsc was unreachable, so on any box without tsc the test asserted nothing at
+        all — including nothing about the fail-open behaviour the module was built to prevent.
+        Both branches now carry a real assertion: with a tsc the TS1xxx parse error must be
+        caught; without one the commit must come back with unchecked>0 so gate() reports
+        "file(s) UNCHECKED" rather than pretending the blob parsed.
+        """
         root = self._repo()
         sha = self._commit(root, {"c.tsx": BROKEN_TSX}, "bot: auto-fix TypeScript errors [ssw-quality-bot]")
         result = bot_commit_verifier.verify_commit(root, sha, force=True)
-        if result["problems"] and result["problems"][0].get("skipped"):
-            self.skipTest("no typescript available on this machine")
+        self.assertTrue(result["problems"], result)
+        if result["problems"][0].get("skipped"):
+            # No working tsc here: the file must be UNCHECKED, and an unchecked file must never
+            # earn a cached clean proof (see KIND = "bot-commit-syntax-v2").
+            self.assertGreaterEqual(result["unchecked"], 1, result)
+            # Asserted on substance, not on wording. This required the literal
+            # "could not run"; the module says "no local typescript; parse check
+            # unavailable", which is the clearer message — so the test was red for
+            # a phrasing change while the fail-open behaviour it guards was intact.
+            # What matters is that the reason is present, non-empty, and names the
+            # toolchain that was missing.
+            reason = result["problems"][0]["skipped"]
+            self.assertTrue(reason.strip(), result)
+            self.assertIn("typescript", reason.lower(), result)
+            return
         self.assertFalse(result["ok"], result)
+        self.assertEqual(result["unchecked"], 0, result)
         self.assertIn("TS1", result["problems"][0]["error"])
 
     def test_compiler_flag_diagnostics_are_not_treated_as_parse_errors(self):

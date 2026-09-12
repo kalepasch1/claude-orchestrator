@@ -111,3 +111,62 @@ def test_clean_code_produces_no_silent_error_violations():
         "        return None\n"
     )
     assert RULE not in _rules(src)
+
+
+def _messages(source: str):
+    checker = lint.ConventionChecker("<test>")
+    checker.visit(ast.parse(source))
+    return [v.message for v in checker._v2_violations if v.rule == RULE]
+
+
+# The rule's remediation text is the only instruction most callers ever read, so
+# it has to describe what the rule actually accepts. It used to offer "or add a
+# comment naming why it is safe to ignore" while _is_silently_discarded ignores
+# comments by design -- callers followed it literally (branch_lease.py:114,
+# regression.py:36) and stayed flagged, which is how a linter earns a reputation
+# for lying and starts getting skipped.
+_COMMENTED_SWALLOW = (
+    "def f():\n"
+    "    try:\n"
+    "        g()\n"
+    "    except ValueError:\n"
+    "        # the finite TTL is the fail-safe here, so dropping this is fine\n"
+    "        pass\n"
+)
+
+
+def test_commented_swallow_is_still_flagged():
+    """Documents the deliberate choice: a comment is not a runtime diagnostic."""
+    assert RULE in _rules(_COMMENTED_SWALLOW)
+
+
+def test_message_does_not_promise_a_comment_escape_hatch():
+    messages = _messages(_COMMENTED_SWALLOW)
+    assert messages
+    for msg in messages:
+        assert "safe to ignore" not in msg, (
+            "remediation text offers a comment escape the rule does not honour"
+        )
+
+
+def test_message_names_remedies_that_actually_clear_the_rule():
+    """bind-and-log and re-raise are the two paths _emits_diagnostic accepts."""
+    for msg in _messages(_COMMENTED_SWALLOW):
+        assert "except X as e" in msg
+        assert "re-raise" in msg
+
+
+def test_message_states_that_a_comment_is_insufficient():
+    for msg in _messages(_COMMENTED_SWALLOW):
+        assert "comment does not clear this warning" in msg
+
+
+def test_documented_remedies_do_clear_the_rule():
+    """The message is only honest if following it silences the warning."""
+    bound_and_logged = (
+        "def f():\n    try:\n        g()\n"
+        "    except ValueError as e:\n        print('g failed', e)\n"
+    )
+    reraised = "def f():\n    try:\n        g()\n    except ValueError:\n        raise\n"
+    assert RULE not in _rules(bound_and_logged)
+    assert RULE not in _rules(reraised)

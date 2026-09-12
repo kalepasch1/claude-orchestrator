@@ -5,7 +5,18 @@ BASE_URL          ?= http://localhost:3000
 E2E_SUPABASE_URL  ?=
 E2E_SESSION_JSON  ?=
 
-.PHONY: test-e2e install-e2e lock lock-check install-deps install-all-deps verify-deps
+.PHONY: test-e2e install-e2e lock lock-check install-deps install-all-deps verify-deps \
+        check-build-tools
+
+## check-build-tools: report the native toolchain (compiler, make, cmake…) this machine has
+##
+## install-deps/verify-deps cover declared manifests. Neither can help when the missing
+## piece is the COMPILER: a wheel with no prebuilt binary for this platform builds from
+## source, and without a toolchain that shows up as compiler output several minutes into
+## an unrelated agent run. This answers it in a second, and installs nothing — it prints
+## the platform's install command and leaves the decision to a human.
+check-build-tools:
+	bash scripts/check-build-tools.sh
 
 ## install-deps: install the exact locked Python dependency set
 install-deps:

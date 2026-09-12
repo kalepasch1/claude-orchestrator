@@ -25,8 +25,10 @@ Test coverage areas:
 - Reuse-first strategy validation (prefer proven diffs over new implementations)
 """
 
+import ast
 import sys
 import os
+import textwrap
 import pytest
 import json
 import tempfile
@@ -59,6 +61,37 @@ class SimilarityLevel(Enum):
     HIGH = 0.8
     MEDIUM = 0.6
     LOW = 0.4
+
+
+def _structural_hash(source):
+    """Hash a snippet's SHAPE, ignoring what its identifiers are called.
+
+    Every name -- function, argument, variable, attribute -- becomes a placeholder
+    numbered by first appearance, so `buildGrid(items)` and `buildGridAlt(entries)`
+    reduce to the same tree. Literals and control flow are left alone, because those
+    are what make two snippets genuinely different rather than merely renamed.
+
+    Written as a plain ast.walk rather than an ast.NodeTransformer subclass on
+    purpose: NodeTransformer dispatches on method names like `visit_Name` and
+    `visit_FunctionDef`, which convention-lint reports as non-snake_case functions.
+    They are framework-mandated names that cannot be changed -- the same false
+    positive it carries against unittest's setUp -- and walking the tree directly
+    does the same job without arguing with the linter.
+    """
+    placeholders = {}
+
+    def placeholder(name):
+        return placeholders.setdefault(name, "n%d" % len(placeholders))
+
+    tree = ast.parse(textwrap.dedent(source).strip())
+    for node in ast.walk(tree):
+        for attribute in ("id", "arg", "attr"):
+            current = getattr(node, attribute, None)
+            if isinstance(current, str):
+                setattr(node, attribute, placeholder(current))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            node.name = placeholder(node.name)
+    return hashlib.md5(ast.dump(tree).encode()).hexdigest()
 
 
 @dataclass
@@ -158,9 +191,22 @@ def buildGridAlt(entries):
         output[item['id']] = item['value']
     return output
 """
-        # Both have same structure, same operations, same control flow
-        hash_1 = hashlib.md5(code_1.strip().replace("items", "X").replace("x", "X").replace("result", "R").encode()).hexdigest()
-        hash_2 = hashlib.md5(code_2.strip().replace("entries", "X").replace("item", "X").replace("output", "R").encode()).hexdigest()
+        # Both have same structure, same operations, same control flow.
+        #
+        # This used to "normalize" with a chain of str.replace() calls chosen per
+        # snippet -- items/x/result vs entries/item/output -- and assert the two md5s
+        # matched. They could not: nothing in that chain touched the function NAME, and
+        # buildGrid is not buildGridAlt. `.replace("x", "X")` also rewrote every letter
+        # x anywhere in the source, including inside other words. The test was asserting
+        # that a hand-picked substitution happened to collide, which is not a property
+        # of anything.
+        #
+        # Near-duplicate detection normalizes STRUCTURE, so normalize the structure: walk
+        # the AST and replace every identifier with a positional placeholder. Two
+        # snippets that differ only in what things are called then hash identically,
+        # which is the claim this test's name actually makes.
+        hash_1 = _structural_hash(code_1)
+        hash_2 = _structural_hash(code_2)
 
         assert hash_1 == hash_2  # Normalized hashes match
 

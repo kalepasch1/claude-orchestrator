@@ -18,8 +18,21 @@ import log as _log_mod
 _log = _log_mod.get("realtime_approval_monitor")
 import db
 
+def _env_int(name, default, minimum=1):
+    """Fail-soft int env read. A bare int() here runs at import, so one malformed
+    fleet push of the key raised ValueError and took down every importer."""
+    try:
+        raw = os.environ.get(name)
+        if raw is None or not str(raw).strip():
+            return default
+        value = int(str(raw).strip())
+        return value if value >= minimum else default
+    except Exception:
+        return default
+
+
 ENABLED = os.environ.get("ORCH_REALTIME_MONITOR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-POLL_INTERVAL = int(os.environ.get("ORCH_RTMON_POLL_INTERVAL", "300"))
+POLL_INTERVAL = _env_int("ORCH_RTMON_POLL_INTERVAL", 300)
 AUTO_RULES_ENABLED = os.environ.get("ORCH_RTMON_AUTO_RULES_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 NOTIFY_CHANNEL = os.environ.get("ORCH_RTMON_NOTIFY_CHANNEL", "approvals")
 
@@ -33,10 +46,20 @@ _stats = {
     "approvals_checked": 0,
     "auto_approved": 0,
     "manual_flagged": 0,
+    "manual_resurfaced": 0,
     "errors": 0,
     "last_poll": None,
     "realtime_events": 0,
 }
+
+# Flagging a card for manual review does NOT change its status, so the next poll
+# selects it again — and the one after that, every POLL_INTERVAL, forever. Each
+# pass rewrote an identical note and re-incremented manual_flagged, so the
+# dashboard counted polls rather than cards and the queue took one redundant
+# UPDATE per pending card per poll for as long as a human took to decide.
+# Remember what was already said about a card and stay quiet until it changes.
+_flagged_notes = {}
+_stats_lock = threading.Lock()
 
 # Automated approval rules: list of (match_fn, action) pairs.
 # Each match_fn takes a card dict and returns True if the rule applies.
@@ -48,19 +71,61 @@ AUTO_APPROVE_RULES = [
 ALARM_PATTERNS = [
     "key leak", "secret leak", "credential compromis",
     "billing firewall", "spend circuit",
+    # Money movement and anything that reaches production or a customer. The rule above
+    # auto-approves every pending card that is not kind legal/secret, so without these
+    # a card titled "transfer $4,000" was auto-approved by a background thread.
+    "money movement", "wire transfer", "transfer $", "payment", "payout", "refund",
+    "charge card", "invoice", "purchase order",
+    "production release", "promote to prod", "deploy to production",
+    "delete", "drop table", "truncate", "revoke", "rotate credential",
+    "send email", "post to", "publish",
 ]
+
+#: Fields scanned for alarm patterns. The original scanned only title/why/value, so a
+#: card whose body said "wire $12,000" and whose title said "vendor step" looked clean.
+ALARM_SCAN_FIELDS = ("title", "why", "value", "body", "detail", "description",
+                     "payload", "action", "kind", "summary")
 
 
 def stats():
     """Return a copy of runtime statistics."""
-    return dict(_stats)
+    with _stats_lock:
+        s = dict(_stats)
+    s["manual_pending"] = len(_flagged_notes)
+    return s
+
+
+def _bump(key, amount=1):
+    """Increment a stat. The poll loop and the realtime callback share these."""
+    with _stats_lock:
+        _stats[key] = (_stats.get(key) or 0) + amount
 
 
 def _is_alarm(card):
     """Check if a card matches alarm patterns (should never be auto-approved)."""
-    text = " ".join(str(v) for v in [card.get("title", ""), card.get("why", ""), card.get("value", "")])
+    try:
+        text = " ".join(str(card.get(field, "") or "") for field in ALARM_SCAN_FIELDS)
+    except Exception:
+        # Fail CLOSED: an unreadable card is treated as alarming, never auto-approved.
+        return True
     text_lower = text.lower()
     return any(p in text_lower for p in ALARM_PATTERNS)
+
+
+def _requires_two_keys(card):
+    """True when the card is configured to need a second approver.
+
+    approval_merge honours approvals_required; this monitor did not, so a two-key card
+    could be single-key approved by a background thread — which defeats the point of
+    asking for two keys. Fails CLOSED on an unreadable value.
+    """
+    try:
+        required = card.get("approvals_required")
+        if required is None:
+            return False
+        return int(required) >= 2 and not card.get("second_approver")
+    except Exception:
+        return True
 
 
 def _check_auto_rules(card):
@@ -68,8 +133,12 @@ def _check_auto_rules(card):
     Returns ('auto_approve', reason) or ('manual', reason)."""
     if not AUTO_RULES_ENABLED:
         return "manual", "auto-rules disabled"
+    if not isinstance(card, dict):
+        return "manual", "unreadable card"
     if _is_alarm(card):
         return "manual", "alarm pattern detected"
+    if _requires_two_keys(card):
+        return "manual", "card requires a second approver"
     if card.get("kind") == "secret":
         return "manual", "secret cards require human review"
     if card.get("kind") == "legal" and card.get("legal_risk_level") == "novel":
@@ -87,7 +156,7 @@ def _process_approval(card):
     """Process a single approval request."""
     card_id = card.get("id", "?")
     action, reason = _check_auto_rules(card)
-    _stats["approvals_checked"] += 1
+    _bump("approvals_checked")
 
     if action == "auto_approve":
         try:
@@ -97,21 +166,30 @@ def _process_approval(card):
                 "decided_at": "now()",
                 "note": f"rtmon auto-approve: {reason}",
             })
-            _stats["auto_approved"] += 1
+            _flagged_notes.pop(card_id, None)
+            _bump("auto_approved")
             _log.info("auto-approved card %s: %s", card_id, reason)
         except Exception as e:
             _log.warning("failed to auto-approve card %s: %s", card_id, e)
-            _stats["errors"] += 1
-    else:
-        _stats["manual_flagged"] += 1
-        _log.info("card %s flagged for manual review: %s", card_id, reason)
-        try:
-            db.update("approvals", {"id": card_id}, {
-                "note": f"rtmon: needs manual review ({reason})",
-            })
-        except Exception as e:
-            _log.warning("failed to flag card %s: %s", card_id, e)
-            _stats["errors"] += 1
+            _bump("errors")
+        return
+
+    note = f"rtmon: needs manual review ({reason})"
+    if _flagged_notes.get(card_id) == note:
+        # Already said exactly this about this card; the human just hasn't
+        # decided yet. Not a new flag and not another write.
+        _bump("manual_resurfaced")
+        return
+
+    _bump("manual_flagged")
+    _log.info("card %s flagged for manual review: %s", card_id, reason)
+    try:
+        db.update("approvals", {"id": card_id}, {"note": note})
+        _flagged_notes[card_id] = note
+    except Exception as e:
+        # Leave it unrecorded so the next poll retries the write.
+        _log.warning("failed to flag card %s: %s", card_id, e)
+        _bump("errors")
 
 
 def check_pending_approvals():
@@ -125,11 +203,18 @@ def check_pending_approvals():
         }) or []
     except Exception as e:
         _log.warning("failed to fetch pending approvals: %s", e)
-        _stats["errors"] += 1
+        _bump("errors")
         return 0
 
-    _stats["polls"] += 1
-    _stats["last_poll"] = time.time()
+    _bump("polls")
+    with _stats_lock:
+        _stats["last_poll"] = time.time()
+
+    # A card that is no longer pending was decided elsewhere; forget it so the
+    # memo cannot outlive the queue it describes.
+    still_pending = {c.get("id", "?") for c in cards}
+    for card_id in [k for k in _flagged_notes if k not in still_pending]:
+        _flagged_notes.pop(card_id, None)
 
     processed = 0
     for card in cards:
@@ -143,14 +228,14 @@ def check_pending_approvals():
 
 def _realtime_callback(payload):
     """Handle a realtime event from Supabase subscription."""
-    _stats["realtime_events"] += 1
+    _bump("realtime_events")
     try:
         record = payload.get("record") or payload.get("new", {})
         if record and record.get("status") == "pending":
             _process_approval(record)
     except Exception as e:
         _log.warning("realtime callback error: %s", e)
-        _stats["errors"] += 1
+        _bump("errors")
 
 
 def _monitor_loop():
@@ -173,7 +258,7 @@ def _monitor_loop():
             check_pending_approvals()
         except Exception as e:
             _log.warning("poll error: %s", e)
-            _stats["errors"] += 1
+            _bump("errors")
         _stop_event.wait(POLL_INTERVAL)
 
 
@@ -207,6 +292,7 @@ def stop_monitor():
     if _monitor_thread:
         _monitor_thread.join(timeout=5)
         _monitor_thread = None
+    _flagged_notes.clear()
     _stats["started"] = False
     _log.info("realtime approval monitor stopped")
 

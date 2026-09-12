@@ -127,39 +127,61 @@ def claim_tasks(limit: int = 5, account: str = "api",
         return []
 
 
-def queue_stats() -> dict:
-    """Return current queue state counts."""
+def _state_counts(params=None) -> dict:
+    """{state: count} over the `tasks` rows matching *params*. {} on error.
+
+    WAS `db.sql("SELECT state, count(*) ... GROUP BY state")`. db speaks
+    PostgREST and has never had a `sql()` (or `query()`) function, so this
+    raised AttributeError on every call and the `except Exception: return {}`
+    below turned it into "the queue is empty" -- a stats endpoint that has only
+    ever reported nothing at all.
+
+    One paged read of the `state` column rather than a db.count() per state:
+    the old SQL returned whatever states existed, including any this module's
+    VALID_TRANSITIONS table does not know about, and losing that would make the
+    replacement quietly narrower than what it replaces.
+    """
+    query = dict(params or {})
+    query["select"] = "state"
     try:
-        rows = db.sql(
-            "SELECT state, count(*) as cnt FROM tasks GROUP BY state ORDER BY state"
-        )
-        return {r["state"]: int(r["cnt"]) for r in (rows or [])}
+        rows = db.select_all("tasks", query) or []
     except Exception:
         return {}
+    counts = {}
+    for row in rows:
+        state = row.get("state")
+        if state:
+            counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+def queue_stats() -> dict:
+    """Return current queue state counts."""
+    return _state_counts()
 
 
 def project_stats(project_id: str) -> dict:
     """Return task stats for a specific project."""
-    try:
-        rows = db.sql(
-            f"SELECT state, count(*) as cnt FROM tasks "
-            f"WHERE project_id = '{project_id}' GROUP BY state ORDER BY state"
-        )
-        return {r["state"]: int(r["cnt"]) for r in (rows or [])}
-    except Exception:
-        return {}
+    # PostgREST needs the operator. The old SQL also interpolated project_id
+    # straight into a WHERE clause; this passes it as a filter value instead.
+    return _state_counts({"project_id": f"eq.{project_id}"})
 
 
 def heartbeat(account: str, claimed: int = 0, done: int = 0) -> None:
-    """Record executor heartbeat in fleet_config."""
+    """Record executor heartbeat in fleet_config.
+
+    WAS a raw `INSERT ... ON CONFLICT (key) DO UPDATE` through db.sql(), which
+    does not exist -- so no executor using this API has ever recorded a
+    heartbeat, and the `except Exception: pass` meant nobody found out.
+    db.insert(upsert=True) sends Prefer: resolution=merge-duplicates, which is
+    the same upsert against the same unique key.
+    """
     import json as _json
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     value = _json.dumps({"ts": ts, "claimed": claimed, "done": done})
     try:
-        db.sql(
-            f"INSERT INTO fleet_config (key, value) "
-            f"VALUES ('{account}_LAST_RUN', '{value}'::jsonb) "
-            f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
-        )
+        db.insert("fleet_config",
+                  {"key": f"{account}_LAST_RUN", "value": value},
+                  upsert=True)
     except Exception:
-        pass
+        return None

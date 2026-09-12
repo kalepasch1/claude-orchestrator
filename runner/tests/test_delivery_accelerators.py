@@ -101,6 +101,14 @@ def test_queue_depth_uses_exact_count(monkeypatch):
 
 def test_selective_qa_maps_imported_source_to_one_test(tmp_path):
     repo = init_repo(tmp_path)
+    # A package.json, because since 61931011 `npm test` is read as what it is -- the
+    # NAME OF A PACKAGE SCRIPT -- instead of being assumed to mean vitest. A fixture
+    # that says `npm test` with no package.json is not a project npm could run, and
+    # the resolver correctly falls back to the full command for it (pinned by
+    # test_selective_qa_falls_back_to_full_without_a_package_json below). This test
+    # is about the source-to-test MAPPING, so give it a project that resolves.
+    (repo / "package.json").write_text(
+        '{"name": "fixture", "scripts": {"test": "vitest run"}}')
     (repo / "src").mkdir(); (repo / "tests").mkdir()
     (repo / "src" / "math.ts").write_text("export const n = 1")
     (repo / "tests" / "math.spec.ts").write_text("import '../src/math'")
@@ -112,6 +120,28 @@ def test_selective_qa_maps_imported_source_to_one_test(tmp_path):
     assert plan["mode"] == "selective"
     assert plan["tests"] == ["tests/math.spec.ts"]
     assert "other.spec.ts" not in plan["command"]
+
+
+def test_selective_qa_falls_back_to_full_without_a_package_json(tmp_path):
+    """Unresolvable means run MORE, never less -- the rule 61931011 turns on.
+
+    `npm test` names a package script and says nothing about the runner. When the
+    package.json cannot be read there is no way to know what the suite is, and
+    guessing is what produced three projects being run under the wrong runner and
+    reported red while green in a clean checkout. So the plan degrades to the full
+    configured command.
+    """
+    repo = init_repo(tmp_path)
+    (repo / "src").mkdir(); (repo / "tests").mkdir()
+    (repo / "src" / "math.ts").write_text("export const n = 1")
+    (repo / "tests" / "math.spec.ts").write_text("import '../src/math'")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base"); base = git(repo, "rev-parse", "HEAD")
+    (repo / "src" / "math.ts").write_text("export const n = 2")
+    git(repo, "add", "."); git(repo, "commit", "-m", "change")
+    candidate = git(repo, "rev-parse", "HEAD")
+    plan = selective_qa.plan(str(repo), base, candidate, "npm test")
+    assert plan["mode"] == "full"
+    assert plan["command"] == "npm test"
 
 
 def test_blocker_portfolio_promotes_task_that_unblocks_chain():
@@ -163,9 +193,16 @@ def test_commit_overlay_materializes_exact_tree_without_worktree_registration(tm
     before = git(repo, "worktree", "list", "--porcelain")
     (repo / "value.txt").write_text("dirty-primary\n")
     with commit_overlay.checkout(str(repo), commit) as overlay:
-        assert (os.path.exists(os.path.join(overlay["path"], ".git"))) is False
-        assert open(os.path.join(overlay["path"], "value.txt")).read() == "committed\n"
+        # The overlay HAS a .git as of ef238b32 -- an independent gitdir borrowing
+        # the source repo's objects, so a suite that shells out to git can run
+        # there. What this test is named for, and what still must hold, is that no
+        # WORKTREE is registered: nothing under the source repo's .git/worktrees,
+        # no index lock, no registry contention. Assert that directly rather than
+        # through the absence of a .git, which was only ever a proxy for it.
         assert overlay["registered_worktree"] is False
+        assert not os.path.isdir(os.path.join(str(repo), ".git", "worktrees"))
+        assert overlay["path"] not in git(repo, "worktree", "list", "--porcelain")
+        assert open(os.path.join(overlay["path"], "value.txt")).read() == "committed\n"
     assert git(repo, "worktree", "list", "--porcelain") == before
 
 

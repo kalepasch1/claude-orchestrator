@@ -24,6 +24,7 @@ ENV
 """
 import json
 import os
+import socket
 import sys
 import time
 
@@ -59,6 +60,45 @@ def is_state_change(patch):
     return any(f in patch for f in STATE_FIELDS)
 
 
+#: The literal string that made 37 audit rows unattributable between 2026-08-04 and
+#: 2026-08-23. It is the default value of the `actor` parameter on both public entry
+#: points, so any caller that simply did not pass one produced an audit row naming nobody.
+#: "unknown" is not an actor; it is the absence of one, recorded as though it were data.
+UNATTRIBUTED = "unknown"
+
+
+def resolve_actor(actor=None):
+    """Return the best available identity for whoever is performing a bulk change.
+
+    Guardrail 2 exists so that every >1-row state change is attributable. An audit row
+    reading actor='unknown' satisfies the schema and defeats the guardrail: it proves a
+    mass flip happened and tells you nothing about who did it. 37 such rows accumulated,
+    all bulk_update -> MERGED, and there was no way to identify the emitting process after
+    the fact.
+
+    So a missing (or literally "unknown") actor is REPLACED, never recorded as-is. In
+    descending order of usefulness: ORCH_ACTOR, ORCH_BOT, then a constructed identity from
+    the entry-point script, pid and host. The constructed form is not as good as a caller
+    naming itself, but it is always enough to find the process — which is the whole point.
+    """
+    named = str(actor or "").strip()
+    if named and named.lower() != UNATTRIBUTED:
+        return named[:200]
+    for var in ("ORCH_ACTOR", "ORCH_BOT", "ORCH_BOT_NAME"):
+        value = str(os.environ.get(var) or "").strip()
+        if value and value.lower() != UNATTRIBUTED:
+            return value[:200]
+    try:
+        entry = os.path.basename(sys.argv[0] or "") or "python"
+    except Exception:
+        entry = "python"
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "?"
+    return f"unattributed:{entry}:pid{os.getpid()}@{host}"[:200]
+
+
 def changed_state_value(patch):
     for f in STATE_FIELDS:
         if f in (patch or {}):
@@ -66,7 +106,7 @@ def changed_state_value(patch):
     return ""
 
 
-def check(table, patch, row_count, actor="unknown", reason=""):
+def check(table, patch, row_count, actor=None, reason=""):
     """Authorise a bulk state transition of `row_count` rows.
 
     Returns True when the operation may proceed. Raises BulkStateChangeRefused otherwise.
@@ -123,13 +163,23 @@ def _audit(table, patch, row_count, actor, reason, token):
     disappears exactly when the database is unhealthy is not an audit trail. A durable local
     JSONL record is written and fsync'd first; only then is the DB row attempted.
     """
+    actor = resolve_actor(actor)
+    # An unknown row_count is recorded as -1 for schema compatibility, but -1 is a sentinel
+    # nobody outside this file can interpret — 37 audit rows carried it with no explanation,
+    # which is why "who did this and to how many rows" was unanswerable. Say so in the
+    # reason, so the row explains itself to whoever reads the table later.
+    count_known = row_count is not None
+    if not count_known:
+        reason = (f"{reason or ''} [row_count UNKNOWN: the count query failed, so -1 is a "
+                  f"sentinel, not a measurement]").strip()
     record = {
         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "bot": "bulk-update-guard", "event": "bulk_state_change",
         "table_name": table, "operation": "bulk_update",
-        "row_count": row_count, "to_state": changed_state_value(patch)[:120],
+        "row_count": row_count, "row_count_known": count_known,
+        "to_state": changed_state_value(patch)[:120],
         "patch": patch, "reason": (reason or "")[:2000],
-        "actor": (actor or "unknown")[:200], "override_token": (token or "")[:200],
+        "actor": actor, "override_token": (token or "")[:200],
     }
     try:
         home = os.environ.get(
@@ -154,7 +204,7 @@ def _audit(table, patch, row_count, actor, reason, token):
             "row_count": int(row_count) if row_count is not None else -1,
             "to_state": changed_state_value(patch)[:120],
             "reason": (reason or "")[:2000],
-            "actor": (actor or "unknown")[:200],
+            "actor": actor,
             "override_token": (token or "")[:200],
         })
     except Exception as e:
@@ -162,9 +212,14 @@ def _audit(table, patch, row_count, actor, reason, token):
               f"written and is authoritative): {e}", flush=True)
 
 
-def audited_bulk_update(table, match, patch, actor="unknown", reason=""):
+def audited_bulk_update(table, match, patch, actor=None, reason=""):
     """Convenience helper: count first, authorise, then update. Use this instead of a raw
-    multi-row db.update() when you genuinely need one."""
+    multi-row db.update() when you genuinely need one.
+
+    `actor` defaults to None, not to "unknown": an omitted actor is now resolved to a real
+    identity by resolve_actor() rather than recorded as the word "unknown", which is what
+    made the audit trail unattributable.
+    """
     import db
     try:
         n = db.count(table, {k: f"eq.{v}" for k, v in (match or {}).items()})

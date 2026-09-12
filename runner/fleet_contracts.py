@@ -14,6 +14,37 @@ it without a cycle and a writer has no excuse to reimplement the check.
 Fails CLOSED. An unrecognised key is refused, not allowed — the asymmetry is not
 close: refusing a legitimate knob costs one config change, admitting a
 credential costs a key rotation across every provider.
+
+THE FOUR SPEC INVARIANTS
+------------------------
+Everything in this module exists to hold these four, and nothing here may be
+changed in a way that breaks one. They are mirrored as data in
+`SPEC_INVARIANTS` and asserted by `tests/test_fleet_contracts_spec.py`, so the
+list below cannot quietly drift out of step with the code.
+
+1. fleet_config-up-to-date — every machine converges on the same knobs. The
+   contract is stated once, here, and `fleet_control` imports it rather than
+   keeping a second copy. Two copies of a policy is what the 2026-08-02
+   incident was made of.
+
+2. no-hardcoded-secrets — credentials live in per-machine environment, never in
+   fleet_config and never in source. `DENY_MARKERS` refuses anything
+   credential-shaped, and `explicit_exclusions` names ORCH_GIT_PAT so the
+   carve-out is documented rather than folklore.
+
+3. safe-keys-only — a key is admitted only if it clears the deny markers AND
+   matches a `SAFE_PREFIXES` family. Deny is checked first, so a credential
+   cannot smuggle itself in behind a permitted prefix, and an unrecognised key
+   is refused rather than allowed.
+
+4. fail-soft-no-crash — a helper degrades instead of wedging the runner;
+   `fail_soft` makes that convention importable. The deliberate exception is
+   the security predicate: `is_safe_config_key` is NOT decorated, because a
+   guard that swallows its own failure and returns a truthy default is a guard
+   that has silently stopped guarding. It fails closed by returning False.
+
+Invariants 3 and 4 pull in opposite directions on purpose. Where they meet —
+inside `is_safe_config_key` — safe-keys-only wins.
 """
 import functools
 
@@ -36,6 +67,29 @@ SAFE_PREFIXES = (
     "SEMANTIC_DEDUPE", "SWARM_", "CADE_",
 )
 
+# Suffixes whose keys name a MODEL, not a credential. Added 2026-08-24.
+#
+# Model-selection keys are spelled per provider — GEMINI_MODEL, OPENAI_STRONG_MODEL,
+# CLAUDE_MODEL, XAI_MODEL, DEEPSEEK_CHEAP_MODEL — so no prefix covers them, and
+# fleet_control.py's own notes list GEMINI_MODEL, GEMINI_CHEAP_MODEL,
+# OPENAI_STRONG_MODEL, OPENAI_FAST_MODEL and OPENAI_CHEAP_MODEL among the keys
+# "stored and ignored": the row exists, the dashboard shows it, nothing happens.
+#
+# That gap has a cost on record. On 2026-08-24 the default agentic coder was pinned
+# to `gemini-2.5-pro`, which Google retired ("no longer available to new users"), and
+# every task routed to it failed 404. runner/agentic_coders.py picks that model from
+# os.environ["GEMINI_MODEL"] — a key fleet_config could store but never deliver — so
+# the one knob that would have re-pointed the whole fleet in a single row was the one
+# knob the loader dropped. The alternative was editing and redeploying every machine.
+#
+# A name ending in _MODEL/_MODELS holds a model identifier. It is not a credential,
+# and it cannot become one: DENY_MARKERS is evaluated FIRST, so GEMINI_API_KEY_MODEL
+# or OPENAI_MODEL_TOKEN are still refused. Deliberately a narrow suffix rule and not
+# a "GEMINI_"/"OPENAI_" prefix — widening to whole provider families would admit
+# every future key those vendors' integrations invent, which is the blast radius the
+# 2026-08-02 plaintext-credential incident argues against.
+SAFE_SUFFIXES = ("_MODEL", "_MODELS")
+
 # The declarative schema. `FLEET_CONFIG_SCHEMA` is the contract other modules and
 # tests assert against, so a change to the policy is a change to one literal.
 FLEET_CONFIG_SCHEMA = {
@@ -46,6 +100,7 @@ FLEET_CONFIG_SCHEMA = {
         "Credentials are per-machine environment only and MUST NOT be stored here."
     ),
     "safe_prefixes": SAFE_PREFIXES,
+    "safe_suffixes": SAFE_SUFFIXES,
     "deny_markers": DENY_MARKERS,
     "fail_closed": True,
     # Named explicitly so the exclusion is documented rather than folklore: the
@@ -53,6 +108,32 @@ FLEET_CONFIG_SCHEMA = {
     # fleet-wide.
     "explicit_exclusions": ("ORCH_GIT_PAT",),
     "incident": "2026-08-02 plaintext-credential incident",
+}
+
+# The four SPEC invariants, as data. The module docstring states them in prose;
+# this is the machine-checkable mirror, so a future edit cannot drop one from
+# the docstring without failing tests/test_fleet_contracts_spec.py.
+#
+# Keyed by slug rather than position: renumbering the prose must not silently
+# repoint an assertion at a different invariant.
+SPEC_INVARIANTS = {
+    "fleet_config-up-to-date": (
+        "Every machine converges on the same knobs. The contract is stated once, "
+        "in fleet_contracts, and other modules import it rather than keeping a "
+        "second copy."
+    ),
+    "no-hardcoded-secrets": (
+        "Credentials live in per-machine environment, never in fleet_config and "
+        "never in source. Anything credential-shaped is refused."
+    ),
+    "safe-keys-only": (
+        "A key is admitted only if it clears the deny markers AND matches a safe "
+        "prefix family. Deny is checked first; an unrecognised key is refused."
+    ),
+    "fail-soft-no-crash": (
+        "Helpers degrade instead of wedging the runner. The security predicate is "
+        "the deliberate exception: it fails closed rather than fail-soft."
+    ),
 }
 
 
@@ -72,7 +153,11 @@ def is_safe_config_key(key) -> bool:
             return False
         if any(marker in upper for marker in DENY_MARKERS):
             return False
-        return any(upper.startswith(prefix) for prefix in SAFE_PREFIXES)
+        if any(upper.startswith(prefix) for prefix in SAFE_PREFIXES):
+            return True
+        # Suffix rule runs only after every deny check, so it can widen the
+        # allowlist but never override a refusal.
+        return any(upper.endswith(suffix) for suffix in SAFE_SUFFIXES)
     except Exception:
         # An exception while deciding is not permission.
         return False
@@ -116,5 +201,11 @@ def assert_safe_config_key(key) -> None:
 
 
 def describe() -> dict:
-    """A copy of the contract, safe to log or serialise."""
-    return dict(FLEET_CONFIG_SCHEMA)
+    """A copy of the contract, safe to log or serialise.
+
+    Includes the four SPEC invariants so a consumer that logs the contract logs
+    what it is for, not only what it permits.
+    """
+    contract = dict(FLEET_CONFIG_SCHEMA)
+    contract["spec_invariants"] = dict(SPEC_INVARIANTS)
+    return contract

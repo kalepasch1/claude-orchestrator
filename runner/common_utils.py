@@ -10,6 +10,7 @@ Consolidates duplicate patterns for:
 """
 import datetime
 import json
+import re
 from typing import Optional, Tuple, Any, List, Callable
 
 
@@ -58,8 +59,35 @@ def truncate_string_at_bytes(s: str, max_bytes: int = 1000) -> str:
         return truncated.decode('utf-8', errors='replace')
 
 
+#: Fractional-second digits, captured so they can be padded to what
+#: datetime.fromisoformat() accepts on Python < 3.11.
+_FRACTIONAL_SECONDS = re.compile(r"(\.\d+)")
+
+
 def parse_iso_timestamp(iso_str: str) -> Optional[datetime.datetime]:
     """Parse an ISO 8601 timestamp string safely.
+
+    THE BUG THIS FIXES (found 2026-08-30)
+    -------------------------------------
+    Before Python 3.11, datetime.fromisoformat() accepts EXACTLY 3 or 6
+    fractional-second digits and raises ValueError on anything else. Postgres
+    renders timestamptz with trailing zeros trimmed, so it emits 1-6 digits
+    depending on the value — roughly one row in ten lands on a width this parser
+    rejected. This machine runs Python 3.9.6.
+
+    That silent ~10% failure rate wedged the fleet. integration_owner._live_hosts()
+    treats an unparseable last_seen as LIVE (deliberately: refusing to integrate is
+    safer than racing another host). The newest runner_heartbeats row read
+
+        {"hostname": "Mac.lan", "last_seen": "2026-08-27T18:52:05.72819+00:00"}
+
+    Five digits. It failed to parse, so a host that had been dead for 75 hours
+    counted as live, won the ownership election, and every merge_train pass on the
+    real host refused with "not the integration owner". 532 consecutive passes
+    considered 0 branches. The module's own docstring promises this cannot happen:
+    "if the owner stops heartbeating it drops out of live". It never did.
+
+    Pad the fraction to 6 digits instead of hoping it arrives at a lucky width.
 
     Args:
         iso_str: ISO timestamp string (with or without timezone)
@@ -69,10 +97,13 @@ def parse_iso_timestamp(iso_str: str) -> Optional[datetime.datetime]:
     """
     if not iso_str or not isinstance(iso_str, str):
         return None
+    text = iso_str.strip()
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    text = _FRACTIONAL_SECONDS.sub(
+        lambda m: '.' + m.group(1)[1:][:6].ljust(6, '0'), text, count=1)
     try:
-        if iso_str.endswith('Z'):
-            iso_str = iso_str[:-1] + '+00:00'
-        return datetime.datetime.fromisoformat(iso_str)
+        return datetime.datetime.fromisoformat(text)
     except (ValueError, AttributeError, TypeError):
         return None
 

@@ -68,10 +68,69 @@ def extract_file_scopes(prompt: str) -> list:
         return []
 
 
-def extract_numbered_items(prompt: str) -> list:
-    """Extract numbered sub-items from a prompt (e.g. '1. Do X  2. Do Y')."""
+#: Envelope sections the pipeline wraps around every prompt. They are metadata about how
+#: the task will be ROUTED, not statements of what to build, and several of them are
+#: numbered — which made them look like sub-items to split on.
+_ENVELOPE_SECTIONS = (
+    "## ORCHESTRATION PIPELINE CONTRACT",
+    "AGENTIC-REPAIR DIRECTIVE",
+    "PREFLIGHT DIRECTIVE",
+    "Required completion behavior:",
+    "Agentic analysis artifacts from prior run:",
+    "Failure context:",
+    "MERGED-DIFF LIBRARY:",
+    "Prior patch diff (truncated):",
+)
+
+_ENVELOPE_END = "## END ORCHESTRATION PIPELINE CONTRACT"
+
+
+def strip_envelope(prompt: str) -> str:
+    """The task's actual request, with pipeline boilerplate removed.
+
+    WHY. Decomposition splits on numbered items, and the envelope is full of numbered
+    and bulleted lines that describe ROUTING rather than work — the pipeline contract,
+    the repair directive, "Required completion behavior:", the truncated prior diff.
+    Counting those as sub-items turns one brief into several children that each restate
+    the same envelope, which is how a single request becomes -slice-2, -slice-3, -slice-5
+    with no distinct content between them.
+
+    Splitting on the REQUEST is the behaviour the rules were always meant to have. A
+    prompt that carries no envelope is returned unchanged, so genuinely enumerated
+    requests decompose exactly as before.
+
+    Fail-soft: anything unexpected returns the input untouched. Under-stripping costs a
+    spurious split; over-stripping would silently discard the specification.
+    """
     try:
-        items = re.findall(r'(?:^|\n)\s*(\d+)\.\s+(.+?)(?=\n\s*\d+\.|\n\n|$)', prompt, re.S)
+        text = prompt or ""
+        if not text:
+            return ""
+        end = text.find(_ENVELOPE_END)
+        if end >= 0:
+            text = text[end + len(_ENVELOPE_END):]
+        cut = len(text)
+        for marker in _ENVELOPE_SECTIONS:
+            idx = text.find(marker)
+            if idx >= 0:
+                cut = min(cut, idx)
+        body = text[:cut].strip()
+        # Never return nothing: an all-envelope prompt keeps its original text so the
+        # caller still sees the task rather than an empty one.
+        return body or (prompt or "")
+    except Exception:
+        return prompt or ""
+
+
+def extract_numbered_items(prompt: str) -> list:
+    """Extract numbered sub-items from a prompt (e.g. '1. Do X  2. Do Y').
+
+    Reads the request only; pipeline envelope sections are stripped first, because their
+    numbered lines describe routing, not work.
+    """
+    try:
+        body = strip_envelope(prompt)
+        items = re.findall(r'(?:^|\n)\s*(\d+)\.\s+(.+?)(?=\n\s*\d+\.|\n\n|$)', body, re.S)
         return [{"num": int(n), "text": t.strip()} for n, t in items if t.strip()]
     except Exception:
         return []

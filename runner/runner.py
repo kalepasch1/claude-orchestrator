@@ -107,6 +107,7 @@ if __name__ == "__main__":
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
 import provider_banner
+import stderr_digest
 import prompt_assembler
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
@@ -158,6 +159,7 @@ import agentic_repair
 import cowork_dispatch
 import worktree_isolation
 import common_utils
+import repo_hygiene
 try:
     import warm_pool
 except ImportError:
@@ -179,6 +181,10 @@ RUNNER_ID = os.environ.get("RUNNER_ID", socket.gethostname() + "-" + str(os.getp
 # honouring a restart request, so a fleet that commits to its own repo cannot restart the runner
 # faster than tasks can finish.
 _PROC_START_T = time.time()
+#: When the current self-deploy drain began, so it can be given a deadline. A dict rather
+#: than a plain global because the drain check lives inside a function that never declared
+#: one, and a stuck drain freezes every claim in the fleet -- see ORCH_RESTART_DRAIN_MAX_S.
+_DRAIN_STARTED = {}
 
 
 class _SkipRestart(Exception):
@@ -214,6 +220,40 @@ POOL = account_pool.AccountPool()
 _sem = threading.Semaphore(int(os.environ.get("ORCH_SEM_MAX", "48")))
 _projects = {}
 MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "36000"))
+
+
+TASK_TIMEOUT_DEFAULT = 3600
+
+
+def _task_timeout(default=TASK_TIMEOUT_DEFAULT):
+    """Seconds to allow one agent run, read fail-soft from TASK_TIMEOUT.
+
+    The three call sites that launch a coder used to inline the environment
+    read and the int() conversion directly. os.environ.get returns the
+    DEFAULT only when the key is absent; when the key is present and empty --
+    `TASK_TIMEOUT=` in a .env, or a fleet_config row whose value was blanked --
+    it returns "" and int("") raises ValueError. That exception is raised at the
+    moment of launching the agent subprocess, so a single blank config value
+    stops every task on the fleet from starting, and the traceback names int()
+    rather than the setting that caused it.
+
+    TASK_TIMEOUT is operator-tunable through the control plane
+    (config_applier, fleet_control, fleet_contracts all list it), so a value
+    this function cannot parse is a routine outcome, not a programming error.
+    Anything unparseable falls back to the default and says so once.
+    """
+    raw = os.environ.get("TASK_TIMEOUT", "")
+    if not str(raw).strip():
+        return default
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        _log.warning("TASK_TIMEOUT=%r is not an integer — using %ss", raw, default)
+        return default
+    if val <= 0:
+        _log.warning("TASK_TIMEOUT=%r is not positive — using %ss", raw, default)
+        return default
+    return val
 
 
 def projects(project_id=None):
@@ -473,7 +513,8 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             if bcmd:
                 ok, blog = build_gate.run_build(repo, branch, bcmd)
                 if not ok:
-                    print(f"[integrate] build RED for {branch} -> not merging: {blog[-160:]}")
+                    print(f"[integrate] build RED for {branch} -> not merging: "
+                          f"{stderr_digest.digest(blog, 160)}")
                     try:
                         import build_fixer
                         build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
@@ -539,6 +580,36 @@ def _branch_exists(repo, branch):
         return False
 
 
+def _already_on_origin(repo, branch):
+    """True when origin's copy of `branch` already contains this clone's tip.
+
+    Pure check — it reads refs/remotes/origin/<branch> and does NOT fetch. The
+    caller fetches first, deliberately: the fetch has to be visible at the push
+    site (that is the thing that was missing), and doing it here as well would
+    pay for the same round trip twice per attempt.
+
+    "origin already has our commits" is a SUCCESS. The branch-share loop used to
+    treat it as a failed push and replay the push twice more, which is a third
+    of the 710/709 failure record this exists to fix: two Macs share one queue,
+    so the other one having already pushed our ref is the normal case, not an
+    error.
+    """
+    if not repo or not branch:
+        return False
+    try:
+        head = subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
+                              capture_output=True, text=True, timeout=30)
+        if head.returncode != 0 or not head.stdout.strip():
+            return False
+        anc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", head.stdout.strip(),
+             f"refs/remotes/origin/{branch}"],
+            cwd=repo, capture_output=True, text=True, timeout=30)
+        return anc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _localize_repo_path(proj, db_path):
     """Translate a repo path stored in the DB to a path that exists on THIS machine.
 
@@ -568,6 +639,12 @@ def _localize_repo_path(proj, db_path):
     return None
 
 
+def _strict_default_base():
+    """Prefer projects.default_base over a generic stored base_branch. Default on."""
+    return os.environ.get("ORCH_STRICT_DEFAULT_BASE", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _normalize_task_base(repo, proj, requested):
     """Resolve task base to a local branch that actually exists before worktree setup.
 
@@ -575,10 +652,88 @@ def _normalize_task_base(repo, proj, requested):
     configured default. Normalizing here prevents empty diffs, failed worktree setup,
     stale branch churn, and wasted agent retries.
     """
-    for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
+    # 2026-09-01: a *generic* requested base ("main"/"master") must not outrank the
+    # project's configured default. db._guard_task_base_branch already applies this rule
+    # at insert time, but it is insert-only -- a row written by an unguarded path, or an
+    # older row, still carries "main", and checking `requested` first sent that work back
+    # to the production branch at execution time. Non-generic values (release/*, hotfix/*)
+    # are deliberate and still win. Set ORCH_STRICT_DEFAULT_BASE=false to restore the old
+    # requested-first order.
+    order = (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master")
+    if _strict_default_base() and (requested or "").strip().lower() in ("", "main", "master"):
+        order = (proj.get("default_base"), requested, proj.get("prod_branch"), "main", "master")
+    for b in order:
         if _branch_exists(repo, b):
             return b
-    return requested or proj.get("default_base") or "main"
+    return proj.get("default_base") or requested or "main"
+
+
+def _dev_reset_on_drift():
+    """True only if the operator has explicitly opted back into destructive dev resets.
+
+    Default False. See _integration_base for why the default flipped on 2026-09-01.
+    """
+    return os.environ.get("ORCH_DEV_RESET_ON_DRIFT", "false").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _ref_commit_time(repo, ref):
+    """Committer timestamp of `ref`, or None if it does not resolve here."""
+    try:
+        r = subprocess.run(["git", "log", "-1", "--format=%ct", ref], cwd=repo,
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return int((r.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _freshest_upstream(repo, proj):
+    """The upstream the integration lane should track: whichever of dev or prod is newer.
+
+    Operator directive 2026-09-01: the improvement lane must replicate "/dev and /prod,
+    whichever is more recent", so improvements always build on the freshest real code
+    without a human choosing which branch that is this week.
+
+    Picking by commit date rather than by name is what makes this safe on these repos.
+    `tomorrow`'s origin/dev is 4,336 commits behind origin/main and was last touched in
+    February; a name-based rule would drag the fleet onto seven-month-old code, while the
+    freshness rule silently keeps it on main until someone actually starts committing to
+    dev again. Remote refs are preferred over local ones because the local copy can be
+    stale on any given host.
+
+    Returns a ref name, or "" if nothing resolves.
+    """
+    prod = _detect_prod_branch(repo, proj)
+    dev_name = os.environ.get("ORCH_TRACK_DEV_BRANCH", "dev")
+    candidates = []
+    for name in (dev_name, prod):
+        if not name:
+            continue
+        for ref in (f"origin/{name}", name):
+            t = _ref_commit_time(repo, ref)
+            if t is not None:
+                candidates.append((t, ref, name))
+                break
+    if not candidates:
+        return ""
+    if os.environ.get("ORCH_DEV_TRACKS_FRESHEST", "true").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        # Legacy behaviour: always track prod.
+        for _t, ref, name in candidates:
+            if name == prod:
+                return ref
+        return candidates[0][1]
+    candidates.sort(reverse=True)  # newest committer date wins
+    best_t, best_ref, best_name = candidates[0]
+    if len(candidates) > 1 and best_name != prod:
+        _log.info("integration-base: tracking %s in %s — it is newer than %s",
+                  best_ref, repo, prod)
+    return best_ref
 
 
 def _integration_base(repo, proj, task_base):
@@ -595,12 +750,29 @@ def _integration_base(repo, proj, task_base):
         prod = _detect_prod_branch(repo, proj)
         # RECURRENT-CONFLICT FIX: keep the integration base CURRENT with prod. After external pushes
         # (e.g. hotfixes to origin/main) a stale local dev drifts BEHIND prod, so every agent branch
-        # rebased onto it conflicts and releases can't promote. Fetch prod, then reset dev to it
-        # UNLESS dev is strictly ahead (contains all of prod + unreleased merges). Fail-soft; a
-        # no-op if dev is checked out in a worktree (the recovery script frees those).
+        # rebased onto it conflicts and releases can't promote.
+        #
+        # 2026-09-01 -- THIS USED TO DESTROY WORK. The old code ran `git branch -f dev prod`
+        # whenever dev was not strictly ahead, which silently discarded every merge that had
+        # landed on dev but had not yet been promoted to prod. The task rows stayed MERGED, so
+        # the loss was invisible: reflog shows 22 such resets in `tomorrow` and 9 in
+        # `apparently-law`, and phantom_merge_audit holds 10,598 tasks that claimed MERGED with
+        # nothing behind them. Fast-forward is the only safe direction. Now:
+        #     dev missing     -> create it from prod              (unchanged)
+        #     dev behind prod -> fast-forward onto prod           (nothing exists to lose)
+        #     dev diverged    -> LEAVE IT ALONE and log loudly    (it holds unpromoted merges)
+        # Set ORCH_DEV_RESET_ON_DRIFT=true to restore the old destructive behaviour.
         subprocess.run(["git", "fetch", "origin", prod], cwd=repo, capture_output=True, timeout=90)
-        pref = f"origin/{prod}" if subprocess.run(["git", "rev-parse", "--verify", f"origin/{prod}"],
-                                                  cwd=repo, capture_output=True).returncode == 0 else prod
+        dev_name = os.environ.get("ORCH_TRACK_DEV_BRANCH", "dev")
+        if dev_name and dev_name != prod:
+            subprocess.run(["git", "fetch", "origin", dev_name], cwd=repo,
+                           capture_output=True, timeout=90)
+        # Track whichever of dev/prod is actually newer, not whichever is named prod.
+        pref = _freshest_upstream(repo, proj)
+        if not pref:
+            pref = f"origin/{prod}" if subprocess.run(
+                ["git", "rev-parse", "--verify", f"origin/{prod}"],
+                cwd=repo, capture_output=True).returncode == 0 else prod
         if subprocess.run(["git", "rev-parse", "--verify", dev], cwd=repo,
                           capture_output=True).returncode != 0:
             subprocess.run(["git", "branch", dev, pref], cwd=repo, capture_output=True)
@@ -608,7 +780,31 @@ def _integration_base(repo, proj, task_base):
             strictly_ahead = subprocess.run(["git", "merge-base", "--is-ancestor", pref, dev],
                                             cwd=repo, capture_output=True).returncode == 0
             if not strictly_ahead:
-                subprocess.run(["git", "branch", "-f", dev, pref], cwd=repo, capture_output=True)
+                # `git fetch . <prod>:<dev>` updates dev ONLY if it is a fast-forward; it refuses
+                # a non-fast-forward rather than clobbering. That is exactly the guarantee we want.
+                ff = subprocess.run(["git", "fetch", ".", f"{pref}:{dev}"], cwd=repo,
+                                    capture_output=True)
+                if ff.returncode != 0:
+                    # dev may simply be the checked-out branch, which `fetch` will not write to.
+                    cur = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo,
+                                         capture_output=True, text=True)
+                    if (cur.stdout or "").strip() == dev:
+                        ff = subprocess.run(["git", "merge", "--ff-only", pref], cwd=repo,
+                                            capture_output=True)
+                if ff.returncode != 0:
+                    if _dev_reset_on_drift():
+                        subprocess.run(["git", "branch", "-f", dev, pref], cwd=repo,
+                                       capture_output=True)
+                        _log.warning(
+                            "integration-base: %s diverged from %s in %s and was FORCE-RESET "
+                            "because ORCH_DEV_RESET_ON_DRIFT is set. Unpromoted merges on %s "
+                            "have been discarded.", dev, pref, repo, dev)
+                    else:
+                        _log.warning(
+                            "integration-base: %s has diverged from %s in %s -- leaving it alone. "
+                            "It holds merges that were never promoted to prod; force-resetting "
+                            "would discard them (that bug is fixed). release_train should "
+                            "reconcile the two.", dev, pref, repo)
     except (OSError, subprocess.SubprocessError):
         return task_base
     return dev
@@ -744,7 +940,8 @@ def _durable_share_branch(wt, slug, env=None, attempts=3):
                 except Exception:
                     pass
                 return True
-            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: {err[-160:]}")
+            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: "
+                  f"{stderr_digest.digest(err, 160)}")
         except Exception as e:
             print(f"[branch-durability] push {branch} attempt {attempt+1} error: {e}")
         time.sleep(2 * (attempt + 1))
@@ -965,6 +1162,13 @@ def run_task(t):
         _domain_post = None
         _cost_val = 0
 
+        # Declare the project for THIS thread, so every model call made while handling
+        # this task is attributed to it and checked against its pause — without each of
+        # the 44 claude_cli.run call sites having to remember a project= keyword. Two of
+        # them did, which is why `beethoven` kept spending while paused since 24 August.
+        # Set rather than scoped: run_task has many return paths, and a worker thread's
+        # next act is always to claim another task, which overwrites this.
+        claude_cli.set_current_project(name)
         # kill switch: stop all spend on this project (or globally) at a click
         if kill_switch.is_paused(name):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")
@@ -1317,6 +1521,14 @@ def run_task(t):
             env = dict(os.environ)
             if acct:
                 env.update(POOL.env_for(acct))
+            # Resolve CLAUDE_BIN to absolute path so subprocess finds it with explicit env
+            # (subprocess.run with env parameter doesn't search PATH the same way)
+            _claude_bin = env.get("CLAUDE_BIN", "claude")
+            if not os.path.sep in _claude_bin:
+                import shutil
+                _resolved = shutil.which(_claude_bin)
+                if _resolved:
+                    env["CLAUDE_BIN"] = _resolved
             # inject this project's external-provider secrets (values never logged)
             try:
                 env.update(secrets_manager.inject_env(name))
@@ -1637,7 +1849,7 @@ def run_task(t):
             # ── REMAINING PRE-HOOKS (parallelized, all skipped when fast-path L4 skip_all) ──
             _pipeline_cost = 0
             if not _fast.get("skip_all"):
-                from concurrent.futures import ThreadPoolExecutor, as_completed
+                # (fan-out moved to prehook_pool.run_hooks — see below)
                 _uk_has_matches = bool(_uk and _uk.get("matches"))
 
                 # ── TIER 0: read-only hooks (parallel, no prompt mutation) ──────────
@@ -1727,30 +1939,28 @@ def run_task(t):
                         _log.debug("hook session_cache failed: %s", e)
                     return None
 
-                # Run Tier 0 + Tier 1 queries concurrently
-                _hook_workers = int(os.environ.get("ORCH_HOOK_WORKERS", "6"))
-                _enrichments = []
-                with ThreadPoolExecutor(max_workers=_hook_workers) as _pool:
-                    _futures = {
-                        # Tier 0 (fire-and-forget, no return value needed)
-                        _pool.submit(_hook_cade): "cade",
-                        _pool.submit(_hook_slashing): "slashing",
-                        _pool.submit(_hook_budget): "budget",
-                        # Tier 1 (collect results for serial apply)
-                        _pool.submit(_query_recycling): "recycling",
-                        _pool.submit(_query_transfer): "transfer",
-                        _pool.submit(_query_distillation): "distillation",
-                        _pool.submit(_query_debate): "debate",
-                        _pool.submit(_query_cross_templates): "cross_templates",
-                        _pool.submit(_query_session_cache): "session_cache",
-                    }
-                    for fut in as_completed(_futures):
-                        try:
-                            result = fut.result()
-                            if result and isinstance(result, dict) and result.get("hook"):
-                                _enrichments.append(result)
-                        except Exception as e:
-                            _log.debug("hook %s future failed: %s", _futures[fut], e)
+                # Run Tier 0 + Tier 1 queries concurrently.
+                # Fan-out lives in prehook_pool.run_hooks so the parallelism is
+                # assertable (runner/tests/test_prehook_pool.py) and so total wall
+                # time is LOGGED — that is the number ORCH_PREHOOK_MAX_S is judged
+                # against, and nothing used to emit it.
+                import prehook_pool
+                _pool_out = prehook_pool.run_hooks({
+                    # Tier 0 (fire-and-forget, no return value needed)
+                    "cade": _hook_cade,
+                    "slashing": _hook_slashing,
+                    "budget": _hook_budget,
+                    # Tier 1 (collect results for serial apply)
+                    "recycling": _query_recycling,
+                    "transfer": _query_transfer,
+                    "distillation": _query_distillation,
+                    "debate": _query_debate,
+                    "cross_templates": _query_cross_templates,
+                    "session_cache": _query_session_cache,
+                }, label=f"pre-hooks[{t.get('slug', '?')}]")
+                _enrichments = [r for r in _pool_out["results"]
+                                if isinstance(r, dict) and r.get("hook")]
+                _prehook_pool_wall_s = _pool_out["wall_s"]
 
                 # ── Apply Tier 1 enrichment results serially (prompt mutation) ──────
                 for _enr in _enrichments:
@@ -1869,7 +2079,7 @@ def run_task(t):
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
                                 cwd=wt,
-                                timeout=int(os.environ.get("TASK_TIMEOUT", "3600")),
+                                timeout=_task_timeout(),
                                 mode=_swarm_mode,
                             )
                             r["coder"] = f"swarm:{_swarm_provider}"
@@ -1885,13 +2095,13 @@ def run_task(t):
                             r = agentic_coders.run(coder, draft_prompt, model,
                                                    cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
-                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
+                                                   timeout=_task_timeout())
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
                                                cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
-                                               timeout=int(os.environ.get("TASK_TIMEOUT", "3600")))
+                                               timeout=_task_timeout())
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 if _agentic_repair_continue(
@@ -2285,6 +2495,45 @@ def run_task(t):
             except Exception as e:
                 _log.debug("hook speculative_exec failed: %s", e)
 
+            # TEMPLATE COMPILE GATE — deliberately ahead of every skip above.
+            #
+            # cache-bypass, speculative-exec and graduated-autonomy L4 all say
+            # some version of "we have seen this pass before". None of them is
+            # evidence about the edit actually in front of us, and a component
+            # that does not compile is not a judgement call — it breaks the
+            # build and the local dev server for whoever works next.
+            #
+            # 2026-08-29: an agent converting 421 hardcoded hex values to design
+            # tokens across 59 .vue files appended an attribute to elements that
+            # already had one, six times. Nothing noticed until a dev server
+            # refused to serve a page. The repair loop below hands the compiler
+            # output back to the agent that wrote it, so the task cannot be
+            # reported done over a broken tree.
+            #
+            # Costs about a second, and runs before the model gates so we never
+            # pay a judge to review code that cannot compile. Silent no-op in
+            # repos that declare no checker. See repo_hygiene.check_vue_templates.
+            _vue_ok, _vue_detail = repo_hygiene.check_vue_templates(wt)
+            if not _vue_ok:
+                if _agentic_repair_continue(
+                    t, "vue-templates", _vue_detail[:2000], attempt,
+                    "A Vue component in your diff does not compile. The compiler output names "
+                    "the file and line. The usual cause is an attribute added to an element that "
+                    "already had one — two `class`, two `:style`, or static classes left outside "
+                    "a `:class` array. Merge the value into the attribute that is already there "
+                    "rather than adding a second one, then re-run the check and commit.",
+                ):
+                    continue
+                set_state(t["id"], state="BLOCKED", note="vue templates: will not compile")
+                approval(name, "verify", f"Vue component will not compile: {slug}",
+                         why=_vue_detail[:1000],
+                         risk="breaks the production build and the local dev server",
+                         detail=_vue_detail[:3000])
+                regression.record(name, slug, kind, t["prompt"][:500],
+                                  "vue templates: will not compile", _vue_detail[:500])
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0,
+                       cost=run_cost); return
+
             if _autonomy_skip.get("skip_all"):
                 # Graduated autonomy Level 4: skip ALL gates — proven pattern
                 v = {"verdict": "pass", "notes": "graduated-autonomy L4: proven pattern"}
@@ -2357,7 +2606,23 @@ def run_task(t):
                 # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
                 # SPECULATIVE EXEC: skip if agent already proved green build
                 if not _spec_skip:
-                    qg = quality_gate.run(wt)
+                    # `base` is passed so the gate can see what THIS branch changed.
+                    # Without it quality_gate.run had no way to tell the candidate's
+                    # test files from the repo's, and its inert-test scan is a no-op.
+                    qg = quality_gate.run(wt, base=base)
+                    # AN ADVISORY FINDING ON A PASSING GATE HAD NOWHERE TO GO.
+                    #
+                    # qg["notes"] is read only inside the `if not qg["pass"]` below, so a
+                    # check that reports without blocking — which is what the inert-test
+                    # scan deliberately does while its false-positive rate is unmeasured —
+                    # was discarded on every task. It ran, produced a finding, and the
+                    # finding was dropped one line later. Zero occurrences in the logs and
+                    # zero in tasks.note, so there was also no way to gather the very data
+                    # the advisory period exists to gather.
+                    _qg_notes = str(qg.get("notes") or "")
+                    if qg["pass"] and "ADVISORY" in _qg_notes:
+                        print(f"[quality-advisory] {slug}: {_qg_notes[:300]}", flush=True)
+                        _soft_flags.append("quality: " + _qg_notes[:180])
                     if not qg["pass"]:
                         if _soft_advisory:
                             _soft_flags.append("quality: " + (qg.get("notes") or "")[:180])
@@ -2458,10 +2723,33 @@ def run_task(t):
                 # cause of local-only branches that later got GC'd → recover-missing-branch churn).
                 # Verify the ref actually landed on origin; if it never does, leave a durable marker
                 # so the branch is NOT eligible for local GC (governor now refuses to delete unshared).
+                # FETCH FIRST, EVERY ATTEMPT (2026-08-16 measurement, fixed 2026-08-25).
+                # 710 branch-share pushes on the live fleet, 709 failures. 374 were
+                # non-fast-forward and 333 were refused by author_identity_guard, and both
+                # are the same missing fetch: this clone's remote-tracking refs predate the
+                # other Mac's push, so the push is rejected as diverged, and the guard's
+                # `<local> --not --remotes` scope reads commits ALREADY on origin as newly
+                # pushed. The loop then replayed the IDENTICAL command twice more, which
+                # cannot succeed — nothing about the rejection changes by repeating it.
+                #
+                # Now each attempt refreshes the ref before deciding, so a retry is a
+                # genuinely different attempt, and "origin already has our tip" is
+                # recognised as success instead of being retried into the failure log.
+                # The push stays non-forcing on purpose: a diverged ref means another
+                # writer has work here, and overwriting it is the one outcome worse than
+                # a failed push. test_source_does_fetch_before_pushing pins that too, by
+                # scanning this block for the forcing flag.
                 _shared = False
+                _share_branch = f"agent/{slug}"
                 for _attempt in range(3):
                     try:
-                        _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
+                        subprocess.run(["git", "fetch", "origin",
+                                        f"+refs/heads/{_share_branch}:refs/remotes/origin/{_share_branch}"],
+                                       cwd=repo, capture_output=True, text=True, timeout=120)
+                        if _already_on_origin(repo, _share_branch):
+                            _shared = True
+                            break
+                        _pr = subprocess.run(["git", "push", "-u", "origin", _share_branch],
                                              cwd=repo, capture_output=True, text=True, timeout=180)
                         if _pr.returncode == 0:
                             _shared = True
@@ -2470,9 +2758,10 @@ def run_task(t):
                         if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
                             _shared = True
                             break
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {(_pr.stderr or '')[-160:]}")
+                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} failed: "
+                              f"{stderr_digest.digest(_pr.stderr, 160)}")
                     except Exception as _pe:
-                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
+                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} error: {_pe}")
                     time.sleep(2 * (_attempt + 1))
                 if not _shared:
                     print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
@@ -2915,6 +3204,11 @@ def cost_ledger_row(project, slug, model, out):
 # job: if ends in .py → python3 runner/<job>; else → python3 periodic.py <job>
 # schedule_type: 'interval' (seconds) | 'daily' (H,M) | 'weekly' (weekday,H,M)
 _SCHEDULE = [
+    # rtmon/rtconfig were in neither table: defined in periodic.py, registered
+    # nowhere, scheduled by nothing. Both are cheap polls and both are
+    # _SAFE_WHEN_PAUSED, so they keep observing while the fleet is paused.
+    ("rtmon-300",     "rtmon",              "interval", 300),
+    ("rtconfig-300",  "rtconfig",           "interval", 300),
     ("txn-300",       "txn",                "interval", 300),
     ("policy-45",     "approval_policy.py", "interval", 45),    # owner policy: auto-approve all but narrow legal
     ("janitor-300",   "queue_janitor.py",   "interval", 300),   # auto-clear blockers: wedged runs, empty diffs, stranded cards, stale locks
@@ -2931,6 +3225,12 @@ _SCHEDULE = [
                                                                   # periodic.py's JOBS dict but never added here — 2026-07-29 fix)
     ("priorityscore-600","priority_scorer",   "interval", 600),  # score QUEUED tasks with default priority=1000 so claim order reflects
                                                                   # urgency (same class of bug: registered, documented, never scheduled)
+    ("rtmon-300",     "rtmon",              "interval", 300),   # approval-monitor polling fallback. periodic.run_rtmon() has existed since
+                                                                  # the monitor landed but was in NEITHER the JOBS dict NOR this table, so the
+                                                                  # documented "polling fallback" never once ran. Third instance of this bug.
+    ("rtconfig-300",  "rtconfig",           "interval", 300),   # canonical fleet_config real-time sync (realtime_config_sync.run()). This is
+                                                                  # the runner half of "integrate real-time sync into the Mac runner"; the
+                                                                  # Vercel half lives in a different repo and is not reachable from here.
     # NOTE: "remotegc" (workflow_guardrails.gc_remote_branches, deletes origin/agent/* branches
     # >7d old) has the same never-scheduled gap but is intentionally left OUT here: with
     # ORCH_REMOTE_BRANCH_GC_DRY_RUN=false in .env it does real, irreversible `git push --delete`
@@ -2945,6 +3245,7 @@ _SCHEDULE = [
     ("ev-900",        "ev_scheduler.py",    "interval", 900),   # EV-per-token queue ordering + zero-EV parking
     ("codercanary-1800","coder_canary.py",  "interval", 1800),  # force low-risk per-coder samples for learned routing
     ("routereplay-1800","route_counterfactual.py","interval",1800), # evaluate 50 route policies on one captured trace
+    ("counterfactual-1800","counterfactual_replay_job.py","interval",1800), # replay past decisions to detect routing divergence
     ("releaseattr-600","release_attribution.py","interval",600), # exact task/commit/release causal attribution backfill
     ("ollamacal-3600","ollama_calibrator.py","interval",3600),  # calibrate local model pass rate/latency for routing
     ("histmodel-night","model_historical_canary.py","daily",(1, 20)), # real merged-task canaries per local model
@@ -2973,6 +3274,7 @@ _SCHEDULE = [
     ("sessions-120",  "session_watcher.py", "interval", 120),   # read paused/finished sessions
     ("loops-300",     "loops.py",           "interval", 300),   # per-app learning/remediation loops
     ("unstick-180",   "unstick",            "interval", 180),   # auto-requeue transient-blocked tasks
+    ("schedsnap-180", "schedsnapshot",      "interval", 180),   # heartbeat for the staleness monitor
     ("dagfix-600",    "dagfix",             "interval", 600),   # heal dep graph: ghost/redundant/orphan
     ("batchmech-900", "batchmech",          "interval", 900),   # fold mechanical tasks (cold-start save)
     ("selftune-daily","selftune",           "daily",    (7, 0)),# outcome-driven confidence tuning
@@ -3014,7 +3316,10 @@ _SCHEDULE = [
     ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
     # Independent, contract-based pipeline smoke test: catches false pressure signals,
     # stale boot code, and recovery-mode settings that otherwise survive indefinitely.
-    ("pipelineselftest-3600", "pipeline_selftest.py", "interval", 3600),
+    # Key must stay distinct from the periodic-wrapper entry below ("pipelineselftest-job-3600").
+    # Both were keyed "pipelineselftest-3600", so they shared one _sched_last slot and each
+    # actually ran every TWO hours while claiming hourly.
+    ("pipelineselftest-script-3600", "pipeline_selftest.py", "interval", 3600),
     # Drain already-written agent branches into canonical integration cards without paying an
     # agent to rewrite them. The CLI's bounded default prevents a first-run card flood.
     ("bulkshelf-600", "bulk_integrate_shelf.py", "interval", 600),
@@ -3043,10 +3348,17 @@ _SCHEDULE = [
     # contention, exhausted retries, missing tests each get their targeted requeue automatically.
     # Deterministic classification only; max 2 requeues per task then human escalation.
     ("blockedtriage-600","blocked_triage.py","interval", 600),
+    # Integration-liveness alarm (CORE INTEGRITY AUDIT §2(d), 2026-07-29): fires when nothing
+    # has reached MERGED/DEPLOYED_AND_VERIFIED for ORCH_INTEGRATION_STALL_WINDOW_H (default 2h)
+    # WHILE agent/* branches keep growing — i.e. the fleet is building and the merge train has
+    # stopped. Every other monitor watches process health, so a merge train that is up and
+    # merging nothing looks identical to one with no work. Runs on the same 10-minute cadence as
+    # blocked_triage; read-only and fail-soft, and self-limits its notifications.
+    ("intliveness-600","integration_liveness.py","interval", 600),
     # Per-initiative progress rollup: strategy-round parts/subparts -> % progress, blockers,
     # deploy-readiness. Persists to coordination KV + .runtime artifact; every surface reads it.
     ("progressroll-300","progress_rollup.py","interval", 300),
-    ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
+    ("cadeextras-dy-0430", "cadeextras",      "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
     ("committeedig-wk","committeedigest",    "daily",    (6, 5)), # owner brief of sharpest dissents/reversals
@@ -3056,7 +3368,7 @@ _SCHEDULE = [
     ("committeemins-dy","committeeminutes",  "daily",    (7, 0)), # plain-English board minutes for the owner
     ("committeekg-2am","committeekg",        "daily",    (2, 40)),# build the cross-committee knowledge graph
     ("committeemeta-wk","committeemeta",     "daily",    (2, 55)),# meta-review of the expert-assembly system
-    ("cadeextras-dy","cadeextras",           "daily",    (3, 15)),# auto-run all cx_* CADE extras modules
+    ("cadeextras-dy-0315","cadeextras",      "daily",    (3, 15)),# auto-run all cx_* CADE extras modules
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
     ("errrem-30",     "error_remediation_periodic", "interval", 30),  # AI-powered error detection + config rollback
     ("quarantine-180","quarantine",         "interval", 180),   # rewrite terminal blockers into safe claimable work
@@ -3090,7 +3402,7 @@ _SCHEDULE = [
     ("worktreeguard-300","worktreeguard",   "interval", 300),   # pin uncommitted work to rescue refs (destroyed 3x on 2026-08-02)
     ("deploysilence-3600","deploysilence",  "interval", 3600),  # ZERO prod deploys in N days — absence of deploys alerts nothing
     ("rescuedur-6h", "rescuedurability",   "interval", 21600), # rescue branches must not be local-only (34 were)
-    ("pipelineselftest-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
+    ("pipelineselftest-job-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
     ("cleanclone-6h","cleanclone",          "interval", 21600), # pristine clone install+build (expensive)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
@@ -3176,6 +3488,15 @@ _SCHEDULE = [
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
     ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
     ("portfolioautopilot-night","portfolioautopilot",    "daily",    (1, 0)),  # nightly: cold-start idle apps, auto-tune distribution, digest
+    # Compliance subsystem. compliance_periodic.DEFAULT_INTERVALS documents these four
+    # cadences as "the values registered in runner._SCHEDULE" — and they were registered
+    # neither here nor in periodic.JOBS, so evidence_bus's durable outbox had no clock at
+    # all and drained only when some caller happened to call flush(). Keep the intervals
+    # in step with DEFAULT_INTERVALS; the rationale for each number lives there.
+    ("complianceoutbox-120",    "complianceoutbox",    "interval", 120),  # drain the durable evidence outbox
+    ("compliancescorecard-900", "compliancescorecard", "interval", 900),  # recompute fleet compliance scorecards
+    ("complianceanomaly-600",   "complianceanomaly",   "interval", 600),  # z-score sweep over composite scores
+    ("compliancehealth-60",     "compliancehealth",    "interval", 60),   # readiness snapshot + degraded alert
 ]
 _sched_last: dict = {}
 
@@ -3212,7 +3533,12 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "surge_planner.py", "service_agent.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "batch_completion.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
-                     "cost_intelligence.py", "improvement_roadmap.py"}
+                     "cost_intelligence.py", "improvement_roadmap.py",
+                     # Observation must not stop when the fleet pauses — a paused fleet is
+                     # exactly when an undrained evidence outbox goes unnoticed. These four
+                     # only read, deliver already-captured evidence and record metrics.
+                     "complianceoutbox", "compliancescorecard", "complianceanomaly",
+                     "compliancehealth"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
@@ -3269,6 +3595,21 @@ def _queue_depth():
     return _qdepth["n"]
 
 
+def _note_skip(job: str, reason: str, context=None) -> None:
+    """Record a scheduler skip so the reason survives past this log line.
+
+    Skip reasons used to exist only as stdout, which made "why did nothing run?"
+    unanswerable once the log rotated. skip_visibility keeps a bounded,
+    structured ledger that the build summary and API responses render from.
+    Fail-soft: never let bookkeeping stop a skip from happening.
+    """
+    try:
+        import skip_visibility
+        skip_visibility.note_skip(job, reason, context=context, logger=_log)
+    except Exception as e:
+        _log.debug("skip_visibility unavailable: %s", e)
+
+
 def _fire_periodic(job: str) -> None:
     # LEAN MODE (opt-in, default off): skip the periodic housekeeping/standings jobs for the
     # heaviest self-play subsystems (colosseum, cade tournaments, agent market, the committee
@@ -3282,6 +3623,7 @@ def _fire_periodic(job: str) -> None:
     # reverting to the default (off) if it doesn't help.
     if _LEAN_MODE_ON() and job in _LEAN_MODE_SKIP:
         print(f"[sched] {job} skipped — ORCH_LEAN_MODE=true", flush=True)
+        _note_skip(job, "ORCH_LEAN_MODE=true")
         return False
     # don't run uncounted proactive spenders unless explicitly enabled
     if job in _PROACTIVE and not _proactive_on():
@@ -3291,6 +3633,7 @@ def _fire_periodic(job: str) -> None:
         reason = drain_policy.skip_reason(job, queue_depth=_queue_depth())
         if reason:
             print(f"[sched] {job} skipped — {reason}; draining backlog first", flush=True)
+            _note_skip(job, reason)
             return False
     except Exception as e:
         print(f"[sched] {job} drain policy unavailable ({e})", flush=True)
@@ -3298,12 +3641,15 @@ def _fire_periodic(job: str) -> None:
     ceiling = _queue_gen_ceiling()
     if job in _GENERATORS and _queue_depth() > ceiling:
         print(f"[sched] {job} throttled — queue depth > {ceiling} (draining backlog first)", flush=True)
+        _note_skip(job, f"throttled — queue depth > {ceiling}",
+                   context={"ceiling": ceiling, "queue_depth": _queue_depth()})
         return False
     # PID controller: queue_velocity pauses generators when velocity is positive for 2+ windows
     try:
         import queue_velocity
         if queue_velocity.is_generator_paused(job):
             print(f"[sched] {job} paused by queue-velocity PID controller", flush=True)
+            _note_skip(job, "paused by queue-velocity PID controller")
             return False
     except Exception as e:
         _log.debug("hook queue_velocity failed: %s", e)
@@ -3313,6 +3659,7 @@ def _fire_periodic(job: str) -> None:
         try:
             if kill_switch.is_paused():
                 print(f"[sched] {job} skipped (paused)", flush=True)
+                _note_skip(job, "kill-switch paused")
                 return False
         except Exception as e:
             _log.debug("hook kill_switch failed: %s", e)
@@ -3368,6 +3715,41 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
 
+
+def duplicate_schedule_keys(schedule=None):
+    """Schedule keys that appear more than once, with the entries that share them.
+
+    `_scheduler_tick` stores every job's last-fire time in `_sched_last[key]`, so
+    two entries sharing a key share ONE timestamp: whichever fires first stamps
+    it and starves the other for a full interval. Nothing raised, nothing logged
+    — the second job simply ran at half its configured cadence forever. The same
+    key is also what `_DISABLED_JOBS` matches on, so disabling one silently
+    disables the other.
+
+    Fail-soft: returns {} rather than raising if the schedule is malformed. The
+    scheduler must boot even when this diagnostic cannot.
+    """
+    try:
+        entries = _SCHEDULE if schedule is None else schedule
+        seen = {}
+        for entry in entries:
+            seen.setdefault(entry[0], []).append(entry)
+        return {k: v for k, v in seen.items() if len(v) > 1}
+    except Exception as e:  # pragma: no cover - diagnostic must never wedge boot
+        print(f"[sched] duplicate-key check skipped: {e}")
+        return {}
+
+
+def _warn_on_duplicate_schedule_keys():
+    """Make the collision loud at boot. Two entries kept the same key for weeks."""
+    for key, entries in duplicate_schedule_keys().items():
+        jobs = ", ".join(str(e[1]) for e in entries)
+        print(f"[ALARM] duplicate_schedule_key key={key} jobs=({jobs}) — these share "
+              f"one _sched_last slot and will starve each other; give each a unique key")
+
+
+_warn_on_duplicate_schedule_keys()
+
 # Launch cadence is not an execution timeout. Integration and release jobs can
 # legitimately spend tens of minutes in isolated typecheck/build worktrees. A
 # historical ``interval * 5`` timeout therefore killed healthy QA for the
@@ -3407,17 +3789,34 @@ def _is_still_running(job):
     so with a 60s scheduler tick they were guaranteed to overlap and accumulate. Any interval
     job whose runtime can exceed its own interval has this same latent bug. Fix: don't launch a
     new instance while the last one is still alive; let it finish (or let the properly-scaled
-    reaper below kill it if it's truly stuck) instead of stacking duplicates."""
+    reaper below kill it if it's truly stuck) instead of stacking duplicates.
+
+    THE RESTART HOLE (2026-08-25). This used to consult only _PERIODIC_PIDS,
+    which records what THIS process launched. A runner restart empties it, so
+    every job left running by the previous runner was invisible and a duplicate
+    was launched on the next tick -- the regression that produced 14 concurrent
+    legal_docket.py copies.
+
+    _external_instance_running() was written to close exactly that hole, and
+    `grep -n _external_instance_running runner/runner.py` found its definition
+    and NO CALLER. The launcher below only ever asks _is_still_running, so the
+    check has to be reachable from here or it is decoration. It also adopts the
+    orphan into _PERIODIC_PIDS, which is what lets _reap_stale_periodic give it
+    a proper lease instead of an instant kill.
+
+    Both no-record paths fall through to it: a dead tracked pid alongside a live
+    external copy is still a duplicate waiting to happen.
+    """
     info = _PERIODIC_PIDS.get(job)
     if not info:
-        return False
+        return _external_instance_running(job)
     pid, _launch_t = info
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         del _PERIODIC_PIDS[job]
-        return False
+        return _external_instance_running(job)
 
 
 def _external_instance_running(job):
@@ -3521,36 +3920,79 @@ def _reap_zombie_tasks():
         for t in running:
             if (t.get("account") or "").startswith("cowork-"):
                 continue
-            account = str(t.get("account") or "")
-            dead_runner_claim = (bool(live_runner_ids)
-                                 and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
-                                 and account not in live_runner_ids
-                                 and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
-            if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
-                patch = agentic_repair.repair_patch(
-                    t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
-                        else "zombie-reaper: stale RUNNING >30min"),
-                    category="orphaned-running",
-                    directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
-                db.update("tasks", {"id": t["id"]}, patch)
-                reclaimed += 1
+            # Per-row isolation. One unusable row -- a task whose repair patch cannot be
+            # built, a write PostgREST rejects, a naive `updated_at` that will not compare
+            # against an aware cutoff -- used to abort the whole cycle from the outer
+            # handler below, taking the remaining orphans AND the retry promoter with it.
+            # That is the failure mode that produced the orphan backlog in the first place:
+            # a reaper that throws on one bad id abandons the rest of the batch (the same
+            # rule zombie_reaper.terminate_expired() is built on). Log the row, keep going.
+            try:
+                account = str(t.get("account") or "")
+                dead_runner_claim = (bool(live_runner_ids)
+                                     and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
+                                     and account not in live_runner_ids
+                                     and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
+                if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
+                    patch = agentic_repair.repair_patch(
+                        t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
+                            else "zombie-reaper: stale RUNNING >30min"),
+                        category="orphaned-running",
+                        directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
+                    db.update("tasks", {"id": t["id"]}, patch)
+                    reclaimed += 1
+            except Exception as e:
+                print(f"[zombie-reaper] task {t.get('id')} not reclaimed: {e}")
         if reclaimed:
             print(f"[zombie-reaper] reclaimed {reclaimed} stale RUNNING tasks")
         retry_cutoff = (datetime.datetime.now(datetime.timezone.utc)
                         - datetime.timedelta(seconds=int(os.environ.get("ORCH_RETRY_PROMOTE_AFTER_S", "120")))).isoformat()
         retries = db.select("tasks", {"select": "id,note,updated_at", "state": "eq.RETRY",
                                        "updated_at": f"lt.{retry_cutoff}", "limit": "250"}) or []
+        promoted = 0
         for task in retries:
-            note = str(task.get("note") or "")
-            new_note = common_utils.truncate_string_at_bytes(f"{note} | retry-promoter", 1000)
-            db.update("tasks", {"id": task["id"]}, {
-                "state": "QUEUED", "updated_at": "now()",
-                "note": new_note,
-            })
-        if retries:
-            print(f"[retry-promoter] returned {len(retries)} elapsed RETRY tasks to QUEUED")
+            # Same rule as the reclaim loop: RETRY is not claimable, so a row that cannot
+            # be promoted must not strand every RETRY behind it in the same limbo this
+            # promoter exists to drain.
+            try:
+                note = str(task.get("note") or "")
+                new_note = common_utils.truncate_string_at_bytes(f"{note} | retry-promoter", 1000)
+                db.update("tasks", {"id": task["id"]}, {
+                    "state": "QUEUED", "updated_at": "now()",
+                    "note": new_note,
+                })
+                promoted += 1
+            except Exception as e:
+                print(f"[retry-promoter] task {task.get('id')} not promoted: {e}")
+        if promoted:
+            print(f"[retry-promoter] returned {promoted} elapsed RETRY tasks to QUEUED")
     except Exception as e:
         print(f"[zombie-reaper] error: {e}")
+
+
+def _reap_terminal_zombies():
+    """Dispose of RUNNING tasks that repair has already failed to rescue.
+
+    `_reap_zombie_tasks()` above is the *recovery* half — it requeues stale RUNNING
+    work for another attempt, which is right for the transient majority. Nothing
+    was ever the *terminal* half, so a task whose worker keeps dying got requeued
+    forever, never reached a terminal state, and held a claim slot indefinitely.
+
+    `zombie_reap_cycle` owns its own interval gate (ORCH_ZOMBIE_REAPER_INTERVAL_S,
+    default 30s) and on/off flag (ORCH_ZOMBIE_REAPER_ENABLED), so calling it on
+    every scheduler tick is cheap and it can be turned off fleet-wide with a config
+    push rather than a code change. Fail-soft: a reap error must not wedge the tick.
+    """
+    try:
+        import zombie_reap_cycle
+        result = zombie_reap_cycle.run_once()
+        terminated = result.get("terminated") or []
+        if terminated:
+            print(f"[zombie-reap-cycle] terminated {len(terminated)} expired tasks", flush=True)
+        return result
+    except Exception as e:
+        print(f"[zombie-reap-cycle] error: {e}", flush=True)
+        return None
 
 
 # Scheduler keys (or job names) that must not fire, comma-separated.
@@ -3592,6 +4034,7 @@ def _scheduler_tick() -> None:
             except Exception as e:
                 print(f"[sched] {job} error: {e}", flush=True)
     _reap_zombie_tasks()
+    _reap_terminal_zombies()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -3865,9 +4308,46 @@ def main():
                     # Deferring, not draining: keep claiming so the lanes stay busy.
                     os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
                     raise _SkipRestart()
+                # A DRAIN THAT CANNOT CONVERGE IS AN OUTAGE, NOT A DRAIN.
+                #
+                # Draining sets ORCH_DRAINING_FOR_RESTART, which freezes new claims so the
+                # active count can fall to the threshold. If a worker thread never finishes,
+                # the count never falls, the restart never happens, and the fleet claims
+                # nothing for as long as that thread stays alive. There is no upper bound on
+                # that wait anywhere else in this loop.
+                #
+                # Observed live 2026-09-02 13:08: MAX_PARALLEL=3, so the clamp above computed
+                # _ceiling = 3 // 4 = 0 and the threshold became "wait for total quiet".
+                # Three agent threads were alive and stuck. The runner logged
+                #     [self-deploy] restart requested — draining lanes active=3 threshold=0
+                # every 30s for 39 minutes while 334 tasks sat QUEUED and the whole fleet
+                # reported 0 RUNNING across all eleven projects.
+                #
+                # The point of the drain is to let work finish before restarting -- it is a
+                # courtesy, not a correctness requirement, because keepalive restarts us and
+                # unfinished tasks are re-claimed. So it gets a deadline: past
+                # ORCH_RESTART_DRAIN_MAX_S we restart anyway and say which lanes we gave up
+                # waiting for. A restart that interrupts a hung thread costs one task's
+                # progress; a restart that never happens costs the entire queue.
+                _drain_started = _DRAIN_STARTED.get("t")
+                if _drain_started is None:
+                    _drain_started = _DRAIN_STARTED["t"] = time.time()
+                _drain_budget = max(0, int(os.environ.get("ORCH_RESTART_DRAIN_MAX_S", "900") or 0))
+                _draining_for = time.time() - _drain_started
                 if time.time() - _restart_log_t > 30:
-                    print(f"[self-deploy] restart requested — draining lanes active={len(active)} threshold={max_active}")
+                    _stuck = ", ".join(sorted(th.name for th in active)[:4]) or "unknown"
+                    print(f"[self-deploy] restart requested — draining lanes "
+                          f"active={len(active)} threshold={max_active} "
+                          f"for {int(_draining_for)}s of {_drain_budget}s; waiting on: {_stuck}",
+                          flush=True)
                     _restart_log_t = time.time()
+                if _drain_budget and _draining_for > _drain_budget:
+                    _stuck = ", ".join(sorted(th.name for th in active)[:6]) or "unknown"
+                    print(f"[self-deploy] drain did not converge in {int(_draining_for)}s "
+                          f"({len(active)} lane(s) still alive, threshold {max_active}) — "
+                          f"restarting anyway so the queue is not frozen. Waited on: {_stuck}",
+                          flush=True)
+                    sys.exit(0)
                 if len(active) <= max_active:
                     print(f"[self-deploy] restart threshold reached ({len(active)} <= {max_active}) — exiting for keepalive")
                     # restart flag intentionally NOT removed here; keepalive.sh consumes it at the
@@ -3877,6 +4357,8 @@ def main():
                 # Freeze new claims while waiting to restart so the active count can converge.
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
             else:
+                # No restart pending: forget any drain clock so the next one starts fresh.
+                _DRAIN_STARTED.pop("t", None)
                 os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
         except _SkipRestart:
             pass

@@ -2,18 +2,26 @@
 """The convention lint must be a ratchet, not a cliff.
 
 `tools/lint_conventions.py` is the linter the pre-commit hook actually runs
-(.pre-commit-config.yaml). It exited 1 on ANY violation, and the tree carries 9,749 of
-them — so the hook failed on every commit and the only way to work was `--no-verify`,
+(.pre-commit-config.yaml). It exited 1 on ANY violation, and the tree carries thousands
+of them — so the hook failed on every commit and the only way to work was `--no-verify`,
 which disables every other hook too. A gate that is always red is not a gate; it is a
 thing people learn to skip.
 
 The ratchet makes it enforceable today: a rule's count may not RISE above the recorded
-baseline. New violations are blocked from the first commit, existing ones are counted and
-can only go down. Same shape as the repo's .tsc-error-baseline.
+baseline. Existing violations are counted and can only go down. Same shape as the repo's
+.tsc-error-baseline.
 
 These pin the properties that make that safe — above all that a corrupt or missing
 baseline fails STRICT rather than silently disabling the gate.
+
+Note on the end-to-end cases below: `.convention-lint-baseline.json` is a snapshot of a
+whole-tree scan of `runner tools scripts`, so it has to be regenerated
+(`--update-baseline` over those same three directories) whenever the tree's counts move
+for a legitimate reason. If test_the_committed_tree_passes goes red, read the per-rule
+"rose to" lines first: they say whether someone added violations or the snapshot is
+merely stale.
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -22,9 +30,27 @@ import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(REPO, "tools"))
 
-import lint_conventions as lint
+
+def _load_linter(module_path, module_name):
+    """Load the hook's linter from its path, WITHOUT touching sys.path/sys.modules.
+
+    This file used to do `sys.path.insert(REPO/tools)` + `import lint_conventions`. The
+    repo has a SECOND module of that name, runner/tools/lint_conventions.py, and its own
+    test files import it the same way — so whichever ran first owned the name for the
+    session. Run alone, this file got the hook's linter and passed; run in the same
+    session as the runner/tools secret tests, `lint` was the other module and all 12
+    unit-level tests here died on AttributeError (no load_baseline/regressions), which
+    reads like a broken ratchet rather than a broken import.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+lint = _load_linter(os.path.join(REPO, "tools", "lint_conventions.py"),
+                    "tools_lint_conventions_ratchet")
 
 
 class TestRegressionArithmetic(unittest.TestCase):
@@ -84,8 +110,52 @@ class TestTheRealGate(unittest.TestCase):
             [sys.executable, os.path.join(REPO, "tools", "lint_conventions.py"), *args],
             capture_output=True, text=True, cwd=REPO, timeout=900)
 
+    def _export_head(self, export_dir):
+        """Extract the committed content of the linted dirs into `export_dir`; return targets.
+
+        Every assertion in this class is about what the COMMITTED baseline describes, so
+        every one of them has to look at committed content. Linting the live checkout
+        instead made all three depend on whatever else was in the working directory --
+        and on this machine that is other agents' in-flight files. Measured 2026-09-07:
+        two staged-but-uncommitted scratch files (+32 MAGIC_NUMBERS, +2 FAIL_SOFT_ERROR)
+        turned this class red inside production_push_guard's suite and blocked a
+        production promotion, while the committed tree was exactly on baseline.
+
+        The CLI still runs with cwd=REPO so it reads the committed baseline file; only
+        the TARGETS move.
+        """
+        tar_path = os.path.join(export_dir, "head.tar")
+        subprocess.run(["git", "archive", "-o", tar_path, "HEAD",
+                        "runner", "tools", "scripts"],
+                       cwd=REPO, check=True, capture_output=True, timeout=300)
+        subprocess.run(["tar", "-xf", tar_path, "-C", export_dir],
+                       check=True, capture_output=True, timeout=300)
+        targets = [os.path.join(export_dir, d) for d in ("runner", "tools", "scripts")
+                   if os.path.isdir(os.path.join(export_dir, d))]
+        self.assertTrue(targets, "git archive produced none of the linted directories")
+        return targets
+
     def test_the_committed_tree_passes(self):
-        result = self._run("runner", "tools", "scripts")
+        """Lint an export of HEAD -- not whatever happens to be lying in the checkout.
+
+        The name always said "committed tree"; the implementation linted the WORKING
+        tree, and the difference is not academic on a machine where several agents write
+        at once. Measured 2026-09-07: another agent had two scratch test files staged but
+        not committed, worth +32 MAGIC_NUMBERS and +2 FAIL_SOFT_ERROR, and this assertion
+        went red -- inside production_push_guard's suite, which blocks the promotion. The
+        committed tree had not regressed at all: a clean worktree at 7aeae1ff reproduced
+        the baseline exactly (3146 / 3503 / 893). Someone else's uncommitted work was
+        blocking a production push, and the baseline it was measured against could not
+        have accounted for it, because the file is not in the repo.
+
+        `git archive HEAD` is the whole fix: it is exactly the content the committed
+        baseline describes. The two probe tests below deliberately drop an UNTRACKED file
+        into the checkout and require the gate to catch it, so they keep linting the
+        working tree -- that is the gate's real job, and this export is only about which
+        tree this particular assertion is entitled to make a claim about.
+        """
+        with tempfile.TemporaryDirectory() as export_dir:
+            result = self._run(*self._export_head(export_dir))
         self.assertEqual(result.returncode, 0,
                          f"the gate must be green on the tree it was baselined against:\n"
                          f"{result.stderr[-2000:]}")
@@ -95,22 +165,25 @@ class TestTheRealGate(unittest.TestCase):
 
         A fresh silent swallow in a new file pushes FAIL_SOFT_ERROR above its baseline.
         """
-        path = os.path.join(REPO, "runner", "_ratchet_probe_tmp.py")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
-        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
-        result = self._run("runner", "tools", "scripts")
+        with tempfile.TemporaryDirectory() as export_dir:
+            targets = self._export_head(export_dir)
+            with open(os.path.join(export_dir, "runner", "_ratchet_probe_tmp.py"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
+            result = self._run(*targets)
         self.assertEqual(result.returncode, 1, "a NEW violation must fail the gate")
         self.assertIn("FAIL_SOFT_ERROR", result.stderr)
         self.assertIn("rose to", result.stderr)
 
     def test_failure_output_names_only_the_offending_rule(self):
-        # A 9,749-line dump buries the handful of lines the author must actually fix.
-        path = os.path.join(REPO, "runner", "_ratchet_probe_tmp2.py")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
-        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
-        result = self._run("runner", "tools", "scripts")
+        # A dump of every grandfathered violation buries the handful of lines the
+        # author must actually fix.
+        with tempfile.TemporaryDirectory() as export_dir:
+            targets = self._export_head(export_dir)
+            with open(os.path.join(export_dir, "runner", "_ratchet_probe_tmp2.py"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
+            result = self._run(*targets)
         printed = [ln for ln in result.stdout.splitlines() if ": " in ln]
         self.assertTrue(printed)
         self.assertTrue(all("FAIL_SOFT_ERROR" in ln for ln in printed),

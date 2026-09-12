@@ -66,6 +66,64 @@ test('passport: claim ordering does not affect digest', () => {
   assert.equal(p1.id, p2.id);
 });
 
+test('passport: claim ordering does not affect digest when claims differ ONLY in detail', () => {
+  // The discriminating case, and the reason passport.ts keeps getting clobbered.
+  //
+  // The test above orders two claims that differ in `kind` AND `issuer`, so a
+  // comparator built from the five SCALAR fields sorts them correctly and the
+  // test passes. Four separate agent branches carry exactly that scalar-only
+  // comparator, and all of them stay green against it.
+  //
+  // These two claims are identical in every scalar field — kind, issuer, value,
+  // issuedAt, expiresAt — and differ only in `detail`. A scalar-only comparator
+  // returns 0 for them, Array.prototype.sort is STABLE and therefore leaves them
+  // in caller order, and the digest becomes order-dependent again: the same
+  // credential content-addresses to two different ids depending on array order,
+  // silently breaking dedup, caching and every equality check built on id.
+  //
+  // canonicalBody's comparator must be a TOTAL order over exactly the bytes that
+  // get hashed, which is why it falls through to `canonicalize` — the same
+  // key-sorted serialization the digest is taken over, so every digest-relevant
+  // field participates by construction, including fields added later.
+  const iso = new Date().toISOString();
+  const at = new Date(iso);
+  const c1 = claim('kyc_verified', 'galop', 1, 90, { region: 'eu', tier: 'a' }, at);
+  const c2 = claim('kyc_verified', 'galop', 1, 90, { region: 'us', tier: 'b' }, at);
+
+  // Guard the premise: if these ever stop being scalar-identical the test stops
+  // discriminating, and would go green for the wrong reason.
+  assert.equal(c1.kind, c2.kind);
+  assert.equal(c1.issuer, c2.issuer);
+  assert.equal(c1.value, c2.value);
+  assert.equal(c1.issuedAt, c2.issuedAt);
+  assert.equal(c1.expiresAt, c2.expiresAt);
+  assert.notDeepEqual(c1.detail, c2.detail);
+
+  const p1 = buildPassport({ subject: 'user_1', claims: [c1, c2], issuedAt: iso });
+  const p2 = buildPassport({ subject: 'user_1', claims: [c2, c1], issuedAt: iso });
+
+  assert.equal(p1.digest, p2.digest);
+  assert.equal(p1.id, p2.id);
+});
+
+test('passport: a digest-order regression is caught by verify, not just by equality', () => {
+  // Both build and verify hash through canonicalBody. If only one side
+  // canonicalises, every passport fails its own digest check — so this pins that
+  // the two stay in agreement for the detail-only case as well.
+  const iso = new Date().toISOString();
+  const at = new Date(iso);
+  const claims = [
+    claim('accredited', 'pareto', 1, 180, { note: 'z' }, at),
+    claim('accredited', 'pareto', 1, 180, { note: 'a' }, at),
+  ];
+  const forward = buildPassport({ subject: 'user_2', claims, issuedAt: iso });
+  const reversed = buildPassport({ subject: 'user_2', claims: [...claims].reverse(), issuedAt: iso });
+
+  assert.equal(verifyPassport(forward).valid, true);
+  assert.equal(verifyPassport(reversed).valid, true);
+  assert.equal(forward.digest, reversed.digest);
+});
+
 test('passport: verify accepts valid passport', () => {
   const claims = [claim('kyc_verified', 'galop', 1)];
   const passport = buildPassport({ subject: 'user_1', claims });
@@ -393,4 +451,73 @@ test('passport: subject is preserved exactly', () => {
 
     assert.equal(passport.subject, subject);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Why this file keeps getting clobbered.
+//
+// Fourteen unmerged agent branches conflicted on passport.ts, but they held only
+// FOUR distinct blobs besides master's. All five export the identical surface and
+// verifyPassport is semantically identical in every one, so nothing was at risk
+// in either direction — except in canonicalBody's comparator.
+//
+// Three of the four variants sort claims on the five SCALAR fields only. That is
+// not a total order over the hashed bytes: it omits `detail`, so two claims that
+// agree on kind/issuer/issuedAt/expiresAt/value compare EQUAL, Array.prototype
+// .sort is stable, caller order survives into the digest, and the passport ID
+// stops being content-addressed. Master's comparator falls through to the
+// canonicalized claim, which restores the total order.
+//
+// The existing "claim ordering does not affect digest" test could not catch that:
+// its two claims differ in kind AND issuer, so the scalar comparator alone already
+// separates them and all four variants pass it. Nothing failed when someone
+// replaced the file — which is the actual reason it kept getting replaced. These
+// tests fail on the scalar-only variants.
+// ---------------------------------------------------------------------------
+
+test('passport: digest is order-independent for claims differing only in detail', () => {
+  const iso = new Date('2026-07-23T00:00:00Z').toISOString();
+  const at = new Date(iso);
+  const a = claim('kyc_verified', 'galop', 1, 90, { region: 'us', tier: 'a' }, at);
+  const b = claim('kyc_verified', 'galop', 1, 90, { region: 'eu', tier: 'b' }, at);
+
+  // Every scalar field is identical; only `detail` differs. A comparator that
+  // stops at the scalars returns 0 here and lets caller order reach the digest.
+  assert.equal(a.kind, b.kind);
+  assert.equal(a.issuer, b.issuer);
+  assert.equal(a.value, b.value);
+  assert.equal(a.issuedAt, b.issuedAt);
+  assert.equal(a.expiresAt, b.expiresAt);
+
+  const p1 = buildPassport({ subject: 'user_1', claims: [a, b], issuedAt: iso });
+  const p2 = buildPassport({ subject: 'user_1', claims: [b, a], issuedAt: iso });
+
+  assert.equal(p1.digest, p2.digest);
+  assert.equal(p1.id, p2.id);
+});
+
+test('passport: canonical claim order is total, not merely stable', () => {
+  const iso = new Date('2026-07-23T00:00:00Z').toISOString();
+  const at = new Date(iso);
+  const claims = [
+    claim('kyc_verified', 'galop', 1, 90, { seq: 3 }, at),
+    claim('kyc_verified', 'galop', 1, 90, { seq: 1 }, at),
+    claim('kyc_verified', 'galop', 1, 90, { seq: 2 }, at),
+  ];
+
+  // Every permutation of an all-scalar-equal set must land on one digest.
+  const digests = new Set(
+    [
+      [0, 1, 2], [0, 2, 1], [1, 0, 2],
+      [1, 2, 0], [2, 0, 1], [2, 1, 0],
+    ].map((order) =>
+      buildPassport({
+        subject: 'user_1',
+        claims: order.map((i) => claims[i]),
+        issuedAt: iso,
+      }).digest,
+    ),
+  );
+
+  assert.equal(digests.size, 1);
 });

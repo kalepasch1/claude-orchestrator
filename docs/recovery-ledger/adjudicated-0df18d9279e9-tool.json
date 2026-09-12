@@ -1,0 +1,100 @@
+{
+  "base": "origin/master",
+  "base_sha": "8a2e2e16327fafdeeb4cc0637a7e728eecba783d",
+  "counts": {
+    "DIVERGED": 1,
+    "IDENTICAL": 5,
+    "SUPERSEDED_BY_NEWER": 3
+  },
+  "items": [
+    {
+      "base_blob": "1a4a095535413c5b915bcf199649129f9e57a2f9",
+      "conflict_markers": false,
+      "disposition": "both sides changed (+159/-8 snapshot->base); needs per-hunk review \u2014 do not take either side wholesale",
+      "path": "runner/runner.py",
+      "snapshot_blob": "883ff36b558951824fbbffa59144e678138ea243",
+      "snapshot_to_base": {
+        "added": 159,
+        "deleted": 8
+      },
+      "verdict": "DIVERGED"
+    },
+    {
+      "base_blob": "10ea2cecdb7eb0882ff193e2aa2a7be3abfea9ec",
+      "disposition": "snapshot blob equals base blob; nothing was lost",
+      "path": "runner/slo_controller.py",
+      "snapshot_blob": "10ea2cecdb7eb0882ff193e2aa2a7be3abfea9ec",
+      "verdict": "IDENTICAL"
+    },
+    {
+      "base_blob": "85aab0c8763e2d40e0cdc255a47a023480d4d96e",
+      "conflict_markers": false,
+      "disposition": "base strictly extends the snapshot (+10/-0); every line the snapshot would restore is a line the base added later",
+      "path": "runner/benchmark_redlines.py",
+      "snapshot_blob": "2ddbe2ce62421dae5ecba734d4e1ac3cb508ff57",
+      "snapshot_to_base": {
+        "added": 10,
+        "deleted": 0
+      },
+      "verdict": "SUPERSEDED_BY_NEWER"
+    },
+    {
+      "base_blob": "add50dc7a888944b72fd7d4e4d6d6142a9d9e1b5",
+      "disposition": "snapshot blob equals base blob; nothing was lost",
+      "path": "runner/claude_cli.py",
+      "snapshot_blob": "add50dc7a888944b72fd7d4e4d6d6142a9d9e1b5",
+      "verdict": "IDENTICAL"
+    },
+    {
+      "base_blob": "2a9c76769d800aef4e614e91fd1c3d2c81865a9e",
+      "conflict_markers": false,
+      "disposition": "base strictly extends the snapshot (+11/-0); every line the snapshot would restore is a line the base added later",
+      "path": "runner/expert_corps.py",
+      "snapshot_blob": "e73cd46edccbf43a9844bb0c38b83d046c5180ff",
+      "snapshot_to_base": {
+        "added": 11,
+        "deleted": 0
+      },
+      "verdict": "SUPERSEDED_BY_NEWER"
+    },
+    {
+      "base_blob": "7ac156500883b9b45bf69bf05626bf336505363d",
+      "conflict_markers": false,
+      "disposition": "base strictly extends the snapshot (+10/-0); every line the snapshot would restore is a line the base added later",
+      "path": "runner/foulkon_sync.py",
+      "snapshot_blob": "729e4912fc1dfcf5aba4134312799994da37c96a",
+      "snapshot_to_base": {
+        "added": 10,
+        "deleted": 0
+      },
+      "verdict": "SUPERSEDED_BY_NEWER"
+    },
+    {
+      "base_blob": "5cc2d5e7d3beb91ae02ae6edf33e975fb1e49da8",
+      "disposition": "snapshot blob equals base blob; nothing was lost",
+      "path": "runner/keepalive.sh",
+      "snapshot_blob": "5cc2d5e7d3beb91ae02ae6edf33e975fb1e49da8",
+      "verdict": "IDENTICAL"
+    },
+    {
+      "base_blob": "70413147ee842563c7f5798908425d30b93bf18a",
+      "disposition": "snapshot blob equals base blob; nothing was lost",
+      "path": "runner/lane_guard.py",
+      "snapshot_blob": "70413147ee842563c7f5798908425d30b93bf18a",
+      "verdict": "IDENTICAL"
+    },
+    {
+      "base_blob": "ce6ea3ab71c0188bc3946c600b0e0bee03f975fd",
+      "disposition": "snapshot blob equals base blob; nothing was lost",
+      "path": "runner/tests/test_slo_controller.py",
+      "snapshot_blob": "ce6ea3ab71c0188bc3946c600b0e0bee03f975fd",
+      "verdict": "IDENTICAL"
+    }
+  ],
+  "needs_human_review": [
+    "runner/runner.py"
+  ],
+  "nothing_recoverable": false,
+  "snapshot": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+  "snapshot_sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d"
+}

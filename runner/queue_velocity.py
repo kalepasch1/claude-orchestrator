@@ -15,6 +15,13 @@ import os, sys, json, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+try:
+    import express_lane
+except Exception as _e:  # fail-soft: the controller must run even if the module moves
+    express_lane = None
+    print(f"[queue-velocity] express_lane unavailable ({_e}); "
+          f"operator-origin shelve protection degraded")
+
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 STATE_FILE = os.path.join(HOME, "queue_velocity_state.json")
 WINDOW_S = 900  # 15 minutes
@@ -168,13 +175,47 @@ def _recovery_action(task):
         return "infra_error", str(e)[:200]
 
 
-def _shelve_lowest_ev(count):
+def _shelve_reason(task, evidence=None):
+    """Build the SHELVED note, carrying the numbers that produced the decision.
+
+    Recovered defect (2026-08-24): the note used to be the CONSTANT string
+    "shelved by queue-velocity PID (low EV, integral too high)" — an f-string
+    with no interpolation, which is the tell. It recorded no evidence at all:
+    not the task's own confidence, not the threshold it failed, not the integral
+    or the depth that triggered the I-action. So a shelved task could not be
+    triaged after the fact; the task that surfaced this ('prompt-evolution-
+    bandit') asked why it was shelved and the record physically could not say.
+    Every shelf decision now carries its own inputs, so the question is
+    answerable from the row alone. Fail-soft: never raises, and always returns
+    at least the original sentence so existing note-matching keeps working.
+    """
+    base = "shelved by queue-velocity PID (low EV, integral too high)"
+    try:
+        parts = []
+        confidence = (task or {}).get("confidence")
+        parts.append(f"confidence={confidence!r}")
+        for key in ("trigger", "integral", "integral_threshold", "depth",
+                    "effective_depth", "shelve_count", "rank"):
+            value = (evidence or {}).get(key)
+            if value is not None:
+                parts.append(f"{key}={value}")
+        return f"{base}; {', '.join(parts)}" if parts else base
+    except Exception:
+        return base
+
+
+def _shelve_lowest_ev(count, evidence=None):
     """Move the lowest-EV queued tasks to SHELVED state so the queue can drain.
 
     Before shelving each task, run a zero-spend recovery check: a task whose
     branch still exists or can be mechanically reconstructed keeps its queue
     slot instead of being shelved. Infra errors during the check are fail-soft
     (skip shelving that task) — mirrors runner/branch_lease.py.
+
+    ``evidence`` is the controller state that justified this pass (trigger,
+    integral, depth, ...). It is recorded on each shelved row via
+    _shelve_reason so the decision can be audited later. Optional and
+    fail-soft: callers that pass nothing still get the original note.
     """
     try:
         # Get tasks ordered by confidence (lowest first = lowest EV).
@@ -183,7 +224,8 @@ def _shelve_lowest_ev(count):
         # a backlog drove the integral over threshold, the I-action fired, and the express work
         # itself got shelved. Pinning is an explicit operator instruction; the PID does not get
         # to override it. Low confidence is not a reason to drop pinned work.
-        tasks = db.select("tasks", {"select": "id,slug,confidence,project_id,pinned",
+        tasks = db.select("tasks", {"select": "id,slug,confidence,project_id,pinned,"
+                                              "submitted_by,submitted_by_label",
                                      "state": "eq.QUEUED",
                                      "pinned": "not.is.true",
                                      "order": "confidence.asc.nullsfirst",
@@ -191,11 +233,25 @@ def _shelve_lowest_ev(count):
         shelved = 0
         recovered = 0
         skipped_infra = 0
-        for t in tasks:
+        for rank, t in enumerate(tasks):
             # Defence in depth. db.py documents deployments where pinned/pin_rank predate their
             # migration, so the server-side filter can be silently dropped; never rely on it alone.
             if t.get("pinned"):
                 print(f"[queue-velocity] refusing to shelve pinned task {t.get('slug')}")
+                continue
+            # OPERATOR ORIGIN IS ALSO EXEMPT. Pinning was the only exemption, but a
+            # drop-box task carries no pin and usually has no confidence score yet, so it
+            # sorted FIRST in `confidence.asc.nullsfirst` — the PID shelved the owner's own
+            # directives preferentially over the machine-generated work they outrank at
+            # claim time. Both of the tasks that produced this fix carry the note "shelved
+            # by queue-velocity PID (low EV, integral too high)". An unscored task is
+            # unmeasured, not low-value, and the operator's instruction is not the PID's to
+            # override.
+            operator, why = (express_lane.is_operator_origin(t)
+                             if express_lane is not None else (False, "unavailable"))
+            if operator:
+                print(f"[queue-velocity] refusing to shelve operator task "
+                      f"{t.get('slug')} ({why})")
                 continue
             action, detail = _recovery_action(t)
             if action == "recovered":
@@ -208,10 +264,12 @@ def _shelve_lowest_ev(count):
                       f"{t.get('slug')} ({detail}); fail-soft NOT SHELVED")
                 continue
             try:
+                note = _shelve_reason(t, dict(evidence or {}, rank=rank,
+                                              shelve_count=count))
                 db.update("tasks", {"id": t["id"]},
-                          {"state": "SHELVED",
-                           "note": f"shelved by queue-velocity PID (low EV, integral too high)"})
+                          {"state": "SHELVED", "note": note})
                 shelved += 1
+                print(f"[queue-velocity] shelved {t.get('slug')}: {note}")
             except Exception:
                 pass
         if shelved:
@@ -300,7 +358,10 @@ def run():
     if acceleration > 0 and consecutive_positive >= 2 and depth > 200:
         # Queue is growing AND getting worse — compact aggressively
         compact_count = min(50, int(depth * 0.05))
-        _shelve_lowest_ev(compact_count)
+        _shelve_lowest_ev(compact_count, evidence={
+            "trigger": "D-action/acceleration", "integral": integral,
+            "integral_threshold": INTEGRAL_SHELVE_THRESHOLD,
+            "depth": depth, "effective_depth": effective_depth})
         print(f"[queue-velocity] D-action: compacted {compact_count} (acceleration={acceleration:+d})")
 
     # I (integral): shelve lowest-EV when cumulative surplus is too high — but
@@ -317,7 +378,10 @@ def run():
     if shelve_pressure >= SHELVE_CONSECUTIVE_REQUIRED:
         i_action = True
         shelve_count = int(effective_depth * SHELVE_PCT)
-        shelved = _shelve_lowest_ev(shelve_count)
+        shelved = _shelve_lowest_ev(shelve_count, evidence={
+            "trigger": "I-action/integral", "integral": integral,
+            "integral_threshold": INTEGRAL_SHELVE_THRESHOLD,
+            "depth": depth, "effective_depth": effective_depth})
         integral = max(0, integral - shelve_count)  # reduce integral after shelving
         shelve_pressure = 0
         print(f"[queue-velocity] I-action: shelved {shelved}/{shelve_count} (integral={integral})")
