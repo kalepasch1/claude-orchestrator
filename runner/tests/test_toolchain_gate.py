@@ -12,9 +12,34 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import toolchain_gate
 
 
-class CachedReadTest(unittest.TestCase):
+class _GateEnv(unittest.TestCase):
+    """Own the kill switch instead of inheriting it.
+
+    is_ready_cached() short-circuits to True when ORCH_DISABLE_TOOLCHAIN_GATE is
+    set, and importing toolchain_gate pulls in db, whose _load_env() reads
+    runner/.env into os.environ. That file is gitignored and machine-local; on
+    this machine line 520 sets ORCH_DISABLE_TOOLCHAIN_GATE=1, so every test here
+    that expected a BLOCK got True and the two of them had been failing.
+
+    The tests that expected True kept passing, which is why it looked like a
+    logic bug rather than an environment one: every assertion was satisfied by
+    "always returns True".
+
+    A unit test's verdict must not depend on a file that is not in the
+    repository. Cleared for the whole class; the bypass gets its own test below.
+    """
 
     def setUp(self):
+        self._env = patch.dict(os.environ, {"ORCH_DISABLE_TOOLCHAIN_GATE": ""},
+                               clear=False)
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+
+class CachedReadTest(_GateEnv):
+
+    def setUp(self):
+        super().setUp()
         fd, self._tmp = tempfile.mkstemp(prefix="tc_test_", suffix=".json")
         os.close(fd)
         os.remove(self._tmp)
@@ -42,6 +67,25 @@ class CachedReadTest(unittest.TestCase):
     def test_cached_ready_false_blocks(self):
         self._write({"p1": {"ready": False, "checked_at": 0}})
         self.assertFalse(toolchain_gate.is_ready_cached("p1"))
+
+    def test_the_kill_switch_bypasses_a_cached_block(self):
+        """The behaviour runner/.env is relying on, pinned so it is visible."""
+        self._write({"p1": {"ready": False, "checked_at": 0}})
+        for value in ("1", "true", "YES"):
+            with patch.dict(os.environ,
+                            {"ORCH_DISABLE_TOOLCHAIN_GATE": value}, clear=False):
+                self.assertTrue(toolchain_gate.is_ready_cached("p1"),
+                                "%r should bypass the gate" % value)
+
+    def test_an_unset_or_empty_kill_switch_does_not_bypass(self):
+        """"" and "0" are not "on". A kill switch that trips on any value is how
+        a gate ends up disabled by a stray line in a file nobody reads."""
+        self._write({"p1": {"ready": False, "checked_at": 0}})
+        for value in ("", "0", "false", "no"):
+            with patch.dict(os.environ,
+                            {"ORCH_DISABLE_TOOLCHAIN_GATE": value}, clear=False):
+                self.assertFalse(toolchain_gate.is_ready_cached("p1"),
+                                 "%r should not bypass the gate" % value)
 
     def test_corrupt_json_fails_open(self):
         with open(self._tmp, "w") as f:
@@ -161,7 +205,7 @@ class StateFileTest(unittest.TestCase):
             json.dump(data, f)
 
 
-class ClaimPathBlockTest(unittest.TestCase):
+class ClaimPathBlockTest(_GateEnv):
 
     def test_is_ready_cached_is_called_from_runner(self):
         runner_path = os.path.join(

@@ -19,6 +19,7 @@ import os
 import json
 import re
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,11 +47,51 @@ MARKER = "ORCHESTRATION PIPELINE CONTRACT"
 ORIGINAL_HEADER = "# Original improvement request"
 CONTROL_PREFIXES = ("REPLAY:", "ROTATE_KEY:", "REVOKE_AND_STOP:")
 
-SECURITY_RX = re.compile(r"\b(auth|oauth|permission|rls|secret|token|credential|security|xss|csrf|sql injection)\b", re.I)
-LEGAL_RX = re.compile(r"\b(legal|compliance|licensing|registration|custody|transmission|advice|contract|terms|privacy|gdpr|hipaa|pci|soc|audit|regulatory|counsel|attorney|lawyer)\b", re.I)
+# Word-boundary anchored on both sides, so the singular nouns used to match only their
+# exact form: "authentication", "authorization", "credentials", "secrets", "tokens" and
+# "permissions" all fell through to task_class="build" (need 6, risk standard) and never
+# reached the security gate below. "Update authentication flow" and "Implement JWT
+# authentication" classifying as routine build work is the whole failure mode this
+# classifier exists to prevent. The auth family is spelled out rather than as `auth\w*`
+# because that would also swallow "author"/"authored", which this module itself uses.
+SECURITY_RX = re.compile(
+    r"\b(auth|authn|authz|oauth|authenticat\w*|authoris\w*|authoriz\w*|permissions?|rls"
+    r"|secrets?|tokens?|credentials?|security|xss|csrf|sql injection)\b", re.I)
+LEGAL_RX = re.compile(r"\b(legal|compliance|licens\w*|registration|custody|transmission|advice|contract|terms|privacy|gdpr|hipaa|pci|soc|audit|regulatory|counsel|attorney|lawyer)\b", re.I)
 MIGRATION_RX = re.compile(r"\b(schema|migration|database|backfill|data model|rls|release train|merge train)\b", re.I)
 RESEARCH_RX = re.compile(r"\b(research|investigate|ideate|concept|strategy|proposal|experiment|ab test|a/b)\b", re.I)
 MECHANICAL_RX = re.compile(r"\b(copy|typo|format|lint|rename|style|css|tailwind|docs?|changelog)\b", re.I)
+
+#: Wording that DENIES the mechanical keyword that follows it. A prompt reading
+#: "extract the stable contracts, do NOT naively copy 4,900 files" was classified as
+#: a copy job -- need 5, risk routine -- because `copy` matched and nothing looked at
+#: the two words in front of it. That is the one classification that reduces scrutiny,
+#: so a false positive there is the expensive kind.
+_MECHANICAL_NEGATION_RX = re.compile(
+    r"\b(?:do(?:es)?\s+not|don'?t|doesn'?t|never|avoid|without|"
+    r"rather\s+than|instead\s+of|no\s+need\s+to|not\s+a)\b", re.I)
+
+#: How far back from a keyword a denial can sit and still govern it. Long enough for
+#: "do NOT naively copy", short enough that a denial in an unrelated earlier clause
+#: does not silently disarm a real one. Sentence punctuation ends the reach outright.
+_NEGATION_WINDOW = 40
+
+
+def _mechanical_match(text):
+    """First MECHANICAL_RX match in TEXT that is not denied by nearby wording.
+
+    Returns None when every mechanical keyword present is negated, so the caller
+    falls through to a fuller classification rather than filing the task as routine.
+    """
+    body = text or ""
+    for match in MECHANICAL_RX.finditer(body):
+        window = body[max(0, match.start() - _NEGATION_WINDOW):match.start()]
+        # A sentence boundary ends a denial's reach: the clause that denied
+        # something is over.
+        window = re.split(r"[.;:!?\n]", window)[-1]
+        if not _MECHANICAL_NEGATION_RX.search(window):
+            return match
+    return None
 
 _ALLOWLIST_ENV_KEYS = {
     "security": "ORCH_SECURITY_TASK_ALLOWLIST",
@@ -158,10 +199,25 @@ def classify(prompt: str, kind: str = "build", material: bool = False) -> Dict[s
         return {"task_class": "security", "need": 9, "risk": "security"}
     if k in ("research", "strategy") or RESEARCH_RX.search(text):
         return {"task_class": "plan", "need": 8, "risk": "strategy"}
-    if k in ("efficiency", "cost") or MECHANICAL_RX.search(text):
+    # An EXPLICIT kind is an operator declaration and outranks anything inferred
+    # from prompt wording, in both directions.
+    if k in ("efficiency", "cost"):
         return {"task_class": "mechanical", "need": 5, "risk": "routine"}
-    if k == "speculative" or MIGRATION_RX.search(text):
+    if k == "speculative":
         return {"task_class": "hard", "need": 8, "risk": "broad_change"}
+    # INFERRED classes: broad change is checked BEFORE routine.
+    #
+    # `mechanical` is the only class that LOWERS scrutiny -- need 5, risk routine --
+    # and MECHANICAL_RX matches "copy", "rename", "format", "style", "docs": ordinary
+    # English that appears constantly in prompts for work that is not routine at all.
+    # With mechanical checked first, "rename the payment columns and backfill" matched
+    # `rename` and was filed as a routine typo-fix, even though `backfill` names it a
+    # migration. When both families match, the safe reading is the broader one; the
+    # dangerous direction is downgrading.
+    if MIGRATION_RX.search(text):
+        return {"task_class": "hard", "need": 8, "risk": "broad_change"}
+    if _mechanical_match(text):
+        return {"task_class": "mechanical", "need": 5, "risk": "routine"}
     return {"task_class": "build", "need": 6, "risk": "standard"}
 
 
@@ -272,10 +328,12 @@ def _recent_context(project: str) -> List[str]:
     """Small cross-learning bundle. Best effort only; DB/network failure returns an empty list."""
     if not project:
         return []
-    try:
-        import db
-    except Exception:
-        return []
+    # NOTE: no local `import db` here. This function used to re-import db into its own
+    # scope, which shadowed the module-level import and meant rebinding
+    # `pipeline_contract.db` — the module's only dependency seam — had no effect on the
+    # one function that reads the database. The guarded local import was also dead:
+    # `import db` at module scope already ran, so it can never fail here. Every query
+    # below is individually fail-soft, which is where the "best effort" promise lives.
     items: List[str] = []
     try:
         rows = db.select("outcomes", {"select": "model,tests_passed,integrated,usd",
@@ -317,26 +375,107 @@ def _recent_context(project: str) -> List[str]:
     return items[:8]
 
 
+#
+# Live-route budget
+#
+# Every lookup below (_author_model, _coder, _safe_route x3, _qa_panel,
+# _recent_context) is individually fail-soft against *exceptions* but not
+# against *latency*. db._req retries GETs HTTP_RETRIES times at HTTP_TIMEOUT
+# seconds each, across every configured base URL, so a single unreachable
+# Supabase edge turns one lookup into minutes of blocking TLS handshakes and a
+# full build_plan into far longer.
+#
+# That is the measured cause of the 2026-08-12 "enqueue terminates silently
+# before insertion" regression: enqueue_task never crashed and never inserted,
+# it sat in urlopen until its supervisor killed it, which prints nothing. A
+# fail-soft module that can still hang forever is not fail-soft.
+#
+# So live resolution now runs against a wall-clock budget. When the budget is
+# spent, the remaining fields degrade to the same deferred values intake
+# already uses (build_deferred_plan) -- routing is revalidated at claim time
+# anyway, so a deferred envelope is correct, merely less specific. Set
+# ORCH_CONTRACT_ROUTE_BUDGET=0 to restore unbounded legacy behaviour.
+ROUTE_BUDGET_S = float(os.environ.get("ORCH_CONTRACT_ROUTE_BUDGET", "25") or 25)
+
+DEFERRED_ROUTE: Dict[str, str] = {
+    "provider": "runtime-policy",
+    "model": "selected-at-claim",
+    "reason": "deferred to execution-time capability and capacity checks",
+}
+
+
+class _Budget:
+    """Wall-clock allowance for the blocking lookups inside build_plan."""
+
+    def __init__(self, seconds: float):
+        self.seconds = float(seconds or 0)
+        self.started = time.monotonic()
+        self.degraded = False
+
+    @property
+    def unlimited(self) -> bool:
+        return self.seconds <= 0
+
+    def spent(self) -> bool:
+        if self.unlimited:
+            return False
+        return (time.monotonic() - self.started) >= self.seconds
+
+    def check(self, what: str) -> bool:
+        """True if `what` may still run. Announces the first degradation."""
+        if not self.spent():
+            return True
+        if not self.degraded:
+            self.degraded = True
+            sys.stderr.write(
+                "[pipeline_contract] live route budget of {0:.0f}s exhausted before {1}; "
+                "remaining routes deferred to claim time. The task envelope is still "
+                "valid -- routing is revalidated when the task is claimed.\n".format(
+                    self.seconds, what))
+        return False
+
+
+def _budgeted(budget: "_Budget", what: str, fn, fallback):
+    """Run a blocking lookup only while the budget allows; never raise."""
+    if not budget.check(what):
+        return fallback() if callable(fallback) else fallback
+    try:
+        return fn()
+    except Exception as exc:
+        sys.stderr.write(
+            "[pipeline_contract] {0} failed ({1}); fail-soft, using deferred value\n".format(what, exc))
+        return fallback() if callable(fallback) else fallback
+
+
 def build_plan(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-               slug: str = "", material: bool = False) -> Dict[str, Any]:
+               slug: str = "", material: bool = False,
+               budget_s: Optional[float] = None) -> Dict[str, Any]:
+    budget = _Budget(ROUTE_BUDGET_S if budget_s is None else budget_s)
     cls = classify(prompt, kind=kind, material=material)
-    author = _author_model(prompt, kind)
-    coder = _coder(slug, prompt, material)
-    try:
-        preflight = _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False)
-    except Exception as e:
-        sys.stderr.write(f"[pipeline_contract] preflight routing failed ({e}); fail-soft, using default\n")
-        preflight = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "preflight routing failed"}
-    try:
-        strategy = _safe_route("orchestrator", "task_strategy", "plan", need=max(7, int(cls["need"])), agentic=False)
-    except Exception as e:
-        sys.stderr.write(f"[pipeline_contract] strategy routing failed ({e}); fail-soft, using default\n")
-        strategy = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "strategy routing failed"}
-    try:
-        qa = _safe_route("orchestrator", "task_qa", "review", need=6 if cls["need"] < 8 else 8, agentic=False)
-    except Exception as e:
-        sys.stderr.write(f"[pipeline_contract] qa routing failed ({e}); fail-soft, using default\n")
-        qa = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "qa routing failed"}
+    author = _budgeted(budget, "author model routing",
+                       lambda: _author_model(prompt, kind), "selected-at-claim")
+    coder = _budgeted(budget, "coder selection",
+                      lambda: _coder(slug, prompt, material), "selected-at-claim")
+    preflight = _budgeted(
+        budget, "preflight routing",
+        lambda: _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False),
+        lambda: dict(DEFERRED_ROUTE))
+    strategy = _budgeted(
+        budget, "strategy routing",
+        lambda: _safe_route("orchestrator", "task_strategy", "plan",
+                            need=max(7, int(cls["need"])), agentic=False),
+        lambda: dict(DEFERRED_ROUTE))
+    qa = _budgeted(
+        budget, "qa routing",
+        lambda: _safe_route("orchestrator", "task_qa", "review",
+                            need=6 if cls["need"] < 8 else 8, agentic=False),
+        lambda: dict(DEFERRED_ROUTE))
+    qa_panel = _budgeted(
+        budget, "qa panel selection",
+        lambda: _qa_panel(author, cls["task_class"]),
+        lambda: ["independent cross-model panel selected at execution time"])
+    collaboration = _budgeted(
+        budget, "cross-learning context", lambda: _recent_context(project), list)
     return {
         "source": source or "unknown",
         "project": project or "selected app",
@@ -350,10 +489,11 @@ def build_plan(prompt: str, project: str = "", kind: str = "build", source: str 
         "coder": coder,
         "author_model": author,
         "qa": qa,
-        "qa_panel": _qa_panel(author, cls["task_class"]),
+        "qa_panel": qa_panel,
         "legal_gate": "owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret",
         "release": f"auto-merge to {os.environ.get('ORCH_STAGING_BRANCH', 'orchestrator/dev')} after tests, verify, judge; production release via batch train",
-        "collaboration": _recent_context(project),
+        "collaboration": collaboration,
+        "degraded": budget.degraded,
     }
 
 
@@ -395,11 +535,7 @@ def build_deferred_plan(prompt: str, project: str = "", kind: str = "build",
     consume the watcher's entire lease before the queue insert happens.
     """
     cls = classify(prompt, kind=kind, material=material)
-    deferred = {
-        "provider": "runtime-policy",
-        "model": "selected-at-claim",
-        "reason": "deferred to execution-time capability and capacity checks",
-    }
+    deferred = dict(DEFERRED_ROUTE)
     return {
         "source": source or "unknown",
         "project": project or "selected app",
@@ -417,18 +553,37 @@ def build_deferred_plan(prompt: str, project: str = "", kind: str = "build",
         "legal_gate": "owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret",
         "release": f"auto-merge to {os.environ.get('ORCH_STAGING_BRANCH', 'orchestrator/dev')} after tests, verify, judge; production release via batch train",
         "collaboration": [],
+        "degraded": True,
     }
 
 
 def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
                 slug: str = "", material: bool = False,
                 resolve_live_routes: bool = True) -> str:
-    """Prepend the shared contract unless the prompt is already wrapped or is a control command."""
+    """Prepend the shared contract unless the prompt is already wrapped or is a control command.
+
+    This is the canonical intent chokepoint: every enqueue path runs through it
+    before the row is inserted. It must therefore always return, and always
+    return promptly. Live routing is budgeted (see ROUTE_BUDGET_S) and any
+    residual failure falls back to the deterministic deferred envelope rather
+    than propagating -- a wrapper that can strand an enqueue is worse than a
+    wrapper that produces a less specific plan.
+    """
     text = prompt or ""
     if not text.strip() or already_wrapped(text) or is_control_prompt(text):
         return text
-    builder = build_plan if resolve_live_routes else build_deferred_plan
-    plan = builder(text, project=project, kind=kind, source=source, slug=slug, material=material)
+    plan = None
+    if resolve_live_routes:
+        try:
+            plan = build_plan(text, project=project, kind=kind, source=source,
+                              slug=slug, material=material)
+        except Exception as exc:
+            sys.stderr.write(
+                "[pipeline_contract] live plan build failed ({0}); "
+                "falling back to the deferred envelope\n".format(exc))
+    if plan is None:
+        plan = build_deferred_plan(text, project=project, kind=kind, source=source,
+                                   slug=slug, material=material)
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
 
 
@@ -439,6 +594,24 @@ def artifact(prompt: str, project: str = "", kind: str = "build", source: str = 
         return json.dumps(
             build_plan(prompt, project=project, kind=kind, source=source,
                        slug=slug, material=material),
+            sort_keys=True,
+        )
+    except Exception:
+        return "{}"
+
+
+def deferred_artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+                      slug: str = "", material: bool = False) -> str:
+    """Return the deferred pipeline contract as stable JSON without live routing.
+
+    Used for intake and high-volume intake pathways where deferring live lookups
+    avoids serial query overhead. Returns valid JSON with the same schema as artifact().
+    Fail-soft: returns "{}" on any error.
+    """
+    try:
+        return json.dumps(
+            build_deferred_plan(prompt, project=project, kind=kind, source=source,
+                                slug=slug, material=material),
             sort_keys=True,
         )
     except Exception:
@@ -456,13 +629,28 @@ def task_fields(prompt: str, project: str = "", kind: str = "build", source: str
     exhaustion or capability drift safely falls through to a fresh choice.
     """
     text = prompt or ""
-    plan = build_plan(text, project=project, kind=kind, source=source,
-                      slug=slug, material=material)
+    try:
+        plan = build_plan(text, project=project, kind=kind, source=source,
+                          slug=slug, material=material)
+    except Exception as exc:
+        sys.stderr.write(
+            "[pipeline_contract] live plan build failed ({0}); "
+            "falling back to the deferred envelope\n".format(exc))
+        plan = build_deferred_plan(text, project=project, kind=kind, source=source,
+                                   slug=slug, material=material)
     wrapped = text if (already_wrapped(text) or is_control_prompt(text) or not text.strip()) else (
         render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
     )
-    chosen_coder = force_coder or plan.get("coder") or None
-    chosen_model = model or plan.get("executor_model") or plan.get("author_model") or None
+    # A degraded plan reports "selected-at-claim" rather than a concrete route.
+    # That sentinel must not be persisted into force_coder/model: those columns
+    # feed native claim-time route validation, and an unknown provider string
+    # there is worse than a NULL, which correctly means "choose at claim time".
+    def _concrete(value):
+        text_value = str(value or "").strip()
+        return None if text_value in ("", "selected-at-claim", "runtime-policy") else text_value
+
+    chosen_coder = force_coder or _concrete(plan.get("coder"))
+    chosen_model = model or _concrete(plan.get("executor_model")) or _concrete(plan.get("author_model"))
     return {
         "prompt": wrapped,
         "note": note(existing_note, source=source),

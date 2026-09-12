@@ -175,12 +175,21 @@ class TestRecordOutcome(unittest.TestCase):
             call_args = mock_insert.call_args
             self.assertEqual(call_args[0][1]["total_reward"], 0.0)
 
-    def test_record_outcome_uses_merge_duplicates_resolution(self):
-        """Insert called with resolution='merge-duplicates'."""
+    def test_record_outcome_upserts_rather_than_appending_a_row_per_trial(self):
+        """Insert called with upsert=True.
+
+        This used to assert `resolution="merge-duplicates"`.  That is the value
+        of the PostgREST Prefer header, not a parameter of db.insert, which is
+        insert(table, row, upsert=False) — so the call it was pinning raised
+        TypeError against the real module and no trial reward was ever recorded.
+        The assertion passed anyway because the target was a MagicMock, which
+        accepts any keyword.  db.insert(..., upsert=True) is what sends that
+        header.
+        """
         with patch('runner.db.insert') as mock_insert:
             prompt_evolver.record_outcome("code_gen", "base", deployed_verified=True)
-            call_args = mock_insert.call_args
-            self.assertEqual(call_args[1]["resolution"], "merge-duplicates")
+            self.assertIs(mock_insert.call_args[1]["upsert"], True)
+            self.assertNotIn("resolution", mock_insert.call_args[1])
 
     def test_record_outcome_inserts_correct_row_structure(self):
         """Inserted row has kind, template_id, total_reward, n_trials."""

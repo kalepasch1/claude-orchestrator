@@ -104,7 +104,10 @@ class TestQScoreManagement:
 
         delta = new_q - old_q
         assert delta > 0
-        assert delta == 0.3
+        # 7.2 - 6.9 is 0.2999999999999998 in binary floating point, so `== 0.3` could
+        # never hold. Nothing here touches product code -- it is arithmetic on two
+        # literals -- so the only thing to fix is the comparison.
+        assert delta == pytest.approx(0.3)
 
     def test_update_q_score_after_failure(self):
         """Q-score decreases after failed task."""

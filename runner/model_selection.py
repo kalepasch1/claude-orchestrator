@@ -30,7 +30,7 @@ def select_preflight_model(task_id=None):
         contract change, not a tuning tweak.
 
         Recorded task prompts in this family describe this function as selecting
-        ``google:gemini-2.0-flash`` for legal task classes, falling back to a default
+        ``google:gemini-2.5-flash`` for legal task classes, falling back to a default
         otherwise, and honouring a "qpd leader queue weight" parameter. It does NONE of
         those things: there is no task-class branching, no fallback, and no weight
         parameter. That description is documented here only so the next reader does not

@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-dropbox-wave-c-compounding-codegen-platform-spine-pipeline-structure-part-6-cross-app-platform
-template: b86900e1fd3b
-intent: 07190257 14t01 20251001 326106 6096aa2b 6915dfba across active adapt advice after agent agentic ambient analysis annuity approved artifact asserts attaching author authoritative batch become beethoven before below branch build build_fix built cache calendar canonical carded carries change cheap checkable claim claimed class claude clearly client clients codegen coder commit completed compounding concern concrete config content context contract contracts convert coordination cowork creating cross custody debate_compress deepseek define defined delete deletions demand department deployfix diffs digest directive documents drafting drift dropbox
-base: master

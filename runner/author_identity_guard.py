@@ -189,17 +189,42 @@ def pushed_ranges(lines):
 
 
 def commit_authors(repo, local_sha, remote_sha, limit=None):
-    """[(sha, name, email)] for commits this push would add. Empty on any failure."""
+    """[(sha, name, email)] for commits this push would add. Empty on any failure.
+
+    "Would add" means add TO THE REMOTE REPOSITORY, not to one branch of it. A
+    commit that already exists on some other remote-tracking ref is not
+    introduced by this push, and must not be judged by it.
+
+    Until 2026-08-24 only the new-branch case reasoned that way. The
+    ``remote_sha..local_sha`` form used for an existing branch reports every
+    commit missing from THAT BRANCH, including commits long since published
+    elsewhere in the same repo. On apparently, pushing ten commits to
+    ``orchestrator/dev`` was refused over ``6cd4d679`` — an automated corpus
+    harvest authored ``corpus@apparently.cc``, which by then sat on
+    ``origin/master`` and 302 other remote branches.
+
+    Refusing that push prevented nothing: the commit was already on the remote,
+    and Vercel had already seen it. What the refusal did do was recommend
+    ``git rebase --exec 'git commit --amend --reset-author'``, which on
+    published history does not correct the commit — it forks it, leaving the
+    original reachable from 303 refs and a divergent duplicate on the branch
+    being pushed. The guard's own rationale says the fix for an
+    already-remote commit is a rewrite; the unstated premise is that the
+    commit is NOT already remote. Once it is, refusing costs a rewrite of
+    public history and buys nothing.
+
+    So both cases now exclude ``--remotes``. Only commits that exist nowhere on
+    any remote are subject to this gate — which is what "this push would add"
+    meant all along.
+    """
     limit = ORCH_AUTHOR_IDENTITY_MAX_COMMITS if limit is None else limit
     if remote_sha and remote_sha != ZERO_SHA:
-        revs = [f"{remote_sha}..{local_sha}"]
+        revs = [f"{remote_sha}..{local_sha}", "--not", "--remotes"]
     else:
         # A first push of a new branch reports an all-zero remote SHA. Inspecting
         # ``local_sha`` by itself treats the repository's entire ancestry as newly
         # pushed and can reject a correctly-authored one-commit branch because an
-        # unrelated commit already on origin used a historical email. Compare the
-        # branch against every remote-tracking ref instead: only locally introduced
-        # commits are subject to this push-time gate.
+        # unrelated commit already on origin used a historical email.
         revs = [local_sha, "--not", "--remotes"]
     out = _git(repo, "log", f"--max-count={limit}", "--format=%H%x1f%an%x1f%ae", *revs)
     authors = []
@@ -277,6 +302,8 @@ def check(repo, lines, stream=None):
             f"    git config user.name \"{canonical_name()}\"\n"
             f"    git config user.email \"{canonical_email()}\"\n"
             "    git rebase -i --exec 'git commit --amend --no-edit --reset-author' <base>\n"
+            "The rewrite is safe here: only commits that exist on NO remote ref reach\n"
+            "this report, so nothing you amend has been published.\n"
             "Break-glass: ORCH_AUTHOR_IDENTITY_GUARD=warn",
             file=stream,
         )

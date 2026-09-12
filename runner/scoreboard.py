@@ -19,20 +19,92 @@ def _ensure_dir():
     os.makedirs(_SCOREBOARD_DIR, exist_ok=True)
 
 
-def persist_snapshot():
-    """Take a router_stats snapshot and append it to the scoreboard file."""
+def _why_empty():
+    """Why did router_stats return nothing? Answered as data, not as silence.
+
+    router_stats scores a rolling window of `outcomes`. Empty therefore means one
+    of three quite different things, and a reader must be able to tell them apart:
+    the fleet is idle (paused, or nothing queued), the window is simply too short
+    for a slow period, or the outcomes feed itself has stopped. Returns a dict —
+    never raises, because a diagnostic that can take down the writer it explains
+    is worse than no diagnostic.
+    """
+    detail = {"window_h": getattr(_router_stats_module(), "WINDOW_H", None)}
+    try:
+        import db
+        rows = db.select("outcomes", {"select": "created_at",
+                                      "order": "created_at.desc",
+                                      "limit": "1"}) or []
+    except Exception as exc:
+        detail["cause"] = "outcomes_unreadable"
+        detail["error"] = str(exc)[:200]
+        return detail
+
+    if not rows:
+        detail["cause"] = "outcomes_table_empty"
+        return detail
+
+    newest = rows[0].get("created_at")
+    detail["newest_outcome_at"] = newest
+    detail["cause"] = "no_outcomes_in_window"
+    detail["newest_outcome_age_h"] = _age_hours(newest)
+    return detail
+
+
+def _age_hours(timestamp):
+    """Hours since an ISO timestamp, or None if it cannot be parsed."""
+    try:
+        import datetime
+        then = datetime.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return round((now - then).total_seconds() / 3600.0, 1)
+    except Exception:
+        return None
+
+
+def _router_stats_module():
     try:
         import router_stats
-        table = router_stats._rebuild()
-    except Exception as e:
-        log.debug("scoreboard: router_stats._rebuild failed: %s", e)
+        return router_stats
+    except Exception:
         return None
+
+
+def _rebuild_routes():
+    """(table, error). Never raises.
+
+    persist_snapshot() used to `return None` when the rebuild failed, so a dead
+    collector wrote NOTHING and the file showed a clean gap indistinguishable
+    from an idle fleet. An unwritten failure is an unnoticed one — hand the error
+    back so it can be recorded instead.
+    """
+    try:
+        import router_stats
+        return router_stats._rebuild(), None
+    except Exception as exc:
+        log.warning("scoreboard: router_stats._rebuild failed: %s", exc)
+        return {}, str(exc)[:200]
+
+
+def persist_snapshot():
+    """Take a router_stats snapshot and append it to the scoreboard file."""
+    table, rebuild_error = _rebuild_routes()
 
     snapshot = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "epoch": time.time(),
         "routes": {},
     }
+
+    # An empty snapshot used to be written bare, as {"routes": {}}. Between
+    # 2026-08-22 and 2026-08-30 that produced 634 consecutive hollow records —
+    # and nothing in them said whether the fleet had simply done no work or the
+    # collector itself had died. Reading the file back, the two are identical,
+    # which is the worst property a diagnostic can have. Say which it is.
+    if not table:
+        snapshot["empty_reason"] = (
+            {"cause": "router_stats_unavailable", "error": rebuild_error}
+            if rebuild_error else _why_empty())
 
     for kind, rows in table.items():
         snapshot["routes"][kind] = [
@@ -48,8 +120,12 @@ def persist_snapshot():
             for r in rows[:5]  # top 5 per kind
         ]
 
-    _ensure_dir()
     try:
+        # _ensure_dir() used to run outside this guard, so an unwritable or
+        # non-directory _SCOREBOARD_DIR raised straight out of persist_snapshot()
+        # and took run() — a scheduled fleet job — down with it. Persisting is
+        # best effort; the snapshot is still returned to the caller.
+        _ensure_dir()
         with open(_SCOREBOARD_FILE, "a") as f:
             f.write(json.dumps(snapshot, default=str) + "\n")
         log.info("scoreboard: persisted snapshot with %d route kinds", len(snapshot["routes"]))

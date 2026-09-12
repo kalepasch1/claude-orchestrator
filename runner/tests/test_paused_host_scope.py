@@ -219,6 +219,50 @@ class TestHostStamp(PausedHostTestCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn("host", calls[1])
 
+    def test_release_insert_never_strips_host_after_guard_rejection(self):
+        """The compat retry must not become a bypass of the fence that just refused.
+
+        Recovered from refs/orch-rescue/20260813T034449-…-7ba40cac. The DB trigger only
+        fires `when (NEW.host is not null and NEW.host <> '')`, so re-inserting the same
+        row without `host` is not a retry — it is the anonymous write the column exists
+        to prevent. Exactly one insert attempt, and the refusal is recorded durably by
+        this caller because the trigger's own write rolls back with its RAISE.
+        """
+        import release_train
+
+        calls = []
+
+        def rejected(table, row):
+            calls.append(row)
+            raise RuntimeError(
+                "paused-host guard: host Mac-A is paused and may not record releases")
+
+        with patch.object(release_train.db, "insert", side_effect=rejected):
+            with self.assertRaisesRegex(RuntimeError, "paused-host guard"):
+                release_train._insert_release({"project": "beethoven"})
+
+        self.assertEqual(len(calls), 1, "no anonymous re-insert past the guard")
+        self.assertEqual(calls[0]["host"], paused_host_guard.HOST)
+        self.assertEqual(len(self.alerts), 1, "silence is how this went unseen")
+        self.assertEqual(self.alerts[0]["actor"], "release_insert")
+        self.assertEqual(self.alerts[0]["project"], "beethoven")
+
+    def test_an_unrelated_db_error_is_not_swallowed_by_the_compat_retry(self):
+        """Only a genuinely-absent `host` column earns the second attempt."""
+        import release_train
+
+        calls = []
+
+        def broken(table, row):
+            calls.append(row)
+            raise RuntimeError("deadlock detected")
+
+        with patch.object(release_train.db, "insert", side_effect=broken):
+            with self.assertRaisesRegex(RuntimeError, "deadlock detected"):
+                release_train._insert_release({"project": "beethoven"})
+
+        self.assertEqual(len(calls), 1)
+
 
 class TestMigrationShape(unittest.TestCase):
     """4/5/6 are enforced in SQL; assert the guard's shape rather than a live DB."""

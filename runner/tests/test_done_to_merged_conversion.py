@@ -11,6 +11,14 @@ Covers the six behaviours specified for the 2026-08-06 done-to-merged work:
 
 These are unit tests over the recording layer: they use fakes for db and for
 _integrate_card so they run without Supabase or a git remote.
+
+SCOPE NOTE on 4 and 5: the green/red merge decision itself lives in
+merge_train._integrate_card, which needs a real git repo, a per-repo lock and an
+isolated worktree -- it is not reachable from a fakes-only file and is NOT tested
+here. What is tested here is how those two outcomes are RECORDED: PassReport's
+terminal-bucket contract, and the reason strings process_project attaches. An
+earlier version of this file claimed 4 and 5 outright from a PassReport it had
+populated by hand; see test_every_considered_card_lands_in_exactly_one_terminal_bucket.
 """
 
 import os
@@ -140,6 +148,43 @@ def test_already_carded_task_is_not_double_filed(fake_db, monkeypatch):
     assert summary["already_carded"] == 1
 
 
+def test_an_approvals_read_error_never_double_files_a_card(fake_db, monkeypatch):
+    """_has_card returns True on a read error: "unknown -> assume carded".
+
+    NEW COVERAGE. The reconciler's whole job is filing cards, so the failure mode that
+    matters most -- a transient approvals read making it file a DUPLICATE card for work
+    that already has one -- had no test at all. It must also not record a rejection: the
+    task is neither carded-for-sure nor rejected, it is simply unknown this pass.
+    """
+    import db as real_db
+    import done_to_merged
+    import merge_train
+
+    fake_db.tables["tasks"] = [{
+        "id": "t6", "slug": "unknown-card-state", "state": "DONE",
+        "project_id": "p1", "branch": "agent/unknown-card-state", "note": "pushed",
+    }]
+
+    passthrough = fake_db.select
+
+    def flaky_select(table, params=None):
+        if table == "approvals":
+            raise RuntimeError("supabase read timeout")
+        return passthrough(table, params)
+
+    monkeypatch.setattr(real_db, "select", flaky_select, raising=False)
+    filed = []
+    monkeypatch.setattr(merge_train, "ensure_integration_card",
+                        lambda project, slug, **kw: filed.append(slug))
+
+    summary = done_to_merged.reconcile_missing_cards()
+
+    assert filed == [], "an unreadable approvals table must never cause a duplicate card"
+    assert summary["already_carded"] == 1
+    assert summary["cards_filed"] == 0
+    assert fake_db.tables["admission_rejections"] == []
+
+
 # ── 2. Card filing raises -> recorded, not swallowed ─────────────────────────
 def test_card_filing_failure_is_recorded(fake_db, monkeypatch):
     import done_to_merged
@@ -258,23 +303,42 @@ def test_persist_failure_does_not_raise(fake_db):
 
 
 # ── 4 & 5. Green tests merge; red tests do not, with a reason ────────────────
-def test_green_tests_merge_and_red_tests_do_not(fake_db):
-    """Outcome -> report bucket mapping, the contract train_run relies on."""
+def test_every_considered_card_lands_in_exactly_one_terminal_bucket(fake_db):
+    """PassReport's stated CONTRACT, which is what criteria 4 and 5 are recorded through.
+
+    SUBSTITUTION: this replaces test_green_tests_merge_and_red_tests_do_not, which was
+    named and commented as proving "approved card + green tests -> merges" and
+    "approved card + red tests -> does NOT merge". It proved neither. It never imported
+    merge_train, never called _integrate_card and never ran a test command -- it called
+    report.merged("green-slug") and report.failed("red-slug", ...) by hand and then
+    asserted that the report contained a merged slug and a failed slug. The green/red
+    decision is made in merge_train._integrate_card, which needs a real git repo, a repo
+    lock and an isolated worktree, and is out of reach of this fakes-only file.
+
+    What IS reachable and was NOT covered: merge_train_report's documented contract that
+    every card the pass considers ends in exactly ONE bucket. process_project() feeds one
+    _r(...) call per card down a long elif chain, so a card double-counted as both merged
+    and failed -- or resolved into no bucket at all -- is a live failure mode, and it is
+    the thing that makes "0 merged" readable afterwards.
+    """
     import merge_train_report
 
     report = merge_train_report.PassReport()
-
-    # 4: approved card + fetchable branch + green tests -> merges
+    # The exact reason strings merge_train.process_project emits for each outcome.
     report.merged("green-slug")
-    # 5: approved card + red tests -> does NOT merge, reason recorded
     report.failed("red-slug", "testfail: tests red after rebase")
+    report.skipped("capped-slug", "cap: standard batch cap 5 reached")
 
     d = report.to_dict()
-    assert d["merged"] == 1
-    assert "green-slug" in d["merged_slugs"]
-    assert "red-slug" not in d["merged_slugs"]
+    assert d["considered"] == 3
+    assert d["merged"] + d["failed"] + d["skipped"] == d["considered"]
+    assert d["unaccounted"] == 0
+    buckets = [set(d["merged_slugs"]), set(d["failed_reasons"]), set(d["skipped_reasons"])]
+    for slug in ("green-slug", "red-slug", "capped-slug"):
+        assert sum(slug in b for b in buckets) == 1, f"{slug} is in more than one bucket"
     assert d["failed_reasons"]["red-slug"].startswith("testfail")
     assert d["no_op"] is False
+    assert d["no_op_reason"] is None
 
 
 def test_merged_wins_over_a_prior_failure_for_the_same_slug(fake_db):
@@ -315,6 +379,9 @@ def test_conversion_stats_expose_rate_and_no_card_count(fake_db):
 
 
 def test_publish_health_writes_conversion_metrics(fake_db):
+    # STRENGTHENED: this used to check three of the five metric values and nothing else,
+    # so publish_health could have dropped two metrics, mislabelled app/domain or lost
+    # the window tag and the test would still have been green.
     import done_to_merged
 
     ok = done_to_merged.publish_health(
@@ -322,10 +389,52 @@ def test_publish_health_writes_conversion_metrics(fake_db):
          "conversion_pct": 33.3, "done_without_card": 4, "no_card_pct": 40.0})
 
     assert ok is True
+    rows = fake_db.tables["fleet_telemetry"]
+    metrics = {r["metric"]: r["value"] for r in rows}
+    assert metrics == {
+        "done_to_merged.conversion_pct": 33.3,
+        "done_to_merged.done_without_card": 4.0,
+        "done_to_merged.no_card_pct": 40.0,
+        "done_to_merged.done": 10.0,
+        "done_to_merged.merged": 5.0,
+    }
+    for row in rows:
+        assert row["app"] == "merge_train"
+        assert row["domain"] == "done_to_merged"
+        assert row["tags"] == {"window_hours": 24}
+
+
+def test_publish_health_defaults_to_live_conversion_stats(fake_db):
+    """publish_health() with no argument must measure, not publish zeros."""
+    import done_to_merged
+
+    fake_db.tables["tasks"] = [
+        {"id": "d1", "slug": "carded", "state": "DONE"},
+        {"id": "m1", "slug": "merged-one", "state": "MERGED"},
+    ]
+    fake_db.tables["approvals"] = [
+        {"id": "a1", "slug": "carded", "kind": "integrate", "status": "approved"},
+    ]
+
+    assert done_to_merged.publish_health() is True
+
     metrics = {r["metric"]: r["value"] for r in fake_db.tables["fleet_telemetry"]}
-    assert metrics["done_to_merged.conversion_pct"] == 33.3
-    assert metrics["done_to_merged.done_without_card"] == 4.0
-    assert metrics["done_to_merged.no_card_pct"] == 40.0
+    assert metrics["done_to_merged.done"] == 1.0
+    assert metrics["done_to_merged.merged"] == 1.0
+    assert metrics["done_to_merged.conversion_pct"] == 50.0
+    assert metrics["done_to_merged.done_without_card"] == 0.0
+
+
+def test_publish_health_reports_a_telemetry_write_failure(fake_db):
+    """A health publisher that swallows its own write failure reports health it never sent."""
+    import done_to_merged
+
+    fake_db.insert_raises = {"fleet_telemetry"}
+
+    assert done_to_merged.publish_health(
+        {"window_hours": 24, "done": 1, "merged": 1, "conversion_pct": 50.0,
+         "done_without_card": 0, "no_card_pct": 0.0}) is False
+    assert fake_db.tables["fleet_telemetry"] == []
 
 
 def test_conversion_stats_survive_a_db_outage(monkeypatch):

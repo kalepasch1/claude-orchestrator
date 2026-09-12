@@ -14,9 +14,11 @@ So the gate now requires both. See verify_tests().
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -204,17 +206,41 @@ QUIET_LOAD_PER_CPU = float(os.environ.get("ORCH_QUIET_LOAD_PER_CPU", "0.5"))
 QUIET_MAX_WAIT_S = int(os.environ.get("ORCH_QUIET_MAX_WAIT_S", "180"))
 
 
+def _quiet_setting(env_name, module_default, cast):
+    """Read a cool-down knob at CALL time, falling back to the import-time constant.
+
+    These two were read once, at import. That made the documented off switch a lie
+    in every case where it matters: a test that sets ORCH_QUIET_MAX_WAIT_S=0 with
+    monkeypatch or patch.dict does so long after this module was imported, so it
+    got the machine's value and blocked anyway; and an operator who set it in
+    fleet_config or runner/.env to stop a stalling gate saw no change until the
+    runner was restarted, which is the one thing you cannot do while a push is
+    hanging on it. Reading it here costs an os.environ lookup per call, on a path
+    that is about to sleep for up to three minutes.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None or str(raw).strip() == "":
+        return module_default
+    try:
+        return cast(str(raw).strip())
+    except (TypeError, ValueError):
+        return module_default  # a typo in the env must not break a push
+
+
 def _wait_for_quiet_machine(max_wait=None, per_cpu=None):
     """Block until the box is idle enough for a timing-sensitive suite, or give up."""
-    max_wait = QUIET_MAX_WAIT_S if max_wait is None else max_wait
-    per_cpu = QUIET_LOAD_PER_CPU if per_cpu is None else per_cpu
+    if max_wait is None:
+        max_wait = _quiet_setting("ORCH_QUIET_MAX_WAIT_S", QUIET_MAX_WAIT_S, int)
+    if per_cpu is None:
+        per_cpu = _quiet_setting("ORCH_QUIET_LOAD_PER_CPU", QUIET_LOAD_PER_CPU, float)
     # ORCH_QUIET_MAX_WAIT_S=0 turns the cool-down off. This exists because the
     # guard's own test suite deadlocked on it: test_red_suite_blocks_the_push
     # drives verify_tests through a genuinely red run, which reached the real
     # cool-down and sat there for the full budget on a machine that was busy —
     # running that very test suite. A wait that can block its own tests will be
     # deleted by whoever hits it at 3am, so it has an off switch and the tests
-    # use it.
+    # use it — see _the_quiet_cooldown_is_off_under_pytest in tests/conftest.py,
+    # which is what makes that last clause true. It was not, until 2026-09-01.
     if max_wait <= 0:
         return None
     try:
@@ -244,10 +270,365 @@ def _wait_for_quiet_machine(max_wait=None, per_cpu=None):
         time.sleep(5)
 
 
+#: Seconds a full suite gets before the gate gives up on it. The old inline default
+#: was 1800, which is SHORTER than this repo's own suite (~2330s for 14,352 tests),
+#: so the gate could not finish the run it exists to perform.
+#:
+#: 3600 -> 7200 on 2026-09-07, for the same reason one iteration later. The suite is now
+#: 19,007 tests and 3,571s, and the promotion that day finished with FOUR MINUTES to
+#: spare on the 3600s clock. That margin is not a bound, it is a coin toss: this machine
+#: carried load averages between 15 and 95 over the same session.
+#:
+#: The number also has to survive the gate's own success. `npm run test` is
+#: `pytest -x`, so every earlier run stopped at the first failure and took 13-20
+#: minutes; the suite only pays its full cost once it is GREEN, which is exactly the run
+#: that must not be cut off. A bound that fits a red run and not a green one gates
+#: nothing.
+#:
+#: The right long-term answer is a cheaper suite, not a longer clock, and that work is
+#: happening alongside this: three tests costing ~400s together were fixed the same day
+#: (find_stale_branches 80.3s, test_coverage_auditor 199.9s, transient_db_crashloop
+#: 190s). This raise buys the headroom to keep doing that without every promotion racing
+#: its own timer.
+TEST_GATE_TIMEOUT_DEFAULT = 7200
+
+
+def _gate_timeout():
+    """Seconds the suite gets, read at call time so fleet_config edits apply live.
+
+    Fail-soft on a bad value, like _task_timeout in runner.py: an absent, empty or
+    unparseable ORCH_TEST_GATE_TIMEOUT means "nobody set this", not "give the suite
+    zero seconds". A non-positive number would make every run time out instantly
+    and read as an unverifiable suite, so it falls back too.
+    """
+    # str(CONSTANT), not "", so scripts/gen_env_example.py can resolve and document
+    # the real default; the fail-soft parse below still covers a SET but bad value.
+    raw = str(os.environ.get("ORCH_TEST_GATE_TIMEOUT",
+                             str(TEST_GATE_TIMEOUT_DEFAULT))).strip()
+    try:
+        seconds = int(raw)
+    except ValueError:
+        return TEST_GATE_TIMEOUT_DEFAULT
+    return seconds if seconds > 0 else TEST_GATE_TIMEOUT_DEFAULT
+
+
+class _SuiteTimedOut:
+    """Stands in for a CompletedProcess that never completed.
+
+    `returncode` is None, which no real CompletedProcess ever is, so a caller that
+    checks `!= 0` treats an unfinished suite as not-green — the safe reading — and a
+    caller that wants to say something more precise can test for None.
+    """
+
+    returncode = None
+
+    def __init__(self, seconds):
+        self.seconds = seconds
+        self.stdout = ""
+        self.stderr = ""
+
+
+#: How often the load watch samples while a suite runs. The suite takes tens of minutes;
+#: a sample every 15s is ~150-300 points over a run, which is plenty to characterise it
+#: and costs nothing measurable.
+LOAD_SAMPLE_INTERVAL_S = float(os.environ.get("ORCH_LOAD_SAMPLE_INTERVAL_S", "15"))
+#: A run is called "loaded" when this share of its samples sat above the quiet threshold.
+LOAD_SUSPECT_SHARE = float(os.environ.get("ORCH_LOAD_SUSPECT_SHARE", "0.25"))
+
+
+class _LoadWatch:
+    """Samples the 1-minute load average for the life of a suite run.
+
+    WHY A VERDICT NEEDS THIS. _wait_for_quiet_machine checks the load ONCE, before the
+    run starts, and this repo's suite then runs for tens of minutes. A box that is quiet
+    at t=0 and saturated at t=20min produces a red result that describes the machine, and
+    nothing in the output says so.
+
+    That is not hypothetical. Measured 2026-09-08: a full-suite run reported 5 failures
+    and 4,565 seconds. Re-run on a quiet box, four of those five passed, and the timings
+    were not close -- test_exact_match_still_passes went from 601.38s to 0.33s, a factor
+    of 1,800; test_python39_compat from 114.11s to 1.56s; test_vendor_portfolio_inclusion
+    from 126.07s to under 0.26s. The suite's own header already records the pattern from
+    an earlier day: "Every green full-suite run that day was at load ~8; every red one at
+    16-26."
+
+    This does not decide anything. It attaches what the machine was doing to the verdict,
+    so a red run under sustained load is reported as what it is instead of being read as
+    a statement about the code.
+    """
+
+    def __init__(self, threshold):
+        self.threshold = threshold
+        self.samples = []
+        self._stop = threading.Event()
+        self._thread = None
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._sample, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=LOAD_SAMPLE_INTERVAL_S)
+        return False
+
+    def _sample(self):
+        while not self._stop.is_set():
+            try:
+                self.samples.append(os.getloadavg()[0])
+            except (OSError, AttributeError):
+                return          # not available here; a watch that cannot see is silent
+            self._stop.wait(LOAD_SAMPLE_INTERVAL_S)
+
+    @property
+    def loaded_share(self):
+        if not self.samples:
+            return 0.0
+        return sum(1 for load in self.samples if load > self.threshold) / len(self.samples)
+
+    @property
+    def suspect(self):
+        """True when enough of the run happened above the quiet threshold to matter."""
+        return bool(self.samples) and self.loaded_share >= LOAD_SUSPECT_SHARE
+
+    def summary(self):
+        """One line for the verdict, or empty when nothing was observed."""
+        if not self.samples:
+            return ""
+        peak = max(self.samples)
+        mean = sum(self.samples) / len(self.samples)
+        return (f"machine load during this run: mean {mean:.1f}, peak {peak:.1f}, "
+                f"{self.loaded_share * 100:.0f}% of {len(self.samples)} samples above the "
+                f"quiet threshold of {self.threshold:.1f}")
+
+
+def _load_watch():
+    """A _LoadWatch bound to the same threshold the cool-down waits for."""
+    try:
+        per_cpu = _quiet_setting("ORCH_QUIET_LOAD_PER_CPU", QUIET_LOAD_PER_CPU, float)
+        return _LoadWatch((os.cpu_count() or 1) * per_cpu)
+    except Exception:
+        return _LoadWatch(float("inf"))   # a watch must never be what breaks a push
+
+
 def _run_suite(repo, command):
-    return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
-                          capture_output=True, text=True,
-                          timeout=int(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "1800")))
+    """Run COMMAND in REPO. Returns a CompletedProcess, or _SuiteTimedOut.
+
+    A timeout used to escape as an uncaught subprocess.TimeoutExpired straight out
+    of the pre-push hook. It blocked the push, which is right, but it reported a
+    traceback rather than a diagnosis — and the diagnosis is the whole story: the
+    clock was shorter than the suite, so nothing at all was learned about the code.
+    """
+    seconds = _gate_timeout()
+    try:
+        return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
+                              capture_output=True, text=True, timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return _SuiteTimedOut(seconds)
+
+
+def _tracked_content_still_matches(repo, commit):
+    """True when HEAD is still `commit` and no TRACKED file has been modified.
+
+    The POST-run counterpart to _tree_is_exactly, and deliberately weaker in one
+    respect: it ignores untracked files. Plenty of test commands legitimately write
+    into the repo while they run — coverage output, junit.xml, a scratch file — and
+    a check that counted those would mean any such project could never earn a proof
+    at all. Those artifacts also cannot retroactively change what the suite already
+    measured, and the PRE-run _tree_is_exactly has already established that the run
+    STARTED from a clean tree at this commit.
+
+    What it does catch is the thing that matters: a tracked file edited, or HEAD
+    moved, while the suite was running — which makes the result describe code that
+    is not the commit being pushed.
+    """
+    try:
+        head = _git(repo, "rev-parse", "HEAD")
+        modified = _git(repo, "status", "--porcelain", "--untracked-files=no")
+    except (subprocess.CalledProcessError, OSError):
+        return False   # cannot confirm the tree held: refuse to certify
+    return head == commit and modified == ""
+
+
+def _tree_drifted_verdict(commit):
+    """The message an operator needs when the tree moved under a running suite."""
+    return (
+        f"A tracked file changed WHILE the suite was running, so the result does not "
+        f"describe {commit[:12]} and no proof has been recorded for it.\n"
+        "Re-run with a clean tree checked out at that commit. (This is the same rule the "
+        "pre-run check enforces — a suite only attests the tree it ran against — applied "
+        "to the other end of a run that can take the better part of an hour. Untracked "
+        "files the run itself writes are ignored; only tracked content and HEAD count.)"
+    )
+
+
+#: pytest's end-of-run summary lines. Anything else falls back to the output tail.
+_FAILED_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
+
+#: How many flaked test ids to name before saying "and N more". A flake list long
+#: enough to scroll is a different problem, and the count says so faster than the
+#: names do.
+_MAX_NAMED_FLAKES = 20
+
+
+def _failing_tests(output):
+    """Test ids a run reported as failing, in order, deduplicated."""
+    names = []
+    for match in _FAILED_LINE_RE.finditer(str(output or "")):
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return names
+
+
+# A KILLED SESSION IS NOT A RED RUN EITHER, AND IT IS NOT RE-RUN.
+#
+# pytest.ini sets `timeout = 60` with `timeout_method = thread`. Under that method
+# pytest-timeout cannot interrupt the test: a background timer thread dumps every
+# thread's stack and calls os._exit(1). os._exit skips the terminal reporter, so the
+# run produces NO summary -- no FAILED line, no "short test summary info", no
+# "N failed in Xs" -- and exits 1, which at the returncode is indistinguishable from
+# an ordinary red suite.
+#
+# Measured 2026-09-06. A promotion was blocked and this guard's entire output was
+# "suite red -- re-running once", then a second full clock, then nothing. NO TEST HAD
+# FAILED. Two tests were merely slower than 60s:
+# test_branch_manager.py::test_branch_health_report_structure (~80s: find_stale_branches
+# spawned one git merge-base AND one control-plane round trip per stale branch, 215 of
+# them) and test_transient_db_crashloop.py (~95s x2: it set HTTP_RETRIES, which is the
+# name of db.py's CONSTANT rather than the env var db.py reads, so a "control plane is
+# down" simulation paid the full 1+2+4s retry backoff per request). Both are fixed.
+#
+# The guard's failure was separate from theirs and outlives them: the id of the
+# responsible test was sitting in output this guard had already captured and threw
+# away. The MainThread stack names it explicitly. So detect the kill, name the test,
+# and STOP -- same class as _SuiteTimedOut. No verdict was produced, so there is
+# nothing for a second attempt to separate, and the re-run costs another full suite
+# to reach the identical os._exit.
+
+#: `terminal.sep("+", title="Timeout")` -- the width follows the terminal writer, so
+#: never match a fixed number of '+'.
+_TIMEOUT_BANNER_RE = re.compile(r"^\++ Timeout \++$", re.M)
+
+#: `terminal.sep("~", title="Stack of %s (%s)")`, one section per live thread.
+_STACK_OF_RE = re.compile(r"^~+ Stack of (\S+) \(\d+\) ~+$", re.M)
+
+#: THE DISCRIMINATOR, and it is not the banner. Under `timeout_method = signal`
+#: pytest-timeout prints the SAME banner and the SAME stack sections whenever more
+#: than one thread is alive -- and then the session SURVIVES and reports normally
+#: ("1 failed in 3.04s"). Verified both ways 2026-09-06. Matching on the banner alone
+#: would misread that as a kill and skip the flake re-run a genuine red deserves.
+#: A session that printed a summary was not killed.
+_SESSION_FINISHED_RE = re.compile(
+    r"^(?:=+ .*(?:passed|failed|error|no tests ran|deselected).*=+"
+    r"|\d+ (?:passed|failed|error)\b.*)$", re.M | re.I)
+
+_STACK_FRAME_RE = re.compile(r'^  File "([^"]+)", line \d+, in (\w+)$', re.M)
+
+
+def _session_was_killed(output):
+    """True when pytest-timeout killed the whole session instead of failing a test."""
+    text = str(output or "")
+    if not _TIMEOUT_BANNER_RE.search(text) or not _STACK_OF_RE.search(text):
+        return False
+    return not _SESSION_FINISHED_RE.search(text)
+
+
+def _killed_session_test(output):
+    """The test the MainThread was running when the session was killed, or "".
+
+    Returns "path::function". The CLASS is not recoverable -- stack frames carry code
+    objects, not the class -- so a unittest method reads as path::test_name. That is
+    still enough to re-run it with -k, which is what the verdict tells the operator.
+
+    MainThread is located BY NAME, never by position: pytest-timeout's dump_stacks
+    iterates sys._current_frames(), and in the worker-thread reproduction on
+    2026-09-06 the order was worker-2, worker-1, worker-0, MainThread. Taking the
+    first section would have named a worker thread's helper instead of the test.
+    """
+    text = str(output or "")
+    sections = list(_STACK_OF_RE.finditer(text))
+    main = next((m for m in sections if m.group(1) == "MainThread"), None)
+    if main is None:
+        return ""
+    end = len(text)
+    for other in sections:
+        if other.start() > main.start():
+            end = other.start()
+            break
+    closing = _TIMEOUT_BANNER_RE.search(text, main.end())
+    if closing and closing.start() < end:
+        end = closing.start()
+    # Innermost frame first, so a test that hangs inside a helper further down its own
+    # file still resolves to the test function rather than to the helper's caller.
+    for path, func in reversed(_STACK_FRAME_RE.findall(text[main.end():end])):
+        if func.startswith("test") or os.path.basename(path).startswith("test_"):
+            return "%s::%s" % (path, func)
+    return ""
+
+
+def _killed_session_verdict(command, output):
+    """What an operator needs to read when pytest-timeout killed the session."""
+    named = _killed_session_test(output)
+    who = named or "(the MainThread stack is in the output above but names no test frame)"
+    where = named.split("::")[0] if named else "<file>"
+    which = named.split("::")[-1] if named else "<test>"
+    return (
+        f"`{command}` was KILLED by pytest-timeout, so this guard has NO verdict on "
+        "the suite. NO TEST FAILED -- nothing here says the code is broken.\n"
+        f"  test that ran long: {who}\n"
+        "\n"
+        "pytest.ini sets `timeout = 60` with `timeout_method = thread`. That method "
+        "cannot interrupt a running test; it dumps every thread's stack and calls "
+        "os._exit(1). The run therefore exits 1 with no summary and no FAILED line, "
+        "which is why this used to read as a red suite. Every test after this one "
+        "never ran, so the suite is not merely unverified here -- it is unverified "
+        "from this point on.\n"
+        "\n"
+        "Either that test is genuinely wedged, or it is simply slower than 60s on a "
+        "loaded box. Find out which:\n"
+        f"    python3 -m pytest {where} -k {which} -q --timeout=300\n"
+        "Then fix the test, or raise `timeout` in pytest.ini if 60s is too tight for "
+        "the load this guard already tolerates.\n"
+        "Blocking the push: a killed suite is not a green one."
+    )
+
+
+def _flake_report(first_output):
+    """What flaked on the first attempt, for a run the re-run then passed.
+
+    The re-run exists to separate the machine from the code, and it does. But until
+    now a push allowed on the second attempt threw the FIRST attempt's output away:
+    the operator was told "the failures were environmental" and "worth a look if it
+    keeps happening", with nothing whatsoever to look at. The comment above the
+    re-run claims both runs are reported; only the fact of them was.
+
+    On this repo a first-run red costs a ~48-minute suite, and it has now happened
+    twice in one day. Naming the tests is what makes the pattern visible: the same
+    id recurring is a test to fix, a different one each time is a machine to fix.
+    """
+    names = _failing_tests(first_output)
+    if not names:
+        tail = str(first_output or "").strip().splitlines()[-10:]
+        return "\n".join(tail) if tail else "(the first attempt produced no parseable failures)"
+    shown = names[:_MAX_NAMED_FLAKES]
+    report = "\n".join("  " + name for name in shown)
+    if len(names) > len(shown):
+        report += "\n  ... and %d more" % (len(names) - len(shown))
+    return report
+
+
+def _timed_out_verdict(command, seconds):
+    """The message an operator needs when the suite never finished."""
+    return (
+        f"`{command}` did not finish within {seconds}s, so this guard has NO verdict on the "
+        "suite. That is NOT the same as a red run — nothing here says the code is broken.\n"
+        "Either the gate clock is shorter than the suite's real runtime (raise "
+        "ORCH_TEST_GATE_TIMEOUT in runner/.env or fleet_config), or something is hanging. "
+        "Blocking the push: an unfinished suite is not a green one."
+    )
 
 
 def verify_tests(repo, commit):
@@ -270,7 +651,43 @@ def verify_tests(repo, commit):
         )
 
     print(f"production_push_guard: no test proof for {commit[:12]} — running `{command}`", file=sys.stderr)
-    proc = _run_suite(repo, command)
+
+    # WAIT BEFORE THE FIRST RUN TOO, NOT ONLY BEFORE THE RE-RUN.
+    #
+    # This cool-down existed on the re-run alone, and the comment on the red-run branch
+    # below states the reason it was also needed here without acting on it: "This gate
+    # runs inside a pre-push hook, on whatever the machine happens to be doing at that
+    # moment." The re-run was the compensator -- but the compensator costs a SECOND full
+    # suite, which on this repo is tens of minutes, to recover from a first run that
+    # should not have started.
+    #
+    # The wait is bounded at 180s and is off under pytest, so the worst case is three
+    # minutes against a re-run that costs an order of magnitude more. Measured 2026-09-08:
+    # a loaded full-suite run took 4,565s and reported 5 failures, 4 of which passed on a
+    # quiet box -- that is a wasted 76 minutes plus a wasted re-run, to reach a wrong
+    # answer, for want of a three-minute wait.
+    _wait_for_quiet_machine()
+    with _load_watch() as first_watch:
+        proc = _run_suite(repo, command)
+
+    # A TIMEOUT IS NOT A RED RUN, AND IT IS NOT RE-RUN.
+    #
+    # The flake re-run below exists because a red result under load can be the
+    # machine. A timeout is different in kind: no result was produced at all, so
+    # there is nothing to separate flake from failure, and a second attempt would
+    # cost another full clock to learn the same nothing. Report it and stop.
+    if proc.returncode is None:
+        return False, _timed_out_verdict(command, proc.seconds)
+
+    # NEITHER IS THE INNER TIMEOUT -- pytest-timeout killing the session.
+    #
+    # This must sit ABOVE the flake re-run below, not inside it. A killed session
+    # exits 1 with no failing test, so the re-run branch would take it, wait out the
+    # cool-down, and spend a second full suite reaching the identical os._exit. That
+    # is exactly what happened on 2026-09-06, and it is what cost the hours: two dead
+    # runs and an output that named nothing.
+    if _session_was_killed(proc.stdout + proc.stderr):
+        return False, _killed_session_verdict(command, proc.stdout + proc.stderr)
 
     # A RED FIRST RUN IS NOT YET A VERDICT.
     #
@@ -285,24 +702,57 @@ def verify_tests(repo, commit):
     # So a red run is re-run once. Flake does not survive a second attempt; a real
     # failure does. Both runs are reported, and a push allowed on the strength of a
     # second attempt says so rather than printing an unqualified GREEN.
+    second_watch = None
     if proc.returncode != 0:
         print("production_push_guard: suite red — re-running once to separate flake from failure",
               file=sys.stderr)
+        if first_watch.suspect:
+            print(f"production_push_guard: {first_watch.summary()} — a red result here may "
+                  "describe the machine rather than the code", file=sys.stderr)
         _wait_for_quiet_machine()
-        second = _run_suite(repo, command)
+        with _load_watch() as second_watch:
+            second = _run_suite(repo, command)
+        if second.returncode is None:
+            return False, _timed_out_verdict(command, second.seconds)
+        # Same rule on the re-run: an ordinary red first attempt can be followed by a
+        # kill on the second, and that second result is not a failure either.
+        if _session_was_killed(second.stdout + second.stderr):
+            return False, _killed_session_verdict(command, second.stdout + second.stderr)
         if second.returncode == 0:
+            if not _tracked_content_still_matches(repo, commit):
+                return False, _tree_drifted_verdict(commit)
             try:
                 proof_graph.record_verification(repo, commit, command, "test", True)
             except (AttributeError, TypeError):
                 pass
+            flaked = _flake_report(proc.stdout + proc.stderr)
+            print("production_push_guard: these passed on the re-run, so they are flakes, "
+                  "not failures:\n" + flaked, file=sys.stderr)
             return True, (
                 f"full suite green for {commit[:12]} ON RE-RUN — the first attempt was red and the "
-                "second was clean, which means the failures were environmental, not code. "
-                "Worth a look if it keeps happening."
+                "second was clean, which means the failures were environmental, not code.\n"
+                "Red on the first attempt, green on the second:\n" + flaked + "\n"
+                "The same id recurring is a test to fix; a different one each time is a machine "
+                "to fix."
             )
         proc = second
 
+    # THE TREE MUST STILL BE THE COMMIT WE JUST TESTED.
+    #
+    # _tree_is_exactly runs BEFORE the suite, and until now nothing checked the
+    # other end. On this repo the suite takes ~40 minutes, so that pre-check
+    # guaranteed nothing about a live development machine: any edit landing during
+    # the run made the result describe a tree that is not the commit being pushed.
+    # Worse than a one-off wrong verdict, the result is RECORDED in proof_graph and
+    # handed back later by reusable_verification -- a green proof for a commit whose
+    # suite was never run against it.
+    #
+    # TRACKED content only: a test command that writes coverage output or a scratch
+    # file into the repo is doing its job, and counting that would mean such a
+    # project could never earn a proof. See _tracked_content_still_matches.
     passed = proc.returncode == 0
+    if not _tracked_content_still_matches(repo, commit):
+        return False, _tree_drifted_verdict(commit)
     try:
         proof_graph.record_verification(repo, commit, command, "test", passed)
     except (AttributeError, TypeError):
@@ -311,10 +761,24 @@ def verify_tests(repo, commit):
     if passed:
         return True, f"full suite green for {commit[:12]}"
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-40:]
+    # What the machine was doing is part of the finding, not a footnote. A red run that
+    # spent most of its life above the quiet threshold has told you less than it appears
+    # to, and the operator reading this at 3am is the person who needs to know that
+    # before they start bisecting code that may be fine.
+    load_lines = [watch.summary() for watch in (first_watch, second_watch)
+                  if watch is not None and watch.summary()]
+    load_note = ""
+    if load_lines:
+        load_note = "\n\n" + "\n".join(load_lines)
+        if first_watch.suspect or (second_watch is not None and second_watch.suspect):
+            load_note += ("\nBoth attempts ran on a loaded machine. Measured on this repo: "
+                          "the same tests took 601.38s loaded and 0.33s quiet, and four of "
+                          "five 'failures' from a loaded run passed on a quiet one. Re-run "
+                          "on an idle box before treating this as a statement about the code.")
     return False, (
         f"FULL SUITE RED for {commit[:12]} using `{command}`, twice.\n"
         "A green build only proves the tree compiles. These tests say it does not work.\n\n"
-        + "\n".join(tail)
+        + "\n".join(tail) + load_note
     )
 
 
@@ -422,6 +886,80 @@ def verify_immutable_ref(local_ref, local_sha, repo):
     )
 
 
+STAGING_BRANCH = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+
+
+def _push_remote(repo):
+    """The remote this push is going to. `origin` unless the repo has no origin."""
+    try:
+        remotes = _git(repo, "remote").splitlines()
+    except subprocess.CalledProcessError:
+        return "origin"
+    return "origin" if "origin" in remotes else (remotes[0] if remotes else "origin")
+
+
+def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main"):
+    """Production is a fast-forward of staging, never a side entrance.
+
+    Every project in this fleet develops on feature branches and integrates on
+    `orchestrator/dev`. When a commit reaches main or master without passing
+    through that branch, two things are lost at once: the integration merge that
+    would have surfaced a conflict against everyone else's in-flight work, and
+    the release train's verification of the *merged* result. The commit builds
+    and its own suite passes — both gates below stay green — and it still ships a
+    tree nobody integrated. That is how the same fix gets written twice in two
+    places, and how a branch that was ahead of production silently stopped being
+    merged at all.
+
+    So: the commit being pushed to main/master must already be contained in the
+    remote staging branch. Merge into orchestrator/dev, let it settle there, then
+    promote — at which point this check is a fast-forward and costs nothing.
+
+    A repo whose remote has no staging branch is not held to this. The rule
+    describes the flow the fleet actually uses; bricking a repo that never
+    adopted it would only teach people to reach for the override.
+    """
+    remote = _push_remote(repo)
+    tracking = f"refs/remotes/{remote}/{STAGING_BRANCH}"
+    try:
+        _git(repo, "fetch", "--quiet", remote,
+             f"+refs/heads/{STAGING_BRANCH}:{tracking}")
+    except subprocess.CalledProcessError:
+        pass  # offline, or no such branch upstream — both resolved by the rev-parse below
+    try:
+        staging_sha = _git(repo, "rev-parse", "--verify", f"{tracking}^{{commit}}")
+    except subprocess.CalledProcessError:
+        return True, f"no {remote}/{STAGING_BRANCH} on this remote — staging rule does not apply here"
+
+    if commit == staging_sha:
+        return True, f"promoting the tip of {remote}/{STAGING_BRANCH}"
+
+    contained = subprocess.run(["git", "merge-base", "--is-ancestor", commit, staging_sha],
+                               cwd=repo, env=_clean_git_env(), capture_output=True, text=True,
+                               timeout=30)
+    if contained.returncode == 0:
+        return True, f"contained in {remote}/{STAGING_BRANCH}"
+
+    try:
+        ahead = _git(repo, "rev-list", "--count", f"{staging_sha}..{commit}")
+    except subprocess.CalledProcessError:
+        ahead = "?"
+    return False, (
+        f"{commit[:12]} is not contained in {remote}/{STAGING_BRANCH} — {ahead} commit(s) "
+        f"would reach production without ever being integrated on staging.\n"
+        f"Production is promoted from {STAGING_BRANCH}, not pushed to directly, so that every\n"
+        f"change meets the rest of the in-flight work in one place and conflicts are resolved\n"
+        f"there rather than discovered in production.\n\n"
+        f"    git fetch {remote}\n"
+        f"    git checkout -B {STAGING_BRANCH} {remote}/{STAGING_BRANCH}\n"
+        f"    git merge {commit[:12]}        # resolve conflicts HERE, keeping the better side\n"
+        f"    git push {remote} HEAD:refs/heads/{STAGING_BRANCH}\n"
+        f"    git push {remote} <new-dev-sha>:{remote_ref}\n\n"
+        f"Emergency only: ORCH_ALLOW_DIRECT_PROD_PUSH=1. That is a separate switch from the\n"
+        f"build and test overrides on purpose — skipping integration is its own decision."
+    )
+
+
 def main(stdin=None):
     repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
     updates = guarded_updates(stdin if stdin is not None else sys.stdin)
@@ -439,6 +977,22 @@ def main(stdin=None):
             print("production_push_guard: BLOCKED — mutable source ref", file=sys.stderr)
             print(ref_log, file=sys.stderr)
             return 1
+
+        # Structural, like the ref check above, and for the same reason: no amount
+        # of green build or green suite can substitute for having been integrated.
+        staged_ok, staged_log = verify_promoted_from_staging(repo, commit, remote_ref)
+        if not staged_ok:
+            if os.environ.get("ORCH_ALLOW_DIRECT_PROD_PUSH", "").lower() in {"1", "true", "yes", "on"}:
+                print("production_push_guard: BYPASSING STAGING — ORCH_ALLOW_DIRECT_PROD_PUSH is set",
+                      file=sys.stderr)
+                print(staged_log, file=sys.stderr)
+            else:
+                print("production_push_guard: BLOCKED — production push that never met staging",
+                      file=sys.stderr)
+                print(staged_log, file=sys.stderr)
+                return 1
+        else:
+            print(f"production_push_guard: INTEGRATED — {staged_log}", file=sys.stderr)
 
         content_ok, content_log = verify_content(repo, remote_commit, commit)
         if not content_ok:

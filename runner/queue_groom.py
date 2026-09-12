@@ -22,14 +22,19 @@ def guard_duplicate_enqueue(project_id: str, slug: str) -> bool:
     failure — catch duplicates at insertion time rather than relying
     solely on after-the-fact grooming.
     """
-    rows = db.sql(
-        """
-        SELECT id FROM tasks
-        WHERE project_id = %s AND slug = %s AND state IN ('QUEUED', 'RUNNING')
-        LIMIT 1
-        """,
-        [project_id, slug],
-    )
+    # Was `db.sql("SELECT ... WHERE project_id = %s ...", [project_id, slug])`.
+    # db has no sql(): it is a PostgREST client and has never had a raw-SQL
+    # channel, and the %s/list placeholders are psycopg2's, a driver this repo
+    # does not use.  So this guard — "the primary fix for the 'groomed:
+    # duplicate queued slug' failure" — raised AttributeError on every call,
+    # unguarded, from its first day.  The equivalent PostgREST read:
+    rows = db.select("tasks", {
+        "select": "id",
+        "project_id": f"eq.{project_id}",
+        "slug": f"eq.{slug}",
+        "state": "in.(QUEUED,RUNNING)",
+        "limit": "1",
+    }) or []
     return len(rows) > 0
 
 

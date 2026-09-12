@@ -59,14 +59,23 @@ class TestLocalModelSlots(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 entered.append("exit")
 
-        proc = MagicMock(returncode=0, stdout="done", stderr="")
+        # The lane stopped going through subprocess.run() directly: it runs through
+        # lane_guard.run_supervised(), which puts the lane in its own process group so a
+        # timeout signals the GROUP rather than reaping a shell and orphaning the coder.
+        # Patching subprocess.run therefore intercepted nothing — this test was really
+        # shelling out to `bash -lc "aider ..."` on every run and asserting on the 127 it
+        # got back. run_supervised returns a dict, not a CompletedProcess.
+        proc = {"returncode": 0, "stdout": "done", "stderr": "",
+                "timed_out": False, "idle_killed": False}
         with patch.object(agentic_coders, "_spec", return_value={
                 "name": "ollama", "cmd": "aider --model ollama/llama3.1:latest --message {prompt}",
                 "est_usd": 0.0,
              }), \
              patch.object(local_model_slots, "slot", return_value=Slot()) as slot, \
-             patch.object(agentic_coders.subprocess, "run", return_value=proc):
+             patch.object(agentic_coders.lane_guard, "run_supervised", return_value=proc) as lane:
             out = agentic_coders.run("ollama", "make a tiny edit", "ollama/llama3.1:latest")
+
+        lane.assert_called_once()
 
         self.assertEqual(out["returncode"], 0)
         slot.assert_called_once_with("llama3.1:latest", operation="agentic:ollama")
@@ -134,11 +143,21 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "_predicted_disk_pct", return_value=(None, None)), \
              patch.object(resource_governor, "set_throttle", side_effect=lambda n: throttle.append(n) or n), \
              patch.object(resource_governor, "current_limit", return_value=1), \
+             patch.object(resource_governor, "_ceiling", return_value=12), \
+             patch.object(resource_governor, "_per_task_gb", return_value=0.5), \
+             patch.object(resource_governor, "effective_floor_gb", return_value=4.0), \
              patch.dict(sys.modules, {"local_model_slots": fake_slots}):
             gauge = resource_governor.govern()
 
         self.assertNotIn(1, throttle)
-        self.assertIn(resource_governor.CEILING, throttle)
+        # resource_governor.CEILING was a module constant; it is now _ceiling(), read
+        # live from MAX_PARALLEL_CEILING so a fleet_control push takes effect without a
+        # restart. This asserted the attribute and raised AttributeError. per_task and
+        # the floor are pinned too, so the number here is stated rather than inherited:
+        # (15.0 - 4.0) / 0.5 = 22 lanes of budget, capped by the ceiling at 12. Leaving
+        # either to the ambient env made the expectation depend on whichever .env the
+        # suite happened to run against.
+        self.assertIn(12, throttle)
         self.assertEqual(gauge["ram_free_gb"], 15.0)
 
     def test_govern_lifts_throttle_when_final_ram_gauge_recovers(self):
@@ -155,11 +174,38 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "_global_pause_reason", return_value=None), \
              patch.object(resource_governor, "_predicted_disk_pct", return_value=(None, None)), \
              patch.object(resource_governor, "set_throttle", side_effect=lambda n: throttle.append(n) or n), \
-             patch.object(resource_governor, "current_limit", side_effect=[8, 2, 10]):
+             patch.object(resource_governor, "_ceiling", return_value=12), \
+             patch.object(resource_governor, "_per_task_gb", return_value=5.0), \
+             patch.object(resource_governor, "effective_floor_gb", return_value=4.0), \
+             patch.object(resource_governor, "load_per_core", return_value=0.5), \
+             patch.object(resource_governor, "current_limit",
+                          side_effect=lambda: throttle[-1] if throttle else 8):
             gauge = resource_governor.govern()
 
+        # TWO THINGS ARE MOCKED HERE THAT USED NOT TO BE, both for the same reason:
+        # this test was pinning govern()'s internals rather than its behaviour.
+        #
+        # current_limit() was `side_effect=[8, 2, 10]` -- a fixed list of THREE answers.
+        # f5568585 added the CPU clamp, which calls current_limit() twice more, so the
+        # list ran out and the test died on StopIteration inside govern(). A list of
+        # answers is a bet on how many times a function will be called; the fake now
+        # just reports the current throttle, which is what current_limit() means.
+        #
+        # load_per_core() was unmocked, so the CPU clamp read THIS MACHINE's load. On a
+        # busy host it would clamp to 1 and change what this test observes. 0.5 is below
+        # the 1.5 soft threshold, which makes the CPU clamp a deliberate no-op and keeps
+        # the test about memory, which is what it is named for.
+        #
+        # mem-clamp: free 14.0 - floor 4.0 = 10.0 of budget, 5.0GB per task -> 2 lanes,
+        # below the current limit of 8, so the clamp fires. PER_TASK_GB's default has
+        # since dropped to 0.15, which made the budget larger than the limit and the
+        # clamp a no-op — the test was reading the ambient default rather than saying
+        # which numbers it needs.
         self.assertIn(2, throttle)
-        self.assertIn(10, throttle)
+        # mem-recover: the dashboard gauge then reports 37.0GB free, so (37.0 - 4.0) / 5.0
+        # = 6 lanes... but current_limit() is mocked to answer 2 at that point, and the
+        # recovery target is capped by the ceiling, giving 6 > 2 -> lift.
+        self.assertIn(6, throttle)
         self.assertEqual(gauge["ram_free_gb"], 37.0)
 
 

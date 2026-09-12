@@ -293,7 +293,7 @@ ENV_OVERRIDES = {
 # already names this route for legal/security work; it was only ever written
 # into prompt headers by hand, so nothing enforced it.
 PREFLIGHT_ESCALATED_MODEL = os.environ.get(
-    "ORCH_PREFLIGHT_ESCALATED_MODEL", "google:gemini-2.0-flash"
+    "ORCH_PREFLIGHT_ESCALATED_MODEL", "google:gemini-2.5-flash"
 )
 PREFLIGHT_ESCALATED_CLASSES = ("legal", "security", "compliance", "privacy")
 

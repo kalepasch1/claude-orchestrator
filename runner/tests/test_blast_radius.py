@@ -32,7 +32,10 @@ class TestDependents(unittest.TestCase):
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
         self.assertIn("rg", args)
-        self.assertIn("user", args)
+        # The stem is interpolated INTO the pattern, it is not a separate argv
+        # entry: argv is ["rg", "-l", "(import|require|from).*user"]. The old
+        # assertion asked for "user" as a whole element and could never pass.
+        self.assertIn("user", args[-1])
 
     @patch("blast_radius.subprocess.run")
     def test_excludes_original_files_from_dependents(self, mock_run):
@@ -139,8 +142,16 @@ class TestNoteForTask(unittest.TestCase):
     def test_empty_targets_returns_empty_note(self, mock_deps, mock_select):
         """If select_files finds nothing, return empty string."""
         mock_select.return_value = []
+        # Without this the patched _dependents returns a bare MagicMock, which is
+        # truthy, so note_for_task emitted the "Blast radius:" header above an
+        # empty list. The header-with-no-rows is what the assertion was catching;
+        # the real function returns [] here, so the stub has to as well.
+        mock_deps.return_value = []
         result = br.note_for_task("/repo", "add logging")
         self.assertEqual(result, "")
+        # No targets means nothing to search for -- the dependent scan is still
+        # entered, but with an empty list, so it never shells out to ripgrep.
+        self.assertEqual(list(mock_deps.call_args[0][1]), [])
 
     @patch("blast_radius.cr.select_files")
     @patch("blast_radius._dependents")

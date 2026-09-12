@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-ccacb00-commit-implementat-slice-1
-template: 7c3462816ef3
-intent: 056af630dd5f 07062319 07071626 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 1042d0 148d45efebad 1565ms 170834ms 20251001 39465ac 6096aa2b 6f940a79484e 7ba77da91bb4 7f21d02 8b92d078e856 _try_patch_template acceptance active adapt adding advice ae92a40b1d18 after agent agentic aider allowlist already alter analysis applicable artifact_commit artifacts audited author backlog batch because beethoven before behavior below blocked blocker blocks branch broad bugfix build buildfail cannot canonical carries carrying category cause ccacb00 ce2e8dcd7954 changes changing check checks claim claimed close commit completion concrete config conflict context continue conventions corrected could cowork deleted deliberately denotes
-base: master

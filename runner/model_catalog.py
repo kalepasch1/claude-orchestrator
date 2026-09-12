@@ -36,11 +36,11 @@ MODELS = {
         {"model": os.environ.get("XAI_MODEL", "grok-4.3"), "cap": 9, "tier": "mid"},
     ],
     "google": [
-        {"model": _configured("GEMINI_CHEAP_MODEL", "gemini-4.0-flash-lite",
+        {"model": _configured("GEMINI_CHEAP_MODEL", "gemini-3.1-flash-lite",
                               deprecated=("gemini-2.0-", "gemini-2.5-")), "cap": 6, "tier": "cheap"},
-        {"model": _configured("GEMINI_MODEL", "gemini-4.0-flash",
+        {"model": _configured("GEMINI_MODEL", "gemini-3.5-flash",
                               deprecated=("gemini-2.0-", "gemini-2.5-")), "cap": 8, "tier": "cheap"},
-        {"model": _configured("GEMINI_STRONG_MODEL", "gemini-4.0-pro",
+        {"model": _configured("GEMINI_STRONG_MODEL", "gemini-3.1-pro-preview",
                               deprecated=("gemini-2.0-", "gemini-2.5-")), "cap": 9, "tier": "mid"},
     ],
     "openai": [

@@ -566,7 +566,8 @@ Spec:
 Return ONLY valid JSON."""
 
     try:
-        r1 = claude_cli.run(r1_prompt, AI_REVIEW_MODEL, timeout=90)
+        r1 = claude_cli.run(r1_prompt, AI_REVIEW_MODEL, timeout=90,
+                            project=project_name, sandbox=True)
         r1_text = r1.get("text", "")
         import re
         m1 = re.search(r"\{.*\}", r1_text, re.S)
@@ -608,7 +609,8 @@ Original spec:
 Return JSON: {{"refined_prompt": "the improved spec text", "resolutions": ["what you resolved"], "confidence": 0.0-1.0}}"""
 
     try:
-        r2 = claude_cli.run(r2_prompt, AI_REVIEW_MODEL, timeout=120)
+        r2 = claude_cli.run(r2_prompt, AI_REVIEW_MODEL, timeout=120,
+                            project=project_name, sandbox=True)
         m2 = re.search(r"\{.*\}", r2.get("text", ""), re.S)
         if not m2:
             return None
@@ -662,7 +664,8 @@ Return ONLY valid JSON."""
 
     try:
         import claude_cli, re
-        r = claude_cli.run(test_prompt, AI_REVIEW_MODEL, timeout=120)
+        r = claude_cli.run(test_prompt, AI_REVIEW_MODEL, timeout=120,
+                           project=project_name, sandbox=True)
         m = re.search(r"\{.*\}", r.get("text", ""), re.S)
         if m:
             tests = json.loads(m.group(0))
@@ -713,7 +716,8 @@ Return ONLY a unified diff (diff -u format) that implements the change. No expla
 
     try:
         import claude_cli
-        r = claude_cli.run(draft_prompt, AI_REVIEW_MODEL, timeout=180)
+        r = claude_cli.run(draft_prompt, AI_REVIEW_MODEL, timeout=180,
+                           project=project_name, sandbox=True)
         diff_text = r.get("text", "")
         if not diff_text or len(diff_text) < 20:
             return None
@@ -756,7 +760,8 @@ Return ONLY valid JSON, no markdown fences."""
 
     try:
         import claude_cli
-        r = claude_cli.run(review_prompt, AI_REVIEW_MODEL, timeout=120)
+        r = claude_cli.run(review_prompt, AI_REVIEW_MODEL, timeout=120,
+                           project=project_name, sandbox=True)
         import re
         m = re.search(r"\{.*\}", r.get("text", ""), re.S)
         if m:

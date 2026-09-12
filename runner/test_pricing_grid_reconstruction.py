@@ -361,6 +361,47 @@ def test_util_validate_grid_non_overlapping_boundaries():
     assert len(issues) == 0
 
 
+def test_util_validate_grid_reports_a_gap_between_tiers():
+    """A grid that leaves units in no tier is not ready to charge anyone.
+
+    validate_grid checked bounds, overlaps and unlimited-tier count but never
+    whether the tiers COVER the range they span. A gapped grid passed validation,
+    and the two pricing entry points then disagreed about it: tier_for_units(30)
+    returned None while total_cost(30) charged 22.0, because graduated consumption
+    walks tier CAPACITY and does not consult tier_min. Reporting the gap is the
+    honest resolution -- what a gap should cost is a pricing decision, and the
+    validator has no business inventing one.
+    """
+    grid = pgr.PricingGrid(product_id="prod-123", tiers=[
+        pgr.PricingTier(name="tier1", min_units=1, max_units=14, unit_price=1.0),
+        pgr.PricingTier(name="tier2", min_units=51, max_units=100, unit_price=0.5),
+    ])
+    is_valid, issues = pgr.PricingGridReconstructionUtil.validate_grid(grid)
+    assert is_valid is False
+    assert any("gap between" in issue for issue in issues), issues
+    assert any("15-50" in issue for issue in issues), issues
+
+
+def test_util_validate_grid_gap_check_ignores_a_grid_that_starts_above_one():
+    """"Units start at 5" is a product decision, not an oversight."""
+    grid = pgr.PricingGrid(product_id="prod-123", tiers=[
+        pgr.PricingTier(name="tier1", min_units=5, max_units=10, unit_price=1.0),
+        pgr.PricingTier(name="tier2", min_units=11, max_units=20, unit_price=1.0),
+    ])
+    is_valid, issues = pgr.PricingGridReconstructionUtil.validate_grid(grid)
+    assert is_valid is True, issues
+
+
+def test_util_validate_grid_gap_check_tolerates_an_unlimited_tier():
+    """An unlimited tier leaves nothing uncovered after it."""
+    grid = pgr.PricingGrid(product_id="prod-123", tiers=[
+        pgr.PricingTier(name="tier1", min_units=1, max_units=100, unit_price=5.0),
+        pgr.PricingTier(name="tier2", min_units=101, max_units=None, unit_price=3.0),
+    ])
+    is_valid, issues = pgr.PricingGridReconstructionUtil.validate_grid(grid)
+    assert is_valid is True, issues
+
+
 def test_util_validate_grid_single_tier():
     grid = pgr.PricingGrid(product_id="prod-123", tiers=[
         pgr.PricingTier(name="flat", min_units=1, max_units=None, unit_price=5.0),

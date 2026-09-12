@@ -1,0 +1,15 @@
+# Risk thresholds for the config approval workflow.
+#
+# `low_risk` is the auto-approve ceiling used by
+# config_approval_engine.should_auto_approve(): a change scoring at or below it
+# skips human review. The bound is INCLUSIVE, matching the behaviour that was
+# previously inline in evaluate_change().
+#
+# This file is the reviewable, committed source of truth and takes precedence
+# over the ORCH_AUTO_APPROVE_RISK env var, which remains as the fleet-pushable
+# override for machines without the file. The value below is deliberately the
+# same 0.3 that has been in effect, so committing this file changes nothing on
+# its own — raising it widens what ships without a human, so it should move only
+# with a deliberate review.
+thresholds:
+  low_risk: 0.3

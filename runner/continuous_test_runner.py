@@ -193,9 +193,18 @@ def _run_once(repo, test_cmd, timeout):
 
 
 def _record_test_run(result):
-    """Persist test run results for fleet learning. Fail-soft."""
+    """Persist test run results for fleet learning. Fail-soft.
+
+    Written through db.upsert(): `db.insert(..., on_conflict=..., merge_patch=...)` is not
+    this repo's API — insert() takes (table, row, upsert=False) and nothing else, so every
+    call here raised TypeError before reaching the network and the bare `except` below
+    swallowed it. The module's whole "so the fleet can learn which tests flake" premise had
+    therefore never recorded a single run. upsert=True is the same key-collision semantics
+    the dead kwargs were reaching for (PostgREST resolution=merge-duplicates on `key`), and
+    is how the other fleet_config writers do it.
+    """
     try:
-        db.insert("fleet_config", {
+        db.upsert("fleet_config", {
             "key": f"test_run:{result['task_id']}:{result['timestamp'][:19]}",
             "value": str({
                 "passed": result["passed"],
@@ -205,7 +214,7 @@ def _record_test_run(result):
                 "mode": result["mode"],
                 "slug": result["slug"],
             })[:500],
-        }, on_conflict="key", merge_patch={"value": "EXCLUDED.value"})
+        })
     except Exception:
         pass  # fail-soft: test recording is best-effort
 

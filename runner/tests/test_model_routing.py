@@ -22,6 +22,31 @@ _RUNNER_SPEC.loader.exec_module(runner_entrypoint)
 
 
 class ModelRoutingTest(unittest.TestCase):
+    """Routing logic, isolated from live provider health.
+
+    THESE TESTS USED TO READ OPERATIONAL STATE FROM DISK. `model_gateway
+    .available()` and `agentic_coders._provider_healthy()` both consult the
+    demote registry in .runtime/provider_sla_state.json, which records which
+    vendors are currently unusable. Nothing was demoted, so the tests passed —
+    by accident, not by isolation.
+
+    On 2026-08-24 every hosted provider was demoted for running out of credit.
+    `available()` began returning ['local'], `choose()` returned None, and
+    eight tests in this class failed. None of them was about health: they ask
+    which coder the routing rules select, given keys and shares. A unit test
+    whose result depends on whether someone's card was charged is not testing
+    routing.
+
+    So the registry is pinned empty here. A test that wants to exercise
+    demotion should patch it explicitly and say so.
+    """
+
+    def setUp(self):
+        import provider_failover_sla
+        self._sla_patch = patch.object(
+            provider_failover_sla, "is_demoted", lambda provider: False)
+        self._sla_patch.start()
+        self.addCleanup(self._sla_patch.stop)
 
     def test_available_uses_keys_and_does_not_count_dead_ollama(self):
         env = {
@@ -206,7 +231,15 @@ class ModelRoutingTest(unittest.TestCase):
                 pick = catalog.choose("plan", need=7)
         importlib.reload(catalog)
         self.assertNotIn("gemini-2.5-flash", models)
-        self.assertEqual(pick["model"], "gemini-4.0-flash")
+        # The contract is "a deprecated env value is rejected in favour of the
+        # default" — not "the default is this exact string". Freezing the
+        # literal is what rotted: this asserted `gemini-4.0-flash`, an id
+        # Google has never served, so the test defended the bug instead of the
+        # behaviour. Assert the rejection, and that what came back is not
+        # itself deprecated.
+        self.assertIsNotNone(pick)
+        self.assertNotEqual(pick["model"], "gemini-2.5-flash")
+        self.assertFalse(pick["model"].startswith(("gemini-2.0-", "gemini-2.5-")))
 
     def test_model_catalog_ignores_gemini_2x_deprecated_env_models(self):
         catalog = __import__("model_catalog")
@@ -218,7 +251,9 @@ class ModelRoutingTest(unittest.TestCase):
                 pick = catalog.choose("plan", need=7)
         importlib.reload(catalog)
         self.assertNotIn("gemini-2.0-flash", models)
-        self.assertEqual(pick["model"], "gemini-4.0-flash")
+        self.assertIsNotNone(pick)
+        self.assertNotEqual(pick["model"], "gemini-2.0-flash")
+        self.assertFalse(pick["model"].startswith(("gemini-2.0-", "gemini-2.5-")))
 
     def test_non_agentic_review_routes_to_external_before_claude_when_sparse(self):
         with patch.object(model_policy.mg, "available", return_value=["claude", "deepseek", "google", "openai"]), \
@@ -341,7 +376,7 @@ class ModelRoutingTest(unittest.TestCase):
         self.assertIn("gemini", names)
         self.assertIn("gpt", names)
 
-    def test_gemini_agentic_coder_defaults_to_gemini_4(self):
+    def test_gemini_agentic_coder_uses_the_configured_default_not_a_2x_model(self):
         env = {
             "ORCH_AUTO_AGENTIC_CODERS": "true",
             "ORCH_USE_PAID_AGENTIC_CREDITS": "true",
@@ -355,7 +390,13 @@ class ModelRoutingTest(unittest.TestCase):
             pool = agentic_coders._pool()
         gemini = next((c for c in pool if c["name"] == "gemini"), None)
         self.assertIsNotNone(gemini)
-        self.assertIn("gemini-4.0-flash", gemini["cmd"])
+        # Was `assertIn("gemini-4.0-flash", ...)`. Google has never served that
+        # id, so the assertion pinned a model that could not answer — and the
+        # coder it guards was the fleet's default. The contract is that the
+        # coder carries a current Gemini id and not a retired 2.x one; the
+        # exact id belongs to config, and model_id_audit is what checks it is
+        # still real.
+        self.assertRegex(gemini["cmd"], r"--model gemini/gemini-[\w.\-]+")
         self.assertNotIn("gemini-2.", gemini["cmd"])
 
     def test_aider_commands_are_headless_and_warning_suppressed(self):

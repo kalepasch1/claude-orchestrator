@@ -13,6 +13,10 @@ import threading
 from unittest import mock
 import pytest
 
+#: One cache entry in the size tests. Eleven of these overflow the 1 MB cap the
+#: test installs, which is what forces the eviction path.
+_ENTRY_BYTES = 95 * 1024
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import merged_diff_memory
 
@@ -255,13 +259,30 @@ class TestCacheSize:
 
             # Fill cache with diffs until full (11 x 95KB ≈ 1045KB > 1MB)
             for i in range(11):
-                diff = "x" * (95 * 1024)
+                diff = "x" * _ENTRY_BYTES
                 merged_diff_memory.put_diff("main", f"f{i}", f"c{i}", diff)
 
-            # Next put should fail (silently)
-            merged_diff_memory.put_diff("main", "ffull", "cfull", "y" * (95 * 1024))
+            # STALE ASSERTION, CORRECTED 2026-08-26. This expected the new entry to be
+            # refused once the cache was full. The module deliberately stopped doing
+            # that -- see the "RECLAIM BEFORE REFUSING (memory fix)" comment in
+            # MergedDiffCache.put_diff: refusing meant that once the pool filled it
+            # never accepted another entry and never gave a byte back, and because TTL
+            # was only ever checked in get_diff() for the key being looked up, a diff
+            # nobody asked for again was held for the life of the process. A
+            # permanently full cache holding permanently stale content is the worst
+            # case for both memory and hit rate.
+            #
+            # The contract now is eviction, so the invariant to test is not "the write
+            # is refused" but "the write succeeds AND the cap still holds".
+            newest = "y" * _ENTRY_BYTES
+            merged_diff_memory.put_diff("main", "ffull", "cfull", newest)
             result = merged_diff_memory.get_diff("main", "ffull", "cfull")
-            assert result == ""
+            assert result == newest, "the newest entry must be admitted"
+
+            assert merged_diff_memory._pool._bytes <= merged_diff_memory.CACHE_SIZE_BYTES, (
+                "eviction must keep the pool under the cap")
+            assert merged_diff_memory.get_diff("main", "f0", "c0") == "", (
+                "the oldest entry is what makes room")
         finally:
             merged_diff_memory.CACHE_SIZE_BYTES = original_bytes
 

@@ -38,17 +38,58 @@ def _inc(key, n=1):
         _stats[key] = _stats.get(key, 0) + n
 
 
+#: Keys a seed file may use to wrap its list of engagements.
+_SEED_LIST_KEYS = ("engagements", "records", "results", "items")
+
+
 def _load_seed(seed_path=None):
-    """Load golden engagements from seed JSON file."""
+    """Load golden engagements from seed JSON, ALWAYS as a list of records.
+
+    THE SHAPE WAS NEVER NORMALISED. This returned `json.load(f)` verbatim, and
+    the only committed seed — runner/seeds/golden_engagements_seed.json — is a
+    single engagement OBJECT, not a list. Three consequences, all silent:
+
+      · `len(records)` counted the object's five KEYS, so the "seed_records"
+        stat reported 5 for one engagement.
+      · trigger_once does `records.extend(_fetch_federal_register())` when
+        live=True, and a dict has no .extend — the live path raised
+        AttributeError before it fetched anything.
+      · every consumer that iterates records got the dict's key STRINGS.
+
+    Three shapes are accepted now: a list of engagements; a single engagement
+    object (wrapped); and a dict wrapping the list under a conventional key.
+    Anything else is not seed data and yields [] rather than something that
+    iterates strangely later.
+
+    Records are also stamped with a `source` when they have none, so a consumer
+    can read r["source"] uniformly across seed and fetched records instead of
+    having to know which list a record came from.
+    """
     path = seed_path or os.environ.get("ORCH_MOAT_SEED_PATH") or DEFAULT_SEED
     try:
         with open(path) as f:
-            records = json.load(f)
-        _inc("seed_records", len(records))
-        return records
+            loaded = json.load(f)
     except Exception:
         _inc("errors")
         return []
+
+    if isinstance(loaded, list):
+        records = [r for r in loaded if isinstance(r, dict)]
+    elif isinstance(loaded, dict):
+        wrapped = next((loaded[k] for k in _SEED_LIST_KEYS
+                        if isinstance(loaded.get(k), list)), None)
+        if wrapped is not None:
+            records = [r for r in wrapped if isinstance(r, dict)]
+        else:
+            records = [loaded]          # one engagement per file
+    else:
+        _inc("errors")
+        return []
+
+    for record in records:
+        record.setdefault("source", "seed")
+    _inc("seed_records", len(records))
+    return records
 
 
 def _fetch_federal_register(limit=None):

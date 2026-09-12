@@ -54,6 +54,41 @@ WHERE state='RUNNING'
 
 ---
 
+### 0c. Honour the kill switch (every loop, BEFORE claiming)
+
+`runner/db.py` drops paused projects from its claim set and `runner/kill_switch.py`
+`is_paused()` gates the runner on the global and host scopes. **This skill had no such
+check**, so a scheduled executor would claim, commit and push straight through a
+deliberate halt. Latest decision per scope wins, and `updated_by='remote-quarantine'`
+rows do not count -- both mirror `is_paused()`.
+
+```sql
+SELECT scope, COALESCE(project,'-') AS project, reason, updated_at,
+       now() - updated_at AS age
+FROM (
+  SELECT DISTINCT ON (scope, project) scope, project, paused, reason, updated_at
+  FROM controls
+  WHERE COALESCE(updated_by,'') <> 'remote-quarantine'
+  ORDER BY scope, project, updated_at DESC
+) latest
+WHERE paused AND scope IN ('global','project')
+ORDER BY scope, project;
+```
+
+- **A `global` row -> stop this run now.** Claim nothing, push nothing. Report the
+  reason and its age and exit. A global pause is an operator decision about spend,
+  provider credit or safety; it is not an obstacle to route around, and "the queue has
+  work in it" is not a reason to override it.
+- **A `project` row** -> that project is off limits for this run. Do not claim its
+  tasks. If you already hold one, release it to QUEUED rather than leaving it RUNNING.
+- **No rows** -> proceed to Step 1.
+
+This gate outranks every "ZERO SKIP" and "never stop early" instruction below. Those
+rules exist to stop an executor talking itself out of ordinary work; they were never
+meant to override a kill switch.
+
+---
+
 ## Step 1: ATOMIC CLAIM — 5 tasks, single CTE
 
 ```sql
@@ -63,12 +98,34 @@ WITH candidates AS (
   JOIN projects p2 ON p2.id = t.project_id
   WHERE t.state = 'QUEUED'
     AND t.kind NOT IN ('speculative')
+    -- Dependency gate. Mirrors runner/db.py _done_slugs() and
+    -- runner/migrations/001_claim_next_rpc.sql, both corrected 2026-08-25; this
+    -- third copy of the predicate was not updated with them and had drifted behind.
+    --
+    --  * DEPLOYED_AND_VERIFIED is strictly stronger than DONE -- shipped and
+    --    verified in production -- and was treated as a blocker, so a dependent of
+    --    fully delivered work was held back by its own success.
+    --  * A dep may be written `project_name:slug` (pareto-2080 tasks depend on
+    --    `beethoven:...` this way). Matched only inside t.project_id, a qualified
+    --    dep can never resolve, making those tasks unclaimable by construction.
+    --  * `dep NOT IN (SELECT t2.slug ...)` is three-valued: one NULL slug in the
+    --    candidate set makes the comparison NULL rather than TRUE for every dep,
+    --    which filters the row out and reports ALL dependencies satisfied. That is
+    --    fail-OPEN -- it would claim tasks whose deps are unmet. There are no NULL
+    --    slugs today, so this is latent rather than active, but NOT EXISTS closes
+    --    the hole outright.
     AND (t.deps IS NULL OR array_length(t.deps,1) IS NULL
          OR NOT EXISTS (
            SELECT 1 FROM unnest(t.deps) AS dep
-           WHERE dep NOT IN (
-             SELECT t2.slug FROM tasks t2
-             WHERE t2.project_id = t.project_id AND t2.state IN ('DONE','MERGED')
+           WHERE NOT EXISTS (
+             SELECT 1 FROM tasks t2
+             LEFT JOIN projects p2 ON p2.id = t2.project_id
+             WHERE t2.state IN ('DONE','MERGED','DEPLOYED_AND_VERIFIED')
+               AND ((position(':' in dep) = 0
+                     AND t2.project_id = t.project_id AND t2.slug = dep)
+                 OR (position(':' in dep) > 0
+                     AND p2.name = split_part(dep, ':', 1)
+                     AND t2.slug = split_part(dep, ':', 2)))
            )
          ))
   ORDER BY
@@ -113,7 +170,28 @@ SELECT c.*, p.name AS project_name, p.repo_path, p.default_base
 FROM claimed c JOIN projects p ON c.project_id = p.id;
 ```
 
-If 0 rows → heartbeat (Step 4), write `<run-summary>`, stop. **This is the ONLY exit condition.**
+**0 rows does NOT mean the queue is empty.** It means nothing was *claimable*, and
+that has two very different causes which produce the identical signal. Tell them apart
+before doing anything else:
+
+```sql
+SELECT count(*) AS queued_remaining
+FROM tasks WHERE state='QUEUED' AND kind NOT IN ('speculative');
+```
+
+- **`queued_remaining = 0`** -> the queue really is empty. Heartbeat (Step 4), write
+  `<run-summary>`, stop. This is the only successful exit.
+- **`queued_remaining > 0`** -> the queue is **STALLED**, not finished. Treat this as an
+  alert and never as a success exit. Run `python3 runner/queue_deadlock_report.py` in
+  the beethoven repo, report which tasks are unclaimable and under which category
+  (decomposed-childless / collapsed / terminal / dangling), and stop. Do **not** report
+  a clean run, and do **not** bulk-clear deps to force the queue open -- three of the
+  four categories need an operator decision about intent, and unblocking a task whose
+  prerequisite never happened is the most expensive failure this fleet has.
+
+Between 2026-07-15 and 2026-08-25 every executor took the first path against a queue of
+327 tasks that had not moved in six weeks, and reported success each time. See
+`QUEUE-DEADLOCK-2026-08-25.md`.
 
 ---
 

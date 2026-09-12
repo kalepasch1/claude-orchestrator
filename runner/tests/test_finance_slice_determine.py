@@ -419,13 +419,21 @@ class RateLimitTest(unittest.TestCase):
         """Different operations consume different token counts."""
         op_costs = {"read": 1, "write": 5, "admin": 10}
         period_limit = 20
+        # The expected total was 17 -- read + write + admin + read -- but the
+        # admin op was missing from the list and `count` was dropped on the floor
+        # by the sum, so the arithmetic could only ever produce 7. The docstring
+        # says "different operations", and admin is the one whose cost dominates,
+        # so the fix is to charge every listed op rather than to lower the total.
         ops = [
             ("read", 1),
             ("write", 1),
+            ("admin", 1),
             ("read", 1),
         ]
-        tokens_used = sum(op_costs[op_type] for op_type, count in ops)
+        tokens_used = sum(op_costs[op_type] * count for op_type, count in ops)
         self.assertEqual(tokens_used, 17)
+        self.assertLess(tokens_used, period_limit,
+                        "this fixture is meant to sit just under the period limit")
 
     def test_rate_limit_per_model_enforcement(self):
         """Rate limits applied per model independently."""
@@ -575,8 +583,14 @@ class FinanceIntegrationTest(unittest.TestCase):
 
     def test_integration_cost_report_generation(self):
         """Cost report generated with breakdown by dimension."""
+        # "total" was 75.0, which is what by_phase and by_model each sum to on
+        # their own -- so the assertion below, which adds overhead on top, could
+        # not hold. 75.0 is the SUBTOTAL the two breakdowns agree on; the total
+        # is that plus overhead. Naming both makes the relationship checkable in
+        # each direction instead of leaving one number doing two jobs.
         cost_report = {
-            "total": 75.0,
+            "subtotal": 75.0,
+            "total": 82.5,
             "by_phase": {
                 "preflight": 5.0,
                 "execution": 50.0,
@@ -589,6 +603,12 @@ class FinanceIntegrationTest(unittest.TestCase):
             },
             "overhead": 7.5,
         }
+        # Two independent breakdowns of the same spend must agree with each other
+        # before either is worth adding overhead to.
+        self.assertAlmostEqual(sum(cost_report["by_phase"].values()),
+                               cost_report["subtotal"])
+        self.assertAlmostEqual(sum(cost_report["by_model"].values()),
+                               cost_report["subtotal"])
         total_check = sum(cost_report["by_phase"].values()) + cost_report["overhead"]
         self.assertAlmostEqual(total_check, cost_report["total"])
 

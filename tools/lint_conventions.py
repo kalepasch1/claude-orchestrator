@@ -17,6 +17,42 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Set
 
 
+#: A regex EXTENSION GROUP -- `(?:`, `(?=`, `(?!`, `(?<`, `(?P<`. Deliberately NOT the
+#: looser markers (\b, \d, [A-Z], .*), which do occur inside real key material; keying
+#: on those would blind the rule to genuine leaks. An extension group is grammar, not
+#: content: credentials do not contain "(?" followed by one of ":=!<P".
+_REGEX_EXTENSION_GROUP_RE = re.compile(r'\(\?[:=!<P]')
+
+
+def _is_regex_source(value: str) -> bool:
+    """True when a literal is the source of a PATTERN rather than a value.
+
+    Mirrors _is_regex_source in tools/convention_lint.py. Both linters carry it
+    because both fired on the redaction pattern in runner/patch_templates.py --
+    the regex that keeps prompt credentials out of the shared patch-template
+    store -- and on their own detectors.
+    """
+    return bool(_REGEX_EXTENSION_GROUP_RE.search(str(value or '')))
+
+
+#: Config-read functions whose first positional argument is a fleet_config key.
+#: Reading a credential out of fleet_config is the mirror of writing one there,
+#: and it is the failure that is hard to see: the DAO is fail-soft, so the read
+#: returns None, becomes "", and produces an empty token instead of an error.
+#: runner/fleet_config_guard.assert_readable now refuses it at runtime; this
+#: rule refuses it at review time, before a fleet-wide run burns on it.
+_CONFIG_READ_FUNCS = frozenset({'get_config', 'get_many', 'get_config_value'})
+
+#: Key names that denote a credential. Kept in step with the `_NAME_RE` in
+#: runner/fleet_config_guard.py -- that module is the authority; this is the
+#: static-analysis echo of it, and a literal key is all a linter can see.
+_CREDENTIAL_KEY_RE = re.compile(
+    r'(SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIAL|_PAT\b|^PAT$|'
+    r'(^|_)KEY(_|$)|_KEY\b|'
+    r'COOKIE|DSN|CONNECTION_?STRING|DATABASE_URL)',
+    re.IGNORECASE)
+
+
 class ConventionViolation:
     def __init__(self, filepath: str, lineno: int, rule: str, message: str, severity: str = "error"):
         self.filepath = filepath
@@ -30,6 +66,18 @@ class ConventionViolation:
 
     def __repr__(self) -> str:
         return str(self)
+
+
+#: Rule id for the hardcoded-secret check.
+#:
+#: The id existed only as the bare string 'HARDCODED_SECRET', repeated at each
+#: report site. Four test modules import RULE_HARDCODED_SECRET to avoid hardcoding
+#: the id in assertions, and with no such name the import failed — so
+#: test_hardcoded_secret_rule, test_annotated_secret_detection,
+#: test_secret_risk_pool_detection and test_secret_risk_pool_rework could not be
+#: COLLECTED at all. The secret-detection rule had no effective test coverage, and
+#: the failure looked like a collection error rather than a gap.
+RULE_HARDCODED_SECRET = 'HARDCODED_SECRET'
 
 
 class ConventionChecker(ast.NodeVisitor):
@@ -58,6 +106,11 @@ class ConventionChecker(ast.NodeVisitor):
         self._check_assignment_naming(node)
         self.generic_visit(node)
 
+    def visit_Call(self, node: ast.Call) -> None:
+        """Check for credential keys read out of fleet configuration."""
+        self._check_credential_config_read(node)
+        self.generic_visit(node)
+
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         """Check augmented assignments for config keys and magic numbers."""
         self._check_magic_numbers_expr(node.value)
@@ -77,19 +130,21 @@ class ConventionChecker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Check function definitions for error handling, naming, and singleton pattern."""
+        """Check function definitions for naming and the singleton pattern.
+
+        Error handling is NOT checked here: visit_Try already fires for every try/except
+        in the module. See _check_error_handling for what the extra walk was costing.
+        """
         self.function_context.append(node.name)
         self._check_function_naming(node)
-        self._check_error_handling(node)
         self._check_module_singleton_pattern(node)
         self.generic_visit(node)
         self.function_context.pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        """Check async function definitions."""
+        """Check async function definitions (see visit_FunctionDef)."""
         self.function_context.append(node.name)
         self._check_function_naming(node)
-        self._check_error_handling(node)
         self._check_module_singleton_pattern(node)
         self.generic_visit(node)
         self.function_context.pop()
@@ -177,9 +232,26 @@ class ConventionChecker(ast.NodeVisitor):
                         f'Magic number {val} in expression should be assigned to named constant'
                     ))
 
+    #: Method names the standard library DEFINES, in the case it defines them in.
+    #:
+    #: unittest calls setUp/tearDown/setUpClass/tearDownClass by exact name; a rule
+    #: telling you to rename them to snake_case is telling you to break the
+    #: framework, and the only way to comply is to stop using unittest. Flagging
+    #: them taught readers that NAMING_CONVENTION hits are things you cannot act
+    #: on, which is how a linter stops being read. Ten test files in runner/tests
+    #: alone carry these; they were all sitting in the grandfathered baseline.
+    _FRAMEWORK_METHOD_NAMES = frozenset({
+        "setUp", "tearDown", "setUpClass", "tearDownClass",
+        "setUpModule", "tearDownModule", "addTypeEqualityFunc",
+        "assertEqual", "assertTrue", "assertFalse", "assertRaises",
+        "runTest", "shortDescription", "subTest", "maxDiff",
+    })
+
     def _check_function_naming(self, node: ast.FunctionDef) -> None:
         """Check function names follow snake_case."""
         name = node.name
+        if name in self._FRAMEWORK_METHOD_NAMES:
+            return
         if not name.startswith('_'):
             if not self._is_snake_case(name):
                 self.violations.append(ConventionViolation(
@@ -199,15 +271,44 @@ class ConventionChecker(ast.NodeVisitor):
                     ))
 
     def _check_error_handling(self, node: ast.FunctionDef) -> None:
-        """Check for fail-soft error handling patterns."""
+        """Report fail-soft violations for one function subtree, without the visitor.
+
+        NOT called during a normal visit, and deliberately so. It used to run from
+        visit_FunctionDef, walking the whole function body for Try nodes — while
+        visit_Try was already reporting every one of them. Every handler inside a
+        function was therefore filed TWICE, and a handler inside a nested function
+        three times (outer walk + inner walk + visit_Try), so both the printed output
+        and the ratchet baseline carried a ~2x phantom multiplier on FAIL_SOFT_ERROR,
+        and adding one try/except moved the count by an unpredictable 1-3.
+
+        Kept as a standalone entry point for callers that want the check on a single
+        function subtree; visit_Try is the one that runs during a file scan.
+        """
         for child in ast.walk(node):
             if isinstance(child, ast.Try):
                 self._check_try_except(child)
 
     def _check_try_except(self, try_node: ast.Try) -> None:
-        """Verify try/except blocks have appropriate error handling."""
+        """Verify try/except blocks have appropriate error handling.
+
+        The rule is named FAIL_SOFT_ERROR and the defect it exists to catch is a
+        handler that swallows an exception and says nothing — the shape that made
+        four db call sites in this repo look like "nothing to report" for months
+        while they had never once worked.
+
+        A handler that RAISES, or that CONTINUES or BREAKS a loop, is not that.
+        It has made an explicit decision about control flow, and there is no
+        `return` it could add: `except OSError: continue` inside a loop cannot be
+        rewritten to satisfy a return-only rule without changing what it does. So
+        those were violations no one could act on, which is how a rule with 3,276
+        hits becomes something readers skip past.
+
+        What still counts: a handler whose body neither returns, raises, nor
+        redirects the loop — `pass`, or a bare log-and-fall-through.
+        """
+        _HANDLED = (ast.Return, ast.Raise, ast.Continue, ast.Break)
         for handler in try_node.handlers:
-            has_return = any(isinstance(stmt, ast.Return) for stmt in handler.body)
+            has_return = any(isinstance(stmt, _HANDLED) for stmt in handler.body)
 
             if not has_return:
                 self.violations.append(ConventionViolation(
@@ -219,18 +320,86 @@ class ConventionChecker(ast.NodeVisitor):
         """Flag mutations to shared state outside lock context."""
         pass
 
+    @staticmethod
+    def _dotted_name(node) -> str:
+        """Best-effort dotted source text for a Name/Attribute chain."""
+        parts = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if isinstance(node, ast.Name):
+            parts.append(node.id)
+        return '.'.join(reversed(parts))
+
+    def _is_config_read(self, func) -> bool:
+        """Is this call a read against the fleet_config store?"""
+        if isinstance(func, ast.Name):
+            return func.id in _CONFIG_READ_FUNCS
+        if isinstance(func, ast.Attribute):
+            if func.attr in _CONFIG_READ_FUNCS:
+                return True
+            # `fleet_config_dao.get("X")` / `self._fleet_config.get("X")`: a bare
+            # `.get` is only a config read when the receiver says so. Matching
+            # every `.get` would fire on every dict in the tree.
+            if func.attr == 'get':
+                return 'fleet_config' in self._dotted_name(func.value).lower()
+        return False
+
+    def _check_credential_config_read(self, node: ast.Call) -> None:
+        """Flag `get_config("GITHUB_PAT")`-shaped reads of fleet configuration.
+
+        Self-referential files are exempt for the same reason _is_regex_source
+        exists: the guard, this linter and their tests must be able to NAME the
+        keys they forbid without being reported for it.
+        """
+        name = Path(self.filepath).name
+        if name in ('fleet_config_guard.py', 'lint_conventions.py') or name.startswith('test_'):
+            return
+        if not self._is_config_read(node.func):
+            return
+
+        literals = []
+        if node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                literals.append(first.value)
+            elif isinstance(first, (ast.List, ast.Tuple, ast.Set)):
+                literals.extend(
+                    e.value for e in first.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                )
+        for key in literals:
+            if _CREDENTIAL_KEY_RE.search(key):
+                self.violations.append(ConventionViolation(
+                    self.filepath, node.lineno, 'CREDENTIAL_CONFIG_READ',
+                    f'Key "{key}" denotes a credential and must not be read from '
+                    f'fleet_config; credentials were purged from that table, so this '
+                    f'read yields an empty value rather than an error. Use '
+                    f'os.environ.get("{key}") instead.'
+                ))
+                break
+
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
-        """Check for hardcoded secrets in variables with sensitive names."""
+        """Check for hardcoded secrets in variables with sensitive names.
+
+        A literal that is the SOURCE OF A PATTERN is excluded (see
+        _is_regex_source): this rule keys off the target name alone, so a regex
+        written to FIND credentials satisfies it by construction and every
+        secret scanner in this repo reported its own detector as a hardcoded
+        secret. The rule punished exactly the code written to enforce it.
+        """
         secret_keywords = ('password', 'token', 'secret', 'key', 'api_key')
 
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            if _is_regex_source(node.value.value):
+                return
             if node.value.value and not node.value.value.startswith('$'):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         var_name = target.id.lower()
                         if any(keyword in var_name for keyword in secret_keywords):
                             self.violations.append(ConventionViolation(
-                                self.filepath, node.lineno, 'HARDCODED_SECRET',
+                                self.filepath, node.lineno, RULE_HARDCODED_SECRET,
                                 f'Variable "{target.id}" contains secret keyword; use environment variables instead'
                             ))
                     elif isinstance(target, ast.Subscript):
@@ -238,7 +407,7 @@ class ConventionChecker(ast.NodeVisitor):
                             key_name = target.slice.value.lower()
                             if any(keyword in key_name for keyword in secret_keywords):
                                 self.violations.append(ConventionViolation(
-                                    self.filepath, node.lineno, 'HARDCODED_SECRET',
+                                    self.filepath, node.lineno, RULE_HARDCODED_SECRET,
                                     f'Key "{target.slice.value}" contains secret keyword; use environment variables instead'
                                 ))
 
@@ -365,10 +534,12 @@ def write_baseline(counts, path=None):
     target = Path(path or BASELINE_PATH)
     payload = {
         "_comment": (
-            "Grandfathered convention-lint counts. The hook fails only when a rule's count "
-            "RISES above these numbers, so the gate is enforceable today without a "
-            "9,780-violation cleanup patch. Lower these as violations are fixed; never "
-            "raise one to make a commit pass."
+            "Grandfathered convention-lint counts, from a whole-tree scan of "
+            "`runner tools scripts`. The hook fails only when a rule's count RISES above "
+            "these numbers, so the gate is enforceable today without a repo-wide cleanup "
+            "patch. Lower these as violations are fixed; never raise one to make a commit "
+            "pass. Regenerate with: python tools/lint_conventions.py --update-baseline "
+            "runner tools scripts"
         ),
         "counts": {k: int(v) for k, v in sorted(counts.items())},
         "total": int(sum(counts.values())),
@@ -383,13 +554,18 @@ def main():
     """Main entry point for the linter.
 
     RATCHET, not a cliff. A bare `exit(1) if any violations` gate is unusable here: the
-    tree carries ~9,780 pre-existing violations, so the pre-commit hook failed on every
-    commit and the only way to work was `--no-verify` — which disables every OTHER hook
-    too. A gate that is always red is not a gate.
+    tree carries thousands of pre-existing violations, so the pre-commit hook failed on
+    every commit and the only way to work was `--no-verify` — which disables every OTHER
+    hook too. A gate that is always red is not a gate.
 
-    So the hook now fails when a rule's count RISES above the recorded baseline. New
-    violations are blocked from the first commit; existing ones are visible, counted, and
-    can only go down. Same shape as the repo's .tsc-error-baseline ratchet.
+    So the hook fails when a rule's count RISES above the recorded baseline: existing
+    violations are visible, counted, and can only go down. Same shape as the repo's
+    .tsc-error-baseline ratchet.
+
+    This only holds for a WHOLE-TREE scan, because the baseline holds whole-tree totals.
+    Invoked on a subset of files — which is what `pass_filenames: true` in
+    .pre-commit-config.yaml does today — the comparison is vacuous and every run passes;
+    that path prints a NOTE saying so instead of a green OK.
 
     `--update-baseline` rewrites the file (use after fixing violations, or when adding a
     rule). `--strict` ignores the baseline entirely, for a full audit.
@@ -402,12 +578,14 @@ def main():
         sys.exit(1)
 
     all_violations = []
+    scanned_a_directory = False
 
     for target in args:
         target_path = Path(target).resolve()
         if target_path.is_file():
             all_violations.extend(check_file(str(target_path)))
         elif target_path.is_dir():
+            scanned_a_directory = True
             all_violations.extend(scan_directory(str(target_path)))
         else:
             print(f"Warning: {target} is not a file or directory", file=sys.stderr)
@@ -427,10 +605,26 @@ def main():
         sys.exit(1 if all_violations else 0)
 
     baseline = load_baseline()
+
+    # The baseline holds WHOLE-TREE totals, so it can only be compared against a
+    # whole-tree scan. .pre-commit-config.yaml sets `pass_filenames: true`, which means
+    # the hook invokes this with just the staged files — a handful of violations
+    # compared against a five-thousand ceiling, so it can never regress and the gate
+    # has been passing unconditionally. A brand-new file containing nothing but a
+    # silent `except: pass` is reported as "grandfathered" and exits 0. Say so rather
+    # than printing a reassuring OK: an invisible no-op gate is worse than no gate,
+    # because people believe it. The fix is `pass_filenames: false` with fixed targets
+    # (`runner tools scripts`) in the hook, which is what this scan is baselined on.
+    if baseline and not scanned_a_directory:
+        print("convention-lint: NOTE — ratchet skipped. The baseline is a whole-tree "
+              "count and this run only saw the files passed to it, so nothing can "
+              "exceed it. Run `python tools/lint_conventions.py runner tools scripts` "
+              "for the real gate.", file=sys.stderr)
+
     over = regressions(counts, baseline)
     if over:
-        # Print only the offending rules' violations: a 9,780-line dump buries the
-        # handful of lines the author actually needs to fix.
+        # Print only the offending rules' violations: a full several-thousand-line dump
+        # buries the handful of lines the author actually needs to fix.
         offending = {rule for rule, _c, _a in over}
         for violation in all_violations:
             if violation.rule in offending:

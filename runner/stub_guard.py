@@ -51,7 +51,7 @@ FILE_TASKS = os.environ.get("ORCH_STUB_GUARD_FILE_TASKS", "true").lower() in ("1
 # file) produced zero BLOCKING violations -> check_repo()["ok"] = True -> merge_train._stub_gate
 # returned "stub gate clean". A guard that cannot run must never report clean.
 BLOCKING = {"stub_shadows_reexport", "body_replaced_by_constant", "stub_commit_message",
-            "fabricated_critical_return", "guard_error"}
+            "fabricated_critical_return", "guard_error", "intent_manifest_stub"}
 
 # How a violation ROUTES once found. A fabricated compliance/financial return escalates loudly
 # (notification + approvals card); a plain constant return is logged and files nothing, because a
@@ -61,6 +61,7 @@ TASK_SEVERITY = {
     "body_replaced_by_constant": guard_tasks.CRITICAL,
     "stub_shadows_reexport": guard_tasks.HIGH,
     "stub_commit_message": guard_tasks.HIGH,
+    "intent_manifest_stub": guard_tasks.HIGH,
     "fabricated_constant_return": guard_tasks.ADVISORY,
     "guard_error": guard_tasks.ADVISORY,
 }
@@ -76,7 +77,17 @@ _SKIP_DIR = re.compile(
     # .runtime holds the orchestrator's own scratch worktrees (integration-worktrees/, agent
     # checkouts). Scanning it re-reports every OTHER project's files through a scratch path,
     # which filed ~400 duplicate remediation tasks on the first live run.
-    r"|\.runtime|\.claude/worktrees)(/|$)")
+    r"|\.runtime|\.claude/worktrees"
+    # THE PROJECTS' OWN WORKTREES, by the two conventions this fleet actually uses:
+    # `{repo}-wt/{slug}` (darwn-wt/, smarter-fix-wt/, law-dev-wt/) and a dotted
+    # scratch checkout `.{name}-wt/` (.spine-wt/). Same reason as .runtime directly
+    # above -- they are working copies of code already scanned at its real path, so
+    # visiting them re-reports the same symbols through a path that exists on no
+    # branch. A finding filed against `.spine-wt/packages/x/src/admit.ts` names a
+    # file `git cat-file` cannot resolve, so nobody can act on it and the agent sent
+    # to fix it has nothing to open.
+    r"|\.[A-Za-z0-9_.-]+-wt|[A-Za-z0-9_.-]+-wt"
+    r")(/|$)")
 
 # A commit whose MESSAGE advertises that it papered over a build break with stubs.
 # These are the exact shapes seen in the fleet.
@@ -102,6 +113,25 @@ _STUB_COMMIT_MSG = re.compile(
 # A single-line declaration whose whole body is a constant. This is the stub shape.
 _IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _CONST_RET = r"(?:\{\s*\}|\[\s*\]|null|undefined|0|false|true|''|\"\"|\{\s*\}\s+as\s+any)"
+
+#: A literal VALUE on the right of `export const NAME = ...` — a threshold, a label,
+#: a flag. Used by is_value_constant() to tell a named constant from a stubbed
+#: function, which is a distinction _CONST_RET cannot make: _CONST_RET is the set of
+#: EMPTY returns a stub falls back to (`{}`, `[]`, `0`, `null`), so it matches
+#: `= 0` but not `= 0.01`, and 0.01 is exactly the case the false positive is about.
+#:
+#: Deliberately narrow, and narrow in one specific direction: no `=>` and no `(`, so
+#: a stubbed arrow function (`= () => 0`) or a call (`= compute()`) can never match
+#: and is still reported. That is what the caller's docstring means by "decided on
+#: the DECLARATION, never the name". Numbers, quoted strings and the bare keywords
+#: are the whole vocabulary of a tunable; anything with callable syntax is not one.
+_CONST_VALUE = (
+    r"(?:"
+    r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"          # 0.01, -5, 1_000 is not JS, 1e3
+    r"|'[^'\n]*'|\"[^\"\n]*\"|`[^`\n$]*`"           # 'x', "x", `x` (no ${} interp)
+    r"|true|false|null|undefined"
+    r")"
+)
 _STUB_FN = re.compile(
     r"^\s*export\s+(?:async\s+)?function\s+(%s)\s*\([^)]*\)\s*:[^{]*\{\s*return\s+%s\s*(?:as\s+any\s*)?;?\s*\}\s*$"
     % (_IDENT, _CONST_RET))
@@ -173,6 +203,86 @@ _FABRICATED_SCALAR = re.compile(
 def is_critical_name(symbol):
     """True when a constant return from this symbol is a compliance/financial defect."""
     return bool(symbol and _CRITICAL.search(symbol))
+
+
+# The value half of `export const NAME = <literal>`: a number, boolean, null, or a
+# quoted string, and nothing else. Anything containing `(`, `=>` or `function` is a
+# callable and stays in scope for the fabricated-return detectors.
+_CONST_VALUE = (
+    r"(?:-?\d[\d_]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    r"|true|false|null"
+    r"|'[^'\n]*'|\"[^\"\n]*\"|`[^`\n]*`)")
+
+
+def is_value_constant(txt, symbol):
+    """Is `symbol` a named VALUE constant rather than a stubbed function?
+
+    The fabricated-return detectors ask "does this declaration's body reduce to a
+    literal". That is the right question for a function and the wrong one for a
+    constant: a threshold is SUPPOSED to be a literal. Without the distinction the
+    guard reports things like
+
+        /** The margin a challenger must beat the incumbent by. ... */
+        export const REPLACEMENT_MARGIN = 0.01
+
+    as "a regulatory gate that stopped throwing", and the remediation it files —
+    "if it is genuinely unimplemented it MUST throw" — would replace a documented,
+    actively-used tunable with an exception. That is a worse repository than the
+    one the guard started with, and it costs an agent a full run to find out.
+
+    Decided on the DECLARATION, never the name: a stubbed arrow function
+    (`export const getPrice = () => 0`) contains callable syntax and is still
+    reported, as is `= compute()`.
+    """
+    if not symbol or not txt:
+        return False
+    rx = re.compile(
+        r"^[ \t]*export\s+const\s+" + re.escape(symbol) +
+        r"\s*(?::[^=\n]*)?=\s*" + _CONST_VALUE + r"\s*(?:;|$)",
+        re.MULTILINE)
+    return bool(rx.search(txt))
+
+
+#: SCREAMING_SNAKE_CASE. In TS/JS this names a VALUE, never a function, by universal
+#: convention -- which is the entire basis of the exemption below.
+_SCREAMING_SNAKE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
+
+#: Callable syntax. If the right-hand side contains any of this it is not a value,
+#: whatever it is called.
+_CALLABLE_RHS = re.compile(r"=>|\bfunction\b|\bclass\b|\(")
+
+
+def _is_named_constant(symbol, slice_text):
+    """Is this export a named VALUE constant rather than a stubbed function?
+
+    THIS FUNCTION DID NOT EXIST, AND THE WHOLE STRUCTURAL PASS DEPENDED ON IT.
+
+    _structural_stubs called it, `_structural_stubs` wraps its body in
+    `except Exception: return []`, and the resulting AttributeError was swallowed on
+    every single call. So the structural half of a FAIL-CLOSED merge gate silently
+    reported nothing at all -- verified 2026-09-04:
+
+        export const computePrice = 0                    -> []
+        export const calculateFee = () => 0              -> []
+        export function assertEcpCounterparty(x) {...}   -> []
+
+    pyflakes says it in one line (`undefined name '_is_named_constant'`); nothing in
+    the gate's own output ever could, because a guard that finds nothing and a guard
+    that cannot run look identical from outside.
+
+    The rule, which is the one test_stub_guard_named_constants.py was written for:
+    the exemption is about VALUES. A SCREAMING_SNAKE name bound to something with no
+    arrow, no `function`, no `class` and no call is a tunable, and a tunable is
+    SUPPOSED to be a literal -- that is the REPLACEMENT_MARGIN = 0.01 false positive
+    that quarantined four unrelated smarter cards in one evening. Anything else stays
+    in scope, including `export const COMPUTE_FEE = () => 0`: the convention argument
+    is about what a name means, and it does not cover a name holding a function.
+    """
+    if not symbol or not _SCREAMING_SNAKE.match(str(symbol)):
+        return False
+    if not slice_text or _CALLABLE_RHS.search(str(slice_text)):
+        return False
+    return True
 
 
 def _home():
@@ -291,6 +401,8 @@ def _structural_stubs(path, txt):
         out = []
         for name, slice_text in exports.items():
             if not slice_text:
+                continue
+            if _is_named_constant(name, slice_text):
                 continue
             kind = _rg._ts_stub_kind(slice_text)
             if kind:
@@ -463,7 +575,7 @@ def scan_fabricated(repo, files=None):
     def _extra_fabricated(path, txt, rel):
         found = []
         for sym, kind in _structural_stubs(path, txt):
-            if is_critical_name(sym):
+            if is_critical_name(sym) and not is_value_constant(txt, sym):
                 found.append((sym, kind, _line_of(txt, sym)))
         for m in _CLASS_METHOD.finditer(txt):
             sym, body = m.group(1), (m.group(2) or "").strip()
@@ -504,6 +616,8 @@ def scan_fabricated(repo, files=None):
             scalar_stub = bool(_FABRICATED_SCALAR.match(body)) or body == ""
             if not (obj_stub or scalar_stub):
                 continue
+            if is_value_constant(txt, sym):
+                continue          # a named threshold, not a stubbed callable
             critical = is_critical_name(sym)
             if not critical and not (_QUANT.match(sym) and obj_stub):
                 continue
@@ -566,6 +680,67 @@ def scan_commit_messages(repo, base, head):
     return out
 
 
+# `.recovery-intent-<slug>.txt` — a manifest of the task's own prompt, committed in place of
+# the work. Shape is identical everywhere it appears:
+#
+#     recovery-intent: <task slug>
+#     template: <hash>
+#     intent: <alphabetised bag of words lifted from the prompt>
+#     originalbase: <branch>
+#
+# No code, no test, no diff to any real file. apparently-law added its own test for this and
+# states the rule exactly: "a run with nothing real to ship must leave the task BLOCKED, not
+# commit a stub manifest" (test/repo-hygiene.test.js). That test is currently RED.
+#
+# MEASURED 2026-09-02, tracked files, live repos:
+#     pareto-2080 173 | pasch 63 | Sustainable_Barks 50 | racefeed 33 | hisanta 33
+#     pmi 19 | apparently-law 18 | smarter 1                      = 390 files, ~124KB in 2080 alone
+#
+# This is the same class stub_guard already blocks in code — a green result standing in for
+# work that did not happen — expressed as a file rather than as a function body.
+_INTENT_STUB_NAME = re.compile(r"(?:^|/)\.recovery-intent-[^/]*\.txt$")
+_INTENT_STUB_HEAD = re.compile(r"\Arecovery-intent:\s*\S")
+
+
+def scan_intent_stubs(repo, base, head):
+    """Intent manifests ADDED by this candidate. Blocking.
+
+    Deliberately diff-scoped, never whole-tree. The 390 already on the base branches must not
+    block every card in those projects forever — that is the precise failure documented above
+    _code_files, where one pre-existing stub refused a whole project. The periodic sweep is
+    where the existing ones get cleaned up; this gate only stops NEW ones landing.
+    """
+    out = []
+    if not base:
+        return out
+    rng = "%s..%s" % (base, head or "HEAD")
+    # --diff-filter=A: added only. A candidate that DELETES these is doing the right thing and
+    # must never be penalised for touching them.
+    rc, names, _ = _git(repo, "diff", "--name-only", "--diff-filter=A", rng)
+    if rc != 0 or not names:
+        return out
+    for name in names.split("\n"):
+        name = name.strip()
+        if not name or not _INTENT_STUB_NAME.search(name):
+            continue
+        # Confirm by CONTENT as well as by name, so a file that merely matches the naming
+        # convention but carries real material is not refused on its filename alone.
+        body = _read(os.path.join(repo, name)) or ""
+        if not _INTENT_STUB_HEAD.match(body):
+            continue
+        out.append(_violation(
+            "intent_manifest_stub", name,
+            "%s is a recovery-intent manifest: the task's own prompt written back out as a "
+            "file, with no code, test or diff behind it. A run that produced nothing real "
+            "must end BLOCKED so the work is visibly still owed; committing a manifest "
+            "instead makes the card look delivered and the debt disappears."
+            % name,
+            "Delete the file and leave the task BLOCKED with the reason it could not be "
+            "completed. If real work WAS done, commit that work — the manifest is not it.",
+            symbol=None))
+    return out
+
+
 # ---------------------------------------------------------------- plumbing
 
 def _code_files(repo):
@@ -577,6 +752,79 @@ def _code_files(repo):
             if f.endswith(CODE_EXT) and not f.endswith(".d.ts") and not _SKIP_DIR.search(p.replace(repo, "")):
                 files.append(p)
     return files
+
+
+# ---------------------------------------------------------------- pre-existing attribution
+
+# scan_shadowed and scan_fabricated walk the ENTIRE working tree (_code_files), not the
+# candidate's diff. On the merge path that meant a stub already sitting on the base branch
+# blocked every card in that project, forever, whatever the card contained.
+#
+# Measured 2026-09-02 on darwn: a clean detached checkout of orchestrator/dev -- zero card
+# changes applied -- produced 1 BLOCK violation (src/utils/zkPrivilegeProof.ts:13,
+# fabricated_critical_return, a file that has been on dev since before any of these cards
+# existed). 76 REGRESSFAILs in the live merge-train log cite exactly that path; tomorrow had
+# 35 more citing server/utils/otc/ecp/reputationPrivacy. The gate was not catching anything
+# a candidate did -- it was refusing the whole project.
+#
+# So on the merge path a whole-tree finding on a file the candidate did not touch is
+# DOWNGRADED to "warn": still reported, still filed and remediated by the periodic sweep
+# (run(), which passes no base and keeps full blocking behaviour), but it no longer blames a
+# card for code it never wrote. Anything the candidate DID touch still blocks, which is the
+# shape the guard was built for. Diff-derived codes (body_replaced_by_constant,
+# stub_commit_message) and guard_error are never downgraded -- they are already attributed.
+_TREE_SCAN_BLOCKING = {"stub_shadows_reexport", "fabricated_critical_return"}
+
+
+def _violation_relpath(repo, path):
+    """Strip the repo prefix and any trailing ':<line>' from a violation path."""
+    p = (path or "").strip()
+    if not p:
+        return ""
+    if p.startswith(repo):
+        p = p[len(repo):].lstrip("/")
+    return re.sub(r":\d+$", "", p)
+
+
+def _paths_touched_vs_base(repo, base):
+    """Repo-relative paths differing from `base` in this checkout, or None if unknowable.
+
+    `git diff --name-only <base>` compares base to the working tree, which is what the merge
+    path actually scans (an overlay checkout of the rebased candidate, possibly dirty). None
+    means the comparison failed -- callers must then change nothing and stay fail-closed.
+    """
+    if not base:
+        return None
+    rc, out, _ = _git(repo, "diff", "--name-only", base, "--")
+    if rc != 0:
+        return None
+    touched = set(x.strip() for x in out.split("\n") if x.strip())
+    rc2, out2, _ = _git(repo, "ls-files", "--others", "--exclude-standard")
+    if rc2 == 0:
+        touched.update(x.strip() for x in out2.split("\n") if x.strip())
+    return touched
+
+
+def attribute_to_candidate(repo, base, violations):
+    """Downgrade whole-tree BLOCK findings on files the candidate did not touch.
+
+    Mutates and returns `violations`. No-op when base is absent or the diff cannot be read.
+    """
+    touched = _paths_touched_vs_base(repo, base)
+    if touched is None:
+        return violations
+    for v in violations:
+        if v.get("severity") != "block":
+            continue
+        if v.get("code") not in _TREE_SCAN_BLOCKING:
+            continue
+        rel = _violation_relpath(repo, v.get("path"))
+        if rel and rel not in touched:
+            v["severity"] = "warn"
+            v["pre_existing"] = True
+            v["detail"] = ("PRE-EXISTING on %s (this candidate does not touch %s) -- advisory, "
+                           "not attributed to this card. %s" % (base, rel, v.get("detail", "")))
+    return violations
 
 
 def check_repo(repo, branch=None, project=None, base=None):
@@ -595,8 +843,10 @@ def check_repo(repo, branch=None, project=None, base=None):
         result["violations"].extend(scan_shadowed(repo, files))
         result["violations"].extend(scan_fabricated(repo, files))
         if base:
+            attribute_to_candidate(repo, base, result["violations"])
             result["violations"].extend(scan_commit_messages(repo, base, branch or "HEAD"))
             result["violations"].extend(scan_diff_replacements(repo, base, branch or "HEAD"))
+            result["violations"].extend(scan_intent_stubs(repo, base, branch or "HEAD"))
     except (OSError, ValueError, TypeError, re.error) as e:
         result["violations"].append(_violation(
             "guard_error", repo, "stub_guard could not evaluate this repo: %s" % e,
@@ -793,3 +1043,4 @@ if __name__ == "__main__":
         print(log)
     else:
         run()
+

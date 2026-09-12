@@ -202,9 +202,12 @@ class StoreIssuesTest(unittest.TestCase):
 
 class FixTest(unittest.TestCase):
 
-    def _issue(self, slug="feat-x", project_id="p1"):
+    def _issue(self, slug="feat-x", project_id="p1", task_state="BLOCKED"):
+        # task_state defaults to BLOCKED, not DONE: a DONE original is by policy not
+        # recoverable (queue_bankruptcy quarantines such rows on sight), so DONE would
+        # exercise the skip path rather than the queue path these tests assert on.
         return {"slug": slug, "project_id": project_id,
-                "branch": f"agent/{slug}", "task_state": "DONE"}
+                "branch": f"agent/{slug}", "task_state": task_state}
 
     def _db_no_existing(self, inserted):
         fake = MagicMock()
@@ -285,7 +288,100 @@ class FixTest(unittest.TestCase):
         fake = MagicMock()
         with patch.object(git_branch_scanner, "db", fake):
             result = git_branch_scanner.fix([])
-        self.assertEqual(result, {"queued": 0, "skipped": 0})
+        self.assertEqual(result, {"queued": 0, "skipped": 0, "skipped_resolved": 0})
+
+
+# ---------------------------------------------------------------------------
+# Recreate-loop guard: an original that already reached DONE/MERGED must never
+# get a fresh recover-missing-branch-* row filed for it.  Without this,
+# git_branch_scanner filed one, queue_bankruptcy quarantined it minutes later
+# ("original task <slug> is already DONE/MERGED"), the quarantined row fell
+# outside the dedup state filter, and the next sweep filed it again -- 14 rows
+# across 2 identical batches ~80min apart, on 2026-08-25.
+# ---------------------------------------------------------------------------
+
+class ResolvedOriginalGuardTest(unittest.TestCase):
+
+    def _issue(self, slug="canary-fleet-verify-20260824-a1", task_state="DONE"):
+        return {"slug": slug, "project_id": "p1",
+                "branch": f"agent/{slug}", "task_state": task_state}
+
+    def test_skips_when_issue_state_is_done(self):
+        fake = MagicMock()
+        with patch.object(git_branch_scanner, "db", fake):
+            result = git_branch_scanner.fix([self._issue(task_state="DONE")])
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["skipped_resolved"], 1)
+        fake.insert.assert_not_called()
+
+    def test_skips_when_issue_state_is_merged(self):
+        fake = MagicMock()
+        with patch.object(git_branch_scanner, "db", fake):
+            result = git_branch_scanner.fix([self._issue(task_state="MERGED")])
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["skipped_resolved"], 1)
+        fake.insert.assert_not_called()
+
+    def test_skips_when_original_resolved_after_scan(self):
+        # Issue was captured while the task was BLOCKED; the merge train landed it
+        # before fix() ran.  The re-read must catch that.
+        fake = MagicMock()
+        fake.select.return_value = [{"id": "orig", "state": "MERGED"}]
+        with patch.object(git_branch_scanner, "db", fake):
+            result = git_branch_scanner.fix([self._issue(task_state="BLOCKED")])
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["skipped_resolved"], 1)
+        fake.insert.assert_not_called()
+
+    def test_still_queues_for_unresolved_original(self):
+        inserted = []
+        fake = MagicMock()
+        fake.select.return_value = []
+        fake.insert.side_effect = lambda tbl, row, **kw: inserted.append((tbl, row))
+        with patch.object(git_branch_scanner, "db", fake):
+            result = git_branch_scanner.fix([self._issue(task_state="BLOCKED")])
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(result["skipped_resolved"], 0)
+        self.assertEqual(len(inserted), 1)
+
+    def test_state_recheck_fails_closed(self):
+        fake = MagicMock()
+        fake.select.side_effect = RuntimeError("db down")
+        with patch.object(git_branch_scanner, "db", fake):
+            result = git_branch_scanner.fix([self._issue(task_state="QUEUED")])
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["skipped_resolved"], 1)
+        fake.insert.assert_not_called()
+
+    def test_dedup_states_cover_terminal_states(self):
+        # A quarantined recovery row still counts as "already filed".  These four
+        # states were absent from the filter and are what let the loop repeat.
+        for state in ("QUARANTINED", "CLOSED", "SUPERSEDED", "DEPLOYED_AND_VERIFIED"):
+            self.assertIn(state, git_branch_scanner.DEDUP_STATES)
+
+    def test_skips_when_recovery_row_is_quarantined(self):
+        calls = []
+
+        def _select(table, params=None, *a, **kw):
+            calls.append(params or {})
+            slug = (params or {}).get("slug", "")
+            if slug.startswith(f"eq.{git_branch_scanner.RECOVERY_PREFIX}"):
+                return [{"id": "quarantined-recovery"}]
+            return []          # original is not DONE/MERGED
+
+        fake = MagicMock()
+        fake.select.side_effect = _select
+        with patch.object(git_branch_scanner, "db", fake):
+            result = git_branch_scanner.fix([self._issue(task_state="BLOCKED")])
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["skipped_resolved"], 0)
+        fake.insert.assert_not_called()
+        dedup_call = [c for c in calls
+                      if str(c.get("slug", "")).startswith(
+                          f"eq.{git_branch_scanner.RECOVERY_PREFIX}")]
+        self.assertTrue(dedup_call)
+        self.assertIn("QUARANTINED", dedup_call[0].get("state", ""))
 
 
 # ---------------------------------------------------------------------------

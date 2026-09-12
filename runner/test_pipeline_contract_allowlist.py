@@ -18,6 +18,28 @@ from unittest.mock import Mock, patch, MagicMock
 import pipeline_contract as pc
 
 
+@pytest.fixture(autouse=True)
+def restore_module_globals():
+    """Reload pipeline_contract after every test, under the REAL environment.
+
+    Several tests here do `importlib.reload(pc)` inside `patch.dict(os.environ, ...)`.
+    patch.dict restores the environment on exit, but the reload has already baked the
+    patched values into module-level globals -- SECURITY_TASK_ALLOWLIST and friends --
+    and those survive the with-block, the test, and the FILE. Nothing put them back.
+
+    Measured 2026-08-26: running this file before
+    test_pipeline_contract_preflight_strategy.py made two tests there fail that pass
+    on their own, because a leftover SECURITY_TASK_ALLOWLIST made
+    _credential_allows() reject every kind, so classify() downgraded a SQL-injection
+    prompt from `security` to `build`. Alone: 3 failures. Together: 5. That is the
+    same shape as the sys.modules leak fixed in test_db_env_interlock.py earlier this
+    session -- a test that mutates global state and does not put it back does not fail
+    itself, it fails whatever runs next.
+    """
+    yield
+    importlib.reload(pc)
+
+
 class TestAllowlistConfiguration:
     """Tests for allowlist initialization from environment variables."""
 
@@ -55,12 +77,24 @@ class TestAllowlistConfiguration:
             assert pc.LEGAL_TASK_ALLOWLIST is None
 
     def test_allowlist_whitespace_trimming(self):
+        """Entries are TRIMMED, and must be: an untrimmed allowlist matches nothing.
+
+        CORRECTED 2026-08-26. This asserted the opposite -- `{" build ", " research "}`
+        -- with a comment explaining that split() does not trim. _parse_allowlist does
+        trim, and the test was pinning the bug rather than the fix.
+
+        The untrimmed reading is not a harmless difference. The allowlist is compared
+        against a task `kind` ("build", "research"), so entries carrying spaces match
+        NOTHING: _credential_allows() returns False for every kind, and classify()
+        silently downgrades every security and legal task to `build` with
+        security_gated=True. An operator who writes a perfectly ordinary
+        `ORCH_SECURITY_TASK_ALLOWLIST=" build , research "` would have turned the
+        allowlist into a blocklist.
+        """
         with patch.dict(os.environ, {"ORCH_SECURITY_TASK_ALLOWLIST": " build , research "}):
             importlib.reload(pc)
-            # Should preserve spaces as-is from split (no trimming)
-            # This tests the actual behavior of split() which doesn't trim
-            values = set(" build , research ".split(","))
-            assert pc.SECURITY_TASK_ALLOWLIST == values
+            assert pc.SECURITY_TASK_ALLOWLIST == {"build", "research"}
+            assert pc._credential_allows("security", "build", "text") is True
 
     def test_allowlist_empty_string(self):
         with patch.dict(os.environ, {"ORCH_SECURITY_TASK_ALLOWLIST": ""}):
@@ -168,11 +202,21 @@ class TestOperationAuthorized:
             assert pc._operation_authorized("permission_audit", "legal") is False
 
     def test_operation_authorized_fail_soft_on_exception(self):
-        # If there's an error parsing env, should fail-soft and allow
-        with patch.dict(os.environ, {"ORCH_SECURITY_ALLOWED_OPERATIONS": "malformed\x00data"}):
-            # Should not raise, should return True (fail-soft)
+        """A malformed allowlist entry must fail SOFT, not raise into the caller.
+
+        CORRECTED 2026-08-26. The original set the env var to "malformed\\x00data",
+        which never reached the code under test: os.environ refuses an embedded null
+        byte, so `patch.dict` itself raised ValueError during setup and the assertion
+        below never ran. It was testing that Python rejects null bytes.
+
+        "bad name!" is a value an operator can actually produce, and it exercises the
+        real path: _operation_authorized validates each entry against
+        ^[a-z_][a-z0-9_]*$, raises ValueError on a bad one, catches it, warns, and
+        allows -- because a typo in a config value must not wedge the pipeline shut.
+        """
+        with patch.dict(os.environ, {"ORCH_SECURITY_ALLOWED_OPERATIONS": "bad name!"}):
             result = pc._operation_authorized("task_security_gate", "security")
-            assert isinstance(result, bool)
+        assert result is True, "a malformed entry must fail soft, not deny everything"
 
     def test_operation_authorized_multi_operation_list(self):
         with patch.dict(os.environ, {"ORCH_SECURITY_ALLOWED_OPERATIONS": "op1,op2,op3,op4"}):
@@ -478,8 +522,15 @@ class TestLegalRegex:
         assert pc.LEGAL_RX.search("sign contract") is not None
 
     def test_legal_rx_matches_licensing_keyword(self):
-        assert pc.LEGAL_RX.search("licensing agreement") is not None
-        assert pc.LEGAL_RX.search("license") is not None
+        """Every form of the word, not just the gerund.
+
+        LEGAL_RX carried `licensing` but not `license`, so "update the license terms"
+        or "add a license grant" did not trip the legal class at all. There is no
+        reading on which "licensing" is legal-posture work and "license" is not; the
+        base form was simply missed. Fixed 2026-08-26 with `licens\\w*`.
+        """
+        for text in ("licensing agreement", "license", "licenses", "licensed to resell"):
+            assert pc.LEGAL_RX.search(text) is not None, text
 
     def test_legal_rx_matches_privacy_keyword(self):
         assert pc.LEGAL_RX.search("privacy policy") is not None

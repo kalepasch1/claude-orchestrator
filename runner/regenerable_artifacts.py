@@ -98,6 +98,26 @@ REGENERABLE_PATTERNS: Tuple[str, ...] = (
     "*/.pytest_cache/*",
     ".turbo/*",
     "*/.turbo/*",
+    # aider's symbol-tag cache. A SQLite database plus its -shm/-wal siblings, rebuilt
+    # from the source tree whenever aider needs it. Added 2026-09-02: two repos track
+    # these files with no .gitignore entry (pasch and Sustainable_Barks; the fleet's
+    # other four repos ignore them), and because every agent run rewrites the database
+    # they conflict on every staging/prod refresh. One release failure named the file
+    # outright:
+    #
+    #   [gate:refresh] staging/prod refresh failed — self-heal queued:
+    #   nflict in .aider.tags.cache.v4/cache.db-shm
+    #   Automatic merge failed; fix conflicts and t...
+    #
+    # 14 release failures across kalepasch-com, santas-secret-workshop and beethoven
+    # came from staging/prod refresh conflicts.
+    #
+    # DELIBERATELY NOT INCLUDED: .aider.chat.history.md and .aider.input.history. They
+    # are transcripts of what agents actually did, and unlike a cache nothing can
+    # rebuild them. They are not authorship, but they are not regenerable either, and
+    # this list means exactly one thing.
+    ".aider.tags.cache*/*",
+    "*/.aider.tags.cache*/*",
 )
 
 

@@ -73,7 +73,7 @@ class TestSecretsManagerBasic(unittest.TestCase):
         self.assertEqual(result, "keychain-secret-value")
         mock_subprocess.assert_called_once_with(
             ["security", "find-generic-password", "-s", "my-api-key", "-w"],
-            text=True
+            text=True, stderr=subprocess.DEVNULL
         )
 
     def test_resolve_from_doppler_store(self):
@@ -92,7 +92,7 @@ class TestSecretsManagerBasic(unittest.TestCase):
         self.assertEqual(result, "doppler-secret-abc123")
         mock_subprocess.assert_called_once_with(
             ["doppler", "secrets", "get", "PROD_API_KEY", "--plain"],
-            text=True
+            text=True, stderr=subprocess.DEVNULL
         )
 
     def test_resolve_from_1password_store(self):
@@ -111,7 +111,7 @@ class TestSecretsManagerBasic(unittest.TestCase):
         self.assertEqual(result, "1password-secret-xyz789")
         mock_subprocess.assert_called_once_with(
             ["op", "read", "op://vault/item/password"],
-            text=True
+            text=True, stderr=subprocess.DEVNULL
         )
 
     def test_resolve_returns_none_on_no_rows(self):
@@ -169,16 +169,78 @@ class TestSecretsManagerProjectScoping(unittest.TestCase):
         with patch.object(secrets_manager, "db") as mock_db:
             # Return both project-specific and global
             mock_db.select.return_value = [
-                {"store": "env", "ref": "GLOBAL_KEY", "provider": "test", "name": "api_key", "project": None},
-                {"store": "env", "ref": "PROJ_KEY", "provider": "test", "name": "api_key", "project": "proj-x"}
+                {"store": "env", "ref": "GLOBAL_REF", "provider": "test", "name": "api_key", "project": None},
+                {"store": "env", "ref": "PROJ_REF", "provider": "test", "name": "api_key", "project": "proj-x"}
             ]
-            os.environ["GLOBAL_KEY"] = "global-secret"
-            os.environ["PROJ_KEY"] = "project-secret"
+            os.environ["GLOBAL_REF"] = "global-secret"
+            os.environ["PROJ_REF"] = "project-secret"
 
             result = secrets_manager.resolve("test", "api_key", project="proj-x")
 
         # Should prefer the project-specific one
         self.assertEqual(result, "project-secret")
+
+    def test_resolve_does_not_leak_another_projects_secret(self):
+        """A secret registered to a DIFFERENT project must never resolve for this one.
+
+        Regression for the `or rows` fallback in resolve(). The filter kept rows whose
+        project was this project or None; when neither existed the comprehension went
+        empty, the falsy-list fallback restored the FULL unfiltered result set, and
+        rows[0] was some other project's row. That value was read out of the store and
+        injected into this project's task env — one tenant's credential handed to another
+        tenant's agent, on the hot path that builds every task's environment.
+        """
+        with patch.object(secrets_manager, "db") as mock_db:
+            mock_db.select.return_value = [
+                {"store": "env", "ref": "OTHER_PROJECT_REF", "provider": "test",
+                 "name": "api_key", "project": "proj-other"}
+            ]
+            os.environ["OTHER_PROJECT_REF"] = "not-yours"
+            try:
+                result = secrets_manager.resolve("test", "api_key", project="proj-mine")
+            finally:
+                os.environ.pop("OTHER_PROJECT_REF", None)
+
+        self.assertIsNone(result)
+
+    def test_resolve_prefers_project_row_regardless_of_row_order(self):
+        """Precedence must come from the project column, not from PostgREST's row order.
+
+        The old rows[0] pick made an override apply or not apply depending on which row
+        the database happened to return first, so the same task could get the global
+        credential on one run and the project one on the next. Assert both orderings.
+        """
+        proj_row = {"store": "env", "ref": "PROJ_REF", "provider": "test",
+                    "name": "api_key", "project": "proj-x"}
+        global_row = {"store": "env", "ref": "GLOBAL_REF", "provider": "test",
+                      "name": "api_key", "project": None}
+        os.environ["GLOBAL_REF"] = "global-secret"
+        os.environ["PROJ_REF"] = "project-secret"
+        try:
+            for ordering in ([proj_row, global_row], [global_row, proj_row]):
+                with self.subTest(order=[r["ref"] for r in ordering]):
+                    with patch.object(secrets_manager, "db") as mock_db:
+                        mock_db.select.return_value = list(ordering)
+                        result = secrets_manager.resolve("test", "api_key", project="proj-x")
+                    self.assertEqual(result, "project-secret")
+        finally:
+            os.environ.pop("GLOBAL_REF", None)
+            os.environ.pop("PROJ_REF", None)
+
+    def test_resolve_falls_back_to_global_when_project_has_no_row(self):
+        """A global (project=None) row is still the right answer when no override exists."""
+        with patch.object(secrets_manager, "db") as mock_db:
+            mock_db.select.return_value = [
+                {"store": "env", "ref": "GLOBAL_ONLY_REF", "provider": "test",
+                 "name": "api_key", "project": None}
+            ]
+            os.environ["GLOBAL_ONLY_REF"] = "global-secret"
+            try:
+                result = secrets_manager.resolve("test", "api_key", project="proj-x")
+            finally:
+                os.environ.pop("GLOBAL_ONLY_REF", None)
+
+        self.assertEqual(result, "global-secret")
 
     def test_inject_env_respects_project_scope(self):
         """Verify inject_env returns only secrets for the specified project."""
@@ -206,7 +268,13 @@ class TestSecretsManagerEdgeCases(unittest.TestCase):
 
     def test_resolve_with_none_provider(self):
         """Verify resolve handles None provider gracefully."""
-        result = secrets_manager.resolve(None, "key")
+        # db must be patched here like every other resolve() test: unpatched, this reached
+        # for a live Supabase and failed with "set SUPABASE_URL and SUPABASE_SERVICE_KEY"
+        # rather than exercising anything about a None provider.
+        with patch.object(secrets_manager, "db") as mock_db:
+            mock_db.select.return_value = []
+            result = secrets_manager.resolve(None, "key")
+
         self.assertIsNone(result)
 
     def test_resolve_with_none_name(self):

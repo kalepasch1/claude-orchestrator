@@ -27,6 +27,37 @@
 # Safe by design: every step is optional and skipped when absent.
 set -eu
 
+# ── 0. Machine-local settings must never enter a commit ──────────────────────────
+#
+# .claude/settings.local.json is gitignored and holds this machine's Claude Code
+# permission allowlist plus absolute home paths. It is nonetheless TRACKED on 616
+# remote branches, and the mechanism is self-perpetuating: checking out one of
+# those branches makes the file tracked in the working copy, the next stash
+# captures it, sentinel's stash-rescue turns that stash into a
+# hotfix/stash-rescue-* branch, and rescue_branch_durability pushes it. So the
+# file spreads without anyone ever choosing to commit it.
+#
+# The ignore rule alone cannot stop that — git ignores only UNTRACKED paths, and
+# on those branches it is already tracked. This refuses it at the one point every
+# copy has to pass through. Staged deletions are allowed, so cleaning it up works.
+_local_settings=$(git diff --cached --name-only --diff-filter=d | grep -x '\.claude/settings\.local\.json' || true)
+if [ -n "$_local_settings" ]; then
+  cat >&2 <<'MSG'
+[pre-commit] ✗ .claude/settings.local.json is staged — refusing the commit.
+
+This file is machine-local: it carries this box's Claude Code permission allowlist
+and absolute home paths, and it is in .gitignore for that reason. It is already
+tracked on old agent branches, which is why git's ignore rule does not catch it
+here; that is the leak this hook closes.
+
+  git rm --cached .claude/settings.local.json
+
+Then commit again. To remove it from a branch that carries it, stage the deletion —
+this hook allows that.
+MSG
+  exit 1
+fi
+
 # ── 1. The repo's own sanctioned hook set (masked by core.hooksPath otherwise) ────
 if [ -x scripts/git-hooks/pre-commit ]; then
   self="$0"
@@ -104,6 +135,87 @@ if [ "${SKIP_RUNNER_SANITY:-0}" != "1" ]; then
         echo "[pre-commit] Python only raises these at call time, so they ship silently and crash-loop a job later." >&2
         exit 1
       fi
+    fi
+  fi
+fi
+
+
+# ── 4. Commit identity: refuse HERE, where the fix is free ───────────────────────
+#
+# WHY AT COMMIT TIME, when author_identity_guard.py already runs at push time.
+# Because the two moments have opposite economics, and the push guard is correctly
+# lenient for its moment in a way that is wrong for this one:
+#
+#   at commit  nothing is published. `git commit --amend --reset-author` fixes it
+#              in one command and costs nothing. So BOTH a wrong email and a wrong
+#              display name are refused.
+#   at push    a wrong name is on commits that may already be reachable elsewhere,
+#              and the recommended rewrite forks published history. So the push
+#              guard blocks a wrong EMAIL and only warns on a wrong NAME. That is
+#              the right call there, and it is why 135 commits authored
+#              "Kale Pasch <kalepasch@gmail.com>" across four repos exist at all:
+#              nothing ever objected at the only moment objecting was cheap.
+#
+# The name is not cosmetic in practice even though §G calls it so. apparently-law's
+# test/binding-rules.test.js asserts the exact author string, so a display-name drift
+# does not merely look untidy — it fails a suite and costs a whole merge. This gate
+# and that test now agree on the same rule, applied at the moment each can act on it.
+#
+# Escape hatches: SKIP_IDENTITY_GATE=1 git commit … | ORCH_AUTHOR_IDENTITY_GUARD=off
+# Fail-soft: any error reading the identity allows the commit and says so.
+if [ "${SKIP_IDENTITY_GATE:-0}" != "1" ] && [ "${ORCH_AUTHOR_IDENTITY_GUARD:-enforce}" != "off" ]; then
+  _want_name="${ORCH_GIT_USER_NAME:-kalepasch1}"
+  _want_email="${ORCH_GIT_USER_EMAIL:-kalepasch@gmail.com}"
+  _want_login="${ORCH_GIT_USER_LOGIN:-kalepasch1}"
+
+  _ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)
+  if [ -z "$_ident" ]; then
+    echo "[pre-commit] identity unreadable — allowing the commit (fail-soft)" >&2
+  else
+    # "Name <email> 1788350000 -0400" → name, email
+    _name=$(printf '%s' "$_ident" | sed -n 's/^\(.*\) <.*$/\1/p')
+    _email=$(printf '%s' "$_ident" | sed -n 's/^.*<\([^>]*\)>.*$/\1/p')
+    _email_lc=$(printf '%s' "$_email" | tr '[:upper:]' '[:lower:]')
+    _want_email_lc=$(printf '%s' "$_want_email" | tr '[:upper:]' '[:lower:]')
+
+    # The owner is the canonical address OR their GitHub noreply alias. The alias is
+    # what GitHub stamps on every merge made through the web UI, and a 400-deployment
+    # Vercel audit on 2026-08-17 found it deploying to production, so refusing it
+    # would wedge the release train — which it did, on 2026-08-18.
+    _owner=0
+    [ "$_email_lc" = "$_want_email_lc" ] && _owner=1
+    printf '%s' "$_email_lc" | grep -Eq "^([0-9]+\+)?${_want_login}@users\.noreply\.github\.com$" && _owner=1
+
+    if [ "$_owner" -ne 1 ]; then
+      cat >&2 <<MSG
+[pre-commit] ✗ REFUSED — this commit would be authored <$_email>.
+
+Vercel puts a production deploy whose commit author is anyone else into BLOCKED
+state. Nothing fails loudly; the deploy simply never happens and the repo looks
+healthy. Fixing it after the push means rewriting history.
+
+    git config user.email "$_want_email"
+    git config user.name  "$_want_name"
+
+Break-glass: SKIP_IDENTITY_GATE=1 git commit …
+MSG
+      exit 1
+    fi
+
+    if [ "$_name" != "$_want_name" ]; then
+      cat >&2 <<MSG
+[pre-commit] ✗ REFUSED — this commit would be authored "$_name", not "$_want_name".
+
+The email is right, so Vercel would deploy it. It is refused anyway because
+apparently-law's test/binding-rules.test.js asserts the exact author string: a
+display-name drift fails that suite and costs a whole merge to unpick. Right now
+nothing is published and the fix is one command.
+
+    git config user.name "$_want_name"
+
+Break-glass: SKIP_IDENTITY_GATE=1 git commit …
+MSG
+      exit 1
     fi
   fi
 fi

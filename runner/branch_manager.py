@@ -51,26 +51,55 @@ def find_stale_branches(repo_path, max_age_days=None):
     branches = list_agent_branches(repo_path)
     stale = []
 
+    # Which branches are stale is pure date arithmetic — no git, no control plane.
+    # Deciding that FIRST means the two expensive lookups below run only when there
+    # is something to decide about, and run once instead of once per branch.
     for b in branches:
         try:
-            # Parse the date (ISO format from git)
             date_str = b["date"].split(" +")[0].split(" -")[0].strip()
-            branch_date = datetime.datetime.fromisoformat(date_str)
-            if branch_date < cutoff:
-                # Check if merged into master/main
-                base = _detect_base_branch(repo_path)
-                try:
-                    subprocess.check_output(
-                        ["git", "merge-base", "--is-ancestor", b["name"], base],
-                        cwd=repo_path, stderr=subprocess.DEVNULL, timeout=10
-                    )
-                    # If no error, branch is merged — safe to delete
-                    b["status"] = "merged"
-                except subprocess.CalledProcessError:
-                    b["status"] = "unmerged"
+            if datetime.datetime.fromisoformat(date_str) < cutoff:
                 stale.append(b)
         except Exception:
             continue
+
+    if not stale:
+        return stale
+
+    # BOTH LOOKUPS ARE HOISTED, AND THAT IS THE WHOLE POINT.
+    #
+    # This used to call _detect_base_branch(repo_path) and spawn one
+    # `git merge-base --is-ancestor` PER STALE BRANCH. _detect_base_branch reads
+    # projects.default_base, so it is a control-plane round trip, and the answer
+    # cannot differ between iterations — it does not depend on `b` at all.
+    #
+    # Measured on this checkout on 2026-09-06: 829 agent/ branches, 215 of them
+    # stale, 0.21s per _detect_base_branch and ~0.56s per merge-base — about 165s,
+    # against pytest.ini's 60s per-test budget. test_branch_health_report_structure
+    # therefore did not fail, it TIMED OUT, and with timeout_method = thread that
+    # kills the whole session: exit 1, which production_push_guard reads as a red
+    # suite. The gate was blocking the promotion on a quadratic loop, not on a bug
+    # in the code being promoted.
+    #
+    # One for-each-ref --merged replaces the N ancestor probes. It is the same
+    # question: `merge-base --is-ancestor B BASE` succeeds exactly when B is in
+    # `for-each-ref --merged BASE`. 215 subprocesses plus 215 network calls become
+    # two subprocesses and one network call.
+    base = _detect_base_branch(repo_path)
+    try:
+        merged_out = subprocess.check_output(
+            ["git", "for-each-ref", "--merged", base,
+             "--format=%(refname:short)", "refs/heads/agent/"],
+            cwd=repo_path, text=True, stderr=subprocess.DEVNULL, timeout=30
+        )
+        merged = {ln.strip() for ln in merged_out.splitlines() if ln.strip()}
+    except Exception:
+        # Fail-soft, and fail-soft in the SAFE direction: an unknown merge state
+        # must not read as "merged", because merged is the status that makes a
+        # branch eligible for deletion downstream.
+        merged = set()
+
+    for b in stale:
+        b["status"] = "merged" if b["name"] in merged else "unmerged"
 
     return stale
 

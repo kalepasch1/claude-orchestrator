@@ -36,12 +36,50 @@ class TestIntentDetection(unittest.TestCase):
             {"_comment": "this repo does not deploy; the only project is web/"}))
 
     def test_the_real_root_config_is_recognised(self):
+        """The declaration lives in the SIDECAR now, so the check must be given `root`.
+
+        This test called _declares_intentional_no_deploy(cfg) with no root and asserted
+        the answer came out of vercel.json alone. That was true until the declaration
+        moved: vercel.json is schema-validated and the CLI refuses to deploy when it
+        carries a key the schema does not define, so `_deploymentDisabledIntentionally`
+        and `_comment` made every `vercel deploy` from the repo root fail before
+        uploading anything. They could not simply be deleted either -- they are what
+        stops the deployment_disabled_everywhere advisory re-filing itself as a backlog
+        task on every sweep -- so they moved to vercel.no-deploy.json, which the guard
+        reads from `root`.
+
+        Without root the guard can only see vercel.json, which no longer carries the
+        keys, so this asserted False and read as "the safety guard is gone" when the
+        guard was intact and correctly relocated. Verified 2026-09-07: same cfg, no root
+        -> False, root=repo -> True.
+        """
         repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         cfg = guard._load_json(os.path.join(repo, "vercel.json"))
         if not cfg:
             self.skipTest("root vercel.json not present")
-        self.assertTrue(guard._declares_intentional_no_deploy(cfg),
+        self.assertTrue(guard._declares_intentional_no_deploy(cfg, root=repo),
                         "the documented 'Do not remove' guard must read as intentional")
+
+    def test_the_sidecar_is_where_the_declaration_actually_lives(self):
+        """Pins the reason the test above needs `root`, so the move cannot be undone quietly.
+
+        If someone puts the keys back into vercel.json to make the check above pass
+        without a root, `vercel deploy` from the repo root breaks again. This asserts the
+        split explicitly: vercel.json stays schema-clean, the sidecar carries the intent.
+        """
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # `config`, not the file's usual `cfg`: tools/lint_conventions.py counts `cfg` as
+        # NAMING_CONVENTION, and the ratchet is a count. Five new uses would have raised
+        # the committed baseline by five for a test that fixes a gate.
+        config = guard._load_json(os.path.join(repo, "vercel.json")) or {}
+        self.assertNotIn("_comment", config,
+                         "vercel.json must stay schema-clean or the CLI refuses to deploy")
+        self.assertNotIn("_deploymentDisabledIntentionally", config,
+                         "vercel.json must stay schema-clean or the CLI refuses to deploy")
+        self.assertFalse(guard._declares_intentional_no_deploy(config),
+                         "without a root there is nothing in vercel.json to find")
+        self.assertTrue(guard._declares_intentional_no_deploy(config, root=repo),
+                        "the sidecar vercel.no-deploy.json must carry the declaration")
 
     def test_absent_or_unrelated_comment_is_not_intent(self):
         for cfg in ({}, {"git": {}}, {"_comment": "build settings for the web app"},

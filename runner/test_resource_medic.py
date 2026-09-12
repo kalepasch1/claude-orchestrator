@@ -252,11 +252,20 @@ class LoadedModelsTests(unittest.TestCase):
 
     @patch("resource_medic.sh")
     def test_loaded_models_parses_ollama_ps_output(self, mock_sh):
-        # ollama ps output format: NAME MODELID PROCESSOR SIZE DETAILS
-        mock_sh.return_value = Mock(stdout="NAME         MODELID    PROCESSOR  9.2GB      1234567\nmodel:13b    abc123def  cpu        20.5GB     abcdef\n")
+        # `ollama ps` columns are NAME, ID, SIZE, PROCESSOR, UNTIL -- and SIZE is printed as
+        # two whitespace-separated fields ("9.2 GB"), which is why _loaded_models() reads the
+        # magnitude out of p[2]. This fixture used to invent a NAME/MODELID/PROCESSOR/SIZE
+        # ordering that `ollama ps` has never emitted, so p[2] was the processor string, every
+        # line failed float() and the parser looked broken while being correct.
+        mock_sh.return_value = Mock(stdout=(
+            "NAME         ID              SIZE      PROCESSOR    UNTIL\n"
+            "model:7b     abc123def000    9.2 GB    100% GPU     4 minutes from now\n"
+            "model:13b    def456abc111    20.5 GB   100% GPU     4 minutes from now\n"
+        ))
         import resource_medic
         models = resource_medic._loaded_models()
-        self.assertGreaterEqual(len(models), 1)
+        # biggest first
+        self.assertEqual(models, [(20.5, "model:13b"), (9.2, "model:7b")])
 
     @patch("resource_medic.sh")
     def test_loaded_models_returns_empty_on_error(self, mock_sh):
@@ -267,11 +276,18 @@ class LoadedModelsTests(unittest.TestCase):
 
     @patch("resource_medic.sh")
     def test_loaded_models_skips_unparseable_lines(self, mock_sh):
-        # ollama ps format: NAME ID PROCESSOR SIZE (size as float)
-        mock_sh.return_value = Mock(stdout="NAME         ID       PROC  SIZE\nmodel:7b     123      gpu   9.2\nmodel:13b    456      gpu   20.5\n")
+        # One good row, one row whose size column is not a number, one row too short to have
+        # a size column at all. The garbage must be dropped without taking the good row with
+        # it. (Same fixture correction as above: SIZE is the third field, not the fourth.)
+        mock_sh.return_value = Mock(stdout=(
+            "NAME         ID              SIZE      PROCESSOR    UNTIL\n"
+            "model:7b     abc123def000    9.2 GB    100% GPU     4 minutes from now\n"
+            "model:13b    def456abc111    unknown   100% GPU     4 minutes from now\n"
+            "truncated    row\n"
+        ))
         import resource_medic
         models = resource_medic._loaded_models()
-        self.assertGreaterEqual(len(models), 1)
+        self.assertEqual(models, [(9.2, "model:7b")])
 
     @patch("resource_medic.sh")
     def test_loaded_models_handles_empty_output(self, mock_sh):
@@ -637,6 +653,58 @@ class RecentEventsTests(unittest.TestCase):
             import resource_medic
             events = resource_medic._recent_events(10)
             self.assertGreater(len(events), 0)
+
+    def test_recent_events_reads_sentinel_lines_written_by_sentinel_py(self):
+        """The exact line format sentinel.py writes must land inside the window.
+
+        Regression: sentinel.py stamps `datetime.datetime.utcnow().isoformat() + "Z"` — a
+        NAIVE clock reading with a UTC marker appended — and _recent_events() stripped the "Z"
+        and compared the naive result against an AWARE cutoff. Python raises TypeError rather
+        than ordering those, and the comparison lived inside a bare `except Exception: pass`,
+        so every sentinel event was dropped from every window with no error anywhere. That
+        blinded thrash_hunter() and loop_breaker() completely: they count ram-clamp / dedupe /
+        runner-cycled / runner-wedged events, and they were counting zero of them.
+        """
+        stamp = datetime.datetime.utcnow().isoformat() + "Z"     # byte-for-byte sentinel.py
+        with open(self.sentinel_log, "w") as f:
+            f.write(f"{stamp} sentinel ram-clamp unloaded model:70b (48.1GB)\n")
+            f.write(f"{stamp} sentinel runner-cycled pid=4211 wedged 3 cycles\n")
+
+        with patch("resource_medic.JOURNAL", self.journal_file), \
+             patch("resource_medic.SENTINEL_LOG", self.sentinel_log):
+            import resource_medic
+            events = resource_medic._recent_events(10)
+
+        self.assertEqual(sorted(a for _b, a, _d in events), ["ram-clamp", "runner-cycled"])
+        self.assertTrue(all(b == "sentinel" for b, _a, _d in events))
+
+    def test_recent_events_still_excludes_old_sentinel_lines(self):
+        """Guard against overcorrecting: making the comparison work must not make it
+        always-true. A line outside the window is still outside the window."""
+        stamp = (datetime.datetime.utcnow() - datetime.timedelta(minutes=45)).isoformat() + "Z"
+        with open(self.sentinel_log, "w") as f:
+            f.write(f"{stamp} sentinel runner-cycled pid=4211\n")
+
+        with patch("resource_medic.JOURNAL", self.journal_file), \
+             patch("resource_medic.SENTINEL_LOG", self.sentinel_log):
+            import resource_medic
+            events = resource_medic._recent_events(10)
+
+        self.assertEqual(events, [])
+
+    def test_recent_events_drops_a_garbled_sentinel_timestamp_without_dropping_the_rest(self):
+        """A truncated or half-written log line must not cost us the readable ones."""
+        good = datetime.datetime.utcnow().isoformat() + "Z"
+        with open(self.sentinel_log, "w") as f:
+            f.write("not-a-timestamp sentinel dedupe duplicate queued slug\n")
+            f.write(f"{good} sentinel dedupe duplicate queued slug\n")
+
+        with patch("resource_medic.JOURNAL", self.journal_file), \
+             patch("resource_medic.SENTINEL_LOG", self.sentinel_log):
+            import resource_medic
+            events = resource_medic._recent_events(10)
+
+        self.assertEqual([a for _b, a, _d in events], ["dedupe"])
 
     def test_recent_events_handles_missing_files(self):
         with patch("resource_medic.JOURNAL", "/nonexistent/j.jsonl"), \

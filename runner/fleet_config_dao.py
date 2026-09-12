@@ -28,6 +28,7 @@ error, same hook semantics. Only the number of requests differs.
 import os, sys, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import fleet_config_guard
 
 _change_hook = None   # callable(old, new, change_type) or None
 
@@ -63,14 +64,33 @@ def get_all():
         return []
 
 
-def get(key):
-    """Return the fleet_config row for key, or None."""
+def _get_unchecked(key):
+    """Read one row WITHOUT the credential-read guard. Internal use only.
+
+    The write path needs the previous row to build accurate before/after
+    context, and a write of a credential must fail with assert_writable's
+    message — not with a read refusal raised a step earlier from inside
+    set_value(). Nothing outside this module should call this.
+    """
     try:
         rows = db.select("fleet_config",
                          {"select": "*", "key": f"eq.{key}", "limit": "1"}) or []
         return rows[0] if rows else None
     except Exception:
         return None
+
+
+def get(key):
+    """Return the fleet_config row for key, or None.
+
+    Raises fleet_config_guard.CredentialReadError for credential-shaped keys.
+    That is deliberately NOT fail-soft: this function's `None` on error is what
+    turned "the token is not in this table" into an empty string and a broken
+    push across the whole executor fleet. A caller that wants a credential is
+    already wrong, and must hear so rather than receive nothing.
+    """
+    fleet_config_guard.assert_readable(key)
+    return _get_unchecked(key)
 
 
 def get_many(keys):
@@ -80,6 +100,16 @@ def get_many(keys):
     ``.get(key)`` and see the same ``None`` that ``get()`` would have returned.
     Fail-soft: an empty dict on any error, matching ``get()``'s contract.
     """
+    wanted = [str(k) for k in (keys or []) if k is not None]
+    # Batching must not become the way around the guard: one credential key in a
+    # list of fifty is still a credential read.
+    for k in wanted:
+        fleet_config_guard.assert_readable(k)
+    return _get_many_unchecked(wanted)
+
+
+def _get_many_unchecked(keys):
+    """Batch read WITHOUT the credential-read guard. Internal use only."""
     wanted = [str(k) for k in (keys or []) if k is not None]
     if not wanted:
         return {}
@@ -101,7 +131,10 @@ def set_value(key, value, note=None, updated_by=None):
     write so change-stream consumers get accurate before/after context.
     Fires _change_hook immediately after a successful write.
     """
-    return _write(key, value, get(key), note=note, updated_by=updated_by)
+    # _get_unchecked, not get(): a credential write must fail with
+    # assert_writable's message from _write, not with a read refusal raised
+    # from the before-image lookup one line earlier.
+    return _write(key, value, _get_unchecked(key), note=note, updated_by=updated_by)
 
 
 def set_many(items):
@@ -119,7 +152,7 @@ def set_many(items):
     for item in batch:
         if "key" not in item:
             raise ValueError("[fleet-config-dao] set_many item is missing 'key'")
-    olds = get_many([item["key"] for item in batch])
+    olds = _get_many_unchecked([item["key"] for item in batch])
     return [
         _write(item["key"], item.get("value"), olds.get(item["key"]),
                note=item.get("note"), updated_by=item.get("updated_by"))
@@ -140,7 +173,15 @@ def _write(key, value, old, note=None, updated_by=None):
         row["updated_by"] = updated_by
     try:
         written = db.upsert("fleet_config", row)
+    except ValueError:
+        # db.upsert raises ValueError for exactly one reason: fleet_config_guard
+        # refused the write. That refusal is the fail-CLOSED half of the
+        # credential ban and it must reach the caller. Swallowing it into
+        # (old, None) made a policy refusal indistinguishable from a dropped
+        # packet -- the write was correctly blocked, and nobody was told.
+        raise
     except Exception:
+        # Transport and server errors stay fail-soft, as every caller expects.
         return old, None
     # db.insert asks for return=representation, so the written row normally
     # comes back here — re-reading it would be a second round trip for a value

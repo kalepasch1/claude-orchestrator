@@ -67,7 +67,7 @@ SUBSCRIPTION_CATALOG = [
      "cowork_capable": False, "models": ["deepseek-chat", "deepseek-reasoner"],
      "best_for": ["mechanical", "boilerplate", "formatting", "simple fixes"]},
     {"vendor": "google",    "tier": "advanced", "monthly_cost": 20,  "est_tasks_hour": 20,
-     "cowork_capable": False, "models": ["gemini-2.5-pro", "gemini-2.0-flash"],
+     "cowork_capable": False, "models": ["gemini-3.1-pro-preview", "gemini-2.5-flash"],
      "best_for": ["standard tasks", "code review", "docs"]},
 ]
 

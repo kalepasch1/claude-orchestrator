@@ -184,16 +184,25 @@ def _metric_value(p, injected=None):
     return None
 
 
+PERFECT_CAP = float(os.environ.get("ORCH_IMPROVE_PERFECT_CAP", "100.0"))
+
+
 def realized_multiplier(baseline, realized, comparator):
-    """How many times better the metric actually got. <1.0 means it got worse."""
+    """How many times better the metric actually got. <1.0 means it got worse.
+
+    2026-09-01: a lower-is-better metric that reaches ZERO -- the ideal, the best possible
+    outcome -- used to return None here and be judged 'unmeasurable'. Perfect success was
+    indistinguishable from a broken query. Hitting the ideal is an unambiguous win; it is
+    reported as PERFECT_CAP rather than infinity so calibration averages stay finite.
+    """
     if baseline is None or realized is None:
         return None
     if comparator == "lt":
         if realized <= 0:
-            return None
+            return PERFECT_CAP if baseline > 0 else None
         return round(baseline / realized, 4)
     if baseline <= 0:
-        return None
+        return PERFECT_CAP if (realized or 0) > 0 else None
     return round(realized / baseline, 4)
 
 
@@ -208,15 +217,28 @@ def evaluate(p, injected=None, now=None):
         return {"verdict": "unmeasurable", "reason": "no baseline_value captured at creation"}
     baseline = float(baseline)
     comparator = p.get("comparator") or "lt"
-    margin = float(p.get("required_margin") or DEFAULT_MARGIN)
+    # `or DEFAULT_MARGIN` silently swallowed a legitimate 0.0. Test for None.
+    _m = p.get("required_margin")
+    margin = float(DEFAULT_MARGIN if _m is None else _m)
     realized = _metric_value(p, injected)
     if realized is None:
         return {"verdict": "unmeasurable", "reason": "metric_query returned no value"}
     mult = realized_multiplier(baseline, realized, comparator)
     if mult is None:
         return {"verdict": "unmeasurable", "reason": "multiplier undefined at these values"}
-    ok = mult >= margin
-    return {"verdict": "validated" if ok else "regressed", "realized": realized,
+    # THREE outcomes, not two. build_proposal sets required_margin = max(1.10, pred*0.5),
+    # so a bottleneck with 16x of headroom demands a 5x improvement. Under the old binary
+    # rule a genuine 1.6x win (say a 32% quarantine rate cut to 20%) was stamped
+    # 'regressed' -- and settle() reverts anything that is not 'validated', while the
+    # release value gate holds any batch carrying a regression. Missing an ambitious
+    # target is not the same as making things worse, and must not be punished as if it were.
+    if mult >= margin:
+        verdict = "validated"
+    elif mult >= 1.0:
+        verdict = "underdelivered"
+    else:
+        verdict = "regressed"
+    return {"verdict": verdict, "realized": realized,
             "baseline": baseline, "multiplier": mult, "margin": margin,
             "comparator": comparator,
             "reason": f"{mult}x vs required {margin}x (baseline {baseline} -> {realized})"}
@@ -301,10 +323,13 @@ def settle(p, injected=None, now=None, dry_run=None):
     patch = {"realized_value": res.get("realized"),
              "realized_multiplier": res.get("multiplier"),
              "evaluated_at": (now or _now()).isoformat()}
-    if res["verdict"] == "validated":
-        patch["status"] = "validated"
+    if res["verdict"] in ("validated", "underdelivered"):
+        # 'underdelivered' means the metric IMPROVED but by less than the (deliberately
+        # ambitious) required margin. It is recorded honestly for calibration and it is
+        # NOT reverted, and the release value gate does not hold a batch for it.
+        patch["status"] = res["verdict"]
         db.update("improvement_proposals", {"id": p["id"]}, patch)
-        _record_calibration(p, res, "validated")
+        _record_calibration(p, res, res["verdict"])
         gate_liveness.record(ROLLBACK_GATE, "not_needed", p.get("task_slug"), res["reason"])
         return dict(res, acted=True, rolled_back=False)
     rb = revert_commit(p.get("artifact_repo") or _repo_for(p.get("app")),
@@ -327,8 +352,10 @@ def settle_due(limit=100, dry_run=None):
         "evaluate_after": f"lte.{_now().isoformat()}", "limit": str(limit)}) or []
     out = [dict(settle(p, dry_run=dry_run), slug=p.get("task_slug")) for p in rows]
     v = sum(1 for r in out if r.get("verdict") == "validated")
+    u = sum(1 for r in out if r.get("verdict") == "underdelivered")
     g = sum(1 for r in out if r.get("verdict") == "regressed")
-    print(f"improvement_verify.settle_due: {len(out)} due; {v} validated, {g} regressed")
+    print(f"improvement_verify.settle_due: {len(out)} due; {v} validated, "
+          f"{u} underdelivered, {g} regressed")
     return out
 
 

@@ -202,8 +202,14 @@ def run_scorecard_refresh() -> dict[str, Any]:
 
     snapshot = {}
     for app, row in (scorecard.get("apps") or {}).items():
+        # An unmeasured app emits nothing. Recording 0.0 for a None composite would
+        # replace one fabricated constant (50.0) with another, and a gap in the series
+        # is the honest representation of "this was never measured".
+        if row.get("composite") is None:
+            result.setdefault("unmeasured_apps", []).append(app)
+            continue
         try:
-            snapshot[f"compliance_composite_{app}"] = float(row.get("composite") or 0.0)
+            snapshot[f"compliance_composite_{app}"] = float(row["composite"])
         except (TypeError, ValueError):
             continue
     try:

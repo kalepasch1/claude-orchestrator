@@ -275,6 +275,25 @@ def _salvage_commit(worktree: str, slug: str) -> None:
     _git(worktree, "commit", "--no-verify", "-m", f"salvage: interrupted work for {slug}")
 
 
+def prune_stale_registrations(repo: str) -> bool:
+    """Drop worktree registry entries whose directory no longer exists.
+
+    Narrow by construction: `git worktree prune` removes an entry only when its
+    checkout is missing from disk. A live worktree, a locked one, and one with
+    uncommitted work are all untouched, so this cannot destroy anything a task
+    is using — which is why it is safe to call before every create.
+
+    Returns True when git reported success. Failure is logged, not raised: a
+    prune that does not run leaves the caller exactly where it already was.
+    """
+    pruned = _git(repo, "worktree", "prune")
+    if pruned.returncode:
+        log.warning("worktree_isolation: prune failed in %s: %s", repo,
+                    (pruned.stderr or pruned.stdout or "").strip()[-300:])
+        return False
+    return True
+
+
 def reclaim_worktree(repo: str, slug: str, worktree: str) -> None:
     """Drop a leftover worktree so a fresh, properly-owned one can be created.
 
@@ -340,6 +359,22 @@ def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str, *,
                 reclaim_worktree(repo, slug, wt)
             else:
                 return validate_task_worktree(repo, slug, wt)
+
+        else:
+            # The directory is gone, but git's worktree REGISTRY may still list
+            # it — a hand-deleted checkout, a crashed cleanup, a reboot mid-run.
+            # git then refuses to create the branch:
+            #
+            #   fatal: cannot force update the branch 'agent/<slug>'
+            #          used by worktree at '<path that no longer exists>'
+            #
+            # and the task fails, retries, and fails identically forever. There
+            # is no self-healing path: the directory check above is the only
+            # place that prunes, and it cannot fire because there is no
+            # directory. `git worktree prune` removes exactly the entries whose
+            # directory is missing and nothing else, so it is safe to run
+            # unconditionally here and it is the whole remedy.
+            prune_stale_registrations(repo)
 
         created = subprocess.run(
             [setup_script, slug, base, task_id, lease_token],

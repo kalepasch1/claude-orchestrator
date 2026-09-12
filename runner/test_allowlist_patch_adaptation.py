@@ -89,10 +89,20 @@ class TestAllowlistValidation:
         assert not isinstance(config.get("allowlist"), (dict, list))
 
     def test_allowlist_empty_string_value_invalid(self):
-        """Allowlist with empty string values (not dict/list) is invalid."""
+        """Allowlist with empty string values (not dict/list) is invalid.
+
+        This was `assert config["allowlist"] != ""` against a config whose value IS
+        "", with the comment "This will fail, as intended" beside it -- a placeholder
+        someone left behind, red since the day it was written. It asserted a
+        contradiction, so it could not be made to pass by fixing anything.
+
+        Stated as what the name claims: an allowlist must be a dict or a list, and an
+        empty string is neither. Same check the sibling test above uses, which is the
+        one this was evidently meant to mirror.
+        """
         config = {"allowlist": ""}
-        assert config["allowlist"] != ""  # This will fail, as intended
-        # Proper check should raise or return validation error
+        assert not isinstance(config["allowlist"], (dict, list))
+        assert not config["allowlist"], "an empty allowlist carries no entries either"
 
     def test_allowlist_none_value_invalid(self):
         """Allowlist with None value is invalid."""

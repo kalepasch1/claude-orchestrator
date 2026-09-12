@@ -19,6 +19,23 @@ os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
 import batch_mechanical as bm
 
 
+def _mechanical_tasks(count, project="proj-1"):
+    """COUNT queued mechanical tasks in one project, ready for find_batches().
+
+    Prompts alternate between two genuinely mechanical phrasings so
+    model_router.MECHANICAL matches every one of them; anything it does not match is
+    filtered out before grouping and the batch silently comes up short.
+    """
+    phrasings = [("lint", "lint code"), ("format", "format code")]
+    tasks = []
+    for index in range(count):
+        prefix, prompt = phrasings[index % len(phrasings)]
+        tasks.append({"id": index + 1, "slug": f"{prefix}-{index + 1}",
+                      "project_id": project, "prompt": prompt, "deps": [],
+                      "state": "QUEUED", "kind": "mechanical", "base_branch": "main"})
+    return tasks
+
+
 class MechanicalClassificationTests(unittest.TestCase):
     """Tests for _is_mechanical(prompt) - must correctly identify mechanical work."""
 
@@ -44,6 +61,31 @@ class MechanicalClassificationTests(unittest.TestCase):
         self.assertTrue(bm._is_mechanical("add docstring comments to functions"))
         self.assertTrue(bm._is_mechanical("add comments to error handling"))
         self.assertTrue(bm._is_mechanical("update changelog for v1.2.0 release"))
+
+    def test_plural_and_verb_forms_of_the_keywords_match(self):
+        """The keywords were singular-only, which \b makes exact.
+
+        `\\bcomment\\b` does not match "comments" and `\\btypo\\b` does not match
+        "typos" -- so "add comments to error handling" and "fix typos in the readme",
+        the ordinary way people write these chores, matched nothing. Genuinely
+        mechanical work was then neither routed to the cheap tier nor picked up for
+        batching. Under-classifying is the safe direction, which is why it survived;
+        it was still the rule failing on the most common spelling of its own words.
+        """
+        for prompt in ("add comments to error handling",
+                       "fix typos in the readme",
+                       "rename the columns",
+                       "renaming the payment fields",
+                       "update the docstrings",
+                       "formatting the config files"):
+            self.assertTrue(bm._is_mechanical(prompt), prompt)
+
+    def test_the_wider_keywords_do_not_swallow_substantive_work(self):
+        """Explicit suffixes, not \\w* -- "commentary" is not a comment chore."""
+        for prompt in ("write commentary on the distributed ledger design",
+                       "refactor the settlement protocol",
+                       "design a novel consensus algorithm"):
+            self.assertFalse(bm._is_mechanical(prompt), prompt)
 
     def test_version_bump_is_mechanical(self):
         """Dependency and version management is mechanical."""
@@ -367,12 +409,12 @@ class ApplyTests(unittest.TestCase):
     @patch('batch_mechanical.db.select')
     def test_apply_marks_originals_as_done(self, mock_select, mock_insert, mock_update):
         """apply() marks original tasks as DONE with MERGED-INTO note."""
-        tasks = [
-            {"id": 1, "slug": "lint-1", "project_id": "proj-1", "prompt": "lint code",
-             "deps": [], "state": "QUEUED", "kind": "mechanical", "base_branch": "main"},
-            {"id": 2, "slug": "format-1", "project_id": "proj-1", "prompt": "format code",
-             "deps": [], "state": "QUEUED", "kind": "mechanical", "base_branch": "main"},
-        ]
+        # A group must reach bm.MIN_GROUP to be worth batching (default 3, tunable
+        # via BATCH_MIN). Both of these tests supplied TWO tasks, so find_batches()
+        # returned {} and apply() did nothing -- mock_insert.call_args was None and
+        # the assertions below crashed on it rather than failing. Built from the
+        # constant so an operator tuning BATCH_MIN cannot silently re-break them.
+        tasks = _mechanical_tasks(bm.MIN_GROUP)
         mock_select.side_effect = [
             tasks,
             []
@@ -382,13 +424,24 @@ class ApplyTests(unittest.TestCase):
 
         bm.apply()
 
-        # Check that all original tasks were marked as DONE
-        self.assertEqual(mock_update.call_count, 2)
+        # Check that all original tasks were marked as DONE.
+        #
+        # `table, where = args` used to raise ValueError here: db.update takes THREE
+        # positional arguments (table, where, updates) and the unpack expected two,
+        # so it crashed before reaching the line below that already knew about the
+        # third. The name this test carries -- marks originals as DONE -- was never
+        # actually asserted; it only ever checked that the table was "tasks".
+        self.assertEqual(mock_update.call_count, bm.MIN_GROUP)
+        updated_ids = set()
         for call in mock_update.call_args_list:
             args, kwargs = call
-            table, where = args
-            updates = kwargs if kwargs else args[2] if len(args) > 2 else {}
+            table, where, updates = args[0], args[1], args[2]
             self.assertEqual(table, "tasks")
+            self.assertEqual(updates["state"], "DONE")
+            self.assertIn("folded into", updates["note"])
+            updated_ids.add(where["id"])
+        self.assertEqual(updated_ids, {t["id"] for t in tasks},
+                         "every folded original must be taken out of the queue")
 
     @patch('batch_mechanical.db.update')
     @patch('batch_mechanical.db.insert')
@@ -406,12 +459,12 @@ class ApplyTests(unittest.TestCase):
     @patch('batch_mechanical.db.select')
     def test_apply_combined_prompt_structure(self, mock_select, mock_insert, mock_update):
         """apply() creates a well-structured combined prompt."""
-        tasks = [
-            {"id": 1, "slug": "lint-1", "project_id": "proj-1", "prompt": "lint code",
-             "deps": [], "state": "QUEUED", "kind": "mechanical", "base_branch": "main"},
-            {"id": 2, "slug": "format-1", "project_id": "proj-1", "prompt": "format code",
-             "deps": [], "state": "QUEUED", "kind": "mechanical", "base_branch": "main"},
-        ]
+        # A group must reach bm.MIN_GROUP to be worth batching (default 3, tunable
+        # via BATCH_MIN). Both of these tests supplied TWO tasks, so find_batches()
+        # returned {} and apply() did nothing -- mock_insert.call_args was None and
+        # the assertions below crashed on it rather than failing. Built from the
+        # constant so an operator tuning BATCH_MIN cannot silently re-break them.
+        tasks = _mechanical_tasks(bm.MIN_GROUP)
         mock_select.side_effect = [
             tasks,
             []
@@ -427,10 +480,9 @@ class ApplyTests(unittest.TestCase):
 
         # Verify the combined prompt includes task info and clear structure
         self.assertIn("Complete ALL", combined_prompt)
-        self.assertIn("lint-1", combined_prompt)
-        self.assertIn("format-1", combined_prompt)
-        self.assertIn("lint code", combined_prompt)
-        self.assertIn("format code", combined_prompt)
+        for task in tasks:
+            self.assertIn(task["slug"], combined_prompt)
+            self.assertIn(task["prompt"], combined_prompt)
 
 
 class EdgeCasesTests(unittest.TestCase):

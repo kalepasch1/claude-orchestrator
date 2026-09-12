@@ -9,6 +9,7 @@ import merged_diff_library
 import model_catalog
 import patch_transplant
 import task_slicer
+import transplant_discipline
 import verifier_marketplace
 
 
@@ -36,8 +37,13 @@ class ReuseIntelligenceTest(unittest.TestCase):
         self.assertEqual(hits[0]["slug"], "stripe-hook")
 
     def test_patch_transplant_prepends_hint(self):
+        # Pinned to the fleet-wide floor rather than a literal. This asserted a hint for
+        # similarity 0.5 while transplant_discipline.MIN_TRANSPLANT_SIMILARITY had moved
+        # to 0.55, so the fixture was BELOW the floor and hint() was correctly returning
+        # "" — the test was failing on the product behaving as designed.
+        above = transplant_discipline.MIN_TRANSPLANT_SIMILARITY + 0.05
         task = {"id": "t1", "prompt": "add stripe webhook verification"}
-        hit = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": 0.5,
+        hit = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": above,
                 "summary": "prior stripe hook", "diff": "+ old patch"}]
         db = MagicMock()
         with patch.object(patch_transplant.merged_diff_library, "find", return_value=hit), \
@@ -46,12 +52,48 @@ class ReuseIntelligenceTest(unittest.TestCase):
         self.assertIn("PATCH TRANSPLANT", out["prompt"])
         db.update.assert_called_once()
 
+    def test_patch_transplant_stays_silent_below_the_similarity_floor(self):
+        # The other half of the same rule, so a future floor change is caught by a test
+        # that fails for the right reason instead of one that passes for none.
+        below = transplant_discipline.MIN_TRANSPLANT_SIMILARITY - 0.05
+        task = {"id": "t1", "prompt": "add stripe webhook verification"}
+        hit = [{"project": "tomorrow", "slug": "stripe-hook", "similarity": below,
+                "summary": "prior stripe hook", "diff": "+ old patch"}]
+        db = MagicMock()
+        with patch.object(patch_transplant.merged_diff_library, "find", return_value=hit), \
+             patch.object(patch_transplant, "db", db, create=True):
+            out = patch_transplant.pre_claim_hook(task)
+        self.assertNotIn("PATCH TRANSPLANT", out["prompt"])
+        db.update.assert_not_called()
+
     def test_task_slicer_decomposes_long_prompt_and_retire_parent(self):
-        prompt = "- one\n- two\n- three\n- four\n- five\n- six\n- seven\n"
+        # The bullets used to read "- one / - two / - three ...". should_slice() now ends
+        # with has_implementation_intent(), added deliberately ("Length is not intent"):
+        # a long prompt with nothing implementable must reach the agent whole so ONE task
+        # fails visibly instead of five. Counting words is exactly what that rejects, so
+        # the fixture needs real work in it — the assertion is about slicing, not about
+        # whether a list of numerals is a task.
+        prompt = (
+            "- Add signature verification to the Stripe webhook route handler.\n"
+            "- Return 400 with a JSON error body when the signature header is absent.\n"
+            "- Record each rejected delivery id in the webhook_failures table.\n"
+            "- Add a replay guard keyed on the delivery id with a 24 hour window.\n"
+            "- Cover the handler with unit tests for valid, invalid and replayed calls.\n"
+            "- Document the new environment variable in runner/README.md.\n"
+            "- Emit a structured log line for every rejection path.\n"
+        )
         task = {"id": "p", "project_id": "proj", "slug": "big", "kind": "build", "prompt": prompt}
         db = MagicMock()
+        # A bare MagicMock answers every select() with a truthy Mock, so _slice_exists()
+        # reported the slices were already there and pre_agent_hook took the idempotency
+        # branch — returning True having inserted nothing, which is why the count assert
+        # below is the one that failed.
+        db.select.return_value = []
+        # THRESHOLD is read at import, so patching the env var here changed nothing; the
+        # prompt qualified only via the "\n- " bullet count. Patch the constant directly
+        # so the test states which gate it is relying on.
         with patch.object(task_slicer, "db", db), \
-             patch.dict(os.environ, {"ORCH_SLICE_PROMPT_CHARS": "10"}, clear=False):
+             patch.object(task_slicer, "THRESHOLD", 10):
             self.assertTrue(task_slicer.pre_agent_hook(task))
         self.assertGreaterEqual(db.insert.call_count, 2)
         db.update.assert_called_once()

@@ -85,13 +85,29 @@ class TestSubstitution(unittest.TestCase):
                 ac._substitute_if_dead("claude", {"slug": "t", "_need": 8}),
                 "ollama")
 
-    def test_falls_back_to_most_capable_when_none_meet_need(self):
-        # need=10 is met by nobody once claude is out; do not stall — take the
-        # strongest survivor rather than returning a dead coder.
+    def test_will_not_downgrade_below_the_capability_need(self):
+        """Reversed. This first asserted the opposite, and was wrong.
+
+        The original read: "need=10 is met by nobody once claude is out; do not
+        stall — take the strongest survivor rather than returning a dead
+        coder." tests/test_coder_routing_selection.py disagreed, and it was
+        right: a critical task landed on a cap-8 local coder.
+
+        Under-capable output is not a smaller version of the work. It is
+        plausible-but-wrong output that then needs review capacity which — in
+        exactly the situation that triggers this path — does not exist either.
+        A stalled queue is visible; a queue full of confident wrong merges is
+        not, and that is what this whole incident was made of.
+        """
         with _Ctx(_env(demoted=("claude",))):
             got = ac._substitute_if_dead("claude", {"slug": "t", "_need": 10})
-        self.assertIn(got, {"ollama", "codex"})
-        self.assertNotEqual(got, "claude")
+        self.assertEqual(got, "claude",
+                         "no survivor clears need=10, so nothing may be substituted")
+
+    def test_substitutes_when_a_survivor_does_clear_the_need(self):
+        with _Ctx(_env(demoted=("claude",))):
+            got = ac._substitute_if_dead("claude", {"slug": "t", "_need": 8})
+        self.assertEqual(got, "ollama")
 
     def test_no_healthy_alternative_returns_original(self):
         # Fail-open: the caller has no None branch, so a dead coder still beats

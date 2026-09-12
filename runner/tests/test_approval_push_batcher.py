@@ -30,6 +30,22 @@ import approval_push as ap
 GOOD_KEY = "k" * 40
 
 
+class _ExplodingLock:
+    """A stand-in for ApprovalBatcher.lock that fails the moment it is entered.
+
+    A real threading.Lock cannot be patched — CPython's _thread.lock exposes read-only
+    attributes, so patch.object(lock, "acquire", ...) raises during __enter__ of the patcher
+    and the test body never runs. Replacing the whole attribute is the only way to drive the
+    "the locked section blew up" path that the fail-soft handlers exist for.
+    """
+
+    def __enter__(self):
+        raise RuntimeError("Lock error")
+
+    def __exit__(self, *exc_info):
+        return False
+
+
 class BatcherBasicTest(unittest.TestCase):
     """Basic batching operations."""
 
@@ -305,7 +321,12 @@ class BatcherErrorHandlingTest(unittest.TestCase):
                 self.fail("append raised an exception on timer error")
 
     def test_get_pending_error_returns_empty_list(self):
-        with patch.object(self.batcher.lock, "acquire", side_effect=Exception("Lock error")):
+        # The lock itself cannot be patched — a _thread.lock's attributes are read-only, so
+        # patch.object(self.batcher.lock, "acquire", ...) raises before the test body runs and
+        # this never exercised get_pending() at all. Swap the WHOLE lock for a context manager
+        # that raises on entry; that is the same failure the original was reaching for, and it
+        # actually reaches it.
+        with patch.object(self.batcher, "lock", _ExplodingLock()):
             result = self.batcher.get_pending()
             self.assertEqual(result, [])
 
@@ -318,7 +339,8 @@ class BatcherErrorHandlingTest(unittest.TestCase):
                 pass
 
     def test_stats_error_returns_empty_dict(self):
-        with patch.object(self.batcher.lock, "acquire", side_effect=Exception("Lock error")):
+        # Same substitution as test_get_pending_error_returns_empty_list above.
+        with patch.object(self.batcher, "lock", _ExplodingLock()):
             result = self.batcher.stats()
             self.assertEqual(result, {})
 
@@ -414,8 +436,19 @@ class BatcherThreadSafetyTest(unittest.TestCase):
             t.join()
 
         self.assertEqual(self.errors, [])
+        # 5 threads x 10 appends is exactly the size threshold this class configures, so the
+        # 50th append TRIPS the flush and moves the whole batch out of the queue. Asserting
+        # items_pending == 50 asserted that the documented threshold behaviour does not
+        # happen. What thread safety actually promises is that no append is lost and none is
+        # counted twice, so account for every card across both sides of the flush.
         stats = self.batcher.stats()
-        self.assertEqual(stats["items_pending"], 50)
+        sent = [card
+                for call in self.batcher._send_batch.call_args_list
+                for card in call.args[0]]
+        ids = [c["id"] for c in sent] + [c["id"] for c in self.batcher.get_pending()]
+        self.assertEqual(len(ids), 50, "an append was lost")
+        self.assertEqual(len(set(ids)), 50, "an append was duplicated")
+        self.assertEqual(stats["items_queued"], 50)
 
     def test_concurrent_get_pending_is_safe(self):
         self.batcher.append([{"id": f"a{i}"} for i in range(10)])
@@ -566,6 +599,62 @@ class BatcherEdgeCasesTest(unittest.TestCase):
         self.batcher.append([{"id": "a2"}])
         pending = self.batcher.get_pending()
         self.assertEqual(len(pending), 1)
+
+
+class BatcherPoisonedBatchTest(unittest.TestCase):
+    """A malformed append must not destroy other callers' pending cards.
+
+    append() used to queue any truthy non-list as a pseudo-card. build_digest() then called
+    .get() on every queued item, a non-mapping raised AttributeError there, _send_batch()
+    caught that around the whole build_digest() call and returned — and the batch had already
+    been lifted out of self.queue by then. So a single bad append silently discarded the
+    ENTIRE pending batch, including every valid card queued by unrelated callers in that
+    window, leaving one fail-soft line about a digest error as the only evidence.
+    """
+
+    def setUp(self):
+        with patch.dict(os.environ, {"ORCH_APPROVAL_BATCH_WINDOW_MS": "60000",
+                                     "ORCH_APPROVAL_BATCH_SIZE": "50"}):
+            importlib.reload(ap)
+        self.batcher = ap._approval_batcher
+
+    def tearDown(self):
+        if self.batcher.timer:
+            self.batcher.timer.cancel()
+        importlib.reload(ap)
+
+    def test_a_bare_string_is_never_queued(self):
+        self.assertEqual(self.batcher.append("not a list"), 0)
+        self.assertEqual(self.batcher.get_pending(), [])
+
+    def test_non_mapping_items_inside_a_list_are_dropped(self):
+        count = self.batcher.append([{"id": "a1"}, "poison", 42, None, {"id": "a2"}])
+        self.assertEqual(count, 2)
+        self.assertEqual([c["id"] for c in self.batcher.get_pending()], ["a1", "a2"])
+
+    def test_a_poisoned_append_does_not_discard_the_pending_batch(self):
+        """The whole point: other callers' cards survive a bad one."""
+        self.batcher.append([{"id": "a1", "kind": "legal", "project": "p", "title": "One"},
+                             {"id": "a2", "kind": "legal", "project": "p", "title": "Two"}])
+        self.batcher.append("not a card")
+
+        sent = []
+        with patch.object(ap, "db", MagicMock()), \
+             patch.dict(sys.modules, {"notify": type("N", (), {
+                 "send": staticmethod(lambda m: sent.append(m))})()}):
+            flushed = self.batcher.flush()
+
+        self.assertEqual([c["id"] for c in flushed], ["a1", "a2"])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("2 decisions", sent[0])
+
+    def test_the_digest_still_builds_after_a_rejected_append(self):
+        """build_digest() must never see a non-mapping, so it must not raise."""
+        self.batcher.append([{"id": "a1", "kind": "legal", "project": "p", "title": "One"}])
+        self.batcher.append(["still not a card"])
+        title, body = ap.build_digest(self.batcher.get_pending())
+        self.assertIn("1 decision", title)
+        self.assertIn("One", body)
 
 
 if __name__ == "__main__":

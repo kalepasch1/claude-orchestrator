@@ -81,7 +81,10 @@ def backfill_train_status(window_hours=24):
             continue
 
         try:
-            db.update("outcomes", {"deploy_status": train_status}, id=outcome["id"])
+            # update(table, match, patch); was (table, patch, id=...) -> TypeError,
+            # caught by the handler below, so every row was counted as "skipped"
+            # and nothing was ever backfilled.
+            db.update("outcomes", {"id": outcome["id"]}, {"deploy_status": train_status})
             updated += 1
         except Exception as e:
             log.warning("train_status_backfill: failed to update outcome %s: %s", outcome["id"], e)

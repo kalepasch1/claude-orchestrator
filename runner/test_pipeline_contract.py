@@ -14,6 +14,7 @@ Tests cover:
 import pytest
 import os
 import json
+import types
 from unittest.mock import Mock, patch, MagicMock
 import pipeline_contract as pc
 
@@ -146,9 +147,26 @@ class TestClassify:
         result2 = pc.classify("Some task", kind="cost")
         assert result2["task_class"] == "mechanical"
 
-    def test_classify_multiple_keywords(self):
-        result = pc.classify("Security audit of authentication module with RLS")
+    def test_classify_legal_wins_when_legal_and_security_both_match(self):
+        # WAS `test_classify_multiple_keywords`, which fed "Security audit of
+        # authentication module with RLS" to classify() and demanded "security". It
+        # returns "legal", and must: "audit" is in LEGAL_RX, and classify() evaluates the
+        # legal branch FIRST so the higher-posture gate wins a tie. The old assertion
+        # pinned the exact opposite of the module's deliberate precedence.
+        both = "Security audit of authentication module with RLS"
+        assert pc.SECURITY_RX.search(both), "prompt must match both vocabularies"
+        assert pc.LEGAL_RX.search(both), "prompt must match both vocabularies"
+        result = pc.classify(both)
+        assert result["task_class"] == "legal"
+        assert result["risk"] == "legal_posture"
+
+    def test_classify_multiple_security_keywords(self):
+        # The original intent — several security keywords in one prompt still land on
+        # security — kept, with a prompt that carries no legal vocabulary. "rls" is also
+        # in MIGRATION_RX, so this additionally pins security ahead of "hard".
+        result = pc.classify("Rotate the oauth token and tighten RLS permissions")
         assert result["task_class"] == "security"
+        assert result["need"] == 9
 
 
 class TestSafeRoute:
@@ -193,8 +211,11 @@ class TestSafeRoute:
         with patch('pipeline_contract.app_triage') as mock_triage:
             mock_triage.route.return_value = {"provider": None, "model": None}
             result = pc._safe_route("app1", "task_qa", "review")
-            assert isinstance(result["provider"], str)
-            assert isinstance(result["model"], str)
+            # WAS: isinstance(..., str) only, which `str(None)` -> "None" would also
+            # satisfy. The coercion is `str(x or "")`, so a missing field must come back
+            # as the empty string, not the word "None" leaking into a rendered contract.
+            assert result["provider"] == ""
+            assert result["model"] == ""
 
 
 class TestAuthorModel:
@@ -300,10 +321,17 @@ class TestRecentContext:
         result = pc._recent_context("")
         assert result == []
 
-    def test_recent_context_db_import_fails(self):
-        with patch.dict('sys.modules', {'db': None}):
-            result = pc._recent_context("test-project")
-            assert result == []
+    def test_recent_context_unusable_db_returns_empty(self):
+        # WAS `test_recent_context_db_import_fails`, which set sys.modules['db'] = None
+        # and relied on a local `import db` inside _recent_context raising ImportError.
+        # That local import shadowed the module-level one, made `pipeline_contract.db`
+        # unpatchable (the three tests below it could never see their fixtures), and was
+        # unreachable dead code besides — `import db` at module scope has already
+        # succeeded by then. It has been removed. The real degradation to cover is a db
+        # object that cannot answer, which is what an offline runner sees.
+        broken = types.SimpleNamespace()  # no .select at all -> AttributeError
+        with patch('pipeline_contract.db', broken):
+            assert pc._recent_context("test-project") == []
 
     def test_recent_context_outcomes(self):
         mock_db = MagicMock()
@@ -633,44 +661,67 @@ class TestFailSoftBehavior:
     """Tests for graceful degradation on errors."""
 
     def test_build_plan_survives_all_provider_failures(self):
-        with patch('pipeline_contract._author_model') as mock_author:
-            with patch('pipeline_contract._coder') as mock_coder:
-                with patch('pipeline_contract._safe_route') as mock_route:
-                    with patch('pipeline_contract._qa_panel') as mock_panel:
-                        with patch('pipeline_contract._recent_context') as mock_context:
-                            mock_author.side_effect = Exception()
-                            mock_coder.side_effect = Exception()
-                            mock_route.side_effect = Exception()
-                            mock_panel.side_effect = Exception()
-                            mock_context.side_effect = Exception()
+        # WAS: patch _author_model/_coder/_safe_route/_qa_panel/_recent_context with
+        # side_effect=Exception and assert build_plan does not raise. Those five helpers
+        # ARE the fail-soft layer — each already swallows its own errors and returns a
+        # default — so the old test removed the mechanism it claimed to verify and then
+        # required build_plan to re-implement it. It does not, so _author_model's
+        # exception escaped and the test failed. (`"coder" in plan` was also a shape
+        # check on a dict build_plan writes unconditionally.)
+        #
+        # Now the real dependencies fail — every provider down, DB unreachable — and the
+        # assertions name the documented defaults each layer must produce.
+        boom = Exception("provider down")
+        mock_router = MagicMock(); mock_router.route.side_effect = boom
+        mock_coders = MagicMock(); mock_coders.pick.side_effect = boom
+        mock_triage = MagicMock(); mock_triage.route.side_effect = boom
+        mock_policy = MagicMock(); mock_policy.choose.side_effect = boom
+        mock_mg = MagicMock(); mock_mg.available.side_effect = boom
+        mock_db = MagicMock(); mock_db.select.side_effect = boom
+        with patch('pipeline_contract.model_router', mock_router), \
+             patch('pipeline_contract.agentic_coders', mock_coders), \
+             patch('pipeline_contract.app_triage', mock_triage), \
+             patch('pipeline_contract.model_policy', mock_policy), \
+             patch('pipeline_contract.mg', mock_mg), \
+             patch('pipeline_contract.judge', None), \
+             patch('pipeline_contract.db', mock_db), \
+             patch.dict(os.environ, {}, clear=True):
+            plan = pc.build_plan("Fix something", project="test")
 
-                            # Should not raise, should return sensible defaults
-                            plan = pc.build_plan("Fix something", project="test")
-                            assert "task_class" in plan
-                            assert "coder" in plan
+        assert plan["task_class"] == "build"
+        assert plan["coder"] == "claude"                    # _coder fallback
+        assert "haiku" in plan["author_model"]              # _author_model fallback
+        for leg in ("preflight", "strategy", "qa"):
+            assert plan[leg]["provider"] == "claude", leg
+            assert "haiku" in plan[leg]["model"], leg
+            assert plan[leg]["reason"] == "fallback policy", leg
+        assert plan["qa_panel"] == ["claude:claude-haiku-4-5-20251001"]
+        assert plan["collaboration"] == []                  # _recent_context fail-soft
 
-    def test_wrap_prompt_survives_plan_build_failure(self):
-        with patch('pipeline_contract.build_plan') as mock_build:
-            # Can't actually make wrap_prompt fail because build_plan is called
-            # But we can verify behavior with a working build_plan
-            mock_build.return_value = {
-                "source": "test",
-                "project": "test",
-                "task_class": "build",
-                "need": 6,
-                "risk": "standard",
-                "preflight": {"provider": "test", "model": "test", "reason": "test"},
-                "strategy": {"provider": "test", "model": "test", "reason": "test"},
-                "coder": "claude",
-                "author_model": "claude",
-                "qa": {"provider": "test", "model": "test", "reason": "test"},
-                "qa_panel": [],
-                "legal_gate": "test",
-                "release": "test",
-                "collaboration": []
-            }
+    def test_wrap_prompt_survives_provider_failures(self):
+        # WAS `test_wrap_prompt_survives_plan_build_failure`: it stubbed build_plan with a
+        # hand-written plan dict and then asserted `wrapped is not None` — an assertion
+        # about a dict the test itself wrote, which no product code could have failed.
+        # Its own comment admitted it could not make wrap_prompt fail. That is right:
+        # wrap_prompt does not guard the build_plan call, because build_plan is the layer
+        # that fails soft. So make the providers fail for real, and assert wrap_prompt
+        # still produces a usable, fully wrapped prompt.
+        boom = Exception("provider down")
+        mock_router = MagicMock(); mock_router.route.side_effect = boom
+        mock_coders = MagicMock(); mock_coders.pick.side_effect = boom
+        mock_triage = MagicMock(); mock_triage.route.side_effect = boom
+        mock_policy = MagicMock(); mock_policy.choose.side_effect = boom
+        mock_db = MagicMock(); mock_db.select.side_effect = boom
+        with patch('pipeline_contract.model_router', mock_router), \
+             patch('pipeline_contract.agentic_coders', mock_coders), \
+             patch('pipeline_contract.app_triage', mock_triage), \
+             patch('pipeline_contract.model_policy', mock_policy), \
+             patch('pipeline_contract.db', mock_db):
             wrapped = pc.wrap_prompt("Test prompt", project="test")
-            assert wrapped is not None
+
+        assert pc.MARKER in wrapped
+        assert pc.ORIGINAL_HEADER in wrapped
+        assert pc.original_request(wrapped) == "Test prompt"
 
 
 class TestEdgeCases:
@@ -719,10 +770,15 @@ class TestEdgeCases:
 
                             # Mechanical task has need=5, but strategy should request at least 7
                             plan = pc.build_plan("Fix typo", kind="efficiency")
-                            # Verify strategy call was made with appropriate need
+                            assert plan["need"] == 5, "precondition: mechanical need is 5"
+                            # WAS: `assert len(strategy_calls) > 0`, which build_plan
+                            # satisfies unconditionally — it says nothing about the
+                            # minimum this test is named for. Assert the need actually
+                            # passed to the strategy route instead.
                             strategy_calls = [c for c in mock_route.call_args_list
                                             if c[0][1] == "task_strategy"]
-                            assert len(strategy_calls) > 0
+                            assert len(strategy_calls) == 1
+                            assert strategy_calls[0].kwargs["need"] == 7
 
 
 if __name__ == "__main__":

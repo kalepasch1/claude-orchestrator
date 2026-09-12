@@ -62,10 +62,10 @@ PRICES = {
     ("openai", "gpt-4o"): (2.5, 10.0),
     # Google Gemini (Jul 2026)
     ("google", "gemini-3.5-flash"): (1.50, 9.0),
-    ("google", "gemini-3.1-pro"): (2.0, 12.0),
+    ("google", "gemini-3.1-pro-preview"): (2.0, 12.0),
     ("google", "gemini-3.1-flash-lite"): (0.25, 1.50),
-    ("google", "gemini-3-flash"): (0.50, 3.0),
-    ("google", "gemini-2.5-pro"): (1.25, 10.0),
+    ("google", "gemini-3.5-flash"): (0.50, 3.0),
+    ("google", "gemini-3.1-pro-preview"): (1.25, 10.0),
     ("google", "gemini-2.5-flash"): (0.30, 2.50),
     # DeepSeek (Jul 2026)
     ("deepseek", "deepseek-v4-flash"): (0.14, 0.28),
@@ -117,15 +117,31 @@ def _ollama_up():
         return False
 
 
+#: Hosted providers this gateway can dispatch to, in the order they are reported.
+#: Membership is decided by provider_credentials, which owns the alias table — asking
+#: it here is the whole point of that module.
+_HOSTED = ("openai", "google", "deepseek", "groq", "xai")
+
+
 def configured():
-    """Providers with local configuration present, regardless of health."""
+    """Providers with local configuration present, regardless of health.
+
+    Reads through provider_credentials rather than os.environ directly. This used to
+    test one hardcoded env name per provider, so a credential stored under an accepted
+    ALIAS enabled nothing: GROK_API_KEY left "xai" out of routing, GEMINI_API_KEY left
+    out "google". provider_credentials.py exists precisely because "provider
+    integrations historically checked one spelling while credential setup accepted
+    another" — and this function was still checking one spelling. A key counts only if
+    it is non-empty, so blank .env lines still enable nothing.
+    """
     prov = ["claude"]
-    # a key counts only if it's non-empty (blank .env lines don't enable a provider)
-    if os.environ.get("OPENAI_API_KEY", "").strip(): prov.append("openai")
-    if os.environ.get("GOOGLE_API_KEY", "").strip(): prov.append("google")
-    if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
-    if os.environ.get("GROQ_API_KEY", "").strip(): prov.append("groq")
-    if os.environ.get("XAI_API_KEY", "").strip(): prov.append("xai")
+    for name in _HOSTED:
+        try:
+            present = provider_credentials.has(name)
+        except Exception:
+            present = bool(os.environ.get(f"{name.upper()}_API_KEY", "").strip())
+        if present:
+            prov.append(name)
     if _ollama_up() and not _local_disabled(): prov.append("local")
     return prov
 
@@ -195,7 +211,7 @@ def _google(model, prompt):
     candidates = [model, os.environ.get("GEMINI_MODEL", ""),
                   os.environ.get("GEMINI_CHEAP_MODEL", ""),
                   os.environ.get("GEMINI_STRONG_MODEL", ""),
-                  "gemini-3-flash", "gemini-3.5-flash", "gemini-2.5-flash",
+                  "gemini-3.5-flash", "gemini-3.5-flash", "gemini-2.5-flash",
                   "gemini-flash-latest"]
     seen, ordered = set(), []
     for c in candidates:
@@ -269,7 +285,7 @@ DEFAULT_MODELS = {
     "groq": lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     "deepseek": lambda: _configured("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash",
                                     deprecated=("deepseek-chat", "deepseek-reasoner")),
-    "google": lambda: _configured("GEMINI_MODEL", "gemini-3-flash",
+    "google": lambda: _configured("GEMINI_MODEL", "gemini-3.5-flash",
                                   deprecated=("gemini-2.0-",)),
     "xai": lambda: os.environ.get("XAI_MODEL", "grok-build-0.1"),
     "openai": lambda: os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-nano"),
@@ -334,9 +350,16 @@ def _groq(model, prompt):
     return d["choices"][0]["message"]["content"], round(cost, 6)
 
 
+#: The one xAI chat endpoint. Exported so a caller has something to import instead of
+#: retyping the URL: it is currently spelled out in swarm_executor.py,
+#: vendor_capabilities.py and (as the /models sibling) model_scout.py, which is three
+#: places that can drift from the owner without anything noticing.
+XAI_CHAT_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+
+
 def _xai(model, prompt):
     """xAI Grok — real-time data, OpenAI-compatible API."""
-    d = _post("https://api.x.ai/v1/chat/completions",
+    d = _post(XAI_CHAT_ENDPOINT,
               {"Authorization": f"Bearer {provider_credentials.get('xai')}"},
               {"model": model, "messages": [{"role": "user", "content": prompt}],
                "max_tokens": 8192})
@@ -346,11 +369,34 @@ def _xai(model, prompt):
     return d["choices"][0]["message"]["content"], round(cost, 6)
 
 
+# Diagnostic fields a provider may attach to explain WHY a call ended. These must survive the
+# gateway untouched: dropping them turned "the agent hit --max-turns" into an indistinguishable
+# empty-text success, and the runner retried the same wedged call instead of escalating.
+_PASSTHROUGH_FIELDS = ("error", "terminal_reason", "error_max_turns", "returncode",
+                       "stderr", "rate_limit_type", "skipped")
+
+
+def _carry_diagnostics(src, dst):
+    """Copy provider diagnostic fields into the gateway envelope without overwriting.
+
+    Fail-soft: a provider that returns a non-mapping (or nothing) leaves ``dst`` unchanged.
+    """
+    try:
+        for key in _PASSTHROUGH_FIELDS:
+            if isinstance(src, dict) and src.get(key) is not None and key not in dst:
+                dst[key] = src[key]
+    except Exception:
+        pass
+    return dst
+
+
 def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "claude":
         import claude_cli
         r = claude_cli.run(prompt, model, project=project, max_turns=1, permission=None, timeout=timeout)
-        return {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+        out = {"text": r.get("text", ""), "cost_usd": r.get("cost_usd", 0),
+               "provider": provider, "model": model}
+        return _carry_diagnostics(r, out)
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
     else:

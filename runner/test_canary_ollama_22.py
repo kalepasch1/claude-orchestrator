@@ -1,605 +1,608 @@
 #!/usr/bin/env python3
 """
-test_canary_ollama_22.py — Canary test for coder routing with bottleneck awareness.
+test_canary_ollama_22.py — Canary test for the coder routing contract in model_gateway/app_triage.
 
-Validates that the coder routing system:
-A) Tracks response time metrics per route to detect bottlenecks in remediation loops
-B) Avoids slow routes (> remediation_response_time_threshold_ms) by routing to faster models
-C) Learns from response times to select optimal paths (analogous to legal-radar-v2)
-D) Maintains backward compatibility with existing routing behavior
-E) Handles measurement failures gracefully (fail-soft)
-F) Thread-safely records concurrent operation measurements
-G) Prefers learned routes when response time is acceptable
-H) Falls back to faster alternatives when bottlenecks are detected
+WHAT THIS FILE USED TO BE, AND WHY IT WAS REPLACED
+--------------------------------------------------
+Every test here previously asserted a "bottleneck-aware routing" feature that does not exist and
+never has. Specifically it assumed:
 
-Orchestration Contract (Expected Routes with Performance):
-  - pipeline_scout -> local:llama3.2:3b (q=4.7, ~500ms)
-  - completion -> local:llama3.2:3b (q=6.45, ~400ms)
-  - meta_loop_improvement -> local:codestral:22b (q=7.7, ~800ms)
-  - build_fix -> local:llama3.1 (q=7.7, ~600ms)
-  - remediation fallback -> deepseek-v4-flash (q=7.4, ~300ms) when response time exceeds threshold
+  * app_op_routes rows carry an `avg_response_time_ms` column — the table has exactly
+    (app, operation, provider, model, reason, avg_cost, avg_quality, n_samples, updated_at);
+    see supabase/migrations/20260701164335_0012_app_operations_triage.sql. Nothing in the repo
+    writes or reads such a column.
+  * model_gateway._learned_route() compares that column against
+    ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS and falls back to a faster model when it is
+    exceeded, gated by ORCH_ENABLE_BOTTLENECK_DETECTION. Neither environment variable is read
+    anywhere in the repository — the only occurrences were in this file. _learned_route gates on
+    quality, availability and provider terms, and on nothing else.
+  * model_gateway.complete() returns `response_time_ms` in its result dict. It does not; it
+    measures latency and hands it to _record_operation() as the app_operations.latency_ms column.
+  * _learned_route() maintains a time-bounded cache ("response time window"). It has no cache at
+    all; every call re-queries.
 
-Test Coverage:
-  - 20+ test cases covering normal paths, bottleneck detection, edge cases
-  - Response time measurement and threshold evaluation
-  - Route selection under performance pressure
-  - Graceful degradation when measurements fail
+Because the invented column was simply ignored by the real code, roughly half these tests passed
+for a reason that had nothing to do with what their names claimed, and the other half failed. The
+file has been retargeted at the routing behaviour that actually exists, keeping each original
+test's INTENT where the real API can carry it. Each test below carries a comment naming what it
+used to assert and why that was wrong.
+
+Also fixed: the concurrency test ran `patch.dict(sys.modules, {"db": MagicMock()})` inside five
+threads. patch.dict restores by clearing and re-filling the dict, so interleaved restores parked
+a MagicMock in sys.modules["db"] for the remainder of the pytest session and broke unrelated
+files much later (see the repo-root conftest's _evict_leaked_doubles). Nothing here touches
+sys.modules any more: the real module objects are patched with patch.object, on the main thread.
+
+Routing contract actually under test:
+  A) _learned_route() honours the app_op_routes quality floor, provider availability and
+     provider terms, and falls through operation -> task_class -> "completion".
+  B) complete() applies a learned route, falls back down FALLBACK_ORDER, and never raises.
+  C) Latency is measured per attempt and recorded to app_operations.
+  D) Confidential mode disables both learned routes and fallback.
+  E) app_triage.route() prefers a learned route and degrades to the policy chooser.
 """
 import os
 import sys
+import threading
 import time
 import unittest
-import threading
-from unittest.mock import MagicMock, patch, call
-from collections import defaultdict
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import model_gateway
 import app_triage
+import db
+import model_gateway
+import prompt_result_cache
 
-# Constants for bottleneck detection
-DEFAULT_REMEDIATION_THRESHOLD_MS = 500
-DEFAULT_RESPONSE_TIME_WINDOW_SECS = 300  # 5-minute rolling window
+# The real defaults the module reads, so a change to either is a visible failure here.
+DEFAULT_MIN_QUALITY = 6.5
+ROUTES_TABLE = "app_op_routes"
 
 
-class CoderRoutingBottleneckCanary(unittest.TestCase):
-    """20+ test cases for coder routing with bottleneck detection and response time tracking."""
+def _route_row(provider="local", model="llama3.2:3b", operation="completion", quality=7.0, **extra):
+    """One app_op_routes row, with only columns the migration actually defines."""
+    row = {"app": "orchestrator", "operation": operation, "provider": provider, "model": model,
+           "reason": "prior review loop", "avg_cost": 0.0, "avg_quality": quality,
+           "n_samples": 12, "updated_at": "2026-07-16T00:00:00Z"}
+    row.update(extra)
+    return row
 
-    def setUp(self):
-        """Reset environment and mocks before each test."""
-        os.environ.pop("ORCH_USE_LEARNED_APP_ROUTES", None)
-        os.environ.pop("ORCH_LEARNED_ROUTE_MIN_QUALITY", None)
-        os.environ.pop("ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS", None)
-        os.environ.pop("ORCH_ENABLE_BOTTLENECK_DETECTION", None)
 
-    def test_response_time_tracked_for_normal_completion_operation(self):
-        """Normal path: response time is measured and recorded for completion operation."""
-        db = MagicMock()
-        db.select.return_value = []
-        insert_calls = []
-        db.insert.side_effect = lambda table, row, **kw: insert_calls.append((table, row))
+class _Recorder:
+    """Thread-safe stand-in for db.select/db.insert that keeps the calls for assertions."""
 
-        def fake_call(provider, model, prompt, project=None, timeout=90):
-            time.sleep(0.05)  # Simulate 50ms latency
-            return {"text": "response", "cost_usd": 0.0, "provider": provider, "model": model}
+    def __init__(self, rows=None, select_fn=None):
+        self._rows = rows
+        self._select_fn = select_fn
+        self._lock = threading.Lock()
+        self.selects = []
+        self.inserts = []
 
-        with patch.dict(os.environ, {"ORCH_ENABLE_BOTTLENECK_DETECTION": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.dict(sys.modules, {"prompt_result_cache": None}), \
-             patch.object(model_gateway, "available", return_value=["deepseek"]), \
-             patch.object(model_gateway, "_call_provider", side_effect=fake_call):
-            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
-                                          project="orchestrator", operation="completion",
-                                          task_class="qa", record_op=True)
-        self.assertIn("response_time_ms", result)
-        self.assertGreater(result["response_time_ms"], 0)
+    def select(self, table, params=None):
+        with self._lock:
+            self.selects.append((table, dict(params or {})))
+        if self._select_fn is not None:
+            return self._select_fn(table, params or {})
+        return list(self._rows or [])
 
-    def test_response_time_below_threshold_allows_route_selection(self):
-        """Normal path: route selection proceeds when response time is below threshold."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_cost": 0.0,
-            "avg_response_time_ms": 400,  # Below typical 500ms threshold
-        }]
+    def insert(self, table, row, **kw):
+        with self._lock:
+            self.inserts.append((table, dict(row)))
+        return row
 
-        def fake_call(provider, model, prompt, project=None, timeout=90):
-            return {"text": "ok", "cost_usd": 0.0, "provider": provider, "model": model, "response_time_ms": 420}
+    @property
+    def routed_operations(self):
+        return [p.get("operation") for t, p in self.selects if t == ROUTES_TABLE]
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "500"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.dict(sys.modules, {"prompt_result_cache": None}), \
-             patch.object(model_gateway, "available", return_value=["local", "deepseek"]), \
-             patch.object(model_gateway, "_call_provider", side_effect=fake_call):
-            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
-                                          project="orchestrator", operation="completion",
-                                          task_class="qa", record_op=False)
-        self.assertEqual(result["provider"], "local")
-        self.assertEqual(result["model"], "llama3.2:3b")
 
-    def test_response_time_above_threshold_triggers_fallback_to_faster_route(self):
-        """Edge case: when response time exceeds threshold, fallback to faster model."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.1",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_cost": 0.0,
-            "avg_response_time_ms": 800,  # Exceeds 500ms threshold
-        }]
+def _patch_db(rec):
+    """Patch the REAL db module object (never sys.modules) — model_gateway does `import db`
+    inside the function body, so it resolves to this same object."""
+    return [patch.object(db, "select", side_effect=rec.select),
+            patch.object(db, "insert", side_effect=rec.insert)]
 
-        def fake_call(provider, model, prompt, project=None, timeout=90):
-            return {"text": "ok", "cost_usd": 0.0, "provider": provider, "model": model}
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "500"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.dict(sys.modules, {"prompt_result_cache": None}), \
-             patch.object(model_gateway, "available", return_value=["deepseek", "local"]), \
-             patch.object(model_gateway, "_call_provider", side_effect=fake_call):
-            result = model_gateway.complete("local", "llama3.1", "test",
-                                          project="orchestrator", operation="completion",
-                                          task_class="qa", record_op=False, fallback=True)
-        # Should have fallen back to faster provider
-        self.assertEqual(result["provider"], "deepseek")
+class _Patches:
+    """Enter a list of patchers as one context manager, on the calling (main) thread."""
 
-    def test_remediation_loop_detects_bottleneck_on_slow_consecutive_calls(self):
-        """Edge case: detect bottleneck when consecutive remediation calls exceed threshold."""
-        db = MagicMock()
-        db.select.return_value = []
-        call_times = []
+    def __init__(self, *patchers):
+        self._patchers = [p for p in patchers if p is not None]
 
-        def fake_call_slow(provider, model, prompt, project=None, timeout=90):
-            time.sleep(0.6)  # 600ms, exceeds 500ms threshold
-            call_times.append(time.time())
-            return {"text": "response", "cost_usd": 0.0, "provider": provider, "model": model}
+    def __enter__(self):
+        self._started = [p.start() for p in self._patchers]
+        return self._started
 
-        with patch.dict(os.environ, {
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "500"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.dict(sys.modules, {"prompt_result_cache": None}), \
-             patch.object(model_gateway, "available", return_value=["deepseek"]), \
-             patch.object(model_gateway, "_call_provider", side_effect=fake_call_slow):
-            result1 = model_gateway.complete("deepseek", "deepseek-chat", "test1",
-                                           project="orchestrator", operation="remediation",
-                                           task_class="bugfix", record_op=True)
-        self.assertGreater(result1.get("response_time_ms", 0), 500)
+    def __exit__(self, *exc):
+        for p in reversed(self._patchers):
+            p.stop()
+        return False
 
-    def test_bottleneck_detection_disabled_skips_threshold_checks(self):
-        """Edge case: when bottleneck detection disabled, no threshold enforcement."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.1",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": 1000,  # Very slow
-        }]
 
-        def fake_call(provider, model, prompt, project=None, timeout=90):
-            return {"text": "ok", "cost_usd": 0.0, "provider": provider, "model": model}
+def _no_cache():
+    """Keep prompt_result_cache out of the way without touching sys.modules or the cache file."""
+    return [patch.object(prompt_result_cache, "lookup", return_value=None),
+            patch.object(prompt_result_cache, "store", return_value=False)]
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "false"  # Disabled
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.dict(sys.modules, {"prompt_result_cache": None}), \
-             patch.object(model_gateway, "available", return_value=["local", "deepseek"]), \
-             patch.object(model_gateway, "_call_provider", side_effect=fake_call):
-            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
-                                          project="orchestrator", operation="completion",
-                                          task_class="qa", record_op=False)
-        # Should use learned route despite slow response time
-        self.assertEqual(result["provider"], "local")
 
-    def test_response_time_measurement_fails_soft_on_timing_error(self):
-        """Error handling: measurement failure doesn't wedge routing."""
-        db = MagicMock()
-        db.select.return_value = []
+class LearnedRouteCanary(unittest.TestCase):
+    """model_gateway._learned_route(project, operation, task_class, sensitivity)."""
 
-        def fake_call_broken(provider, model, prompt, project=None, timeout=90):
-            # Simulate response time measurement failure
-            return {"text": "ok", "cost_usd": 0.0, "provider": provider, "model": model}
-
-        with patch.dict(os.environ, {"ORCH_ENABLE_BOTTLENECK_DETECTION": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.dict(sys.modules, {"prompt_result_cache": None}), \
-             patch.object(model_gateway, "available", return_value=["deepseek"]), \
-             patch.object(model_gateway, "_call_provider", side_effect=fake_call_broken):
-            try:
-                result = model_gateway.complete("deepseek", "deepseek-chat", "test",
-                                              project="orchestrator", operation="completion",
-                                              task_class="qa", record_op=True)
-                self.assertIsNotNone(result)
-            except Exception as e:
-                self.fail(f"Measurement failure wedged routing: {e}")
-
-    def test_response_time_window_respects_time_bounds(self):
-        """Staleness: response time window refreshes after expiration."""
-        db = MagicMock()
-        select_call_count = [0]
-
-        def select_side_effect(*args, **kwargs):
-            select_call_count[0] += 1
-            if select_call_count[0] == 1:
-                return [{
-                    "provider": "local",
-                    "model": "llama3.2:3b",
-                    "app": "orchestrator",
-                    "operation": "completion",
-                    "avg_quality": 7.0,
-                    "avg_response_time_ms": 400,
-                    "updated_at": "2026-07-16T00:00:00Z",
-                }]
-            return []  # Simulate stale data
-
-        db.select.side_effect = select_side_effect
-
-        with patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result1 = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-            # Second call should re-query after window expiration
-            result2 = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        self.assertIsNotNone(result1)
-        self.assertEqual(select_call_count[0], 2)
-
-    def test_pipeline_scout_routes_to_llama32_3b_with_quality_and_timing(self):
-        """Normal path: pipeline_scout operation routes with quality and response time metrics."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "pipeline_scout",
-            "avg_quality": 4.7,
-            "avg_cost": 0.0,
-            "avg_response_time_ms": 500,
-            "updated_at": "2026-07-16T00:00:00Z",
-        }]
-
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "true"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
+    def test_learned_route_returns_provider_model_and_reason(self):
+        # WAS test_pipeline_scout_routes_to_llama32_3b_with_quality_and_timing, which fed
+        # avg_quality=4.7 plus an invented avg_response_time_ms and asserted a route came back.
+        # 4.7 is below the ORCH_LEARNED_ROUTE_MIN_QUALITY floor of 6.5, so the real function
+        # correctly returns None — the test only "passed" in the author's imagination. Asserting
+        # the real three-part return value instead.
+        rec = _Recorder([_route_row(operation="pipeline_scout", quality=7.4)])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
             result = model_gateway._learned_route("orchestrator", "pipeline_scout", "plan", "standard")
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0], "local")
-        self.assertEqual(result[1], "llama3.2:3b")
+        self.assertEqual(result[:2], ("local", "llama3.2:3b"))
+        self.assertEqual(result[2], "learned orchestrator/pipeline_scout route q=7.4")
+        table, params = rec.selects[0]
+        self.assertEqual(table, ROUTES_TABLE)
+        self.assertEqual(params["app"], "eq.orchestrator")
+        self.assertEqual(params["operation"], "eq.pipeline_scout")
+        self.assertEqual(params["order"], "updated_at.desc")
 
-    def test_completion_routes_to_llama32_3b_with_fast_response_time(self):
-        """Normal path: completion operation routes to model with acceptable response time."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 6.45,
-            "avg_cost": 0.0,
-            "avg_response_time_ms": 400,
-        }]
+    def test_quality_below_the_floor_is_rejected_and_the_floor_is_configurable(self):
+        # WAS test_completion_routes_to_llama32_3b_with_fast_response_time: avg_quality=6.45 with
+        # a 450ms "threshold", asserting the route was returned. It fails against the real code
+        # for a reason the test never mentions — 6.45 < the 6.5 quality floor. That floor is the
+        # actual gate, so test it directly, in both directions.
+        rec = _Recorder([_route_row(quality=6.45)])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
+            self.assertIsNone(
+                model_gateway._learned_route("orchestrator", "completion", "qa", "standard"))
+        rec2 = _Recorder([_route_row(quality=6.45)])
+        with _Patches(*_patch_db(rec2),
+                      patch.object(model_gateway, "available", return_value=["local"]),
+                      patch.dict(os.environ, {"ORCH_LEARNED_ROUTE_MIN_QUALITY": "6.0"}, clear=False)):
+            self.assertEqual(
+                model_gateway._learned_route("orchestrator", "completion", "qa", "standard")[:2],
+                ("local", "llama3.2:3b"))
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "450"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
+    def test_quality_exactly_at_the_floor_is_accepted(self):
+        # WAS test_threshold_comparison_uses_correct_operator, which claimed to pin down whether
+        # the (nonexistent) response-time comparison was > or >=. The real boundary is the
+        # quality floor, compared as `< min_q: continue` — i.e. exactly at the floor is IN.
+        rec = _Recorder([_route_row(quality=DEFAULT_MIN_QUALITY)])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
             result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        self.assertIsNotNone(result)
-        self.assertEqual(result[1], "llama3.2:3b")
+        self.assertEqual(result[:2], ("local", "llama3.2:3b"))
 
-    def test_meta_loop_improvement_routes_to_codestral_22b(self):
-        """Normal path: meta_loop_improvement routes to codestral despite slower response time."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "codestral:22b",
-            "app": "orchestrator",
-            "operation": "meta_loop_improvement",
-            "avg_quality": 7.7,
-            "avg_cost": 0.0,
-            "avg_response_time_ms": 800,
-        }]
+    def test_missing_or_unparsable_quality_is_treated_as_zero_and_rejected(self):
+        # WAS three tests asserting that avg_response_time_ms of None / 0 / -5 "doesn't wedge
+        # routing" — all of which passed trivially because the column is never read. The column
+        # that IS read and can genuinely be absent or junk is avg_quality; an unreadable quality
+        # must not be silently promoted into a route. (None and "" hit the explicit `< min_q`
+        # gate; a non-numeric string trips float() and the function's outer fail-soft. Both must
+        # end at None, and neither may end at a route.)
+        for bad in (None, "", "unrated"):
+            rec = _Recorder([_route_row(quality=bad)])
+            with _Patches(*_patch_db(rec),
+                          patch.object(model_gateway, "available", return_value=["local"])):
+                self.assertIsNone(
+                    model_gateway._learned_route("orchestrator", "completion", "qa", "standard"),
+                    "avg_quality=%r must not yield a route" % (bad,))
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "true"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
+    def test_unknown_columns_on_the_row_are_ignored(self):
+        # WAS test_backward_compatibility_learned_route_without_response_time_field. Inverted to
+        # the direction that is actually load-bearing: the review loop may add columns to
+        # app_op_routes, and _learned_route reads "select": "*", so an unrecognised column must
+        # not change the decision.
+        rec = _Recorder([_route_row(quality=7.0, some_future_column=123, n_samples=None)])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
+            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
+        self.assertEqual(result[:2], ("local", "llama3.2:3b"))
+
+    def test_a_provider_that_is_not_available_is_skipped(self):
+        # ADDED (the old file never covered the availability gate, though every one of its
+        # scenarios silently depended on it via a patched available()).
+        rec = _Recorder([_route_row(provider="local")])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["deepseek"])):
+            self.assertIsNone(
+                model_gateway._learned_route("orchestrator", "completion", "qa", "standard"))
+
+    def test_a_provider_the_terms_gate_refuses_is_skipped(self):
+        # ADDED: a learned route must not be able to route a sensitive prompt to a provider
+        # provider_terms disallows. Verifies the gate is consulted with the sensitivity argument.
+        rec = _Recorder([_route_row(provider="local")])
+        allowed = MagicMock(return_value=False)
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"]),
+                      patch.object(model_gateway, "_provider_allowed", allowed)):
+            self.assertIsNone(
+                model_gateway._learned_route("orchestrator", "completion", "qa", "confidential"))
+        allowed.assert_any_call("local", "confidential")
+
+    def test_operation_then_task_class_then_completion_are_tried_in_order(self):
+        # WAS test_multiple_operations_have_independent_thresholds, whose db double branched on
+        # `str(kwargs)` — but _learned_route passes its params POSITIONALLY, so kwargs was always
+        # {} and both branches were dead; both lookups returned [] and both results were None.
+        # The real fallthrough order is the thing worth pinning: operation, then task_class, then
+        # the generic "completion" bucket.
+        rec = _Recorder([])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
+            self.assertIsNone(
+                model_gateway._learned_route("orchestrator", "build_fix", "bugfix", "standard"))
+        self.assertEqual(rec.routed_operations,
+                         ["eq.build_fix", "eq.bugfix", "eq.completion"])
+
+    def test_the_first_acceptable_operation_bucket_wins(self):
+        # ADDED companion: the fallthrough must stop at the first usable row, not keep going.
+        def select_fn(table, params):
+            if params.get("operation") == "eq.meta_loop_improvement":
+                return [_route_row(operation="meta_loop_improvement", model="codestral:22b", quality=7.7)]
+            return [_route_row(model="llama3.2:3b", quality=9.9)]
+        rec = _Recorder(select_fn=select_fn)
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
             result = model_gateway._learned_route("orchestrator", "meta_loop_improvement", "plan", "standard")
-        self.assertIsNotNone(result)
-        self.assertEqual(result[1], "codestral:22b")
+        self.assertEqual(result[:2], ("local", "codestral:22b"))
+        self.assertEqual(rec.routed_operations, ["eq.meta_loop_improvement"])
 
-    def test_build_fix_routes_to_llama31_within_time_budget(self):
-        """Normal path: build_fix routes to llama3.1 with response time within budget."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.1",
-            "app": "orchestrator",
-            "operation": "build_fix",
-            "avg_quality": 7.7,
-            "avg_cost": 0.0,
-            "avg_response_time_ms": 600,
-        }]
+    def test_learned_route_is_not_cached_between_calls(self):
+        # WAS test_response_time_window_respects_time_bounds, which asserted db.select is called
+        # exactly twice across two _learned_route calls — i.e. that a 5-minute "response time
+        # window" cache existed. There is no cache and no window in the module; the second call
+        # made three selects (operation, task_class, "completion") for a total of four, which is
+        # why it failed. The real, and more useful, property is that routing decisions are never
+        # served from a stale memo: a row written by the review loop takes effect immediately.
+        state = {"rows": [_route_row(model="llama3.2:3b", quality=7.0)]}
+        rec = _Recorder(select_fn=lambda t, p: list(state["rows"]))
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
+            first = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
+            state["rows"] = [_route_row(model="codestral:22b", quality=8.1)]
+            second = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
+        self.assertEqual(first[1], "llama3.2:3b")
+        self.assertEqual(second[1], "codestral:22b")
+        self.assertEqual(len(rec.selects), 2)
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "700"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result = model_gateway._learned_route("orchestrator", "build_fix", "bugfix", "standard")
-        self.assertIsNotNone(result)
-        self.assertEqual(result[1], "llama3.1")
+    def test_learned_routes_can_be_switched_off_by_env(self):
+        # WAS test_bottleneck_detection_disabled_skips_threshold_checks, which flipped the
+        # invented ORCH_ENABLE_BOTTLENECK_DETECTION. The real kill switch on this code path is
+        # ORCH_USE_LEARNED_APP_ROUTES, and when it is off the db must not be touched at all.
+        rec = _Recorder([_route_row(quality=9.0)])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"]),
+                      patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "false"}, clear=False)):
+            self.assertIsNone(
+                model_gateway._learned_route("orchestrator", "completion", "qa", "standard"))
+        self.assertEqual(rec.selects, [])
 
-    def test_response_time_none_treated_as_acceptable(self):
-        """Edge case: missing response time data doesn't reject a learned route."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_cost": 0.0,
-            "avg_response_time_ms": None,  # No timing data
-        }]
+    def test_project_none_defaults_to_the_orchestrator_app(self):
+        # ADDED: `app = project or "orchestrator"` is what keeps an unlabelled caller's telemetry
+        # and its routes on the same key.
+        rec = _Recorder([])
+        with _Patches(*_patch_db(rec),
+                      patch.object(model_gateway, "available", return_value=["local"])):
+            model_gateway._learned_route(None, "completion", "qa", "standard")
+        self.assertTrue(rec.selects)
+        self.assertEqual(rec.selects[0][1]["app"], "eq.orchestrator")
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "true"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        self.assertIsNotNone(result)
+    def test_db_exception_returns_none_fail_soft(self):
+        # Kept from the original (it was already asserting real behaviour), with the sys.modules
+        # MagicMock swapped for a patch on the real db module.
+        with _Patches(patch.object(db, "select", side_effect=RuntimeError("db connection failed"))):
+            self.assertIsNone(
+                model_gateway._learned_route("orchestrator", "completion", "qa", "standard"))
 
-    def test_response_time_zero_treated_as_measurement_artifact(self):
-        """Edge case: response_time_ms=0 doesn't trigger bottleneck (graceful)."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": 0,  # Likely measurement artifact
-        }]
 
-        with patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        self.assertIsNotNone(result)
+class CompleteRoutingCanary(unittest.TestCase):
+    """model_gateway.complete() — routing, fallback, telemetry."""
 
-    def test_response_time_negative_handled_gracefully(self):
-        """Edge case: negative response time (measurement error) doesn't wedge routing."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": -5,  # Invalid measurement
-        }]
+    def test_latency_is_measured_and_recorded_to_app_operations(self):
+        # WAS test_response_time_tracked_for_normal_completion_operation, asserting
+        # `response_time_ms` in complete()'s result. complete() returns exactly what
+        # _call_provider returned plus optional fallback/learned_route keys — the timing it
+        # measures goes to telemetry as app_operations.latency_ms. That is the real artefact a
+        # bottleneck analysis would read, so assert it there.
+        rec = _Recorder([])
 
-        with patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        # Should accept the route despite invalid measurement
-        self.assertIsNotNone(result)
+        def fake_call(provider, model, prompt, project=None, timeout=90):
+            time.sleep(0.05)
+            return {"text": "response", "cost_usd": 0.0, "provider": provider, "model": model}
 
-    def test_concurrent_response_time_recordings_dont_corrupt_state(self):
-        """Thread-safety: concurrent response time recordings are isolated."""
-        db = MagicMock()
-        db.select.return_value = []
-        recorded_times = []
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["deepseek"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=fake_call)):
+            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=True)
+        self.assertEqual(result["text"], "response")
+        ops = [row for table, row in rec.inserts if table == "app_operations"]
+        self.assertEqual(len(ops), 1)
+        self.assertGreaterEqual(ops[0]["latency_ms"], 40)
+        self.assertEqual((ops[0]["provider"], ops[0]["model"]), ("deepseek", "deepseek-chat"))
+        self.assertEqual((ops[0]["app"], ops[0]["operation"], ops[0]["task_class"]),
+                         ("orchestrator", "completion", "qa"))
+        self.assertTrue(ops[0]["ok"])
+
+    def test_a_slow_call_is_recorded_with_its_full_latency(self):
+        # WAS test_remediation_loop_detects_bottleneck_on_slow_consecutive_calls, asserting
+        # result["response_time_ms"] > 500. There is no bottleneck detector on this path and no
+        # such key; SUBSTITUTION — the nearest real behaviour is that a slow provider call is
+        # measured honestly rather than clipped or dropped, which is the measurement any
+        # downstream bottleneck analysis would depend on. Sleep shortened from 600ms because the
+        # assertion is about fidelity of the measurement, not about a specific threshold.
+        rec = _Recorder([])
+
+        def slow_call(provider, model, prompt, project=None, timeout=90):
+            time.sleep(0.15)
+            return {"text": "response", "cost_usd": 0.0, "provider": provider, "model": model}
+
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["deepseek"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=slow_call)):
+            model_gateway.complete("deepseek", "deepseek-chat", "test1",
+                                   project="orchestrator", operation="remediation",
+                                   task_class="bugfix", record_op=True)
+        ops = [row for table, row in rec.inserts if table == "app_operations"]
+        self.assertEqual(len(ops), 1)
+        self.assertEqual(ops[0]["operation"], "remediation")
+        self.assertGreaterEqual(ops[0]["latency_ms"], 140)
+
+    def test_a_learned_route_overrides_the_callers_provider(self):
+        # WAS test_response_time_below_threshold_allows_route_selection: same expected outcome,
+        # but it attributed the override to an avg_response_time_ms of 400 being under a 500ms
+        # threshold. The override happens because the row's avg_quality clears the floor and its
+        # provider is available; the reason string is also attached to the result, which the old
+        # test never checked.
+        rec = _Recorder([_route_row(provider="local", model="llama3.2:3b", quality=7.0)])
+
+        def fake_call(provider, model, prompt, project=None, timeout=90):
+            return {"text": "ok", "cost_usd": 0.0, "provider": provider, "model": model}
+
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["local", "deepseek"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=fake_call)):
+            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=False)
+        self.assertEqual((result["provider"], result["model"]), ("local", "llama3.2:3b"))
+        self.assertEqual(result["learned_route"], "learned orchestrator/completion route q=7.0")
+
+    def test_a_failing_provider_falls_back_to_the_next_available_one(self):
+        # WAS test_response_time_above_threshold_triggers_fallback_to_faster_route, which expected
+        # complete() to abandon a *successful* local call for deepseek because a fabricated
+        # avg_response_time_ms of 800 exceeded a fabricated threshold. complete() only leaves a
+        # provider when the call RAISES, walking FALLBACK_ORDER over available(). That real
+        # fallback — and the fallback_from/fallback_error breadcrumbs it leaves — is asserted
+        # here instead.
+        rec = _Recorder([])
+        seen = []
+
+        def flaky(provider, model, prompt, project=None, timeout=90):
+            seen.append((provider, model))
+            if provider == "local":
+                raise RuntimeError("ollama not reachable")
+            return {"text": "ok", "cost_usd": 0.0, "provider": provider, "model": model}
+
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["deepseek", "local"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=flaky)):
+            result = model_gateway.complete("local", "llama3.1", "test",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=True, fallback=True)
+        self.assertEqual(result["provider"], "deepseek")
+        self.assertEqual(result["model"], model_gateway.DEFAULT_MODELS["deepseek"]())
+        self.assertEqual(result["fallback_from"], "local")
+        self.assertIn("ollama not reachable", result["fallback_error"])
+        self.assertEqual([p for p, _ in seen], ["local", "deepseek"])
+        ops = [row for table, row in rec.inserts if table == "app_operations"]
+        self.assertEqual([(r["provider"], r["ok"]) for r in ops],
+                         [("local", False), ("deepseek", True)])
+
+    def test_fallback_disabled_returns_the_error_without_trying_another_provider(self):
+        # ADDED: the counterpart of the above. A caller that opts out of fallback must get the
+        # error back rather than a silent provider swap.
+        rec = _Recorder([])
+        seen = []
+
+        def always_fails(provider, model, prompt, project=None, timeout=90):
+            seen.append(provider)
+            raise RuntimeError("boom")
+
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["deepseek", "local"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=always_fails)):
+            result = model_gateway.complete("local", "llama3.1", "test",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=False, fallback=False)
+        self.assertEqual(seen, ["local"])
+        self.assertEqual(result["text"], "")
+        self.assertIn("boom", result["error"])
+
+    def test_complete_never_raises_when_every_provider_fails(self):
+        # WAS test_response_time_measurement_fails_soft_on_timing_error, a try/except around a
+        # call that could not fail, ending in assertIsNotNone — it asserted nothing. Rebuilt as
+        # the real fail-soft contract: with every attempt raising, complete() still returns a
+        # shaped dict carrying the last error, and records each failed attempt.
+        rec = _Recorder([])
+
+        def broken(provider, model, prompt, project=None, timeout=90):
+            raise RuntimeError("provider %s exploded" % provider)
+
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["deepseek", "local"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=broken)):
+            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=True)
+        self.assertEqual(result["text"], "")
+        self.assertEqual(result["cost_usd"], 0)
+        self.assertIn("exploded", result["error"])
+        ops = [row for table, row in rec.inserts if table == "app_operations"]
+        self.assertTrue(ops)
+        self.assertTrue(all(r["ok"] is False for r in ops))
+
+    def test_confidential_mode_disables_both_learned_routes_and_fallback(self):
+        # WAS test_bottleneck_detection_disabled_skips_threshold_checks (the "feature flag off"
+        # scenario) built on ORCH_ENABLE_BOTTLENECK_DETECTION, which nothing reads. The real
+        # environment flag that suppresses route substitution on this path is
+        # ORCH_CONFIDENTIAL_MODE, and it is stricter: a prompt scoped to one vendor must not be
+        # re-sent to a second one, so learned routing AND fallback are both switched off.
+        rec = _Recorder([_route_row(provider="local", model="llama3.2:3b", quality=9.0)])
+        seen = []
+
+        def fake_call(provider, model, prompt, project=None, timeout=90):
+            seen.append(provider)
+            raise RuntimeError("nope")
+
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["local", "deepseek"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=fake_call),
+                      patch.dict(os.environ, {"ORCH_CONFIDENTIAL_MODE": "true"}, clear=False)):
+            result = model_gateway.complete("deepseek", "deepseek-chat", "secret work",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=False, fallback=True)
+        self.assertEqual(seen, ["deepseek"])
+        self.assertEqual(result["provider"], "deepseek")
+        self.assertNotIn("learned_route", result)
+
+    def test_a_cached_prompt_result_short_circuits_the_provider_call(self):
+        # ADDED: the old file disabled prompt_result_cache in every test by shoving None into
+        # sys.modules, so the cache branch of complete() — which returns early, still records the
+        # operation, and re-attaches the learned-route reason — was never exercised at all.
+        rec = _Recorder([])
+        cached = {"text": "from cache", "cost_usd": 0.0, "provider": "deepseek",
+                  "model": "deepseek-chat", "cached": True}
+        call = MagicMock()
+        with _Patches(*_patch_db(rec),
+                      patch.object(prompt_result_cache, "lookup", return_value=cached),
+                      patch.object(prompt_result_cache, "store", return_value=False),
+                      patch.object(model_gateway, "available", return_value=["deepseek"]),
+                      patch.object(model_gateway, "_call_provider", call)):
+            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=True)
+        call.assert_not_called()
+        self.assertEqual(result["text"], "from cache")
+        self.assertTrue(result["cached"])
+        ops = [row for table, row in rec.inserts if table == "app_operations"]
+        self.assertEqual(len(ops), 1)
+        self.assertEqual(ops[0]["latency_ms"], 0)
+        self.assertEqual(ops[0]["cost_usd"], 0.0)
+        # A cache hit is also booked as avoided work; that resource_events row is the only place
+        # the saving is visible, so a regression that stopped recording it would be silent.
+        saved = [row for table, row in rec.inserts if table == "resource_events"]
+        self.assertEqual(len(saved), 1)
+        self.assertIn("prompt_result_cache", saved[0]["detail"])
+
+    def test_concurrent_completions_each_get_their_own_result_and_telemetry_row(self):
+        # WAS test_concurrent_response_time_recordings_dont_corrupt_state. Two problems. (1) It
+        # asserted `all(rt >= 0 ...)` on result.get("response_time_ms", 0) — a key complete()
+        # never sets, so the default 0 made the assertion vacuously true no matter what the
+        # threads did. (2) It ran patch.dict(sys.modules, {"db": MagicMock()}) INSIDE each of the
+        # five threads; patch.dict restores by clearing and refilling the dict, so interleaved
+        # restores left a MagicMock parked at sys.modules["db"] for the rest of the session and
+        # broke unrelated test files much later. All patching now happens once, on the main
+        # thread, against the real module objects, and the assertion is that each concurrent
+        # call's own operation label survives round-trip into its own telemetry row.
+        rec = _Recorder([])
+        results = {}
         lock = threading.Lock()
 
         def fake_call(provider, model, prompt, project=None, timeout=90):
-            time.sleep(0.01 * (hash(threading.current_thread().name) % 5))
-            return {"text": "ok", "cost_usd": 0.0, "provider": provider, "model": model}
+            time.sleep(0.01)
+            return {"text": prompt, "cost_usd": 0.0, "provider": provider, "model": model}
 
         def thread_target(op_name):
-            with patch.dict(os.environ, {"ORCH_ENABLE_BOTTLENECK_DETECTION": "true"}, clear=False), \
-                 patch.dict(sys.modules, {"db": db}), \
-                 patch.dict(sys.modules, {"prompt_result_cache": None}), \
-                 patch.object(model_gateway, "available", return_value=["deepseek"]), \
-                 patch.object(model_gateway, "_call_provider", side_effect=fake_call):
-                result = model_gateway.complete("deepseek", "deepseek-chat", "test",
-                                              project="orchestrator", operation=op_name,
-                                              task_class="qa", record_op=True)
-                with lock:
-                    recorded_times.append(result.get("response_time_ms", 0))
+            res = model_gateway.complete("deepseek", "deepseek-chat", op_name,
+                                         project="orchestrator", operation=op_name,
+                                         task_class="qa", record_op=True)
+            with lock:
+                results[op_name] = res
 
-        threads = [threading.Thread(target=thread_target, args=(f"op_{i}",)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        names = ["op_%d" % i for i in range(5)]
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["deepseek"]),
+                      patch.object(model_gateway, "_call_provider", side_effect=fake_call)):
+            threads = [threading.Thread(target=thread_target, args=(n,), name=n) for n in names]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+        self.assertEqual(sorted(results), names)
+        # Each call's own prompt came back to it — no cross-thread result bleed.
+        for name in names:
+            self.assertEqual(results[name]["text"], name)
+        ops = [row for table, row in rec.inserts if table == "app_operations"]
+        self.assertEqual(sorted(r["operation"] for r in ops), names)
+        self.assertTrue(all(r["latency_ms"] >= 0 for r in ops))
 
-        self.assertEqual(len(recorded_times), 5)
-        self.assertTrue(all(rt >= 0 for rt in recorded_times))
+    def test_no_provider_allowed_for_the_sensitivity_returns_a_shaped_error(self):
+        # ADDED: the terms gate is applied to the attempt list too, and the empty-attempts branch
+        # of complete() had no coverage.
+        rec = _Recorder([])
+        with _Patches(*_patch_db(rec), *_no_cache(),
+                      patch.object(model_gateway, "available", return_value=["deepseek"]),
+                      patch.object(model_gateway, "_provider_allowed", return_value=False),
+                      patch.object(model_gateway, "_call_provider",
+                                   side_effect=AssertionError("must not call a provider"))):
+            result = model_gateway.complete("deepseek", "deepseek-chat", "test",
+                                            project="orchestrator", operation="completion",
+                                            task_class="qa", record_op=False)
+        self.assertEqual(result["text"], "")
+        self.assertIn("no provider allowed", result["error"])
 
-    def test_threshold_comparison_uses_correct_operator(self):
-        """Accuracy: response time threshold comparison is >= (not >)."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": 500,  # Exactly at threshold
-        }]
 
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "500"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        # At threshold: should be considered acceptable (not a bottleneck)
-        self.assertIsNotNone(result)
+class AppTriageRouteCanary(unittest.TestCase):
+    """app_triage.route() — decide without executing."""
 
-    def test_threshold_just_below_limit_is_acceptable(self):
-        """Accuracy: response time just below threshold is accepted."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": 499,
-        }]
-
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "500"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        self.assertIsNotNone(result)
-
-    def test_threshold_just_above_limit_triggers_fallback(self):
-        """Accuracy: response time just above threshold triggers bottleneck detection."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.1",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": 501,  # Just over 500
-        }]
-
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_ENABLE_BOTTLENECK_DETECTION": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "500"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["deepseek"]), \
-             patch.dict(sys.modules, {"prompt_result_cache": None}):
-            # Should trigger fallback logic
-            db.insert.side_effect = lambda *args, **kwargs: None
+    def test_route_prefers_the_learned_app_operation_route(self):
+        # WAS test_app_triage_route_includes_response_time_in_metadata, which asserted only that
+        # "provider"/"model" were present and that result.get("provider") was not None — true of
+        # every possible return value, so it could not fail. It also patched sys.modules["db"],
+        # which app_triage never consults: app_triage binds `db` as a module-level attribute at
+        # import time, so the mock was never reached and the assertions were really describing
+        # the model_policy default. Patching app_triage.db is what actually drives this code.
+        fake_db = MagicMock()
+        fake_db.select.return_value = [{"provider": "local", "model": "llama3.2:3b",
+                                        "avg_cost": 0.0, "avg_quality": 7.0}]
+        with _Patches(patch.object(app_triage, "db", fake_db),
+                      patch.object(model_gateway, "available", return_value=["local"])):
             result = app_triage.route("orchestrator", "completion", task_class="qa")
-        self.assertIsNotNone(result)
+        self.assertEqual(result["source"], "learned")
+        self.assertEqual((result["provider"], result["model"]), ("local", "llama3.2:3b"))
+        self.assertIn("learned route", result["reason"])
+        fake_db.select.assert_called_once_with(
+            "app_op_routes", {"select": "*", "app": "eq.orchestrator", "operation": "eq.completion"})
 
-    def test_response_time_non_numeric_string_handled_gracefully(self):
-        """Error handling: non-numeric response time doesn't wedge routing."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": "slow",  # Invalid type
-        }]
-
-        with patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            try:
-                result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-                self.assertIsNotNone(result)
-            except Exception as e:
-                self.fail(f"Invalid response_time_ms type wedged routing: {e}")
-
-    def test_multiple_operations_have_independent_thresholds(self):
-        """Accuracy: different operations can have different response time profiles."""
-        db = MagicMock()
-        def select_side_effect(*args, **kwargs):
-            if "pipeline_scout" in str(kwargs):
-                return [{
-                    "provider": "local",
-                    "model": "llama3.2:3b",
-                    "app": "orchestrator",
-                    "operation": "pipeline_scout",
-                    "avg_response_time_ms": 350,  # Fast
-                }]
-            elif "meta_loop" in str(kwargs):
-                return [{
-                    "provider": "local",
-                    "model": "codestral:22b",
-                    "app": "orchestrator",
-                    "operation": "meta_loop_improvement",
-                    "avg_response_time_ms": 850,  # Slower but acceptable for this op
-                }]
-            return []
-
-        db.select.side_effect = select_side_effect
-
-        with patch.dict(os.environ, {
-                "ORCH_USE_LEARNED_APP_ROUTES": "true",
-                "ORCH_REMEDIATION_RESPONSE_TIME_THRESHOLD_MS": "500"
-            }, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            scout_result = model_gateway._learned_route("orchestrator", "pipeline_scout", "plan", "standard")
-            meta_result = model_gateway._learned_route("orchestrator", "meta_loop_improvement", "plan", "standard")
-        self.assertIsNotNone(scout_result)
-        self.assertIsNotNone(meta_result)
-
-    def test_app_triage_route_includes_response_time_in_metadata(self):
-        """Normal path: app_triage.route() returns routing decision with response time info."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_response_time_ms": 400,
-        }]
-
-        with patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
+    def test_route_ignores_a_learned_route_whose_provider_is_unavailable(self):
+        # WAS test_threshold_just_above_limit_triggers_fallback, which set a 501ms
+        # avg_response_time_ms "just over 500" and then asserted only assertIsNotNone(result) —
+        # route() always returns a dict, so it could not fail either. The genuine
+        # don't-use-the-learned-route condition in app_triage.route is `learned[0] in avail`;
+        # when it does not hold the decision must come from the bandit/policy chain instead, and
+        # must still name an available provider.
+        fake_db = MagicMock()
+        fake_db.select.return_value = [{"provider": "local", "model": "llama3.1",
+                                        "avg_cost": 0.0, "avg_quality": 7.0}]
+        with _Patches(patch.object(app_triage, "db", fake_db),
+                      patch.object(model_gateway, "available", return_value=["claude"])):
             result = app_triage.route("orchestrator", "completion", task_class="qa")
-        self.assertIn("provider", result)
-        self.assertIn("model", result)
-        # Response time metadata may be present in advanced implementations
-        self.assertIsNotNone(result.get("provider"))
+        self.assertNotEqual(result["source"], "learned")
+        self.assertEqual(result["provider"], "claude")
+        self.assertTrue(result["model"])
 
-    def test_routing_db_exception_returns_none_fail_soft(self):
-        """Error handling: database exception on response time lookup returns None (fail-soft)."""
-        db = MagicMock()
-        db.select.side_effect = RuntimeError("db connection failed")
-
-        with patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}):
-            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        self.assertIsNone(result)
-
-    def test_backward_compatibility_learned_route_without_response_time_field(self):
-        """Backward compatibility: old route records without response_time_ms still work."""
-        db = MagicMock()
-        db.select.return_value = [{
-            "provider": "local",
-            "model": "llama3.2:3b",
-            "app": "orchestrator",
-            "operation": "completion",
-            "avg_quality": 7.0,
-            "avg_cost": 0.0,
-            # No avg_response_time_ms field (legacy data)
-        }]
-
-        with patch.dict(os.environ, {"ORCH_USE_LEARNED_APP_ROUTES": "true"}, clear=False), \
-             patch.dict(sys.modules, {"db": db}), \
-             patch.object(model_gateway, "available", return_value=["local"]):
-            result = model_gateway._learned_route("orchestrator", "completion", "qa", "standard")
-        self.assertIsNotNone(result)
-        self.assertEqual(result[1], "llama3.2:3b")
+    def test_route_is_fail_soft_when_the_control_plane_is_unreachable(self):
+        # ADDED: app_triage._learned_route swallows db errors and returns None so a control-plane
+        # outage degrades routing to the policy chooser instead of taking every app call down.
+        fake_db = MagicMock()
+        fake_db.select.side_effect = RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY")
+        with _Patches(patch.object(app_triage, "db", fake_db),
+                      patch.object(model_gateway, "available", return_value=["claude"])):
+            result = app_triage.route("orchestrator", "completion", task_class="qa")
+        self.assertNotEqual(result["source"], "learned")
+        self.assertEqual(result["provider"], "claude")
 
 
 if __name__ == "__main__":

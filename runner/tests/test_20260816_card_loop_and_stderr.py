@@ -152,12 +152,33 @@ def test_pick_cards_pages_instead_of_widening_the_limit(monkeypatch):
 
 
 def test_pick_cards_falls_back_when_the_server_cannot_page(monkeypatch):
-    """A server that will not page must degrade, not take the train down."""
+    """A server that will not page must degrade to a bounded window, not take the train down.
+
+    WAS: the fallback returned [] because the stand-in db.select returned [], so the test
+    could not tell "degraded correctly" from "gave up and returned nothing". The fallback
+    now has to prove it read the table, kept the window bounded, and still handed the
+    cards it found to the train.
+    """
+    seen = []
+
     def no_paging(*a, **k):
         raise RuntimeError("offset unsupported")
+
+    def fake_select(table, params=None, **kw):
+        seen.append(params or {})
+        return [{"id": "c1", "kind": "integrate", "status": "approved", "slug": "s",
+                 "title": "merge of s", "decided_by": None}]
+
     monkeypatch.setattr(mt.db, "select_all", no_paging)
-    monkeypatch.setattr(mt.db, "select", lambda *a, **k: [])
-    assert mt._pick_cards() == []          # returned, did not raise
+    monkeypatch.setattr(mt.db, "select", fake_select)
+
+    picked = mt._pick_cards()
+
+    assert seen, "the degraded path must still read the approvals table"
+    assert all(int(p.get("limit") or 0) > 0 for p in seen), \
+        "an unpaged read must stay bounded — that is the whole reason it is a fallback"
+    assert [c["id"] for c in picked] == ["c1"], \
+        "cards the fallback did see must still reach the train"
 
 
 # ---------------------------------------------------------------------- 3. stderr digest
@@ -174,9 +195,26 @@ REAL_PUSH_FAILURE = (
 )
 
 
-def test_old_tail_truncation_loses_the_cause():
-    """Documents the defect this module exists to fix."""
-    assert "rejected" not in REAL_PUSH_FAILURE[-160:]
+def test_the_cause_lines_are_exactly_what_a_tail_throws_away():
+    """The defect this module exists to fix, stated against the real API.
+
+    WAS: `assert "rejected" not in REAL_PUSH_FAILURE[-160:]` — an assertion about a
+    constant defined ten lines above it, which is green no matter what stderr_digest
+    does. Kept as the same documentation of the defect, but anchored to the function
+    that has to know better: diagnostic_lines() must pick up precisely the lines the
+    160-byte tail discards, and must not pick up git's hint block, which is all the
+    tail preserved.
+    """
+    tail = REAL_PUSH_FAILURE[-160:]
+    found = sd.diagnostic_lines(REAL_PUSH_FAILURE)
+
+    assert any("! [rejected]" in ln for ln in found)
+    assert any(ln.startswith("error: failed to push") for ln in found)
+    assert not any(ln.startswith("hint:") for ln in found), "git advice is not a cause"
+    # ...and every one of those cause lines is absent from what the old tail kept.
+    for line in found:
+        assert line not in tail
+    assert "hint:" in tail, "the tail kept the advice and nothing else — that is the bug"
 
 
 def test_digest_keeps_the_cause_at_the_same_budget():
@@ -209,13 +247,46 @@ def test_digest_never_raises():
     assert isinstance(sd.digest(Nasty()), str)
 
 
+#: A tail slice this short, applied to diagnostic text, cuts the cause off the front.
+#: Long tails (1000+) are whole-log captures and are not what this guards against.
+SHORT_TAIL_LIMIT = 200
+
+#: Only text that a person or an agent reads as an explanation. `slugs[-50:]` is a
+#: list slice and none of this applies to it.
+DIAGNOSTIC_NAMES = ("stderr", "stdout", "log", "note", "detail", "error", "message")
+
+
 def test_no_tail_truncation_left_in_the_repaired_modules():
-    """The 17 sites replaced this session must not come back."""
+    """The 17 sites replaced on 2026-08-16 must not come back, in any width.
+
+    The original check named two widths, `[-160:]` and `[-150:]`. On 2026-09-03 a
+    `[-120:]` walked straight past it and produced this row, which is what a human
+    and an automated repair task both had to work from:
+
+        [gate:build] staging BUILD red — self-heal queued: nthropic-ai/sdk'
+        imported from /Users/kpasch/.orch-scratch/build-overlay-_a6mb2u2/...
+
+    The cause -- which package, and that it was a missing import -- is off the
+    front of the string, along with the first letter of the package name. Three
+    separate wrong diagnoses this session traced to exactly this shape, so the
+    guard now looks for the SHAPE rather than for two literals.
+    """
+    import re
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pattern = re.compile(r"\[-(\d+):\]")
     bad = []
     for name in ("runner.py", "release_train.py", "merge_truth.py",
                  "branch_durability.py", "merge_train.py"):
         for i, ln in enumerate(open(os.path.join(root, name)), 1):
-            if "[-160:]" in ln or "[-150:]" in ln:
-                bad.append(f"{name}:{i}")
-    assert bad == [], f"stderr tail-truncation reintroduced at {bad}"
+            stripped = ln.strip()
+            if stripped.startswith("#"):
+                continue                      # a comment quoting the old shape is fine
+            for width in pattern.findall(ln):
+                if int(width) > SHORT_TAIL_LIMIT:
+                    continue
+                if not any(n in ln.lower() for n in DIAGNOSTIC_NAMES):
+                    continue                  # e.g. slugs[-50:], a list of ids
+                bad.append(f"{name}:{i}: [-{width}:]")
+    assert bad == [], (
+        "diagnostic text tail-truncated instead of digested at "
+        f"{bad} — use stderr_digest.digest(), which keeps the first line")

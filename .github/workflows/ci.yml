@@ -9,10 +9,40 @@ on:
   # that hole: any promotion can be verified on demand against the exact master tip.
   workflow_dispatch:
 
+# SUPERSEDED PR RUNS ARE CANCELLED; MASTER RUNS ARE NOT.
+#
+# Every push to a PR branch queued a fresh full run — darwin-kernel tests + typecheck,
+# the runner guards, compileall over every module — while the previous run for the same
+# PR kept going to completion against a commit nobody will merge. On a branch pushed five
+# times in an hour that is five full runs to learn about one tip, and they queue behind
+# each other, so the answer for the commit you actually care about arrives last.
+#
+# The `github.ref` key scopes the group per branch, so two different PRs never cancel each
+# other.
+#
+# The nuance that makes this safe: cancel-in-progress is FALSE on master. The comment on
+# `workflow_dispatch` above records why — auto-sync promotes dev -> master with
+# GITHUB_TOKEN, whose pushes never trigger workflows, so master can already change with no
+# CI run to show for it. Cancelling a master run would widen exactly that hole: a
+# promotion could land, start its verification, be cancelled by the next promotion, and
+# leave two commits on master with no completed run between them. Wasted minutes on a
+# superseded PR are cheap; an unverified master tip is the thing this pipeline exists to
+# prevent.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   darwin-kernel:
     name: darwin-kernel — test + typecheck
     runs-on: ubuntu-latest
+    # Every other workflow in this repo bounds its jobs; ci.yml was the one that did
+    # not, so all three jobs inherited GitHub's 360-minute default. That is not
+    # theoretical here: the runner suite has been observed to hang rather than fail
+    # (three full local runs stalled), and a hung job would hold a runner for six hours
+    # per push while the queue waited behind it. These jobs take seconds today, so the
+    # bound is generous — it is a fuse, not a performance budget.
+    timeout-minutes: 15
     container:
       image: node:22-alpine
     defaults:
@@ -21,6 +51,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # `npm ci` DELETES node_modules and reinstalls from the lockfile on every run, so
+      # this job refetched every dependency from the registry each time — the single
+      # slowest step in the pipeline, repeated on every push and every PR update, for a
+      # tree that only changes when package-lock.json does.
+      #
+      # Keyed on the lockfile hash: a dependency change misses the cache and installs
+      # fresh, which is correct — `npm ci` must still be the thing that decides what is
+      # installed. The cache only removes the download, never the resolution.
+      #
+      # Restored into npm's own cache dir rather than node_modules, because `npm ci`
+      # wipes node_modules before it starts; a node_modules cache would be deleted by the
+      # very command it was meant to speed up.
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-darwin-kernel-${{ hashFiles('packages/darwin-kernel/package-lock.json') }}
+          restore-keys: npm-darwin-kernel-
 
       - name: Install dependencies
         run: npm ci
@@ -44,15 +93,31 @@ jobs:
   runner-guards:
     name: runner — offline guard tests
     runs-on: ubuntu-latest
+    # The offline guards run in ~3s. A minute is a fuse for the hang case, not a budget.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          # pytest is the only dependency this job installs, and it was refetched from
+          # PyPI on every single run. Caching it turns a network install into a restore.
+          cache: pip
 
-      - name: Install pytest
-        run: pip install --quiet pytest
+      - name: Install test dependencies
+        # pytest-timeout, not just pytest. requirements-dev.txt exists precisely because
+        # the merge gate's `--timeout=60` died with "unrecognized arguments" on any
+        # machine that did not happen to have the plugin — and this step was still
+        # installing pytest alone, so CI was one of those machines. pytest.ini now sets a
+        # default timeout, and pytest ignores an unknown ini key without complaint: the
+        # bound would look configured and simply not exist.
+        #
+        # Named directly rather than `-r requirements-dev.txt`, because that file pulls in
+        # requirements.txt, and this job unsets SUPABASE_* on purpose to prove the tests
+        # are offline. Installing the runtime stack into it would widen a deliberately
+        # narrow, blocking job. Keep these two pinned in step with requirements-dev.txt.
+        run: pip install --quiet 'pytest>=8.0' 'pytest-timeout>=2.2'
 
       - name: Run offline guard tests
         working-directory: runner
@@ -100,6 +165,9 @@ jobs:
   task-reconciliation:
     name: tasks — reconcile against the queue
     runs-on: ubuntu-latest
+    # This one talks to the control plane, so it is the most likely to hang on a
+    # network stall rather than return an error.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -128,3 +196,41 @@ jobs:
         # --check reports without rewriting the files. Exit 1 when any task file
         # is MISSING or AMBIGUOUS in the queue.
         run: python3 runner/tools/reconcile_task_files.py --check
+
+  # DEPENDENCY MANIFEST — the acceptance check that existed and never ran.
+  #
+  # scripts/verify_deps.py calls itself "Acceptance check for the dependency
+  # manifest" and fails when a package declared in requirements*.txt is not
+  # importable, or when `runner` itself cannot be imported. Nothing invoked it, so
+  # it could only catch drift that someone already suspected and went looking for.
+  #
+  # The drift is documented in requirements.txt's own header: the file "previously
+  # listed only requests/python-dotenv/prometheus-client, so a fresh clone that ran
+  # pip install -r requirements.txt still could not import large parts of runner/".
+  # requirements-dev.txt records the same class of failure a second time, for
+  # pytest-timeout: declared nowhere, so the merge gate died with "unrecognized
+  # arguments: --timeout" on any machine built from the manifest.
+  #
+  # Both were found by a person hitting them. This job is what finds the third one:
+  # it installs from the manifest ALONE — never an ad-hoc `pip install X` — so a
+  # package that is only present because a developer's laptop happens to have it
+  # fails here instead of on the next clean machine.
+  dependency-manifest:
+    name: deps — manifest installs and imports
+    runs-on: ubuntu-latest
+    # A pip install that stalls on the network hangs until GitHub's 360-minute
+    # default kills it, holding a runner for six hours over a job that takes
+    # about a minute. This is a fuse, not a performance budget.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install from the manifest only
+        run: pip install --quiet -r requirements-dev.txt
+
+      - name: Verify every declared package imports
+        run: python3 scripts/verify_deps.py

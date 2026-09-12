@@ -8,12 +8,23 @@ Fail-soft throughout: metric loss is always preferable to wedging the merge trai
 import datetime, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import log as _log_mod
+
+# FAIL-SOFT IS NOT THE SAME AS SILENT.
+#
+# Both handlers below were `except Exception: pass`, and record()'s docstring
+# said so out loud: "Silently swallows all errors." Not raising is right -- the
+# module docstring is correct that metric loss beats wedging the merge train --
+# but saying nothing means a table that never receives a row is indistinguishable
+# from a pipeline that never ran. merge_train now reads get_health() into its run
+# summary, so an empty health block has to be traceable to the write that failed.
+_log = _log_mod.get("pipeline_metrics")
 
 TABLE = "pipeline_metrics"
 
 
 def record(slug, task_type, ok, duration_ms, gate_decision, gate_reason=""):
-    """Persist one test-run metric row. Silently swallows all errors."""
+    """Persist one test-run metric row. Never raises; logs what it lost."""
     row = {
         "slug": slug or "",
         "task_type": task_type or "unknown",
@@ -25,8 +36,9 @@ def record(slug, task_type, ok, duration_ms, gate_decision, gate_reason=""):
     }
     try:
         db.insert(TABLE, row)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.warning("pipeline_metrics: db.insert failed for %s (%s): %s",
+                     slug, task_type, exc)
 
 
 def get_health(lookback_minutes=60, task_type=None):
@@ -48,7 +60,9 @@ def get_health(lookback_minutes=60, task_type=None):
         params["task_type"] = f"eq.{task_type}"
     try:
         rows = db.select(TABLE, params) or []
-    except Exception:
+    except Exception as exc:
+        _log.warning("pipeline_metrics: db.select failed over the last %s minutes "
+                     "(task_type=%s): %s", lookback_minutes, task_type, exc)
         rows = []
 
     by_type = {}

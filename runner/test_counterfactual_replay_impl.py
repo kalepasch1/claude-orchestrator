@@ -1,424 +1,309 @@
 #!/usr/bin/env python3
-"""
-Test suite for counterfactual_replay.py — periodic re-run of past decisions
-with newer models/data to detect routing divergences and update policies.
+"""Implementation tests for counterfactual_replay.py's batch and routing surface.
 
-Tests cover the actual implementation:
-- _fetch_recent_decisions: fetch completed tasks from DB
-- _current_model_roster: load model quality scores
-- replay_decision: evaluate routing with current models
-- run_replay: main orchestration
-- _apply_policy_updates: persist route changes
-- Edge cases: disabled replay, missing DB, corrupted data
-- Integration: fleet config, worktree context
-"""
-import os, sys, json, time, tempfile, shutil
-from unittest.mock import Mock, patch, MagicMock, call
-from datetime import datetime, timedelta
+SUITE OWNERSHIP: this file owns
+    * replay_batch / replay_batch_with_summary (the batch surface)
+    * detect_circular_dependencies
+    * RouteConfig (the in-memory route table)
+    * the runtime-path helpers (_get_runtime_dir / _acquire_storage)
+Per-decision units are owned by test_counterfactual_replay_comprehensive.py, the
+spec contract by test_counterfactual_replay_spec.py, persistence by
+tests/test_counterfactual_replay.py, and the assembled flow by tests/..._e2e.py.
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("SUPABASE_URL", "http://localhost")
-os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
+This file previously tested `_fetch_recent_decisions`, `_current_model_roster`,
+`run_replay` and `_apply_policy_updates` against a `counterfactual_replay.db`
+attribute. The module imports no `db` and defines none of those four functions;
+they are from the spec document's unbuilt design. Each test below was retargeted
+onto the batch/routing behaviour that the module actually implements.
+"""
+
+import os
+import sys
+
+import pytest
+
+RUNNER = os.path.dirname(os.path.abspath(__file__))
+if RUNNER not in sys.path:
+    sys.path.insert(0, RUNNER)
 
 import counterfactual_replay as cfr
-import error_handling_utils as ehu
 
 
-# --- Env & Config Tests (1-3) ---
+class FakeModel:
+    """Model handle with a stable decision, or a per-call varying one."""
 
-def test_replay_enabled_by_default():
-    """ORCH_REPLAY_ENABLED defaults to true."""
-    with patch.dict(os.environ, {}, clear=False):
-        if "ORCH_REPLAY_ENABLED" in os.environ:
-            del os.environ["ORCH_REPLAY_ENABLED"]
-        # Re-import or check constant
-        assert cfr.ENABLED or "ORCH_REPLAY_ENABLED" not in os.environ or cfr.ENABLED
+    def __init__(self, model_id="opus", version="2.0", decision="opus", confidence=0.9):
+        self.model_id = model_id
+        self.version = version
+        self._decision = decision
+        self._confidence = confidence
+        self.calls = 0
 
-
-def test_replay_respects_disabled_flag():
-    """Replay exits early when disabled."""
-    with patch.dict(os.environ, {"ORCH_REPLAY_ENABLED": "false"}):
-        # Re-bind the constant for this test
-        original = cfr.ENABLED
-        cfr.ENABLED = False
-        result = cfr.run_replay()
-        assert result.get("enabled") is False
-        cfr.ENABLED = original
+    def evaluate(self, input_data, task_type):
+        self.calls += 1
+        return {"decision": self._decision, "confidence": self._confidence}
 
 
-def test_replay_config_from_env():
-    """Config values read from env vars with defaults."""
-    assert isinstance(cfr.LOOKBACK_DAYS, int)
-    assert cfr.LOOKBACK_DAYS > 0
-    assert isinstance(cfr.SAMPLE_SIZE, int)
-    assert cfr.SAMPLE_SIZE > 0
+def _decision(task_id, route="haiku", confidence=0.5):
+    return {
+        "task_id": task_id,
+        "input": {"q": task_id},
+        "output": {"route": route, "confidence": confidence},
+    }
 
 
-# --- Fetch Recent Decisions (4-7) ---
+# =============================================================================
+# replay_batch()
+# =============================================================================
 
-def test_fetch_recent_decisions_queries_db():
-    """_fetch_recent_decisions queries tasks table."""
-    with patch("counterfactual_replay.db.select") as mock_select:
-        mock_select.return_value = []
-        cfr._fetch_recent_decisions(lookback_days=7, limit=100)
-        mock_select.assert_called_once()
-        args, kwargs = mock_select.call_args
-        assert args[0] == "tasks"
-        assert "updated_at" in kwargs
-        assert "state" in kwargs
+class TestReplayBatch:
+    """replay_batch() — replay a window of decisions against one model."""
+
+    def test_empty_batch_returns_empty_list(self):
+        """No decisions in the window means no results."""
+        assert cfr.replay_batch([], FakeModel()) == []
+        assert cfr.replay_batch(None, FakeModel()) == []
+
+    def test_replays_every_valid_decision(self):
+        """Each replayable decision produces one result."""
+        decisions = [_decision(f"t{i}") for i in range(3)]
+        results = cfr.replay_batch(decisions, FakeModel())
+        assert len(results) == 3
+
+    def test_preserves_input_order(self):
+        """Results come back in the order the decisions were given."""
+        decisions = [_decision("t1"), _decision("t2"), _decision("t3")]
+        results = cfr.replay_batch(decisions, FakeModel())
+        assert [r["original_task_id"] for r in results] == ["t1", "t2", "t3"]
+
+    def test_skips_malformed_entries(self):
+        """None and non-dict entries are skipped without aborting the batch."""
+        results = cfr.replay_batch([None, "junk", _decision("t1")], FakeModel())
+        assert [r["original_task_id"] for r in results] == ["t1"]
+
+    def test_drops_unreplayable_decisions(self):
+        """Decisions with neither input nor output yield no result row."""
+        results = cfr.replay_batch(
+            [{"task_id": "t1", "state": "DONE"}, _decision("t2")], FakeModel())
+        assert [r["original_task_id"] for r in results] == ["t2"]
+
+    def test_missing_task_id_replays_as_unknown(self):
+        """A decision with no task id is still replayed, tagged 'unknown'."""
+        results = cfr.replay_batch([{"input": {"q": 1}}], FakeModel())
+        assert results[0]["task_id"] == "unknown"
 
 
-def test_fetch_recent_decisions_respects_lookback():
-    """Fetches only tasks within lookback window."""
-    with patch("counterfactual_replay.db.select") as mock_select:
-        mock_select.return_value = []
-        cfr._fetch_recent_decisions(lookback_days=30, limit=50)
-        args, kwargs = mock_select.call_args
-        # Should have a timestamp cutoff
-        updated_at = kwargs.get("updated_at", "")
-        assert "gte." in updated_at or "gt." in updated_at
+# =============================================================================
+# replay_batch_with_summary()
+# =============================================================================
 
+class TestReplayBatchWithSummary:
+    """replay_batch_with_summary() — batch plus the divergence report."""
 
-def test_fetch_recent_decisions_returns_task_fields():
-    """Returns expected task fields."""
-    mock_tasks = [
-        {
-            "id": 1, "slug": "task-1", "kind": "build", "project_id": 123,
-            "state": "DONE", "note": "ok", "force_coder": "claude-opus-4",
-            "attempt": 1, "updated_at": "2026-08-19T10:00:00Z"
+    def test_returns_results_and_summary(self):
+        """The call returns the result rows alongside the summary."""
+        results, summary = cfr.replay_batch_with_summary(
+            [_decision("t1")], FakeModel())
+        assert len(results) == 1
+        assert summary["total_replayed"] == 1
+
+    def test_total_counts_only_replayed_decisions(self):
+        """Skipped decisions are not counted as replayed."""
+        decisions = [_decision("t1"), {"task_id": "t2"}, None]
+        _, summary = cfr.replay_batch_with_summary(decisions, FakeModel())
+        assert summary["total_replayed"] == 1
+
+    def test_models_tested_is_sorted_and_deduplicated(self):
+        """The summary names each model that produced a replay, once."""
+        decisions = [_decision("t1"), _decision("t2")]
+        _, summary = cfr.replay_batch_with_summary(decisions, FakeModel("opus"))
+        assert summary["models_tested"] == ["opus"]
+
+    def test_counts_policy_changes(self):
+        """Divergent replays are counted, not just produced.
+
+        Regression guard: policy_changes used to be initialised to 0 and never
+        written, so the summary always reported zero divergences.
+        """
+        decisions = [_decision("t1", route="haiku"), _decision("t2", route="haiku")]
+        _, summary = cfr.replay_batch_with_summary(
+            decisions, FakeModel(decision="opus"))
+        assert summary["policy_changes"] == 2
+
+    def test_stable_replays_report_no_policy_changes(self):
+        """Replays that reproduce the stored route are not divergences."""
+        decisions = [_decision("t1", route="opus"), _decision("t2", route="opus")]
+        _, summary = cfr.replay_batch_with_summary(
+            decisions, FakeModel(decision="opus", confidence=0.5))
+        assert summary["policy_changes"] == 0
+
+    def test_confidence_delta_measured_against_stored_output(self):
+        """The delta compares the replay to the decision it replays."""
+        decisions = [_decision("t1", confidence=0.5)]
+        _, summary = cfr.replay_batch_with_summary(
+            decisions, FakeModel(confidence=0.9))
+        assert summary["avg_confidence_delta"] == pytest.approx(0.4)
+
+    def test_empty_batch_summary_is_all_zero(self):
+        """An empty window summarises to zeros, not to missing keys."""
+        results, summary = cfr.replay_batch_with_summary([], FakeModel())
+        assert results == []
+        assert summary == {
+            "total_replayed": 0,
+            "policy_changes": 0,
+            "avg_confidence_delta": 0.0,
+            "models_tested": [],
         }
-    ]
-    with patch("counterfactual_replay.db.select") as mock_select:
-        mock_select.return_value = mock_tasks
-        result = cfr._fetch_recent_decisions()
-        assert len(result) == 1
-        assert result[0]["slug"] == "task-1"
-        assert result[0]["force_coder"] == "claude-opus-4"
-        assert result[0]["kind"] == "build"
 
 
-def test_fetch_recent_decisions_db_error_returns_empty():
-    """DB errors return empty list (fail-soft)."""
-    with patch("counterfactual_replay.db.select") as mock_select:
-        mock_select.side_effect = Exception("connection timeout")
-        result = cfr._fetch_recent_decisions()
-        # Should not raise, return empty or existing list
-        assert isinstance(result, list) or result is None
+# =============================================================================
+# detect_circular_dependencies()
+# =============================================================================
+
+class TestDetectCircularDependencies:
+    """detect_circular_dependencies() — guard against replay loops."""
+
+    def test_detects_two_node_cycle(self):
+        """A mutual dependency is a cycle and names its members."""
+        detection = cfr.detect_circular_dependencies({
+            "task_a": {"depends_on": "task_b"},
+            "task_b": {"depends_on": "task_a"},
+        })
+        assert detection["has_cycle"] is True
+        assert set(detection["cycle"]) <= {"task_a", "task_b"}
+
+    def test_detects_self_dependency(self):
+        """A task depending on itself is a cycle."""
+        detection = cfr.detect_circular_dependencies({"a": {"depends_on": "a"}})
+        assert detection["has_cycle"] is True
+
+    def test_acyclic_chain_is_clean(self):
+        """A plain chain reports no cycle and an empty cycle list."""
+        detection = cfr.detect_circular_dependencies({
+            "a": {"depends_on": "b"},
+            "b": {"depends_on": "c"},
+            "c": {},
+        })
+        assert detection == {"has_cycle": False, "cycle": []}
+
+    def test_empty_graph_is_clean(self):
+        """No decisions, no cycles."""
+        assert cfr.detect_circular_dependencies({}) == {"has_cycle": False, "cycle": []}
+
+    def test_unhashable_graph_fails_soft(self):
+        """A list of decision dicts is not a graph; it reports no cycle."""
+        detection = cfr.detect_circular_dependencies([{"task_id": "a"}, {"task_id": "b"}])
+        assert detection == {"has_cycle": False, "cycle": []}
 
 
-# --- Model Roster (8-10) ---
+# =============================================================================
+# RouteConfig
+# =============================================================================
 
-def test_current_model_roster_loads_scores():
-    """_current_model_roster fetches model quality data."""
-    mock_scores = [
-        {"model": "claude-opus-4", "task_kind": "build", "quality": 0.95, "cost_usd": 0.050},
-        {"model": "claude-haiku-4", "task_kind": "build", "quality": 0.72, "cost_usd": 0.001},
-        {"model": "claude-sonnet-5", "task_kind": "qafix", "quality": 0.88, "cost_usd": 0.015},
-    ]
-    with patch("counterfactual_replay.db.select") as mock_select:
-        mock_select.return_value = mock_scores
-        roster = cfr._current_model_roster()
-        assert ("claude-opus-4", "build") in roster
-        assert roster[("claude-opus-4", "build")]["quality"] == 0.95
-        assert roster[("claude-haiku-4", "build")]["cost"] == 0.001
+class TestRouteConfig:
+    """RouteConfig — the in-memory operation -> model table."""
 
+    def test_set_then_get_route(self):
+        """A set route reads back with its model and score."""
+        config = cfr.RouteConfig()
+        config.set_route("build", "haiku", q_score=0.4)
+        assert config.get_route("build") == {
+            "operation": "build", "model": "haiku", "q_score": 0.4}
 
-def test_current_model_roster_empty_db():
-    """Handles empty model scores gracefully."""
-    with patch("counterfactual_replay.db.select") as mock_select:
-        mock_select.return_value = []
-        roster = cfr._current_model_roster()
-        assert roster == {}
+    def test_unknown_operation_returns_none(self):
+        """An operation that was never routed has no entry."""
+        assert cfr.RouteConfig().get_route("nope") is None
 
+    def test_update_existing_route_keeps_score_when_omitted(self):
+        """Re-pointing an operation leaves its score untouched."""
+        config = cfr.RouteConfig()
+        config.set_route("build", "haiku", q_score=0.4)
+        config.update_route("build", "opus")
+        assert config.get_route("build") == {
+            "operation": "build", "model": "opus", "q_score": 0.4}
 
-def test_current_model_roster_db_error():
-    """DB errors return empty dict (fail-soft)."""
-    with patch("counterfactual_replay.db.select") as mock_select:
-        mock_select.side_effect = RuntimeError("db down")
-        roster = cfr._current_model_roster()
-        assert roster == {}
+    def test_update_existing_route_can_set_score(self):
+        """An explicit score replaces the old one."""
+        config = cfr.RouteConfig()
+        config.set_route("build", "haiku", q_score=0.4)
+        config.update_route("build", "opus", q_score=0.9)
+        assert config.get_route("build")["q_score"] == 0.9
 
+    def test_update_unknown_operation_creates_it(self):
+        """Updating an unrouted operation registers it."""
+        config = cfr.RouteConfig()
+        config.update_route("deploy", "opus", q_score=0.7)
+        assert config.get_route("deploy") == {
+            "operation": "deploy", "model": "opus", "q_score": 0.7}
 
-# --- Replay Decision (11-15) ---
+    def test_counterfactual_update_prefers_new_model(self):
+        """A replay naming new_model repoints the route to it."""
+        config = cfr.RouteConfig()
+        config.set_route("build", "haiku")
+        config.apply_counterfactual_update(
+            "build", {"new_model": "opus", "model": "sonnet", "q_score_delta": 0.3})
+        assert config.get_route("build")["model"] == "opus"
+        assert config.get_route("build")["q_score"] == 0.3
 
-def test_replay_decision_compares_models():
-    """replay_decision identifies best current model for task kind."""
-    task = {
-        "id": 1, "slug": "task-001", "kind": "build",
-        "force_coder": "claude-haiku-4"
-    }
-    roster = {
-        ("claude-haiku-4", "build"): {"quality": 0.72, "cost": 0.001},
-        ("claude-opus-4", "build"): {"quality": 0.95, "cost": 0.050},
-        ("claude-sonnet-5", "qafix"): {"quality": 0.88, "cost": 0.015},
-    }
-    result = cfr.replay_decision(task, roster)
-    assert result["original_coder"] == "claude-haiku-4"
-    assert result["recommended"] == "claude-opus-4"
-    assert result["original_quality"] == 0.72
-    assert result["best_quality"] == 0.95
+    def test_counterfactual_update_falls_back_to_model(self):
+        """A replay result that only carries 'model' still repoints the route."""
+        config = cfr.RouteConfig()
+        config.set_route("build", "haiku")
+        config.apply_counterfactual_update("build", {"model": "opus"})
+        assert config.get_route("build")["model"] == "opus"
+        # No q_score_delta means the score is reset to 0.0, not preserved.
+        assert config.get_route("build")["q_score"] == 0.0
 
-
-def test_replay_decision_flags_improvement():
-    """Marks changed=True when quality delta > 0.5."""
-    task = {"slug": "t1", "kind": "build", "force_coder": "claude-haiku-4"}
-    roster = {
-        ("claude-haiku-4", "build"): {"quality": 0.70, "cost": 0.001},
-        ("claude-opus-4", "build"): {"quality": 0.95, "cost": 0.050},  # delta = 0.25, below threshold? Let's check implementation
-    }
-    result = cfr.replay_decision(task, roster)
-    # Implementation checks: quality_delta > 0.5 AND best_model != original
-    if result["quality_delta"] > 0.5:
-        assert result["changed"] is True
-
-
-def test_replay_decision_no_change_same_model():
-    """No change when same model is still best."""
-    task = {"slug": "t2", "kind": "build", "force_coder": "claude-opus-4"}
-    roster = {
-        ("claude-opus-4", "build"): {"quality": 0.95, "cost": 0.050},
-        ("claude-haiku-4", "build"): {"quality": 0.72, "cost": 0.001},
-    }
-    result = cfr.replay_decision(task, roster)
-    assert result["original_coder"] == result["recommended"]
-    assert result["changed"] is False
+    def test_counterfactual_update_fails_soft(self):
+        """An unusable replay result leaves the table untouched."""
+        config = cfr.RouteConfig()
+        config.set_route("build", "haiku", q_score=0.4)
+        config.apply_counterfactual_update("build", None)
+        assert config.get_route("build")["model"] == "haiku"
 
 
-def test_replay_decision_preserves_metadata():
-    """Result includes task slug and kind."""
-    task = {"slug": "my-task", "kind": "qafix", "force_coder": "haiku"}
-    roster = {
-        ("haiku", "qafix"): {"quality": 0.70, "cost": 0.001},
-        ("opus", "qafix"): {"quality": 0.80, "cost": 0.050},
-    }
-    result = cfr.replay_decision(task, roster)
-    assert result["task_slug"] == "my-task"
-    assert result["task_kind"] == "qafix"
+# =============================================================================
+# Runtime paths
+# =============================================================================
 
+class TestRuntimeHelpers:
+    """_get_runtime_dir() / _acquire_storage() — where replay state lands.
 
-def test_replay_decision_unknown_original_model():
-    """Handles original model not in roster."""
-    task = {"slug": "t3", "kind": "build", "force_coder": "unknown-model"}
-    roster = {
-        ("claude-opus-4", "build"): {"quality": 0.95, "cost": 0.050},
-    }
-    result = cfr.replay_decision(task, roster)
-    assert result["original_coder"] == "unknown-model"
-    assert result["original_quality"] == 0.0  # default for missing
+    ReplayStorage's own behaviour is owned by tests/test_counterfactual_replay.py;
+    only the lookup and the singleton are asserted here.
+    """
 
+    def test_runtime_dir_follows_claude_orch_home(self, tmp_path, monkeypatch):
+        """CLAUDE_ORCH_HOME is the runtime root when set."""
+        monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
+        assert cfr._get_runtime_dir() == str(tmp_path)
 
-# --- Run Replay Main Flow (16-19) ---
+    def test_runtime_dir_defaults_next_to_the_runner(self, monkeypatch):
+        """Without the env var the runtime dir sits beside runner/."""
+        monkeypatch.delenv("CLAUDE_ORCH_HOME", raising=False)
+        assert cfr._get_runtime_dir().endswith(".runtime")
 
-def test_run_replay_with_no_tasks():
-    """run_replay handles empty task list."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            mock_fetch.return_value = []
-            mock_roster.return_value = {("opus", "build"): {"quality": 0.9, "cost": 0.05}}
-            result = cfr.run_replay(lookback_days=7, limit=100, apply=False)
-            assert result["tasks_scanned"] == 0
-            assert result["decisions_diverged"] == 0
+    def test_acquire_storage_is_a_singleton(self, tmp_path):
+        """Repeat calls hand back the same storage object."""
+        cfr.invalidate()
+        try:
+            first = cfr._acquire_storage(str(tmp_path))
+            second = cfr._acquire_storage(str(tmp_path / "ignored"))
+            assert first is second
+            assert isinstance(first, cfr.ReplayStorage)
+        finally:
+            cfr.invalidate()
 
-
-def test_run_replay_no_roster():
-    """run_replay returns error when no model roster available."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            mock_fetch.return_value = [{"slug": "t1"}]
-            mock_roster.return_value = {}
-            result = cfr.run_replay()
-            assert result.get("error") == "no_roster"
-
-
-def test_run_replay_scans_and_reports():
-    """run_replay scans tasks and reports divergence rate."""
-    tasks = [
-        {"id": 1, "slug": "t1", "kind": "build", "force_coder": "haiku"},
-        {"id": 2, "slug": "t2", "kind": "build", "force_coder": "haiku"},
-    ]
-    roster = {
-        ("haiku", "build"): {"quality": 0.70, "cost": 0.001},
-        ("opus", "build"): {"quality": 0.95, "cost": 0.050},
-    }
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            mock_fetch.return_value = tasks
-            mock_roster.return_value = roster
-            result = cfr.run_replay(apply=False)
-            assert result["tasks_scanned"] == 2
-            assert "decisions_diverged" in result
-            assert "divergence_rate" in result
-
-
-def test_run_replay_apply_false_does_not_persist():
-    """apply=False prevents policy persistence."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            with patch("counterfactual_replay._apply_policy_updates") as mock_apply:
-                mock_fetch.return_value = [{"id": 1, "slug": "t1", "kind": "build", "force_coder": "haiku"}]
-                mock_roster.return_value = {
-                    ("haiku", "build"): {"quality": 0.70, "cost": 0.001},
-                    ("opus", "build"): {"quality": 0.95, "cost": 0.050},
-                }
-                cfr.run_replay(apply=False)
-                mock_apply.assert_not_called()
-
-
-# --- Policy Updates (20-22) ---
-
-def test_apply_policy_updates_persists_changes():
-    """_apply_policy_updates saves route overrides to DB."""
-    results = [
-        {
-            "changed": True,
-            "task_kind": "build",
-            "recommended": "claude-opus-4",
-            "best_quality": 0.95,
-        }
-    ]
-    with patch("counterfactual_replay.db.upsert") as mock_upsert:
-        cfr._apply_policy_updates(results)
-        mock_upsert.assert_called_once()
-        call_args = mock_upsert.call_args[0][0]
-        assert "route_override:" in call_args["key"]
-        assert call_args["value"]["preferred_model"] == "claude-opus-4"
-
-
-def test_apply_policy_updates_skips_unchanged():
-    """Only persists results with changed=True."""
-    results = [
-        {"changed": False, "task_kind": "build"},
-        {"changed": True, "task_kind": "qafix", "recommended": "opus", "best_quality": 0.88},
-    ]
-    with patch("counterfactual_replay.db.upsert") as mock_upsert:
-        cfr._apply_policy_updates(results)
-        assert mock_upsert.call_count == 1  # Only 1 changed
-
-
-def test_apply_policy_updates_error_handling():
-    """DB errors during update don't crash (fail-soft)."""
-    results = [
-        {"changed": True, "task_kind": "build", "recommended": "opus", "best_quality": 0.95}
-    ]
-    with patch("counterfactual_replay.db.upsert") as mock_upsert:
-        mock_upsert.side_effect = RuntimeError("db write failed")
-        # Should not raise
-        cfr._apply_policy_updates(results)
-
-
-# --- Edge Cases (23-26) ---
-
-def test_replay_decision_with_zero_quality():
-    """Handles zero quality scores."""
-    task = {"slug": "t", "kind": "build", "force_coder": "unknown"}
-    roster = {
-        ("known", "build"): {"quality": 0.0, "cost": 0.0},
-    }
-    result = cfr.replay_decision(task, roster)
-    assert "quality_delta" in result
-
-
-def test_run_replay_with_partial_roster():
-    """Handles roster missing scores for some task kinds."""
-    tasks = [
-        {"id": 1, "slug": "t1", "kind": "build", "force_coder": "opus"},
-        {"id": 2, "slug": "t2", "kind": "deploy", "force_coder": "haiku"},  # kind not in roster
-    ]
-    roster = {
-        ("opus", "build"): {"quality": 0.95, "cost": 0.050},
-    }
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            mock_fetch.return_value = tasks
-            mock_roster.return_value = roster
-            result = cfr.run_replay(apply=False)
-            assert result["tasks_scanned"] == 2
-
-
-def test_run_replay_respects_limit():
-    """Only replays up to limit tasks."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            mock_fetch.return_value = [{"id": i} for i in range(200)]
-            mock_roster.return_value = {("opus", "build"): {"quality": 0.9, "cost": 0.05}}
-            cfr.run_replay(limit=50)
-            # Should pass limit=50 to _fetch
-            mock_fetch.assert_called_once()
-
-
-def test_run_replay_computes_divergence_rate():
-    """Correctly computes divergence_rate = changed / total."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            tasks = [
-                {"id": i, "slug": f"t{i}", "kind": "build", "force_coder": "haiku"}
-                for i in range(10)
-            ]
-            roster = {
-                ("haiku", "build"): {"quality": 0.70, "cost": 0.001},
-                ("opus", "build"): {"quality": 0.95, "cost": 0.050},  # quality_delta = 0.25, below threshold
-            }
-            mock_fetch.return_value = tasks
-            mock_roster.return_value = roster
-            result = cfr.run_replay()
-            assert result["divergence_rate"] == result["decisions_diverged"] / 10
-
-
-# --- CLI Integration (27-29) ---
-
-def test_cli_dry_run(capsys):
-    """CLI without --apply performs dry run."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            mock_fetch.return_value = []
-            mock_roster.return_value = {}
-            result = cfr.run_replay(apply=False)
-            assert result.get("applied") is False or "applied" not in result or result["applied"] is False
-
-
-def test_cli_apply_flag(capsys):
-    """CLI --apply sets apply=True in run_replay."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            with patch("counterfactual_replay._apply_policy_updates") as mock_apply:
-                mock_fetch.return_value = [
-                    {"id": 1, "slug": "t1", "kind": "build", "force_coder": "haiku"}
-                ]
-                roster = {
-                    ("haiku", "build"): {"quality": 0.70, "cost": 0.001},
-                    ("opus", "build"): {"quality": 0.96, "cost": 0.050},  # > 0.5 delta
-                }
-                mock_roster.return_value = roster
-                result = cfr.run_replay(apply=True)
-                # If there was a change > 0.5, _apply_policy_updates should be called
-                if result.get("decisions_diverged", 0) > 0:
-                    mock_apply.assert_called()
-
-
-def test_cli_limit_flag():
-    """CLI --limit restricts sample size."""
-    with patch("counterfactual_replay._fetch_recent_decisions") as mock_fetch:
-        mock_fetch.return_value = []
-        with patch("counterfactual_replay._current_model_roster") as mock_roster:
-            mock_roster.return_value = {}
-            cfr.run_replay(limit=25)
-            mock_fetch.assert_called_once()
-            # Verify limit was passed (implementation detail)
-
-
-# --- Disabled Replay (30) ---
-
-def test_run_replay_disabled():
-    """ORCH_REPLAY_ENABLED=false disables all operations."""
-    original = cfr.ENABLED
-    try:
-        cfr.ENABLED = False
-        result = cfr.run_replay()
-        assert result.get("enabled") is False
-    finally:
-        cfr.ENABLED = original
+    def test_invalidate_drops_the_storage_singleton(self, tmp_path):
+        """invalidate() forces the next acquire to build fresh storage."""
+        cfr.invalidate()
+        try:
+            first = cfr._acquire_storage(str(tmp_path))
+            cfr.invalidate()
+            assert cfr._acquire_storage(str(tmp_path)) is not first
+        finally:
+            cfr.invalidate()
 
 
 if __name__ == "__main__":
-    import pytest
     pytest.main([__file__, "-v"])

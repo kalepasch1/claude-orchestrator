@@ -310,7 +310,20 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         }
         updates = []
         db = MagicMock()
-        db.select.side_effect = [[], [], [task]]
+        # KEYED ON THE QUERY, NOT ON THE CALL COUNT.
+        #
+        # This was `[[], [], [task]]`: three canned answers, positionally, on
+        # the assumption that run()'s fetch of BLOCKED tasks is the third
+        # db.select it makes. run() has since grown more preparatory selects, so
+        # the list ran out and the fetch raised StopIteration -- the test broke
+        # on a call it does not care about. Match the filter instead and the
+        # count stops mattering.
+        def select(table, params=None):
+            if table == "tasks" and "BLOCKED" in (params or {}).get("state", ""):
+                return [task]
+            return []
+
+        db.select.side_effect = select
         db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
 
         with patch.object(auto_remediate, "db", db):
@@ -337,7 +350,20 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         }
         updates = []
         db = MagicMock()
-        db.select.side_effect = [[], [], [task]]
+        # KEYED ON THE QUERY, NOT ON THE CALL COUNT.
+        #
+        # This was `[[], [], [task]]`: three canned answers, positionally, on
+        # the assumption that run()'s fetch of BLOCKED tasks is the third
+        # db.select it makes. run() has since grown more preparatory selects, so
+        # the list ran out and the fetch raised StopIteration -- the test broke
+        # on a call it does not care about. Match the filter instead and the
+        # count stops mattering.
+        def select(table, params=None):
+            if table == "tasks" and "BLOCKED" in (params or {}).get("state", ""):
+                return [task]
+            return []
+
+        db.select.side_effect = select
         db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
 
         with patch.object(auto_remediate, "db", db):
@@ -348,7 +374,15 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         self.assertEqual(task_patch["state"], "QUEUED")
         self.assertEqual(task_patch["remediation_count"], auto_remediate.CAP + 1)
         self.assertIn("cap reached on max_turns", task_patch["note"])
-        self.assertIn("implement focused", task_patch["prompt"].lower())
+        # Was assertIn("implement focused", ...), a contiguous substring of a
+        # directive that has since been reworded to "implement with focused,
+        # direct approach avoiding excessive tool use". The contract is that the
+        # max-turns directive names the turn limit and asks for a focused
+        # implementation; assert that, not one exact phrasing of it.
+        prompt = task_patch["prompt"].lower()
+        self.assertIn("turn limit", prompt)
+        self.assertIn("focused", prompt)
+        self.assertIn("implement", prompt)
 
 
 if __name__ == "__main__":

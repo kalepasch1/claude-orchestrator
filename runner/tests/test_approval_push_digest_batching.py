@@ -192,6 +192,22 @@ class RunBatchingTest(unittest.TestCase):
         self.assertEqual(len(pings), 1)
         self.assertIn("1 decision", pings[0])
 
+    def test_the_digest_is_delivered_before_run_returns(self):
+        """run() is a one-shot process; nothing after it returns will ever execute.
+
+        `python3 periodic.py pushdecisions` runs this job and exits, and ApprovalBatcher arms
+        its window with a daemon threading.Timer — a daemon thread does not keep the
+        interpreter alive, so the 30s timer never fires. The per-card `notifications` ledger
+        rows are written during the run, so the next invocation reads those ids into `already`
+        and skips the same cards: a digest left to the timer is not delayed, it is lost. The
+        batch therefore has to be flushed inside run().
+        """
+        _pushed, inserts, pings = self._run()
+        self.assertEqual(len(pings), 1, "the digest never left the process")
+        self.assertEqual(len([r for r in inserts if r.get("channel") == "digest"]), 1)
+        self.assertEqual(ap._approval_batcher.get_pending(), [],
+                         "cards were left queued for a timer that will never run")
+
     def test_nothing_new_means_no_ping_and_no_digest_row(self):
         pushed, inserts, pings = self._run(already=("a1", "a2", "a3"))
         self.assertEqual(pushed, 0)

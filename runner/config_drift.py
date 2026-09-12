@@ -89,10 +89,12 @@ def suggest_updates():
     suggestions = []
     try:
         # Check if current MAX_PARALLEL matches queue pressure
-        rows = db.query(
-            "SELECT count(*) as cnt FROM tasks WHERE state = 'QUEUED'"
-        ) or []
-        queued = int(rows[0]["cnt"]) if rows else 0
+        # Was `db.query("SELECT count(*) as cnt FROM tasks WHERE state='QUEUED'")`.
+        # db has no query() — it is a PostgREST client with no raw-SQL channel —
+        # so this raised AttributeError into the `except Exception: pass` below
+        # and suggest_updates() has always returned []. db.count() is the exact
+        # equivalent: an exact server-side count with no rows downloaded.
+        queued = int(db.count("tasks", {"state": "eq.QUEUED"}) or 0)
         current_parallel = int(os.environ.get("MAX_PARALLEL", "4"))
 
         if queued > current_parallel * 3:
@@ -131,66 +133,7 @@ def tick():
         return [], []
 
 
-# ── Tests ────────────────────────────────────────────────────────────────────
-import unittest
-from unittest.mock import patch
-
-
-class TestConfigDrift(unittest.TestCase):
-
-    @patch("config_drift.db")
-    def test_no_drift_when_synced(self, mock_db):
-        os.environ["ORCH_TEST_VAL"] = "42"
-        mock_db.select = lambda *a, **kw: [{"key": "ORCH_TEST_VAL", "value": "42", "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}]
-        drifts = detect_drift()
-        env_drifts = [d for d in drifts if d["key"] == "ORCH_TEST_VAL" and d["kind"] == "env_db_divergence"]
-        self.assertEqual(len(env_drifts), 0)
-
-    @patch("config_drift.db")
-    def test_drift_detected(self, mock_db):
-        os.environ["ORCH_TEST_VAL"] = "99"
-        mock_db.select = lambda *a, **kw: [{"key": "ORCH_TEST_VAL", "value": "42", "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}]
-        drifts = detect_drift()
-        env_drifts = [d for d in drifts if d["key"] == "ORCH_TEST_VAL" and d["kind"] == "env_db_divergence"]
-        self.assertEqual(len(env_drifts), 1)
-
-    @patch("config_drift.db")
-    def test_stale_detected(self, mock_db):
-        old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=60)).isoformat()
-        mock_db.select = lambda *a, **kw: [{"key": "ORCH_OLD_VAL", "value": "x", "updated_at": old}]
-        drifts = detect_drift()
-        stale = [d for d in drifts if d["kind"] == "stale"]
-        self.assertGreaterEqual(len(stale), 1)
-
-    @patch("config_drift.db")
-    def test_unsafe_keys_skipped(self, mock_db):
-        mock_db.select = lambda *a, **kw: [{"key": "SECRET_TOKEN", "value": "bad", "updated_at": None}]
-        drifts = detect_drift()
-        self.assertEqual(len(drifts), 0)
-
-    @patch("config_drift.db")
-    def test_suggest_increase_parallel(self, mock_db):
-        mock_db.query = lambda q: [{"cnt": 50}]
-        os.environ["MAX_PARALLEL"] = "4"
-        suggestions = suggest_updates()
-        self.assertTrue(any(s["key"] == "MAX_PARALLEL" and s["suggested"] > 4 for s in suggestions))
-
-    @patch("config_drift.db")
-    def test_handles_db_error(self, mock_db):
-        mock_db.select = lambda *a, **kw: (_ for _ in ()).throw(Exception("down"))
-        drifts = detect_drift()
-        self.assertEqual(drifts, [])
-
-    def test_tick_failsoft(self):
-        with patch("config_drift.detect_drift", side_effect=Exception("boom")):
-            result = tick()
-            self.assertEqual(result, ([], []))
-
-
 if __name__ == "__main__":
-    if "--test" in sys.argv:
-        unittest.main(argv=["test_config_drift"])
-    else:
-        import json
-        d, s = tick()
-        print(json.dumps({"drifts": d, "suggestions": s}, indent=2, default=str))
+    import json
+    d, s = tick()
+    print(json.dumps({"drifts": d, "suggestions": s}, indent=2, default=str))

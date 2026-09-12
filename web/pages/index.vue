@@ -604,7 +604,7 @@ watch(user, u => { if (u) loadAll() })
       <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
         <div class="flex items-center gap-2 mb-3">
           <h2 class="text-xs uppercase tracking-wider text-slate-500">Shared proof packs</h2>
-          <span class="text-xs text-slate-500">Common Brain - CADE - receipts</span>
+          <span class="text-xs text-slate-500">Shared learning - recommendations - receipts</span>
           <span class="flex-1"></span>
           <span v-if="proofPacks.error" class="text-xs text-red-300">{{ proofPacks.error }}</span>
           <span v-else class="text-xs text-slate-500">{{ commonBrainProofRows.length }} brain deployments - {{ recentProofReceipts.length }} receipts</span>

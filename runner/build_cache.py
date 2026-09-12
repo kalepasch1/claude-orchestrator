@@ -42,6 +42,39 @@ def _cache_key(repo, sha, build_cmd):
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
+def _age_seconds(stored_ts, updated_at):
+    """Seconds since this cache entry was written, or None if undeterminable.
+
+    None means "treat as a miss": an entry whose age cannot be established must
+    not be replayed as a fresh build result. Both an epoch float (what store()
+    writes) and a PostgREST ISO-8601 timestamp are accepted.
+    """
+    import datetime
+    now = time.time()
+
+    def _from_epoch(value):
+        """Age from the epoch float store() writes, or None if it is not one."""
+        try:
+            return max(0.0, now - float(value))
+        except (TypeError, ValueError):
+            return None
+
+    if stored_ts is not None:
+        epoch_age = _from_epoch(stored_ts)
+        if epoch_age is not None:
+            return epoch_age
+    raw = str(updated_at or "").strip()
+    if not raw:
+        return None
+    try:
+        stamp = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return max(0.0, now - stamp.timestamp())
+
+
 def lookup(repo, sha, build_cmd):
     """Check cache for a prior build result. Returns (ok, log) or None."""
     if not CACHE_ENABLED or not sha:
@@ -57,9 +90,17 @@ def lookup(repo, sha, build_cmd):
         row = rows[0]
         import json
         data = json.loads(row.get("value", "{}"))
-        # check TTL
-        updated = row.get("updated_at", "")
-        if not updated:
+        # CHECK THE TTL, rather than merely checking that a timestamp exists.
+        # The comment here said "check TTL" and the code only asserted that
+        # `updated_at` was non-empty, so CACHE_TTL_HOURS was dead: an entry never
+        # expired. For a BUILD GATE that is the dangerous direction — a green
+        # recorded weeks ago would be replayed as current and let a branch merge
+        # on a build nobody had run against the current toolchain, lockfile or
+        # environment. The stored payload carries its own `ts`, which is what the
+        # writer controls; `updated_at` is the server's and is used as the
+        # fallback when an older row has no `ts`.
+        age = _age_seconds(data.get("ts"), row.get("updated_at"))
+        if age is None or age > CACHE_TTL_HOURS * 3600:
             return None
         return (data.get("ok", False), data.get("log", "cached (no log)"))
     except Exception:
@@ -74,9 +115,17 @@ def store(repo, sha, build_cmd, ok, log):
     key = _cache_key(repo, sha, build_cmd)
     value = json.dumps({"ok": ok, "log": (log or "")[-2000:], "ts": time.time()})
     try:
-        db.upsert("controls",
-                   {"key": f"build_cache_{key}"},
-                   {"key": f"build_cache_{key}", "value": value, "updated_at": "now()"})
+        # upsert(table, row) takes TWO arguments — it is insert(..., upsert=True)
+        # and PostgREST resolves the conflict on the primary key.  This was
+        # calling it with a separate match dict, so it raised TypeError and no
+        # build result was ever cached; `store()` is fail-soft, so the miss was
+        # invisible and every build re-ran from scratch.
+        #
+        # "updated_at": "now()" is dropped with it: that is a SQL expression sent
+        # as a JSON string, which PostgREST stores or rejects as the literal text
+        # "now()" — it is never evaluated.  The column's own DEFAULT is the thing
+        # that was wanted.  (runner/agent_market.py:467 still has this.)
+        db.upsert("controls", {"key": f"build_cache_{key}", "value": value})
     except Exception:
         pass  # fail-soft: cache miss is better than crash
 

@@ -8,6 +8,7 @@ is where `main`, every `exports` target and the bin shim's own import point.
 packages in that one tree are truncated the same way, so the preflight declared
 GREEN and every claimed task inherited a repo that could not run.
 """
+import contextlib
 import json
 import os
 import sys
@@ -136,27 +137,63 @@ class TestVerifyInstall(Base):
 
 
 class TestPreflightBlocksOnPartialInstall(Base):
-    def _preflight(self, env=None):
+    def _preflight(self, env=None, repair_works=True):
+        """Run preflight with the project's side effects stubbed.
+
+        `repair_works` decides whether the REPAIR-BEFORE-BLOCKING step introduced
+        on 2026-08-12 is allowed to do its job. That step is why the blocking test
+        below needs it: preflight no longer blocks the moment verify_install finds
+        a truncated package — it first deletes the broken packages so npm will
+        re-fetch them, then re-verifies, and blocks only if the tree is still
+        broken. With _install stubbed to a no-op, the real repair simply removed
+        the fixture's one broken package and left an EMPTY node_modules, which
+        verifies clean — so the test saw "green" and read as though blocking were
+        broken, when what it had actually exercised was the repair.
+        """
         blocked = []
-        with patch.object(wp, "_package_roots", return_value=[self.root]), \
-             patch.object(wp, "missing_tools", return_value=[]), \
-             patch.object(wp, "_install", return_value={"ok": True}), \
-             patch.object(wp, "_read_stamp", return_value=None), \
-             patch.object(wp, "_write_stamp", return_value=None), \
-             patch.object(wp, "_unblock_project", return_value=True), \
-             patch.object(wp, "_block_project",
-                          side_effect=lambda p, r: blocked.append((p, r)) or True), \
-             patch.dict(os.environ, env or {}, clear=False):
+        stubs = [
+            patch.object(wp, "_package_roots", return_value=[self.root]),
+            patch.object(wp, "missing_tools", return_value=[]),
+            patch.object(wp, "_install", return_value={"ok": True}),
+            patch.object(wp, "_read_stamp", return_value=None),
+            patch.object(wp, "_write_stamp", return_value=None),
+            patch.object(wp, "_unblock_project", return_value=True),
+            patch.object(wp, "_block_project",
+                         side_effect=lambda p, r: blocked.append((p, r)) or True),
+            patch.dict(os.environ, env or {}, clear=False),
+        ]
+        if not repair_works:
+            # Repair is attempted and changes nothing — the real "still broken
+            # afterwards" case, which is the only one that may block.
+            stubs.append(patch.object(wp, "repair_partial_install",
+                                      return_value={"ok": False, "removed": []}))
+        with contextlib.ExitStack() as stack:
+            for stub in stubs:
+                stack.enter_context(stub)
             result = wp.preflight("proj", self.root, force=True)
         return result, blocked
 
     def test_a_truncated_tree_blocks_the_project(self):
         make_pkg(self.nm, "vitest", {"main": "./dist/index.js"})
-        result, blocked = self._preflight()
+        result, blocked = self._preflight(repair_works=False)
         self.assertEqual(result["status"], wp.STATUS_BLOCKED)
         self.assertFalse(result["claimable"])
         self.assertIn("truncated", result["reason"])
         self.assertEqual(len(blocked), 1)
+
+    def test_a_repairable_tree_is_repaired_instead_of_blocked(self):
+        """The other half of REPAIR BEFORE BLOCKING, pinned deliberately.
+
+        Blocking straight from verify_install was a deadlock rather than a
+        safeguard: npm treats a truncated tree as satisfied, so the next pass
+        re-installs, re-verifies and re-blocks forever, and the project never
+        comes back on its own. A tree that repair can clean must go green.
+        """
+        make_pkg(self.nm, "vitest", {"main": "./dist/index.js"})
+        result, blocked = self._preflight(repair_works=True)
+        self.assertEqual(result["status"], wp.STATUS_GREEN)
+        self.assertTrue(result["claimable"])
+        self.assertEqual(blocked, [], "a repaired tree must not be blocked")
 
     def test_a_whole_tree_still_goes_green(self):
         make_pkg(self.nm, "good", {"main": "./dist/i.js"}, files=["dist/i.js"])

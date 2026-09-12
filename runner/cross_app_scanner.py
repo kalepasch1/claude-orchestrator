@@ -43,8 +43,11 @@ def _grep_excludes():
 
 # Repo paths are read from the projects table (repo_path column).
 # This fallback is used ONLY when the projects table has no repo_path for an app.
+# "apparently" is not a repo. The app of that name is served by kalepasch1/smarter
+# from _layers/apparently/; the repo that carries the name is an archived ancestor
+# that deploys nowhere. Pointing a scan at it produced findings against dead code.
 _FALLBACK_REPOS = {
-    "apparently": "/Users/kpasch/Documents/apparently",
+    "apparently": "/Users/kpasch/Documents/smarter",
     "tomorrow":   "/Users/kpasch/Documents/tomorrow/tomorrow",
     "smarter":    "/Users/kpasch/Documents/smarter",
     "beethoven":  os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

@@ -29,8 +29,31 @@ def _fresh_db_env(env_lines, extra_environ=None):
         shutil.copy(os.path.join(RUNNER_DIR, "subscription_guard.py"),
                     os.path.join(d, "subscription_guard.py"))
         sys.path.insert(0, d)
-        sys.modules.pop("db", None)
-        sys.modules.pop("subscription_guard", None)
+        # KEEP THE REAL MODULES AND PUT THEM BACK (fixed 2026-08-25).
+        #
+        # This used to `sys.modules.pop("db", None)` without keeping the object,
+        # and the finally block popped the throwaway without restoring anything.
+        # So every test that ran after this file found NO "db" in sys.modules,
+        # and the next runtime `import db` built a SECOND db module object.
+        #
+        # From then on the suite had two live copies of the control-plane client.
+        # Any module that had already done `import db` — every test file, and
+        # conftest's own _REAL_MODULES registry — kept copy A; anything doing a
+        # runtime `import db` inside a function got copy B. A test patching
+        # db.select on the object it holds therefore patched A while the code
+        # under test read B, and the patch silently did nothing.
+        #
+        # That is the whole of the 20-failure cluster in
+        # test_done_to_merged_conversion.py and test_eval_harness_causal.py:
+        # both patch their own module-level `db`, both exercise product code that
+        # does `import db` inside a function, and both pass alone and fail in
+        # suite. conftest cannot cover it — _restore_real_modules() runs at
+        # collectstart, and this leak happens during the RUN phase.
+        #
+        # test_db_env_loader.py's _load_env_into already had the correct shape;
+        # this is the same save/restore.
+        saved_modules = {m: sys.modules.pop(m, None)
+                         for m in ("db", "subscription_guard")}
         saved = {k: os.environ.pop(k, None) for k in
                  ("ANTHROPIC_API_KEY", "ORCH_USE_SUBSCRIPTION", "ORCH_ALLOW_API_BILLING",
                   "ORCH_USE_PURCHASED_CREDITS", "ORCH_USE_PAID_AGENTIC_CREDITS")}
@@ -41,7 +64,10 @@ def _fresh_db_env(env_lines, extra_environ=None):
             return os.environ.get("ANTHROPIC_API_KEY")
         finally:
             sys.path.remove(d)
-            sys.modules.pop("db", None)
+            for name, mod in saved_modules.items():
+                sys.modules.pop(name, None)      # drop the throwaway
+                if mod is not None:
+                    sys.modules[name] = mod      # put the real one back
             for k, v in saved.items():
                 if v is None:
                     os.environ.pop(k, None)
@@ -49,6 +75,36 @@ def _fresh_db_env(env_lines, extra_environ=None):
                     os.environ[k] = v
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+class ThrowawayImportLeavesNoHoleTest(unittest.TestCase):
+    """The helper above must not leave sys.modules without a control-plane client.
+
+    Not a style point. A MISSING name is worse than a replaced one: the next
+    `import db` builds a second module object from the same source, and the
+    session then has two live copies. Every module that imported db earlier keeps
+    the first; anything doing `import db` inside a function gets the second. A
+    test patching db.select on the object it holds patches one copy while the
+    code under test reads the other, so the patch does nothing and the product
+    talks to the real database. That is what these assertions exist to prevent.
+    """
+
+    def check_module_identity_survives(self):
+        import db
+        import subscription_guard
+        before = {"db": db, "subscription_guard": subscription_guard}
+
+        _fresh_db_env(["SUPABASE_URL=https://x.supabase.co",
+                       "SUPABASE_SERVICE_KEY=abc"])
+
+        for name, module in before.items():
+            self.assertIn(name, sys.modules,
+                          f"{name} was removed from sys.modules and not put back")
+            self.assertIs(sys.modules[name], module,
+                          f"sys.modules[{name!r}] is a different object than before")
+
+    # unittest wants the camelCase spelling; the convention lint wants snake_case.
+    test_module_identity_survives_a_throwaway_import = check_module_identity_survives
 
 
 class DbEnvInterlockTest(unittest.TestCase):

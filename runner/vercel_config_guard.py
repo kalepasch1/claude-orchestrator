@@ -363,7 +363,7 @@ def check_deploy_skip(repo, root, cfg, default_branch):
     # and is the shape that silently stops production.
     git_cfg = cfg.get("git") or {}
     enabled_cfg = git_cfg.get("deploymentEnabled")
-    intentional = _declares_intentional_no_deploy(cfg)
+    intentional = _declares_intentional_no_deploy(cfg, root)
     if isinstance(enabled_cfg, bool) and enabled_cfg is False and not intentional:
         out.append(_violation(
             "deployment_disabled_everywhere", rel_root,
@@ -372,9 +372,12 @@ def check_deploy_skip(repo, root, cfg, default_branch):
             "is correct, and deploy_silence_detector honours it. Confirm it is intended."
             % default_branch,
             "If this project SHOULD deploy, set git.deploymentEnabled to true for '%s'. "
-            "If it deliberately does not deploy, record that with "
-            "`\"_deploymentDisabledIntentionally\": true` (or say so in `_comment`) and this "
-            "advisory will stop re-filing." % default_branch))
+            "If it deliberately does not deploy, record that in a sibling "
+            "`vercel.no-deploy.json` with `\"deploymentDisabledIntentionally\": true` (or say "
+            "so in its `comment`) and this advisory will stop re-filing. Do NOT put those "
+            "keys in vercel.json itself — it is schema-validated and the CLI refuses to "
+            "deploy a config carrying any key the schema does not define."
+            % default_branch))
     elif isinstance(enabled_cfg, dict):
         # PRECEDENCE MATTERS. `{"*": false, "master": true}` is a correct, common config:
         # the exact branch key overrides the catch-all glob, so master DOES deploy. Reading
@@ -459,8 +462,12 @@ _INTENT_PHRASES = (
 )
 
 
-def _declares_intentional_no_deploy(cfg):
-    """True when this vercel.json says, in itself, that not deploying is the point.
+#: Sidecar that carries the no-deploy declaration OUT of the schema-validated vercel.json.
+NO_DEPLOY_SIDECAR = "vercel.no-deploy.json"
+
+
+def _declares_intentional_no_deploy(cfg, root=None):
+    """True when this deploy root says, in itself, that not deploying is the point.
 
     WHY. `deployment_disabled_everywhere` is advisory precisely because it cannot tell a
     broken config from a correct one — its own text asks a human to "confirm it is
@@ -475,22 +482,51 @@ def _declares_intentional_no_deploy(cfg):
     repo ROOT; this file disables git deployments so a duplicate can never silently
     build. "Do not remove." Acting on the advisory would delete a safety guard.
 
-    So the answer is recorded IN the config, where it travels with the thing it describes:
-    an explicit `_deploymentDisabledIntentionally: true`, or a `_comment` that says so.
+    So the answer is recorded next to the config it describes.
+
+    WHERE IT LIVES, AND WHY IT MOVED. It used to live INSIDE vercel.json as
+    `_deploymentDisabledIntentionally` + `_comment`. vercel.json is schema-validated and
+    rejects unknown top-level keys, so those two keys made every `vercel deploy` from the
+    repo root die with "should NOT have additional property `_comment`" before uploading
+    anything. That is a local-tooling blocker rather than an outage — production deploys
+    through the `web` project, whose own vercel.json carries only schema keys — but it
+    made the CLI unusable from this checkout. Deleting the keys was not an option either:
+    they are what stops the advisory re-filing itself, and the comment records that a
+    duplicate project was once auto-created from the repo root.
+
+    So the declaration now lives in the sidecar `vercel.no-deploy.json` (unversioned by
+    Vercel, ignored by the CLI), read from `root`. The legacy in-config keys are still
+    honoured so a project that has not migrated does not regress into re-filing.
+
     Deliberately narrow — it suppresses only the never-deploys-anywhere advisories, never
     the BLOCKING inconsistent case (some branches enabled, default branch not), which is
     the shape that actually stops production by accident.
     """
-    if not isinstance(cfg, dict):
-        return False
-    flag = cfg.get("_deploymentDisabledIntentionally")
-    if flag is True:
-        return True
-    comment = cfg.get("_comment")
-    if isinstance(comment, (list, tuple)):
-        comment = " ".join(str(c) for c in comment)
-    text = str(comment or "").lower()
-    return any(phrase in text for phrase in _INTENT_PHRASES)
+    for source in (cfg, _load_no_deploy_sidecar(root)):
+        if not isinstance(source, dict):
+            continue
+        # Sidecar keys are unprefixed; the legacy in-vercel.json keys carry a leading _.
+        for key in ("deploymentDisabledIntentionally", "_deploymentDisabledIntentionally"):
+            if source.get(key) is True:
+                return True
+        for key in ("comment", "_comment"):
+            comment = source.get(key)
+            if isinstance(comment, (list, tuple)):
+                comment = " ".join(str(c) for c in comment)
+            text = str(comment or "").lower()
+            if any(phrase in text for phrase in _INTENT_PHRASES):
+                return True
+    return False
+
+
+def _load_no_deploy_sidecar(root):
+    """Read `vercel.no-deploy.json` from a deploy root. Fail-soft: {} on anything."""
+    if not root:
+        return {}
+    try:
+        return _load_json(os.path.join(root, NO_DEPLOY_SIDECAR)) or {}
+    except Exception:
+        return {}
 
 
 def check_root(repo, root, ref):
@@ -500,6 +536,26 @@ def check_root(repo, root, ref):
     cfg = _load_json(os.path.join(root, "vercel.json"))
     scripts = (_load_json(os.path.join(root, "package.json")).get("scripts") or {})
     prefix = "" if rel_root == "." else rel_root.rstrip("/") + "/"
+
+    # -- 0a. Non-schema keys in vercel.json. `vercel deploy` validates the file against a
+    # closed schema and aborts BEFORE uploading anything on any key it does not know:
+    #   Error: Invalid vercel.json - should NOT have additional property `_comment`.
+    # A comment someone added for readability is therefore a hard CLI-deploy blocker. Git
+    # integration ignores the extra key, so this is local tooling rather than an outage —
+    # advisory, not blocking — but it makes the CLI unusable from the checkout it is in.
+    extra_keys = sorted(k for k in cfg if isinstance(k, str) and k.startswith("_"))
+    if extra_keys:
+        out.append(_violation(
+            "vercel_json_non_schema_key", rel_root,
+            "vercel.json carries non-schema top-level key(s) %s. `vercel deploy` validates "
+            "this file against a closed schema and aborts before uploading anything: "
+            "\"Invalid vercel.json - should NOT have additional property\". Git-integration "
+            "deploys are unaffected, so this blocks the CLI, not production."
+            % ", ".join("`%s`" % k for k in extra_keys),
+            "Move the content out of vercel.json. A deliberate no-deploy declaration "
+            "belongs in a sibling `%s` (read by _declares_intentional_no_deploy); anything "
+            "else belongs in docs/ or a code comment next to whatever reads it."
+            % NO_DEPLOY_SIDECAR))
 
     install = str(cfg.get("installCommand") or "")
     build = str(cfg.get("buildCommand") or "")

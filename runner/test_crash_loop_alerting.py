@@ -160,9 +160,36 @@ def test_empty_log_dir_is_silent(tmp_path):
 
 
 def test_second_alert_is_deduplicated(tmp_path):
-    """Re-alerting every cycle is its own kind of silence."""
+    """Re-alerting every cycle is its own kind of silence.
+
+    The state is keyed with cld.state_key(), which is (job, signature). This test
+    keyed it on the bare signature -- the format from before the job was added -- so
+    _should_fire found no prior entry and correctly reported "new". The product was
+    right; the fixture was a version behind.
+    """
     findings = cld.classify(cld.scan(str(_dead_module_logs(tmp_path))))
     top = findings[0]
-    state = {top["signature"]: {"last_alert": time.time(), "count_at_alert": top["count"]}}
-    fire, _ = cld._should_fire(top, state, time.time())
-    assert fire is False
+    state = {cld.state_key(top): {"last_alert": time.time(),
+                                  "count_at_alert": top["count"]}}
+    fire, why = cld._should_fire(top, state, time.time())
+    assert fire is False, why
+
+
+def test_a_legacy_signature_only_entry_is_honoured_for_its_own_job(tmp_path):
+    """The migration path: pre-job state must not replay every historical alert.
+
+    _should_fire falls back to a bare-signature entry only when it records the SAME
+    job. That branch had no coverage, which is how the fixture above could sit on the
+    old key shape without anything noticing.
+    """
+    findings = cld.classify(cld.scan(str(_dead_module_logs(tmp_path))))
+    top = findings[0]
+    legacy = {"last_alert": time.time(), "count_at_alert": top["count"],
+              "job": top["job"]}
+    fire, why = cld._should_fire(top, {top["signature"]: legacy}, time.time())
+    assert fire is False, why
+
+    # A legacy entry recorded by a DIFFERENT job must not suppress this one.
+    other = dict(legacy, job=str(top["job"]) + "-other")
+    fire, _ = cld._should_fire(top, {top["signature"]: other}, time.time())
+    assert fire is True

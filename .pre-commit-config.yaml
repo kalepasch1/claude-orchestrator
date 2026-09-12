@@ -3,13 +3,24 @@ repos:
     hooks:
       - id: lint-conventions
         name: Convention Linter
-        entry: python tools/lint_conventions.py
+        entry: python tools/lint_conventions.py runner tools scripts
         language: system
         types: [python]
         stages: [commit]
-        pass_filenames: true
+        # FIXED 2026-08-24: this was `pass_filenames: true`, which handed the linter ONLY
+        # the staged files while the ratchet compared their counts against a WHOLE-TREE
+        # baseline. Every staged set therefore came in far under every ceiling, so the gate
+        # returned 0 unconditionally — demonstrated with a brand-new file whose entire
+        # contents were one `except: pass`, reported back as "1 grandfathered violation,
+        # none new". That is why the tree drifted from the recorded 9,749 violations to
+        # 11,305 with nobody noticing, and it contradicts the linter's own promise that
+        # "new violations are blocked from the first commit". A ratchet only means anything
+        # when both sides of the comparison cover the same tree.
+        pass_filenames: false
+        always_run: true
         description: >-
           Enforce conventions from CLAUDE.md on Python files. Ratcheted against
-          .convention-lint-baseline.json — a rule's count may not rise. Run
+          .convention-lint-baseline.json — a rule's count may not rise. Scans the whole
+          tree (runner tools scripts), because the baseline it compares against does. Run
           `python tools/lint_conventions.py --update-baseline runner tools scripts`
           after genuinely reducing a count, and `--strict` for a full audit.

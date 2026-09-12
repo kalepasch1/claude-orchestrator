@@ -56,8 +56,18 @@ class TestLocalBranchAudit(unittest.TestCase):
             else:
                 m.stdout = ""
             return m
+        # fake_run was defined and never wired in — subprocess.run stayed a bare
+        # MagicMock, so `git worktree list` returned a Mock instead of the porcelain
+        # text above, wt_map came out empty and NO worktree could be classified
+        # stale. The test read as "detection is broken" while never exercising it.
+        mock_run.side_effect = fake_run
+        # And the db stub answered only "eq.RUNNING"; the audit asks for
+        # "in.(RUNNING,RETRY)" — a task being retried still owns its worktree — so
+        # running_slugs was empty too. Matching on the state filter's CONTENT keeps
+        # the stub honest whichever of the two spellings the product uses.
         mock_db.select.side_effect = lambda table, params=None, **kw: (
-            [{"slug": "running-task"}] if params and params.get("state") == "eq.RUNNING" else []
+            [{"slug": "running-task"}]
+            if params and "RUNNING" in str(params.get("state", "")) else []
         )
         mod._FETCHED_AGENT_REFS.clear()
         import tempfile

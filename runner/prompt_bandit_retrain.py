@@ -35,6 +35,7 @@ import json
 import os
 import random
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -152,6 +153,44 @@ def retrain(max_iter=10, arms=None, epsilon=None, budget=None, rng=None, warm=Tr
         return result
 
 
+def _write_atomically(path, text):
+    """Replace `path` with `text` in one step, or leave it exactly as it was.
+
+    evolve() promises that "a retrain that produces nothing usable must leave the
+    previous prompt in place rather than truncate it", and validate_prompt() enforces
+    that for content the retrain can see. It could not enforce it for the write:
+    `open(path, "w")` TRUNCATES on open, so a crash, a full disk or a SIGKILL between
+    the truncate and the write left a zero-byte live prompt template behind — the very
+    blank prompt the guard exists to prevent, arrived at by the one route the guard
+    could not inspect. Every later task would then load an empty template.
+
+    Written to a sibling temp file, flushed and fsynced, then os.replace()d into
+    position. os.replace is atomic on POSIX for a same-filesystem rename, so a reader
+    sees either the old prompt or the new one and never a partial file. The temp file
+    is a sibling rather than /tmp precisely so the rename cannot cross a filesystem.
+    """
+    path = os.path.abspath(path)
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory or None,
+                               prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # Includes KeyboardInterrupt/SystemExit: an abandoned run must not leave the
+        # temp file behind, and must not have touched the live prompt at all.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def evolve(max_iter=10, out_path=None, base_template=None, arms=None,
            epsilon=None, budget=None, rng=None):
     """Retrain, evolve the template with the learned signal, and persist it.
@@ -179,11 +218,7 @@ def evolve(max_iter=10, out_path=None, base_template=None, arms=None,
             return outcome
 
         path = out_path or DEFAULT_OUT
-        directory = os.path.dirname(os.path.abspath(path))
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(evolved if evolved.endswith("\n") else evolved + "\n")
+        _write_atomically(path, evolved if evolved.endswith("\n") else evolved + "\n")
 
         outcome.update({"ok": True, "path": path, "prompt": evolved})
         return outcome

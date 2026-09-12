@@ -6,6 +6,10 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
+
+Those variables (and METRICS_URL) may also live in a `.env` file: the CLI calls
+load_env() before evaluating. Import stays side-effect free — only main() reads
+the file — and a real environment variable always beats the file.
 """
 import os, sys, json, logging, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -15,6 +19,39 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # validate_canary() was called. Same crash-free-until-used class as the
 # _metrics_server regression noted below. Bind the logger next to the imports.
 _log = logging.getLogger(__name__)
+
+# Every threshold this module reads comes from the environment (see the module
+# docstring), but nothing ever loaded a .env, so an operator had to export
+# METRICS_URL and all four CANARY_* knobs by hand before each run — and a
+# forgotten export reads as "no threshold configured" rather than as an error,
+# which is the quiet way to promote a bad deploy.
+#
+# python-dotenv is declared in requirements.txt, but the import stays guarded:
+# canary.py runs on deploy boxes that may predate the manifest, and a canary
+# that cannot import is a canary that cannot report.
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - covered via monkeypatch in the tests
+    load_dotenv = None
+
+
+def load_env(path=None):
+    """Populate os.environ from a .env file. Returns True when one was loaded.
+
+    Fail-soft by contract: a missing python-dotenv, a missing file, or a
+    malformed file all return False rather than raising. Real environment
+    variables always win over the file — dotenv does not override what is
+    already set — so `METRICS_URL=... python -m canary` still behaves as before
+    and none of the existing callers change.
+    """
+    if load_dotenv is None:
+        _log.debug("canary: python-dotenv not installed; .env ignored")
+        return False
+    try:
+        return bool(load_dotenv(path) if path else load_dotenv())
+    except Exception as exc:  # noqa: BLE001 - a bad .env must not wedge the canary
+        _log.warning("canary: .env present but unreadable (%s); ignoring", exc)
+        return False
 
 # RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
 # (auto-resolved)' dropped the `threading` / `http.server` imports and these two module
@@ -225,12 +262,36 @@ def validate_canary(response_text):
     """
     if not isinstance(response_text, str):
         _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
+        record_failure()
         return False
     import canary_validation
     if canary_validation.validate_canary(response_text):
         _log.info("canary marker found in response text")
+        # VALIDATION SUCCESS PATH. Only the promote verdict in main() ever stamped this
+        # gauge, so a canary that validated successfully — the marker demonstrably
+        # survived the pipeline hop — left it reading whatever it read before. A live
+        # success was invisible to the heartbeat.
+        #
+        # The task asked for `canary_last_success.set(1)`. Deliberately NOT a literal 1:
+        # this gauge holds a UNIX TIMESTAMP (record_success stamps time.time(),
+        # heartbeat_age computes now - last, and 0 is the documented "not currently
+        # succeeding" sentinel). Writing 1 would make heartbeat_age report ~56 years of
+        # staleness and the heartbeat permanently expired — a successful validation
+        # would read as a dead canary, the exact inversion of the intent. record_success()
+        # is this module's own idiom for "mark a success" and keeps the contract intact.
+        record_success()
         return True
+    # VALIDATION FAILURE PATH. Zeroing here, not only in main(): a missing marker means
+    # the canary did NOT survive the pipeline hop, but the gauge kept the timestamp of
+    # the last success, so an alert written as
+    # `time() - canary_last_success > threshold` stayed green through a failing
+    # validation until the threshold expired on its own. That is the same defect
+    # record_failure was written for on the rollback path, left open on this one.
+    #
+    # This module owns the gauge and this function already logs, so the side effect is
+    # where it belongs; `canary_validation.validate_canary` stays a pure predicate.
     _log.warning("canary marker NOT found in response text")
+    record_failure()
     return False
 
 
@@ -279,6 +340,13 @@ def main(argv=None):
     """
     argv = sys.argv[1:] if argv is None else argv
 
+    # Load .env here rather than at import time. Importing canary must stay a pure,
+    # side-effect-free act — the test suite and the metrics server both import this
+    # module, and a module-scope load_dotenv() would silently reshape os.environ
+    # for every one of them. Only the CLI, which is the thing an operator actually
+    # configures, reads the file.
+    load_env()
+
     # `--heartbeat` reports staleness WITHOUT evaluating: the whole point is to answer
     # "is this canary still beating" from outside, at a moment when running an evaluation
     # is exactly what may be wedged. Exit 1 when expired, matching the rollback convention.
@@ -305,7 +373,21 @@ def main(argv=None):
         # rather than raising if the port is taken.
         start_metrics_server()
 
-    result = evaluate(argv[0] if argv else None)
+    try:
+        result = evaluate(argv[0] if argv else None)
+    except Exception as exc:
+        # EXCEPTION PATH. evaluate() returns a rollback verdict for the failures it
+        # anticipates, but anything it does NOT anticipate propagated straight out of
+        # main() — so the gauge kept the previous SUCCESS timestamp while the canary was
+        # crashing, and a `time() - canary_last_success > threshold` alert read green.
+        # A canary that raises is not succeeding; the gauge has to say so, and it has to
+        # say so before the traceback escapes.
+        record_failure()
+        result = {"verdict": "rollback", "reason": f"canary evaluation raised: {exc}"}
+        _log.exception("canary evaluation raised; gauge zeroed and verdict forced to rollback")
+        print(json.dumps(result))
+        return 1
+
     if result.get("verdict") == "promote":
         record_success()
     else:

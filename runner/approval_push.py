@@ -24,6 +24,7 @@ SECURITY POSTURE (2026-08-13 rework; the previous version was quarantined)
   * Everything printed or handed to a notifier goes through scrub(): signatures never leak.
 """
 import os, re, sys, time, hmac, hashlib, json, threading
+from collections.abc import Mapping
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -64,14 +65,37 @@ class ApprovalBatcher:
         self.size_threshold = max(1, self.size_threshold)
 
     def append(self, cards):
-        """Add cards to batch queue. Returns count added; 0 on error."""
+        """Add cards to batch queue. Returns count actually queued; 0 if nothing was.
+
+        Anything that is not a mapping is REJECTED here, at the door, and never reaches the
+        queue. This used to accept any truthy non-list as a pseudo-card — append("not a list")
+        queued the string — and the consequence was not local to the bad caller. The queue is
+        shared: build_digest() walks every queued item calling .get() on it, a non-mapping
+        raises AttributeError there, _send_batch() catches that around the whole build_digest
+        call and returns, and by then the batch has already been lifted out of self.queue. So
+        one malformed append silently destroyed the ENTIRE pending batch — every valid card
+        other callers had queued in that window went with it, and the only trace was one
+        fail-soft line about a digest error.
+
+        A card the batcher cannot render is worth dropping. The other callers' cards are not,
+        so the check has to happen before the two are mixed together.
+        """
         if not cards:
             return 0
         try:
             pending_flush = None
+            items = cards if isinstance(cards, list) else [cards]
+            valid = [c for c in items if isinstance(c, Mapping)]
+            rejected = len(items) - len(valid)
+            if rejected:
+                print(f"approval_batcher append: dropped {rejected} non-mapping item(s) "
+                      f"(build_digest needs .get(); a non-card would take the whole pending "
+                      f"batch down with it); fail-soft")
+            if not valid:
+                return 0
             with self.lock:
-                card_count = len(cards) if isinstance(cards, list) else 1
-                self.queue.extend(cards if isinstance(cards, list) else [cards])
+                card_count = len(valid)
+                self.queue.extend(valid)
                 self._items_queued += card_count
 
                 if len(self.queue) == card_count:
@@ -382,6 +406,17 @@ def run(limit=50):
             continue
         title = ("Decision: " if is_decision else "Action: ") + (a.get("title") or "")[:140]
         bj = a.get("brief_json") or {}
+        # brief_json is a jsonb column, but it reaches callers as a raw JSON *string* often
+        # enough that the rest of the fleet decodes it defensively (see
+        # decision_confidence_autodecide.sweep and db._ev_rank_map), and this function
+        # already does exactly that for the sibling `alternatives` column in _links_block().
+        # Without this, a text-encoded brief_json silently dropped the one narrow QUESTION
+        # the owner is being asked — the single most important line in the email.
+        if isinstance(bj, str):
+            try:
+                bj = json.loads(bj)
+            except Exception:
+                bj = {}
         parts = [f"[{a.get('project') or '-'}] {a.get('title') or ''}"]
         if isinstance(bj, dict) and bj.get("question"):
             parts.append(f"QUESTION: {bj['question']}")

@@ -98,9 +98,44 @@ def summarize(rows, provider=None):
     confident = n >= MIN_SAMPLES and deployed >= MIN_DEPLOYS
     value_per_min = value / max(1.0, minutes)
     usd_per_value = usd / max(0.25, value)
-    score = lower * math.log1p(value_per_min * 10.0) / (1.0 + usd_per_value) if confident else 0.0
+
+    # WHY THIS IS NOT `... if confident else 0.0` ANYMORE
+    # ---------------------------------------------------
+    # Two multiplications used to collapse the whole objective to exactly 0.0 for
+    # nearly every route in the fleet, and a scorer that answers 0.0 for everything
+    # is not a scorer — `model_catalog` adds `2.0 * provider_score(...)` to its
+    # ranking, so a uniformly-zero term contributes nothing and routing silently
+    # degenerates to the price/cap tiebreak.
+    #
+    #   1. the hard `confident` cliff: below MIN_SAMPLES (20) a route scores 0.0,
+    #      so a promising new route is indistinguishable from a known-bad one and
+    #      can never accumulate the samples that would prove it out;
+    #   2. `wilson_lower(deployed, n)`: with `deployed == 0` the bound is exactly
+    #      0, so a route that merged 12 of 12 attempts but has not yet been picked
+    #      up by a release train scores the same 0.0 as a route that failed 12/12.
+    #      Given the observed fleet state (31 MERGED against 638 DECOMPOSED, whole
+    #      days at 0 deploys) that describes almost every route.
+    #
+    # The replacement keeps deployment as the objective and keeps small samples
+    # conservative — it just does it with a gradient instead of a cliff:
+    #
+    #   * the lower bound is computed on `value`, which already weights a deploy at
+    #     1.0 against 0.15 for a merge and 0.02 for a passing test. Deployment still
+    #     dominates the ordering by more than 6x; merges are now separable from
+    #     nothing at all.
+    #   * `confidence` shrinks the result toward 0 as n → 0 (n=1 keeps ~5% of the
+    #     score, n=20 keeps ~50%, n=100 keeps ~83%), so exploration is discounted
+    #     rather than erased, and a route cannot win on a single lucky sample.
+    #
+    # `confident` is still reported unchanged for callers that gate on it.
+    value_lower = wilson_lower(value, n)
+    confidence = n / float(n + MIN_SAMPLES) if n > 0 else 0.0
+    score = value_lower * math.log1p(value_per_min * 10.0) / (1.0 + usd_per_value) * confidence
     return {"n": n, "deployed": deployed, "integrated": integrated, "tested": tested,
-            "deployment_lower_bound": round(lower, 5), "value_per_min": round(value_per_min, 5),
+            "deployment_lower_bound": round(lower, 5),
+            "value_lower_bound": round(value_lower, 5),
+            "confidence": round(confidence, 5),
+            "value_per_min": round(value_per_min, 5),
             "usd_per_value": round(usd_per_value, 5), "confident": confident,
             "score": round(score, 5)}
 

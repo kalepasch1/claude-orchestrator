@@ -75,7 +75,15 @@ def test_a_bad_row_does_not_stop_the_loop(monkeypatch):
         processed.append(tid)
 
     assert processed == ["good-1", "bad", "good-2"]
-    assert seen == ["good-1", "bad", "good-2"]
+    # `seen` is WRITE ATTEMPTS, not rows, and the rejected row is attempted twice:
+    # a rejection that names missing evidence is followed by a second update that
+    # parks the row as PHANTOM_UNVERIFIED so the sweep stops re-attempting it. The
+    # assertion used to be `seen == ["good-1", "bad", "good-2"]`, which predates
+    # that park and read as "the loop stopped" when the loop was fine.
+    assert seen == ["good-1", "bad", "bad", "good-2"]
+    # The point of the test, stated directly: every row was reached, and the
+    # rejection did not abort the sweep.
+    assert [tid for tid in seen if tid == "good-2"], "the sweep stopped at the bad row"
 
 
 @pytest.mark.parametrize(

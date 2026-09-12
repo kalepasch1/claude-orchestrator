@@ -340,13 +340,38 @@ def _route_absent_commits_to_recovery(project, absent):
     """
     if not absent:
         return 0
+    # FLEET-WIDE INTEGRATION. This is the one place recovery is wired into the delivery
+    # workflow, and it hardcoded dry_run=True — so the "recovery" step could never
+    # recover anything. It printed RECOVERY-CANDIDATE lines forever while the branches
+    # stayed missing, and because the return value was discarded, nothing recorded that
+    # the step was a no-op. Two changes, both conservative:
+    #
+    #   * the dry-run decision is now explicit and fleet-pushable, defaulting to ON so
+    #     today's behaviour is preserved exactly until an operator opts in; and
+    #   * the outcome is LOGGED, so a permanent no-op is visible as one rather than
+    #     being indistinguishable from "there was nothing to recover".
+    recovery = None
+    dry_run = str(os.environ.get("ORCH_MISSING_BRANCH_AUTO_RECOVER", "")).strip().lower() \
+        not in ("1", "true", "yes", "on")
     try:
         import missing_branch_audit
         fn = getattr(missing_branch_audit, "auto_recover_missing_branches", None)
         if callable(fn):
-            fn(dry_run=True, max_recover=len(absent))
-    except Exception:
-        pass
+            recovery = fn(dry_run=dry_run, max_recover=len(absent))
+    except Exception as exc:
+        # Fail-soft by contract — recovery being unavailable must not stop an otherwise
+        # correct promotion pass — but say so, rather than swallowing it silently.
+        print(f"deployment_terminal: missing-branch recovery unavailable ({exc})")
+    if isinstance(recovery, dict):
+        if recovery.get("dry_run"):
+            print(f"deployment_terminal: missing-branch recovery ran DRY — "
+                  f"{recovery.get('would_recover', 0)} of {recovery.get('missing', 0)} "
+                  f"would be recovered, none were. Set "
+                  f"ORCH_MISSING_BRANCH_AUTO_RECOVER=1 to actually recover.")
+        else:
+            print(f"deployment_terminal: missing-branch recovery created "
+                  f"{recovery.get('recovered', 0)} of {recovery.get('missing', 0)} "
+                  f"recovery task(s)")
     for t in absent[:20]:
         print(f"deployment_terminal: RECOVERY-CANDIDATE {project} task={t.get('slug') or t.get('id')} "
               f"commit={(t.get('artifact_commit') or '')[:12]} — commit absent from repo, "

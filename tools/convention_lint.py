@@ -23,6 +23,27 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 
+#: Paths checked when the caller names none. Named rather than repeated as a literal in
+#: two places, where the two copies were free to drift apart.
+DEFAULT_CHECK_PATHS = ('runner', 'tools')
+
+#: Severity spellings that mean "does not block a commit". Both are in use — the
+#: class-naming rule emits 'warning' while the CLI flag is spelled --fail-on=warn — so
+#: the exit-code logic accepts either rather than silently treating an unrecognised
+#: spelling as blocking.
+WARN_SEVERITIES = frozenset({'warn', 'warning'})
+
+
+def is_blocking(severity: str) -> bool:
+    """True when a violation of this severity should fail an --fail-on=error run.
+
+    Anything that is not explicitly warn-level blocks: an unknown severity is treated as
+    an error, because the failure mode of guessing the other way is a rule that silently
+    stops gating.
+    """
+    return str(severity or 'error').strip().lower() not in WARN_SEVERITIES
+
+
 class ConventionViolation:
     """Represents a single convention violation."""
 
@@ -113,6 +134,59 @@ def _names_a_secret(name: str) -> bool:
     return bool(words & {'api', 'private', 'access', 'signing', 'encryption'})
 
 
+#: A PEM header for a PRIVATE key. Matches the RSA/EC/OPENSSH/DSA variants and the bare
+#: PKCS#8 spelling in one pattern, and only the PRIVATE ones -- "BEGIN CERTIFICATE" and
+#: "BEGIN PUBLIC KEY" are meant to be committed.
+_PEM_PRIVATE_KEY_RE = re.compile(
+    r'-----BEGIN\s+(?:[A-Z0-9]+\s+)*PRIVATE\s+KEY(?:\s+BLOCK)?-----')
+
+
+def _is_pem_private_key(value: str) -> bool:
+    """True when a literal carries a PEM private-key header.
+
+    Checked SEPARATELY from the generic value gate, which a PEM block fails for a
+    reason that is right in general and wrong here: `_looks_like_secret_value`
+    rejects anything containing whitespace as prose, and
+    "-----BEGIN PRIVATE KEY-----" contains spaces by definition (a real key body
+    contains newlines too). So the most unambiguous credential shape there is was
+    the one shape this rule could never report.
+
+    The NAME gate is not the problem -- `_names_a_secret("private_key")` already
+    returns True -- but a PEM literal is a credential whatever it is assigned to,
+    so this check does not consult the name at all.
+
+    runner/tools/lint_conventions.py already carries its own _is_pem_private_key;
+    this is the same check for the linter that owns check_directory.
+    """
+    return bool(_PEM_PRIVATE_KEY_RE.search(str(value or '')))
+
+
+#: A regex EXTENSION GROUP -- `(?:`, `(?=`, `(?!`, `(?<`, `(?P<`. Deliberately not the
+#: looser markers (\b, \d, [A-Z], .*), which do occur inside real credential material.
+#: An extension group does not.
+_REGEX_EXTENSION_GROUP_RE = re.compile(r'\(\?[:=!<P]')
+
+
+def _is_regex_source(value: str) -> bool:
+    """True when a literal is the SOURCE OF A PATTERN rather than a value.
+
+    The rule matches on `name says credential` AND `value looks credential-shaped`,
+    and a regex that HUNTS for credentials satisfies both by construction: it is
+    named for what it matches, it has no spaces, and it is all entropy. So every
+    secret scanner in this repo reported its own detector as a hardcoded secret --
+    tools/convention_lint.py on itself, and runner/patch_templates.py on the
+    redaction pattern that keeps prompt credentials out of the shared template
+    store. The rule punished exactly the code written to enforce it.
+
+    The test is a regex EXTENSION GROUP, which is grammar, not content: an API key
+    or password containing the two-character sequence "(?" followed by one of
+    ":=!<P" is not a shape credentials take. Looser markers were considered and
+    rejected -- "\\d" and "[A-Z" appear in real key material often enough that
+    keying on them would blind the rule to genuine leaks.
+    """
+    return bool(_REGEX_EXTENSION_GROUP_RE.search(str(value or '')))
+
+
 def _looks_like_secret_value(value: str) -> bool:
     """True only when the assigned literal could plausibly BE a credential.
 
@@ -183,6 +257,97 @@ class ConventionChecker(ast.NodeVisitor):
         if self.is_test_file and violation.rule in TEST_EXEMPT_RULES:
             return
         self.violations.append(violation)
+
+    def visit_Module(self, node: ast.Module) -> None:
+        """Check the module-level singleton convention, then descend."""
+        self._check_module_singletons(node)
+        self.generic_visit(node)
+
+    def _check_module_singletons(self, node: ast.Module) -> None:
+        """Flag a module-level singleton instance with no module-level delegator.
+
+        CLAUDE.md: "Module-level singleton pattern: provide module-level functions
+        that delegate to a thread-safe singleton instance (e.g. `acquire()` ->
+        `_pool.acquire()`); avoids passing state through call chains."
+
+        CONVENTION_LINT.md documented this as Rule 3 and then said, in the file
+        itself, that "detection is not fully implemented ... does not currently
+        flag violations". A rule that is written down, listed in the Phase 1 set
+        and never fires is worse than an absent rule: the docs claim coverage the
+        gate does not provide. This implements it.
+
+        Deliberately narrow, because a rule that fires on correct code gets the
+        whole hook routed around with --no-verify:
+          * only a *private* module-scope name (`_pool`, not `pool`), so public
+            module state is untouched;
+          * only an instantiation of a PascalCase class *defined in this same
+            module* (`_pool = ResourcePool()` next to `class ResourcePool`). That
+            one condition is what makes the rule usable: measured over runner/,
+            tools/ and lib/ the looser "any PascalCase call" form produced 15 hits
+            and essentially all of them were `ModuleType(...)` fake modules in
+            tests, `threading.Lock()` and `logging.StreamHandler()` — imported
+            infrastructure primitives that a module is not expected to wrap in
+            delegators. Requiring local ownership drops those without a denylist,
+            because the convention only binds a module for the singletons it owns.
+            `_log = logging.getLogger(__name__)` and `_cache = {}` are likewise
+            not singletons in this sense and are skipped;
+          * SCREAMING_CASE is a constant, not a singleton, and is skipped;
+          * a module with no module-level functions at all is a pure class/dataclass
+            module — the convention has nothing to say about it, so it is skipped;
+          * a name referenced by ANY module-level function counts as delegated,
+            wherever in the body it appears.
+        Warning, not error: the fix is to add a delegator, which is a design change
+        and should not hard-block a commit.
+        """
+        local_classes = {s.name for s in ast.walk(node) if isinstance(s, ast.ClassDef)}
+        if not local_classes:
+            return
+
+        singletons = {}
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Call):
+                continue
+            func = stmt.value.func
+            # Only a bare Name: `Attribute` calls (mod.Thing()) come from elsewhere.
+            class_name = func.id if isinstance(func, ast.Name) else ""
+            if class_name not in local_classes or not _is_pascal_case(class_name):
+                continue
+            for target in stmt.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                name = target.id
+                if not name.startswith("_") or name.startswith("__"):
+                    continue
+                if name.upper() == name:  # _CONSTANT, not a singleton
+                    continue
+                singletons.setdefault(name, (stmt.lineno, class_name))
+        if not singletons:
+            return
+
+        module_functions = [s for s in node.body
+                            if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        if not module_functions:
+            return
+
+        referenced = set()
+        for func in module_functions:
+            for sub in ast.walk(func):
+                if isinstance(sub, ast.Name):
+                    referenced.add(sub.id)
+                elif isinstance(sub, ast.Global):
+                    referenced.update(sub.names)
+
+        for name, (lineno, class_name) in sorted(singletons.items(), key=lambda kv: kv[1][0]):
+            if name in referenced:
+                continue
+            self._record(ConventionViolation(
+                self.filepath, lineno, 'MODULE_SINGLETON',
+                f"Module-level singleton '{name}' ({class_name}) has no module-level "
+                f"function that delegates to it, so callers must reach into the private "
+                f"name (CLAUDE.md: provide module-level functions that delegate to the "
+                f"singleton)",
+                severity='warning',
+            ))
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Track class context to distinguish methods from module functions."""
@@ -337,6 +502,39 @@ class ConventionChecker(ast.NodeVisitor):
             yield child
             stack.extend(ast.iter_child_nodes(child))
 
+    @staticmethod
+    def _is_process_exit(raise_node: ast.Raise) -> bool:
+        """True for `raise SystemExit(...)` / `raise SystemExit`.
+
+        SystemExit is the documented way a CLI entry point ends the process;
+        treating it as "raises on bad input" produced a false positive on every
+        main() in the repo and taught operators to ignore the rule.
+        """
+        exc = raise_node.exc
+        if exc is None:
+            return False
+        if isinstance(exc, ast.Call):
+            exc = exc.func
+        if isinstance(exc, ast.Attribute):
+            return exc.attr == 'SystemExit'
+        return isinstance(exc, ast.Name) and exc.id == 'SystemExit'
+
+    def _reraise_nodes(self, node: ast.FunctionDef) -> set:
+        """ids of bare `raise` statements sitting inside an except handler.
+
+        A bare re-raise propagates an error the handler has already observed;
+        it is not the function raising on bad input.
+        """
+        found = set()
+        for child in self._own_nodes(node):
+            if not isinstance(child, ast.Try):
+                continue
+            for handler in child.handlers:
+                for inner in ast.walk(handler):
+                    if isinstance(inner, ast.Raise) and inner.exc is None:
+                        found.add(id(inner))
+        return found
+
     def _check_fail_soft_error_handling(self, node: ast.FunctionDef) -> None:
         """
         Rule 1: Fail-soft error handling
@@ -351,11 +549,23 @@ class ConventionChecker(ast.NodeVisitor):
         if len(self.function_context) > 1:
             return
 
+        reraise_nodes = self._reraise_nodes(node)
+
         has_raise = False
         for child in self._own_nodes(node):
-            if isinstance(child, ast.Raise):
-                has_raise = True
-                break
+            if not isinstance(child, ast.Raise):
+                continue
+            if self._is_process_exit(child):
+                # `raise SystemExit(...)` is how a CLI entry point exits the
+                # process. It is control flow, not raising on bad input, and
+                # flagging it made every main() in the repo a false positive.
+                continue
+            if id(child) in reraise_nodes:
+                # A bare `raise` inside an except handler re-raises after the
+                # handler has already logged — the documented fail-soft shape.
+                continue
+            has_raise = True
+            break
 
         if has_raise:
             # Check if there are try/except blocks that handle errors gracefully
@@ -375,21 +585,41 @@ class ConventionChecker(ast.NodeVisitor):
                     f'Public function "{node.name}" raises on bad input; use try/except with sensible defaults instead'
                 ))
 
-        # A bare `except: pass` silently swallows every error including
-        # KeyboardInterrupt/SystemExit — that is silent failure, not fail-soft
-        # (fail-soft returns a sensible default). Flag it in public functions.
+        # A handler whose body is only `pass` silently swallows the error — that
+        # is silent failure, not fail-soft (fail-soft returns a sensible default,
+        # re-raises deliberately, or at minimum records the error).
+        #
+        # This used to require a BARE except. CLAUDE.md is explicit that broad
+        # catches are this repo's documented convention and that the defect is
+        # the silence, not the breadth: "A silent `except Exception: pass` is the
+        # defect; a logged one is the convention." Typing the exception does not
+        # make an empty body any less silent, so the type check is gone.
         for child in self._own_nodes(node):
             if not isinstance(child, ast.Try):
                 continue
             for handler in child.handlers:
-                bare = handler.type is None
-                only_pass = all(isinstance(stmt, ast.Pass) for stmt in handler.body)
-                if bare and only_pass:
+                if self._handler_is_silent(handler):
                     self._record(ConventionViolation(
                         self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
-                        f'Public function "{node.name}" has a bare "except: pass"; '
-                        'catch specific exceptions and return a sensible default instead'
+                        f'Public function "{node.name}" swallows errors with an empty '
+                        'except handler; return a sensible default or record the error'
                     ))
+
+    @staticmethod
+    def _handler_is_silent(handler: ast.ExceptHandler) -> bool:
+        """True when an except body does nothing but `pass`.
+
+        A docstring-only body counts as silent too: a string literal explaining
+        why the error is ignored is documentation, not handling.
+        """
+        body = [
+            stmt for stmt in handler.body
+            if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str))
+        ]
+        if not body:
+            return True
+        return all(isinstance(stmt, ast.Pass) for stmt in body)
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
         """
@@ -403,7 +633,18 @@ class ConventionChecker(ast.NodeVisitor):
 
         # The value gate runs first and rejects most of the tree, so a name that merely
         # mentions credentials costs nothing until something secret-shaped is assigned.
+        # A PEM private key is admitted whatever it is called: it is self-identifying,
+        # and the generic gate throws it out for containing spaces.
         value = node.value.value
+        if _is_pem_private_key(value):
+            self._record(ConventionViolation(
+                self.filepath, node.lineno, 'HARDCODED_SECRET',
+                'A PEM private key is embedded in the source; load it from a secret '
+                'store or the environment instead'
+            ))
+            return
+        if _is_regex_source(value):
+            return   # a detector's own pattern is not the thing it detects
         if not _looks_like_secret_value(value):
             return
 
@@ -518,8 +759,12 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    # Collect all paths to check
-    check_paths = args.paths or ['runner', 'tools']
+    # Collect all paths to check.
+    #
+    # `list(...)` matters: with nargs='*' argparse hands back the SAME list object it was
+    # given as `default`, so extending it in place mutated the parser's own default and
+    # made a second call in one process check paths the caller never asked for.
+    check_paths = list(args.paths or DEFAULT_CHECK_PATHS)
     if args.check_paths:
         check_paths.extend(args.check_paths)
 
@@ -530,6 +775,16 @@ def main() -> int:
             all_violations.extend(check_directory(path))
         elif Path(path).is_file():
             all_violations.extend(check_file(path))
+        else:
+            # A path that does not exist used to be skipped in silence, so a typo in a
+            # pre-commit hook ("runnr", a renamed directory) made the linter check
+            # nothing and exit 0 — a gate reporting success precisely because it never
+            # ran. Report it as an error so the miss is loud instead of invisible.
+            all_violations.append(ConventionViolation(
+                str(path), 1, 'MISSING_PATH',
+                'Path does not exist, so nothing was checked for it '
+                '(a silent skip here makes the linter pass by doing no work)'
+            ))
 
     # Output results
     if args.json:
@@ -541,10 +796,12 @@ def main() -> int:
 
     # Determine exit code
     if all_violations:
-        error_violations = [v for v in all_violations if v.severity == 'error']
-        if error_violations and args.fail_on == 'error':
+        # `is_blocking` rather than `severity == 'error'`: the class-naming rule emits
+        # 'warning', and any rule added later that spells its severity differently would
+        # otherwise stop failing the build without anyone noticing.
+        if args.fail_on == 'warn':
             return 1
-        if all_violations and args.fail_on == 'warn':
+        if any(is_blocking(v.severity) for v in all_violations):
             return 1
 
     return 0

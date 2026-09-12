@@ -54,8 +54,12 @@ def check_and_rollback() -> list:
         for key, snap in candidates.items():
             if status.get("error_count", 0) >= _ERR_THRESH:
                 try:
-                    db.upsert("fleet_config", {"key": key, "value": snap["old_value"]},
-                              on_conflict="key")
+                    # db.upsert(table, row) takes no on_conflict= keyword; PostgREST
+                    # resolves on the primary key and db.upsert already asks for
+                    # resolution=merge-duplicates. As written this raised TypeError,
+                    # so a config rollback during an error spike never wrote anything
+                    # back to fleet_config — only to os.environ of the running process.
+                    db.upsert("fleet_config", {"key": key, "value": snap["old_value"]})
                     os.environ[key] = str(snap["old_value"])
                     action = {"action": "rolled_back", "key": key,
                               "to_value": snap["old_value"],

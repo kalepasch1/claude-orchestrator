@@ -42,7 +42,23 @@ MAX_WORKTREES = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
 REMOTE_GC_DAYS = int(os.environ.get("ORCH_REMOTE_BRANCH_GC_DAYS", "7"))
 REMOTE_GC_ENABLED = os.environ.get("ORCH_REMOTE_BRANCH_GC_ENABLED", "true").lower() in ("1", "true", "yes")
 REMOTE_GC_DRY_RUN = os.environ.get("ORCH_REMOTE_BRANCH_GC_DRY_RUN", "true").lower() in ("1", "true", "yes")
-GIT_TIMEOUT = 30
+# 30s until 2026-09-08, and that number left 2,642 abandoned lockfiles in the repo.
+#
+# `git fetch --prune` takes a lock on EVERY ref it intends to delete, all at once, and
+# holds them until the batch commits -- measured here at 2,000 concurrent locks. When
+# subprocess.run's timeout fires, CPython SIGKILLs the child, and a SIGKILL between
+# hold_lock_file_for_update() and commit_lock_file() leaves every one of those locks on
+# disk. On 2026-09-02 that is precisely what happened: the lock mtimes are a single
+# 13-second burst in git's sorted ref order, ending where the process died. The fallout
+# ran for five days -- every later prune aborted its whole deletion batch on the first
+# lock it could not take, so the local branch view sat 95 branches out of date and
+# runner.log filled with 27 `fleet_control: auto-pull failed ... cannot lock ref` lines.
+#
+# 300s is the ceiling every other git call in runner/ already uses, and a prune over
+# ~1,700 stale refs on a loaded machine needs far more than 30. This does not make a
+# mid-transaction kill impossible -- it makes it rare, and queue_janitor's lock sweep now
+# cleans up after the cases it cannot prevent.
+GIT_TIMEOUT = int(os.environ.get("ORCH_GUARDRAIL_GIT_TIMEOUT_S", "300"))
 
 # ── Internal state ─────────────────────────────────────────────────────────
 _branch_creates = []   # timestamps of recent branch creations
@@ -151,9 +167,32 @@ def check_worktree_count(repo_path):
     # Re-read from env each call so fleet_config updates take effect without restart
     _mode = os.environ.get("ORCH_GUARDRAIL_MODE", "warn")
     _max_wt = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
-    if count > _max_wt:
-        v = _violation("worktree_cap", f"{count} active worktrees (limit {_max_wt})",
-                       {"count": count, "limit": _max_wt})
+
+    # THE CAP AND THE WARM POOL ARE COUPLED, so read them together.
+    #
+    # build_daemon pre-creates a worktree for each of the first
+    # ORCH_WARM_WORKTREES queued tasks, per repo. Those are provisioned
+    # capacity, not runaway creation — this guardrail exists to catch the
+    # latter. But it counted them, so raising the pool ate into the leak
+    # budget without anyone saying so.
+    #
+    # That is what happened here: the pool default is 5 and the cap was set to
+    # 40 against it; the pool was later raised to 15 and the cap was not. The
+    # orchestrator repo sat at 40-45 worktrees during entirely normal
+    # operation, and with ORCH_GUARDRAIL_MODE=block every claim was refused
+    # with "44 active worktrees (limit 40)". A well-provisioned fleet was
+    # blocking itself, and the message read like a leak.
+    #
+    # Adding the pool to the budget keeps the guardrail measuring the thing it
+    # is named for, and means a future change to the pool size cannot quietly
+    # re-break the cap.
+    _warm = int(os.environ.get("ORCH_WARM_WORKTREES", "5"))
+    _budget = _max_wt + max(0, _warm)
+    if count > _budget:
+        v = _violation(
+            "worktree_cap",
+            f"{count} active worktrees (limit {_max_wt} + {_warm} warm = {_budget})",
+            {"count": count, "limit": _max_wt, "warm": _warm, "budget": _budget})
         return {"passed": _mode != "block", "count": count, "violation": v}
     return {"passed": True, "count": count}
 
@@ -200,7 +239,17 @@ def gc_remote_branches(repo_path, terminal=None):
                      "any origin/agent/* branch (a QUEUED/RUNNING task's branch could be among "
                      "them, and push --delete is irreversible)")
         return {"deleted": 0, "skipped": 0, "errors": 0, "reason": "no terminal slugs — fail safe"}
-    _git(repo_path, "fetch", "--prune", "origin")
+    # Checked, not discarded. This call's failure was silent for five days: it is the
+    # exact prune that could not take its locks, and nothing read its exit code, so the
+    # branch view drifted 95 branches behind with no signal anywhere. A prune that cannot
+    # lock is a broken repo, not a slow one, and deleting remote branches from a stale
+    # view is worse than not deleting them -- so this returns rather than continuing.
+    prune_rc, _prune_out, prune_err = _git(repo_path, "fetch", "--prune", "origin")
+    if prune_rc != 0:
+        _violation("stale_ref_locks" if "cannot lock ref" in prune_err else "prune_failed",
+                   f"fetch --prune failed in {repo_path}: {prune_err[:300]}",
+                   {"repo": repo_path, "returncode": prune_rc})
+        return {"deleted": 0, "errors": 1, "reason": f"fetch --prune failed: {prune_err[:120]}"}
     rc, out, _ = _git(repo_path, "branch", "-r", "--list", "origin/agent/*")
     if rc != 0:
         return {"deleted": 0, "errors": 1, "reason": "git branch -r failed"}

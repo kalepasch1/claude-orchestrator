@@ -45,27 +45,97 @@ def _spool(row):
         pass
 
 
-def flush(limit=500):
-    """Replay the local outbox; DB uniqueness makes retry idempotent."""
+def _read_outbox():
+    """(rows, corrupt_lines) from the local outbox. A missing file reads as empty.
+
+    A line that is not a JSON object is NEVER discarded: it is evidence we failed to
+    write correctly, and deleting it is the one outcome the outbox exists to prevent.
+    It is carried forward verbatim and counted, so backlog() can raise the alarm.
+    """
+    rows, corrupt = [], []
     try:
         with open(_OUTBOX, encoding="utf-8") as outbox:
-            rows = [json.loads(line) for line in outbox if line.strip()][:limit]
+            for line in outbox:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    corrupt.append(line.rstrip("\n"))
+                    continue
+                (rows if isinstance(row, dict) else corrupt).append(
+                    row if isinstance(row, dict) else line.rstrip("\n"))
     except OSError:
+        return [], []
+    return rows, corrupt
+
+
+def _rewrite_outbox(rows, corrupt):
+    """Replace the outbox with exactly `rows` + the corrupt lines we could not parse."""
+    try:
+        with open(_OUTBOX, "w", encoding="utf-8") as outbox:
+            for row in rows:
+                outbox.write(_canonical(row) + "\n")
+            for line in corrupt:
+                outbox.write(line + "\n")
+    except OSError:
+        pass
+
+
+def backlog():
+    """Depth, corruption and age of the oldest undelivered row in the local outbox.
+
+    Read-only and total: a missing or unreadable outbox is an empty one, never an
+    exception, because this is polled from health/readiness handlers.
+    """
+    rows, corrupt = _read_outbox()
+    now = time.time()
+    oldest = None
+    for row in rows:
+        # `observed_at` is what _spool writes; `created_at` is the DB column name and
+        # appears on rows spooled back from a read of fleet_evidence_events.
+        stamp = row.get("observed_at") or row.get("created_at")
+        if not stamp:
+            continue
+        try:
+            parsed = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        age = max(0, int(now - parsed.timestamp()))
+        oldest = age if oldest is None else max(oldest, age)
+    return {"pending": len(rows), "corrupt": len(corrupt),
+            "oldest_age_s": oldest, "path": _OUTBOX}
+
+
+def flush(limit=500):
+    """Replay the local outbox; DB uniqueness makes retry idempotent.
+
+    `limit` bounds how many rows are ATTEMPTED, not how many survive. The previous
+    version read `[:limit]` rows and then rewrote the whole file from that truncated
+    slice, so every row past the limit was destroyed by a successful flush — the exact
+    silent evidence loss the outbox exists to prevent. Un-attempted rows are carried
+    forward here, so a backlog deeper than one pass drains over several passes instead.
+    """
+    rows, corrupt = _read_outbox()
+    if not rows and not corrupt:
         return 0
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = 500
+    attempted, deferred = rows[:limit], rows[limit:]
     delivered = 0
     remaining = []
-    for row in rows:
+    for row in attempted:
         try:
             db.insert("fleet_evidence_events", row)
             delivered += 1
         except Exception:
             remaining.append(row)
-    try:
-        with open(_OUTBOX, "w", encoding="utf-8") as outbox:
-            for row in remaining:
-                outbox.write(_canonical(row) + "\n")
-    except OSError:
-        pass
+    if delivered:
+        # Nothing changed when nothing was delivered, and not rewriting keeps the
+        # window in which a concurrent _spool() append could be lost as small as possible.
+        _rewrite_outbox(remaining + deferred, corrupt)
     return delivered
 
 

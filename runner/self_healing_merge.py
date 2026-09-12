@@ -136,6 +136,18 @@ def _classify_files(repo: str, branch: str, base: str) -> dict:
 
     _cleanup()
 
+    if not conflict_set:
+        # The merge FAILED but named no conflicting file: a timeout (_git returns 124),
+        # a locked index, "not something we can merge", a hook refusal. "Clean" here is
+        # defined as "not named in the conflict output", so falling through classified
+        # EVERY changed file as clean — and heal() then reported "no conflicts found
+        # (branch may be mergeable)", set healed=True and merged nothing, which
+        # continuous_merger logs as a successful self-heal and stops retrying. Unknown
+        # means conflicting, exactly as the worktree-creation failure above already
+        # decides; the branch then stays CONFLICT for the normal path.
+        result["conflicting"] = changed_files
+        return result
+
     for f in changed_files:
         if f in conflict_set:
             result["conflicting"].append(f)

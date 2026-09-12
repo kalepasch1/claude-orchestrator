@@ -26,7 +26,8 @@ def test_sweep_files_tier1_remediation(tmp_path):
 def test_sweep_clean_files_nothing(tmp_path):
     filed = []
     res = cms.sweep(_repo(tmp_path, "ok=1\n"), enqueue_fn=lambda rec: filed.append(rec))
-    assert res == {"found": [], "worktree": [], "filed": False} and filed == []
+    assert res == {"found": [], "worktree": [], "artifacts": [], "filed": False}
+    assert filed == []
 
 
 # --- uncommitted markers: invisible to a HEAD grep, yet they block EVERY merge ---------

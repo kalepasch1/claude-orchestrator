@@ -19,4 +19,4 @@ comment on column operator_autoclear_rules.project is
     'Match only cards for this project slug; NULL matches any project.';
 
 comment on column operator_autoclear_rules.max_usd is
-    'If set, only auto-approve when the card detail contains a dollar amount <= this value.';;
+    'If set, only auto-approve when the card detail contains a dollar amount <= this value.';

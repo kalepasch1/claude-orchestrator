@@ -13,10 +13,21 @@ Failure classes (ordered most-specific first):
   unknown           : none matched — escalate to a human
 """
 
+#: A conflict marker is `<<<<<<<` at the start of a line. Matching `"<<<<<<< "` — with a
+#: trailing space — missed the unlabelled form git writes when there is no branch name to
+#: append (`<<<<<<<\n`), so those failures fell through to `collection-error` and were
+#: routed to "fix the offending test file" instead of "resolve the conflict markers".
+#: Leading whitespace is stripped because the marker usually reaches us inside a pytest
+#: traceback, where the offending source line is indented under `File "...", line N`.
+def _has_conflict_marker(text):
+    return any(line.lstrip().startswith("<<<<<<<")
+               for line in str(text or "").splitlines())
+
+
 def classify(log_text):
     t = log_text or ""
     low = t.lower()
-    if "leftover conflict marker" in low or "<<<<<<< " in t:
+    if "leftover conflict marker" in low or _has_conflict_marker(t):
         return "conflict-marker"
     if "modulenotfounderror" in low:
         return "missing-module"
@@ -31,7 +42,7 @@ def classify(log_text):
     if "error during collection" in low or "interrupted:" in low:
         return "collection-error"
     if "syntaxerror" in low:
-        return "conflict-marker" if "<<<<<<< " in t else "collection-error"
+        return "conflict-marker" if _has_conflict_marker(t) else "collection-error"
     return "unknown"
 
 _ROUTE = {

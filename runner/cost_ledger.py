@@ -28,8 +28,11 @@ _OUT = re.compile(r"(output|completion)[ _]tokens[\"':\s]+([0-9,]+)", re.I)
 
 
 def _n(s):
-    """Parse a numeric string that may contain commas (e.g. '1,234') into an int."""
-    return int(s.replace(",", ""))
+    """Parse a numeric string that may contain commas (e.g. '1,234') into an int. Returns 0 on error."""
+    try:
+        return int(str(s or "").replace(",", ""))
+    except (ValueError, TypeError):
+        return 0
 
 
 def record(project, slug, model, logpath):
@@ -37,6 +40,7 @@ def record(project, slug, model, logpath):
 
     Parses input/output token counts from the log file at *logpath*, computes USD
     cost using PRICES, and appends a JSON line to LEDGER. Returns the row dict.
+    Fail-soft: continues even if log parsing or write fails.
     """
     itok = otok = 0
     try:
@@ -49,22 +53,49 @@ def record(project, slug, model, logpath):
     cost = itok / 1e6 * pin + otok / 1e6 * pout
     row = {"ts": time.time(), "project": project, "slug": slug, "model": model,
            "input_tokens": itok, "output_tokens": otok, "usd": round(cost, 4)}
-    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
-    with open(LEDGER, "a") as f:
-        f.write(json.dumps(row) + "\n")
+    try:
+        os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception as exc:  # noqa: BLE001 - cost accounting must not wedge a run
+        # A broad catch is the fail-soft convention here; a SILENT one is the
+        # defect. Losing a cost row unannounced is how the ledger quietly stops
+        # matching reality, so say so and keep going.
+        print("cost_ledger: could not append row (%s); continuing" % exc,
+              file=sys.stderr)
     return row
 
 
 def report():
+    """Print aggregate cost report. Fail-soft: prints diagnostic on error instead of crashing."""
     if not os.path.exists(LEDGER):
         print("no cost data yet"); return
-    rows = [json.loads(l) for l in open(LEDGER) if l.strip()]
+    rows = []
+    try:
+        with open(LEDGER, errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    except (OSError, IOError) as e:
+        print(f"error reading ledger: {e}"); return
+    if not rows:
+        print("no valid cost records found"); return
     by_proj, by_model = {}, {}
     total = 0.0
     for r in rows:
-        by_proj[r["project"]] = by_proj.get(r["project"], 0) + r["usd"]
-        by_model[r["model"]] = by_model.get(r["model"], 0) + r["usd"]
-        total += r["usd"]
+        try:
+            proj = r.get("project") or "unknown"
+            model = r.get("model") or "unknown"
+            cost = float(r.get("usd") or 0)
+            by_proj[proj] = by_proj.get(proj, 0) + cost
+            by_model[model] = by_model.get(model, 0) + cost
+            total += cost
+        except (ValueError, TypeError):
+            pass
     print(f"TOTAL ${total:.2f} over {len(rows)} tasks")
     print("by project:", {k: round(v, 2) for k, v in sorted(by_proj.items(), key=lambda x: -x[1])})
     print("by model:  ", {k: round(v, 2) for k, v in sorted(by_model.items(), key=lambda x: -x[1])})

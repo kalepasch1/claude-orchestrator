@@ -29,11 +29,22 @@ def unified_route(task, available_coders, stage=None):
     """
     kind = str(task.get("kind") or "build").lower()
     slug = str(task.get("slug") or "")
+    available = [str(c) for c in (available_coders or []) if c]
+
+    # 0. Nothing is available. There is no routing decision to make, and every router below
+    #    would answer anyway: router_stats returns None (it intersects with `available`), but
+    #    agentic_coders.pick() consults the whole configured pool and hands back its own
+    #    default, which unified_route then reported as a real "agentic_coders.pick" verdict.
+    #    The caller said no coder is available; the honest answer is the fallback name, marked
+    #    as the fallback it is.
+    if not available:
+        log.debug("route_consolidation: no coders available for %s — returning fallback", slug)
+        return "claude", "fallback"
 
     # 1. Try learned router first (has the most empirical signal)
     try:
         import router_stats
-        learned = router_stats.best_coder(kind, available_coders, stage=stage)
+        learned = router_stats.best_coder(kind, available, stage=stage)
         if learned:
             log.debug("route_consolidation: learned router picked %s for %s", learned, slug)
             return learned, "router_stats"
@@ -41,13 +52,24 @@ def unified_route(task, available_coders, stage=None):
         log.debug("route_consolidation: router_stats failed: %s", e)
 
     # 2. Try agentic_coders.pick() (cost x capability x difficulty)
+    #
+    # pick()'s second parameter is `slot_index` — an INTEGER lane index — not a candidate
+    # list. Passing available_coders there did nothing except hand a list to code expecting a
+    # number, so the pick was never restricted to what is actually available and this branch
+    # could route a task to a coder the caller had just excluded. router_stats.best_coder()
+    # takes the availability set and intersects with it; pick() has no such parameter, so the
+    # restriction has to be applied to its ANSWER instead. A pick outside the available set
+    # falls through to the routers below rather than being returned.
     try:
         import agentic_coders
         if hasattr(agentic_coders, "pick"):
-            picked = agentic_coders.pick(task, available_coders)
-            if picked and isinstance(picked, str):
+            picked = agentic_coders.pick(task)
+            if picked and isinstance(picked, str) and picked in available:
                 log.debug("route_consolidation: agentic_coders.pick chose %s for %s", picked, slug)
                 return picked, "agentic_coders.pick"
+            if picked:
+                log.debug("route_consolidation: agentic_coders.pick chose %s for %s but it is "
+                          "not available (%s) — falling through", picked, slug, available)
     except Exception as e:
         log.debug("route_consolidation: agentic_coders.pick failed: %s", e)
 
@@ -55,15 +77,15 @@ def unified_route(task, available_coders, stage=None):
     try:
         import bandit
         if hasattr(bandit, "select"):
-            selected = bandit.select(kind, available_coders)
-            if selected:
+            selected = bandit.select(kind, available)
+            if selected and selected in available:
                 log.debug("route_consolidation: bandit selected %s for %s", selected, slug)
                 return selected, "bandit"
     except Exception as e:
         log.debug("route_consolidation: bandit failed: %s", e)
 
     # 4. Ultimate fallback: first available
-    default = available_coders[0] if available_coders else "claude"
+    default = available[0]
     log.debug("route_consolidation: falling back to %s for %s", default, slug)
     return default, "fallback"
 
@@ -82,7 +104,10 @@ def routing_diagnosis(task, available_coders, stage=None):
     try:
         import agentic_coders
         if hasattr(agentic_coders, "pick"):
-            results["agentic_coders"] = agentic_coders.pick(task, available_coders)
+            # Same signature correction as unified_route(): pick()'s second parameter is an
+            # integer slot index, not a candidate list. The diagnosis is only useful if it
+            # reports what the router would ACTUALLY have answered.
+            results["agentic_coders"] = agentic_coders.pick(task)
     except Exception as e:
         results["agentic_coders"] = f"error: {e}"
 

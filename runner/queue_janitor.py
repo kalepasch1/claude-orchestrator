@@ -21,7 +21,7 @@ queue_janitor.py - automates the manual cleanup session of 2026-07-02, every cyc
 Everything is bounded, idempotent (the approvals_one_pending_per_issue index blocks
 duplicate cards), and audited via notes/notifications. No model spend.
 """
-import datetime, json, os, sys, glob, time, socket, subprocess
+import datetime, json, os, stat, sys, glob, time, socket, subprocess
 import repo_hygiene
 import host_resume_watch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,6 +40,27 @@ ORPHAN_RUNNING_MIN = float(os.environ.get("JANITOR_ORPHAN_RUNNING_MIN", "20"))
 # object.  A crash can leave them behind indefinitely.  Never delete them: move
 # only cold files to Git's recovery area, and pin any dangling commits first.
 GIT_TMP_OBJECT_STALE_MIN = float(os.environ.get("JANITOR_GIT_TMP_OBJECT_STALE_MIN", "30"))
+SECONDS_PER_MINUTE = 60
+# Ceiling on unlinks per repo per cycle. On 2026-09-08 one repo held 2,642 abandoned
+# lockfiles; sweeping them is fine, but an unbounded loop inside a 300s janitor cycle is
+# not. Anything past the cap is left for the next cycle and reported as `remaining`, which
+# is what makes a sweeper that is falling behind visible instead of silent.
+LOCK_SWEEP_CAP = int(os.environ.get("JANITOR_LOCK_SWEEP_CAP", "5000"))
+# How many lock paths go into one `lsof` invocation. One lsof per lockfile is what the
+# obvious implementation does, and at 2,642 locks that is 2,642 subprocess spawns inside a
+# 300s janitor cycle -- the sweep would time out before it cleared the backlog it exists
+# to clear. Batched, the same repo costs a single-digit number of spawns. The bound is
+# argv length, not lsof.
+LOCK_HOLDER_BATCH = int(os.environ.get("JANITOR_LOCK_HOLDER_BATCH", "500"))
+LOCK_HOLDER_TIMEOUT_S = int(os.environ.get("JANITOR_LOCK_HOLDER_TIMEOUT_S", "30"))
+# Subtrees of the Git directory that hold lockfiles. Deliberately enumerated rather than
+# walking the whole Git directory: objects/ contains tmp_obj_* files that belong to
+# archive_stale_git_objects (it pins dangling commits into recovery refs before touching
+# them), and nothing in this sweep may race that.
+LOCK_SEARCH_SUBDIRS = ("refs", os.path.join("logs", "refs"), "worktrees")
+# `locked` is a user-written "do not prune this worktree" MARKER, not a lockfile, and
+# `gc.pid` is git's own liveness record. Neither is ours to remove.
+NEVER_SWEEP_BASENAMES = frozenset({"locked", "gc.pid"})
 
 EMPTY_RUN_MARKERS = ("no committable changes", "empty diff", "diff is empty",
                      "no diff provided", "missing diff", "no code diff",
@@ -49,7 +70,26 @@ EMPTY_RUN_MARKERS = ("no committable changes", "empty diff", "diff is empty",
 
 def _note_matches_empty(note):
     n = (note or "").lower()
-    return any(m in n for m in EMPTY_RUN_MARKERS)
+    if not any(m in n for m in EMPTY_RUN_MARKERS):
+        return False
+    # An empty diff because the agent produced nothing is a failed run and this
+    # module should repair it. An empty diff because the executor INSPECTED the
+    # repo and reported there is nothing to build is an answer, and requeueing
+    # it deletes the answer. The two look identical from the diff alone, which
+    # is why the marker exists and why the check has to live here rather than in
+    # EMPTY_RUN_MARKERS -- a NO-ARTIFACT-JUSTIFIED note routinely explains
+    # itself using the words "no committable changes".
+    #
+    # Imported from auto_remediate rather than re-stated so both requeue doors
+    # answer with one rule. A second copy would drift, and when it drifts these
+    # tasks quietly start looping again.
+    try:
+        import auto_remediate
+        if auto_remediate.is_terminal_closure(note):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _repair_task(task, category, detail, prefer_non_claude=False):
@@ -61,11 +101,24 @@ def _repair_task(task, category, detail, prefer_non_claude=False):
         task, detail, category=category, directive=directive, prefer_non_claude=prefer_non_claude
     )
     if "transient_retries" in task and not agentic_repair.is_terminal(patch):
+        # THE INCREMENT LIVES HERE, AND ONLY HERE.
+        #
         # Was `= int(...or 0)` — it PRESERVED the counter instead of advancing it, so every
         # transient_retries-based cap elsewhere in the fleet stayed frozen at the same value no
         # matter how many times the janitor re-queued the row. Advancing it is the whole point of
         # writing the field back.
-        patch["transient_retries"] = int(task.get("transient_retries") or 0) + 1
+        #
+        # But the three below-cap call sites were ALREADY passing
+        # `{**t, "transient_retries": attempts + 1}`, so adding the increment
+        # here made every janitor pass count as two: a row at 1 went to 3, and
+        # REQUEUE_CAP (3) was reached in two sweeps instead of three. Those
+        # pre-increments are gone; the callers hand over the row as they read it.
+        #
+        # At or above the cap the counter HOLDS. The at-cap branch is the final
+        # same-task repair, not another retry, and letting it climb would make
+        # "how many times did the janitor retry this" unreadable after the fact.
+        attempts = int(task.get("transient_retries") or 0)
+        patch["transient_retries"] = attempts + 1 if attempts < REQUEUE_CAP else attempts
     db.update("tasks", {"id": task["id"]}, patch)
 
 
@@ -103,7 +156,7 @@ def requeue_stuck_running():
             )
         else:
             _repair_task(
-                {**t, "transient_retries": attempts + 1},
+                t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was stuck RUNNING >{STUCK_RUNNING_H}h; resume and complete, do not restart blindly.",
                 prefer_non_claude=True,
@@ -151,7 +204,7 @@ def release_orphaned_running():
             )
         else:
             _repair_task(
-                {**t, "transient_retries": attempts + 1},
+                t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m; resume existing work and finish.",
                 prefer_non_claude=True,
@@ -195,8 +248,7 @@ def requeue_empty_runs():
         if "[janitor-requeued]" in (t.get("note") or "") and int(t.get("transient_retries") or 0) >= REQUEUE_CAP:
             continue
         _repair_task(
-            {**t, "attempt": int(t.get("attempt") or 0) + 1,
-             "transient_retries": int(t.get("transient_retries") or 0) + 1},
+            {**t, "attempt": int(t.get("attempt") or 0) + 1},
             "noop",
             (t.get("note") or "") + "\nPrevious run produced no committable changes; make the smallest concrete implementation and commit.",
         )
@@ -236,28 +288,198 @@ def _lock_has_live_holder(lock_path):
         return True
 
 
+def _candidate_lock_paths(git_dir):
+    """Every lockfile path under one Git directory, top level and nested.
+
+    THE BUG THIS FUNCTION EXISTS TO FIX. Until 2026-09-08 clear_stale_git_locks globbed
+    `.git/*.lock` and nothing else -- top level only. On 2026-09-02 a `git fetch --prune`
+    was SIGKILLed by its caller's 30s subprocess timeout mid-transaction, and a prune
+    holds a lock on EVERY ref it intends to delete simultaneously, so it left 2,642
+    abandoned lockfiles: 888 under refs/heads, 1,746 under refs/remotes/origin, 8 under
+    refs/orch-rescue. Not one of them was at the top level. The janitor ran on schedule
+    for five days, cleared its usual index.lock / packed-refs.lock, and stepped over all
+    2,642 every single cycle.
+
+    What that cost, measured: `git fetch --prune` aborts the WHOLE deletion batch on the
+    first lock it cannot take ("could not delete references: cannot lock ref ...: File
+    exists"), so it printed 65 deletions and performed none. The local branch view sat 95
+    branches out of date for five days, and 27 `fleet_control: auto-pull failed` lines in
+    runner.log are the same root cause going unread. A sibling repo still held 555.
+
+    objects/ is excluded on purpose -- see LOCK_SEARCH_SUBDIRS.
+    """
+    found = [path for path in glob.glob(os.path.join(git_dir, "*.lock"))]
+    for subdir in LOCK_SEARCH_SUBDIRS:
+        for parent, _dirnames, filenames in os.walk(os.path.join(git_dir, subdir)):
+            for filename in filenames:
+                if filename.endswith(".lock"):
+                    found.append(os.path.join(parent, filename))
+    return found
+
+
+def _held_in_one_batch(batch):
+    """Which paths in this one batch some live process has open.
+
+    Returns the WHOLE batch when lsof cannot answer -- see _held_lock_paths for why that
+    is the safe default rather than the empty set.
+    """
+    try:
+        out = subprocess.run(["lsof", "-F", "n", "--", *batch],
+                             capture_output=True, text=True,
+                             timeout=LOCK_HOLDER_TIMEOUT_S)
+    except Exception as error:
+        print(f"janitor: lsof failed for {len(batch)} lock paths ({error}) -- treating "
+              f"them all as held")
+        return set(batch)
+    # lsof exits nonzero when it simply found nothing open, which is the normal and
+    # expected answer here, so the exit code is not a failure signal. Only an exception
+    # (missing binary, timeout) means we did not get an answer.
+    return {line[1:] for line in out.stdout.splitlines() if line.startswith("n")}
+
+
+def _held_lock_paths(lock_paths):
+    """Which of these lockfiles some live process currently has open.
+
+    Batched on purpose -- see LOCK_HOLDER_BATCH. `lsof -F n` prints one `n<name>` line per
+    open file, so a single invocation answers for hundreds of paths at once.
+
+    FAILS CLOSED, per batch. If lsof cannot be run, or times out, every path in that batch
+    is reported as held and survives this cycle. A lock that lingers an extra 300 seconds
+    is far cheaper than one yanked out from under a live writer: git keeps the descriptor
+    from hold_lock_file_for_update() open until it commits or rolls back, so a live writer
+    is visible here for the whole life of its lock, and losing that signal must never be
+    read as "nobody has it".
+    """
+    held = set()
+    for start in range(0, len(lock_paths), LOCK_HOLDER_BATCH):
+        held.update(_held_in_one_batch(lock_paths[start:start + LOCK_HOLDER_BATCH]))
+    return held
+
+
+def _lock_is_abandoned(lock_path, cutoff, held_paths=None):
+    """Whether one lockfile may be removed. Returns (verdict, reason). Never raises.
+
+    NOTE WHAT IS DELIBERATELY ABSENT: file size.
+
+    A ref DELETION -- exactly what `git fetch --prune` does, and what produced all 2,642
+    of the 2026-09-02 locks -- takes the lock and never writes a value into it. Zero bytes
+    is the normal shape of a LIVE prune's lock. Conversely a writer killed after it had
+    written the new object id leaves a NONZERO abandoned lock, and that is the index.lock
+    class that silently blocks every merge. Size tells you which git operation it was,
+    never whether its writer is alive; gating on it would keep live locks and miss dead
+    ones, in both directions. It is reported in the journal and never tested.
+    """
+    try:
+        lock_stat = os.lstat(lock_path)
+    except OSError:
+        return False, "vanished"
+    if not stat.S_ISREG(lock_stat.st_mode):
+        return False, "not-a-regular-file"
+    if os.path.basename(lock_path) in NEVER_SWEEP_BASENAMES:
+        return False, "not-a-lockfile"
+    if lock_stat.st_mtime >= cutoff:
+        return False, "too-young"
+    if held_paths is None:
+        if _lock_has_live_holder(lock_path):
+            return False, "live-holder"
+    elif lock_path in held_paths:
+        return False, "live-holder"
+    return True, "abandoned"
+
+
+def _remove_if_unchanged(lock_path, expected_identity):
+    """Unlink only if the file is still the exact one that was cleared.
+
+    Closes the window between the decision and the syscall: a git that grabbed this path
+    in between has a different inode, so the comparison fails and nothing happens. Hitting
+    the residual window needs a fresh lock that reuses both the same inode number and the
+    same nanosecond mtime.
+    """
+    try:
+        current = os.lstat(lock_path)
+        if (current.st_ino, current.st_mtime_ns) != expected_identity:
+            return False
+        os.remove(lock_path)
+        return True
+    except OSError:
+        return False
+
+
 def clear_stale_git_locks():
-    """Remove .git/*.lock files older than LOCK_STALE_MIN in repos on this machine, but
-    only once no live process still has the file open (see _lock_has_live_holder)."""
+    """Remove abandoned Git lockfiles anywhere under each repo's Git directory.
+
+    Two guards decide, and both must pass: the lock has been untouched for
+    LOCK_STALE_MIN (15 min, three times the longest git invocation the fleet permits --
+    every git call in runner/ is bounded at <=300s and is killed by its caller past that,
+    so no legitimate writer can still hold a lock), and no live process has it open
+    (_lock_has_live_holder, which fails CLOSED). A lock that lingers an extra cycle is far
+    cheaper than one yanked from a live writer.
+
+    _git_dir is used rather than repo/".git" so a linked worktree, whose .git is a FILE,
+    is swept instead of skipped.
+    """
     cleared = 0
-    cutoff = time.time() - LOCK_STALE_MIN * 60
-    for p in db.select("projects", {"select": "repo_path"}) or []:
-        repo = p.get("repo_path") or ""
-        if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+    cutoff = time.time() - LOCK_STALE_MIN * SECONDS_PER_MINUTE
+    for project in db.select("projects", {"select": "repo_path"}) or []:
+        repo = project.get("repo_path") or ""
+        if not repo or not os.path.exists(os.path.join(repo, ".git")):
             continue
-        for lock in glob.glob(os.path.join(repo, ".git", "*.lock")):
+        git_dir = _git_dir(repo)
+        if not git_dir:
+            continue
+        removed = held = 0
+        oldest_age_min = 0.0
+        candidates = _candidate_lock_paths(git_dir)
+        held_paths = _held_lock_paths(candidates) if candidates else set()
+        for lock in candidates:
+            if removed >= LOCK_SWEEP_CAP:
+                break
             try:
-                if os.path.getmtime(lock) >= cutoff:
+                identity = (os.lstat(lock).st_ino, os.lstat(lock).st_mtime_ns)
+                age_min = (time.time() - os.path.getmtime(lock)) / SECONDS_PER_MINUTE
+                verdict, reason = _lock_is_abandoned(lock, cutoff, held_paths)
+                if not verdict:
+                    if reason == "live-holder":
+                        held += 1
+                        print(f"janitor: {lock} is stale by age but still held by a live "
+                              f"process -- leaving it")
                     continue
-                if _lock_has_live_holder(lock):
-                    print(f"janitor: {lock} is stale by age but still held by a live process -- leaving it")
-                    continue
-                os.remove(lock)
-                cleared += 1
-                print(f"janitor: removed stale {lock}")
+                if _remove_if_unchanged(lock, identity):
+                    removed += 1
+                    cleared += 1
+                    oldest_age_min = max(oldest_age_min, age_min)
             except Exception:
                 pass
+        # Counts only locks that are PAST the cutoff and still there -- never a lock a
+        # live git took thirty seconds ago. Counting young locks would make
+        # `stale-git-locks-not-cleared` fire on every healthy repo on every cycle, and an
+        # alert that is always on is the same as no alert. This backlog is exactly what
+        # went unnoticed for five days, so it has to stay meaningful.
+        remaining = sum(1 for path in _candidate_lock_paths(git_dir)
+                        if _lock_is_abandoned(path, cutoff, set())[0])
+        if removed or remaining:
+            _journal_lock_sweep(repo, removed, remaining, held, oldest_age_min)
     return cleared
+
+
+def _journal_lock_sweep(repo, removed, remaining, held, oldest_age_min):
+    """One row per repo per cycle -- never one per file.
+
+    2,642 rows would drown the file resource_medic._recent_events reads, and drowning it
+    is how the NEXT recurrence goes unnoticed for five days the way this one did. A sweep
+    that leaves locks behind writes a DISTINCT action, so "the self-healing is itself
+    broken" is a separately countable event rather than a quieter version of success.
+    """
+    action = "cleared-stale-git-locks" if not remaining else "stale-git-locks-not-cleared"
+    detail = (f"repo={repo} removed={removed} remaining={remaining} held={held} "
+              f"oldest_age_min={oldest_age_min:.0f}")
+    try:
+        import resource_medic
+        resource_medic.journal("git_hygiene", action, detail)
+        return True
+    except Exception as error:
+        print(f"janitor: {action} {detail} (journal unavailable: {error})")
+        return False
 
 
 def _git_dir(repo):
@@ -368,6 +590,37 @@ def clean_stray_js_across_projects():
     return cleaned
 
 
+def check_vue_templates_across_projects():
+    """Periodic sweep (all registered repos on this machine) for .vue components that do
+    not compile -- see repo_hygiene.check_vue_templates.
+
+    2026-08-29: an agent converted 421 hardcoded hex values to design tokens across 59
+    .vue files in one pass, and several of the edits appended an attribute to an element
+    that already had one. Every one is a hard compile error, and nothing noticed: the
+    TypeScript lints do not read templates. They were found one at a time, by hand, when
+    the local dev server refused to serve a page -- six over one afternoon.
+
+    Reported rather than repaired. A duplicated attribute has two plausible fixes (merge
+    the values, or drop one) and picking wrong silently changes what renders, so this
+    surfaces the file and line and leaves the decision to whoever is working. Returns a
+    list of (repo, detail)."""
+    try:
+        projects = db.select("projects", {"select": "repo_path"}) or []
+    except Exception:
+        return []
+    broken = []
+    for p in projects:
+        repo = p.get("repo_path") or ""
+        if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+            continue
+        # check_vue_templates never raises — it returns (True, reason) when it
+        # cannot look. So there is nothing to guard here.
+        ok, detail = repo_hygiene.check_vue_templates(repo)
+        if not ok:
+            broken.append((repo, detail))
+    return broken
+
+
 def run():
     hb = scheduler_heartbeat()
     orphans = release_orphaned_running()
@@ -378,14 +631,21 @@ def run():
     locks = clear_stale_git_locks()
     recovery_refs, archived_objects = archive_stale_git_objects_across_projects()
     stray_js = clean_stray_js_across_projects()
+    broken_vue = check_vue_templates_across_projects()   # fail-soft; returns [] on error
     try:
         hosts_resumed, hosts_checked = host_resume_watch.check_and_resume()
     except Exception as e:
         print(f"queue_janitor: host_resume_watch failed: {e}")
         hosts_resumed, hosts_checked = 0, 0
+    # Printed in full, not counted. A component that will not compile breaks the
+    # build and the local dev server, and the message already names the file and
+    # line -- burying that in a tally would waste the only useful part.
+    for repo, detail in broken_vue:
+        print(f"queue_janitor: ✗ {repo} has a component that will not compile:\n{detail}")
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
           f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks} "
           f"recovery-refs={recovery_refs} stale-git-objects-archived={archived_objects} stray-js-cleaned={stray_js} "
+          f"broken-vue-repos={len(broken_vue)} "
           f"hosts-checked={hosts_checked} hosts-resumed={hosts_resumed}")
     return orphans + stuck + merging + empty + refiled + locks + recovery_refs + archived_objects + stray_js + hosts_resumed
 

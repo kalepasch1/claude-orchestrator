@@ -6,15 +6,36 @@ checker now catches secrets in annotated assignments using the
 _SECRET_VALUE_PREFIXES constant and _SECRET_PATTERNS.
 """
 import ast
+import importlib.util
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-
-from lint_conventions import (  # noqa: E402
-    RULE_HARDCODED_SECRET,
-    ConventionChecker,
+_LINTER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "lint_conventions.py"
 )
+
+
+def _load_linter(module_path, module_name):
+    """Load a linter module from an explicit path, WITHOUT touching sys.path/sys.modules.
+
+    The repo has two files named `lint_conventions.py` — `tools/` (the pre-commit hook)
+    and `runner/tools/` (this one). Every test file for either of them used to do
+    `sys.path.insert(...)` + `import lint_conventions`, so the first one imported in a
+    session won the name and every later file silently got the OTHER module: running
+    this file together with runner/tests/test_convention_lint_ratchet.py made 12 of that
+    file's tests fail with AttributeError, and running it alone made them pass. Loading
+    by path under a unique name makes the target unambiguous and order-independent.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_lint = _load_linter(_LINTER_PATH, "runner_tools_lint_conventions_annotated")
+
+RULE_HARDCODED_SECRET = _lint.RULE_HARDCODED_SECRET
+ConventionChecker = _lint.ConventionChecker
 
 
 def _secret_violations(code):
@@ -117,9 +138,18 @@ def test_annotated_api_key_literal():
 
 
 def test_annotated_pat_literal():
-    """Annotated assignment with 'pat' in name should be flagged."""
+    """A GitHub PAT literal is flagged — by its ``ghp_`` value, not by "pat".
+
+    WAS titled/documented as "'pat' in name should be flagged". That reads as a claim
+    about the name test, and it is false by design: "pat" is not in
+    _SECRET_NAME_TOKENS because it matches REL_PATH, GENERATED_TASKS_PATH and every
+    "pattern". The case still passes, but on the value prefix, and the docstring said
+    otherwise — which would send the next reader to add "pat" as a name token.
+    """
     violations = _secret_violations('github_pat: str = "ghp_pattern"')
     assert len(violations) == 1
+    # Same name, no vendor-prefixed value: not a credential, and not flagged.
+    assert _secret_violations('github_pat: str = "pattern-name"') == []
 
 
 def test_secret_pattern_case_insensitive():
@@ -246,9 +276,13 @@ def test_annotated_assignment_list_value_not_flagged():
 
 def test_annotated_assignment_subscript_target_not_flagged():
     """Annotated assignment with subscript target should NOT be flagged."""
+    # WAS: `assert isinstance(violations, list)`, which is a tautology — the helper
+    # builds a list comprehension, so it holds even if the visitor flagged this. The
+    # name says "not flagged", so assert that. `config["key"]` is a KV namespace, and
+    # bare "key" is deliberately not a secret-name token; a subscript whose key IS a
+    # credential name (config["api_key"]) is flagged, see the plain-assignment tests.
     violations = _secret_violations('config["key"]: str = "password"')
-    # Note: This is technically invalid Python, but we test the visitor doesn't crash
-    assert isinstance(violations, list)
+    assert violations == []
 
 
 def test_annotated_assignment_with_complex_annotation():

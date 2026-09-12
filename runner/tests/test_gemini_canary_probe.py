@@ -59,14 +59,42 @@ class TestProbeContract(unittest.TestCase):
         finally:
             probe.probe_gemini = original
 
-    def test_non_numeric_timeout_falls_back(self):
+    def test_a_non_numeric_timeout_is_reported_not_silently_swallowed(self):
+        """GEMINI_TIMEOUT=not-a-number is a typo, and main() now says so.
+
+        This used to assert exit 0 — main() parsed the timeout, hit ValueError,
+        fell back to the default and probed anyway. validate_environment() runs
+        first now and refuses, which is the module's stated purpose: "reporting a
+        typo'd model id or a truncated key as a PROVIDER failure is the failure
+        mode this module exists to prevent". A silently-ignored timeout is the
+        same class of thing — the operator who set it never learns it did
+        nothing. Asserting 0 here would pin the swallow.
+        """
+        os.environ["GEMINI_API_KEY"] = "A" * 40
         os.environ["GEMINI_TIMEOUT"] = "not-a-number"
+        original, probe.probe_gemini = probe.probe_gemini, lambda *a, **k: "canary"
+        try:
+            self.assertEqual(probe.main(), probe.EXIT_MISCONFIGURED)
+            problems = probe.validate_environment()
+            self.assertTrue(any("GEMINI_TIMEOUT" in p for p in problems), problems)
+        finally:
+            probe.probe_gemini = original
+            os.environ.pop("GEMINI_TIMEOUT", None)
+            os.environ.pop("GEMINI_API_KEY", None)
+
+    def test_the_timeout_parse_still_falls_back_rather_than_raising(self):
+        """The fallback is still there and still correct; it is just no longer reached
+        with garbage, because validate_environment refuses that first. Pinned so a
+        future caller that bypasses validation does not get a ValueError."""
+        os.environ["GEMINI_API_KEY"] = "A" * 40
+        os.environ["GEMINI_TIMEOUT"] = "45"
         original, probe.probe_gemini = probe.probe_gemini, lambda *a, **k: "canary"
         try:
             self.assertEqual(probe.main(), 0)
         finally:
             probe.probe_gemini = original
             os.environ.pop("GEMINI_TIMEOUT", None)
+            os.environ.pop("GEMINI_API_KEY", None)
 
 
 if __name__ == "__main__":

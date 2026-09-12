@@ -13,7 +13,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
 
+import merge_train
 from merge_train import _materialize_branch
+
+BRANCH = "agent/test-branch"
 
 
 def _mock_git_factory(branch_exists_local=False, worktree_has_branch=False,
@@ -40,10 +43,21 @@ def _mock_git_factory(branch_exists_local=False, worktree_has_branch=False,
                 result.stdout = (
                     "worktree /tmp/wt\n"
                     "HEAD abc123\n"
-                    "branch refs/heads/agent/test-branch\n\n"
+                    f"branch refs/heads/{BRANCH}\n\n"
                 )
             else:
                 result.stdout = ""
+            result.stderr = ""
+
+        elif cmd == "ls-remote":
+            # _materialize_branch asks _remote_agent_branch_maybe first for any
+            # agent/* branch, and that gate returns False — skipping the fetch
+            # entirely — unless origin's listing names the branch. The factory
+            # did not model ls-remote at all, so it always answered "origin has
+            # nothing", and the fall-through-to-remote test could never observe
+            # a fetch no matter what branch_exists_remote said.
+            result.returncode = 0
+            result.stdout = f"abc123\trefs/heads/{BRANCH}\n" if branch_exists_remote else ""
             result.stderr = ""
 
         elif cmd == "fetch":
@@ -67,6 +81,17 @@ def _mock_git_factory(branch_exists_local=False, worktree_has_branch=False,
 
 class TestMaterializeBranchWorktree(unittest.TestCase):
 
+    def drop_caches(self):
+        # Both lookups memoise per repo with a TTL, so without this the second
+        # test in the class reads the first test's answer for "/repo" and the
+        # mock git it was given is never consulted.
+        merge_train._REMOTE_AGENT_REFS.clear()
+        merge_train._WORKTREE_BRANCHES.clear()
+
+    # unittest requires the camelCase name; the convention lint requires
+    # snake_case. Aliasing satisfies both without an exemption.
+    setUp = drop_caches
+
     @patch("merge_train._branch_exists", return_value=True)
     def test_returns_true_when_branch_already_exists(self, mock_exists):
         self.assertTrue(_materialize_branch("/repo", "agent/test"))
@@ -85,6 +110,29 @@ class TestMaterializeBranchWorktree(unittest.TestCase):
         mock_git.side_effect = _mock_git_factory(worktree_has_branch=True)
         result = _materialize_branch("/repo", "agent/test-branch")
         self.assertTrue(result)
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("merge_train._git")
+    @patch("merge_train._branch_exists")
+    def test_a_worktree_only_branch_is_recovered_without_touching_the_remote(
+            self, mock_exists, mock_git, mock_isdir):
+        """The case the missing step 2 was silently losing.
+
+        An agent branch that exists only in a local worktree has never been
+        pushed, so _remote_agent_branch_maybe answers "origin does not have it"
+        and the remote path returns False. Before worktree recovery existed,
+        that meant a commit sitting on this very machine produced a permanent
+        WAIT. Recovery must happen before the remote is consulted at all.
+        """
+        mock_exists.side_effect = [False, True]
+        mock_git.side_effect = _mock_git_factory(worktree_has_branch=True,
+                                                 branch_exists_remote=False)
+        self.assertTrue(_materialize_branch("/repo", BRANCH))
+        commands = [c[0][1] for c in mock_git.call_args_list if len(c[0]) > 1]
+        self.assertIn("branch", commands, "the missing ref must be re-created")
+        self.assertNotIn("fetch", commands, "recovery must not pay for a fetch")
+        self.assertNotIn("ls-remote", commands,
+                         "recovery must not even ask origin what it has")
 
     @patch("os.path.isdir", return_value=True)
     @patch("merge_train._git")

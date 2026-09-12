@@ -6,6 +6,9 @@ CoppaConsent and constitution_check. Which one a caller got depended on which
 directory happened to be on sys.path, so an isinstance check or an enum
 comparison could fail across the seam, and hisanta/tests/* could not even be
 collected. These tests fail the moment the duplicate starts growing back.
+
+The definitions live in hisanta/contracts/family.py; the nested module is a
+re-export shim over it and carries CANONICAL_MODULE / CANONICAL_PATH.
 """
 
 import importlib
@@ -16,18 +19,30 @@ import hisanta.contracts.family as family
 
 
 def test_the_shim_points_at_the_canonical_file():
-    """hisanta/contracts/family.py must re-export, never re-declare."""
-    assert family.CANONICAL_PATH.replace("\\", "/").endswith(
+    """The nested module must re-export, never re-declare.
+
+    Which of the two files holds the definitions was itself the thing the two
+    branches disagreed about, and this assertion is what pins the answer:
+    hisanta/contracts/family.py is canonical, hisanta/hisanta/contracts/family.py
+    is the shim over it.  `hisanta/hisanta/` is a packaging accident that should
+    eventually be deleted, so canonical code must not live inside it.
+    """
+    shim = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert shim.CANONICAL_PATH.replace("\\", "/").endswith(
+        "hisanta/contracts/family.py"
+    )
+    assert not shim.CANONICAL_PATH.replace("\\", "/").endswith(
         "hisanta/hisanta/contracts/family.py"
     )
-    assert family.CANONICAL_MODULE is not None
+    assert shim.CANONICAL_MODULE is family
 
 
 def test_every_public_name_is_the_canonical_object():
-    canonical = family.CANONICAL_MODULE
-    assert family.__all__, "the shim must export something"
+    shim = importlib.import_module("hisanta.hisanta.contracts.family")
+    assert family.__all__, "the canonical module must export something"
+    assert shim.__all__ == family.__all__
     for name in family.__all__:
-        assert getattr(family, name) is getattr(canonical, name), (
+        assert getattr(shim, name) is getattr(family, name), (
             f"{name} is a SECOND definition, not the canonical one"
         )
 

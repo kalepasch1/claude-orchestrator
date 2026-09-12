@@ -35,9 +35,20 @@ FABLE  = os.environ.get("ORCH_SUPER_MODEL",       "claude-fable-5")
 # Set ORCH_SUPER_TIER_ENABLED=false to drop Fable back out of the ladder (cost control).
 SUPER_ENABLED = os.environ.get("ORCH_SUPER_TIER_ENABLED", "true").lower() != "false"
 
-MECHANICAL = re.compile(r"\b(rename|format|prettier|lint|typo|comment|import order|"
-                        r"dark mode|theme|palette|css|tailwind|copy edit|bump version|"
-                        r"changelog|docstring|whitespace|remove duplicate)\b", re.I)
+# Plurals and the common verb forms are matched explicitly. Every noun here was
+# singular-only, and `\b` makes that exact: `\bcomment\b` does not match "comments",
+# `\btypo\b` does not match "typos". "fix typos", "add comments", "rename the
+# columns" -- the ordinary way people write these chores -- all missed, so genuinely
+# mechanical work was neither routed cheaply nor picked up by batch_mechanical.
+# Under-classifying is the safe direction, which is why it went unnoticed; it is
+# still the whole rule failing on the most common spelling of its own keywords.
+# Kept as explicit suffixes rather than \w*, so "commentary" and "formatting a
+# distributed ledger" do not quietly become chores.
+MECHANICAL = re.compile(r"\b(renames?|renaming|formats?|formatting|prettier|lints?|linting|"
+                        r"typos?|comments?|import order(?:ing)?|"
+                        r"dark mode|themes?|palettes?|css|tailwind|copy edits?|"
+                        r"bump versions?|version bumps?|"
+                        r"changelogs?|docstrings?|whitespace|remove duplicates?)\b", re.I)
 HEAVY = re.compile(r"\b(architect|design|novel|security|auth|crypto|settlement|migration|"
                    r"schema|distributed|concurrency|algorithm|refactor the|rewrite|"
                    r"non-custodial|allowlist|threat model|protocol)\b", re.I)

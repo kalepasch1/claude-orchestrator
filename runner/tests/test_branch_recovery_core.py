@@ -471,7 +471,10 @@ class TestRecoveryResponseStructure(unittest.TestCase):
             "recover_unrecoverable", "recover_errors",
             "detect_calls", "detect_missing_found"
         }
-        self.assertEqual(set(result.keys()), expected_keys)
+        # SUBSET, not equality -- see test_branch_recovery_reproduce_missing for
+        # the same fix. recover_repo_unreachable, recover_archive and the four
+        # batch_* counters are all legitimate additions this assertion rejected.
+        self.assertLessEqual(expected_keys, set(result.keys()))
 
 
 if __name__ == "__main__":

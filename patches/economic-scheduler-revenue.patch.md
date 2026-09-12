@@ -12,6 +12,6 @@ Located/reconstructed 2026-08-06 per backlog-batch-beethoven-e63dfee (locate-and
 
 - **File:** `runner/economic_scheduler.py`
 - **Hunk:** 1
-- **Change:** +6 / -2
-- **Summary:** Rewrites `REVENUE_KEYWORDS` in `runner/economic_scheduler.py` (2 line(s) out, 6 in).
-- **Justification:** Intent phrases, not bare nouns: "fix stripe payment crash" is a stability task that merely mentions payments, while "payment integration"/"payment processing" work is revenue-moving. Bare "payment"/"pricing"/"stripe" over-triggered the 1.5x boost on incidental mentions (see revenue tests).
+- **Change:** +6 / -1
+- **Summary:** Rewrites `REVENUE_KEYWORDS` in `runner/economic_scheduler.py` (1 line(s) out, 6 in).
+- **Justification:** Intent phrases, not bare nouns: "fix stripe payment crash" is a stability task that merely mentions payments, while "payment integration"/"payment processing" work is revenue-moving. Bare "payment"/"pricing"/"stripe" over-triggered the 1.5x boost on incidental mentions.

@@ -145,16 +145,55 @@ class TestConcurrentAppend(SessionTestCase):
         self.assertEqual(seqs, list(range(1, 61)), "ordinals must be dense and unique")
 
     def test_the_race_actually_happened(self):
-        # If the fake never rejected an insert, the previous test proved nothing.
-        for n in range(4):
+        """The fake really does reject a duplicate ordinal — proven, not hoped for.
+
+        This used to start four threads and assert insert_conflicts > 0. The
+        intent is right: if the fake never rejects anything, the concurrency test
+        above proves nothing. But whether two of those threads actually collide is
+        up to the scheduler, and on a loaded machine they serialise — so the test
+        passed on an idle box and failed in a full-suite run, which is the one
+        environment where it needs to be trustworthy.
+
+        The constraint is asserted directly instead: hand the store two rows with
+        the same (session_id, seq) and require it to refuse the second. That is
+        the property the sibling test depends on, and it holds regardless of
+        timing.
+        """
+        row = {"session_id": self.sid, "seq": 1, "idempotency_key": "k-a",
+               "kind": "tick", "payload": {}}
+        self.store.insert(store_mod.EVENTS_TABLE, row)
+        with self.assertRaises(ValueError):
+            self.store.insert(store_mod.EVENTS_TABLE, dict(row, idempotency_key="k-b"))
+        self.assertGreater(self.store.insert_conflicts, 0,
+                           "the fake accepted a duplicate ordinal; the concurrency "
+                           "test above would be vacuous")
+        # The duplicate idempotency key is the other half of the same guarantee.
+        with self.assertRaises(ValueError):
+            self.store.insert(store_mod.EVENTS_TABLE, dict(row, seq=2))
+
+    def test_contention_is_observed_when_the_scheduler_allows_it(self):
+        """Best-effort observation of real interleaving. Never the only evidence.
+
+        Kept because seeing genuine contention is worth something, but it cannot
+        be asserted: four threads on a busy machine may run one after another and
+        collide zero times. The deterministic guarantee lives in the test above.
+        """
+        threads = [
             threading.Thread(target=lambda n=n: [
                 store_mod.append_event(self.sid, "tick", {"w": n, "i": i},
-                                       store=self.store) for i in range(8)]).start()
-        for t in threading.enumerate():
-            if t is not threading.current_thread() and t.is_alive() and not t.daemon:
-                t.join(timeout=10)
-        self.assertGreater(self.store.insert_conflicts, 0,
-                           "no contention occurred; the concurrency test is vacuous")
+                                       store=self.store) for i in range(8)])
+            for n in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+            self.assertFalse(t.is_alive(), "an appender thread never finished")
+
+        events = self.store.tables[store_mod.EVENTS_TABLE]
+        self.assertEqual(len(events), 32, "an event was lost or duplicated")
+        self.assertEqual(sorted(e["seq"] for e in events), list(range(1, 33)),
+                         "ordinals must be dense and unique whether or not threads raced")
 
 
 class TestDuplicateDelivery(SessionTestCase):

@@ -149,6 +149,80 @@ def suggest_config_changes():
     return suggestions
 
 
+def query_history(records, start=None, end=None, config_key=None):
+    """Historical config records filtered by date range and config key.
+
+    `analyze_config_history()` answers "did this one change help?" one row at a
+    time. Answering "which knob actually tracks queue depth?" needs the SERIES,
+    so this is the read side: an inclusive [start, end] window over
+    `created_at`, optionally narrowed to a single config key.
+
+    Records are passed in rather than fetched so the caller owns the source —
+    the live audit trail, or a synthetic set under test. Fail-soft: an
+    unparseable timestamp drops that record instead of raising.
+    """
+    out = []
+    for row in records or []:
+        if config_key is not None and row.get("key") != config_key:
+            continue
+        ts = _parse_ts(row.get("created_at"))
+        if ts is None:
+            continue
+        if start is not None and ts < _parse_ts(start):
+            continue
+        if end is not None and ts > _parse_ts(end):
+            continue
+        out.append(row)
+    out.sort(key=lambda r: _parse_ts(r.get("created_at")))
+    return out
+
+
+def _parse_ts(value):
+    """ISO-8601 to datetime, tolerating a trailing Z and a missing time part."""
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
+def correlate(records, param, metric="queue_depth"):
+    """Pearson r between a config parameter and an observed metric.
+
+    Returns {'r', 'n', 'param', 'metric'} with r=None when it is undefined —
+    fewer than two usable pairs, or one side constant (zero variance), where a
+    coefficient would be a divide-by-zero rather than "no relationship". Callers
+    gate on a threshold, so a fabricated 0.0 there would read as a real finding.
+
+    Deliberately dependency-free: numpy/scipy are not runner dependencies and
+    one correlation does not justify adding them.
+    """
+    xs, ys = [], []
+    for row in records or []:
+        x, y = row.get(param), row.get(metric)
+        if x is None or y is None:
+            continue
+        try:
+            xs.append(float(x))
+            ys.append(float(y))
+        except (TypeError, ValueError):
+            continue
+    n = len(xs)
+    if n < 2:
+        return {"r": None, "n": n, "param": param, "metric": metric}
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(xs, ys))
+    sxx = sum((a - mx) ** 2 for a in xs)
+    syy = sum((b - my) ** 2 for b in ys)
+    if sxx <= 0 or syy <= 0:
+        return {"r": None, "n": n, "param": param, "metric": metric}
+    return {"r": sxy / ((sxx ** 0.5) * (syy ** 0.5)), "n": n,
+            "param": param, "metric": metric}
+
+
 def stats():
     """Return optimizer summary."""
     return {

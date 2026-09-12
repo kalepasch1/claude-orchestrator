@@ -10,6 +10,8 @@ real package build) with a timeout. Returns (ok, log). Auto-detects build_cmd an
 """
 import fnmatch, os, sys, json, subprocess, tempfile, shutil, shlex
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import build_slots       # bound how many production builds run at once
+import gate_env          # node on PATH for every gate that shells out
 import db
 import dependency_prewarm
 
@@ -206,9 +208,31 @@ def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
     try:
         with commit_overlay.checkout(repo, branch, prefix="build-overlay-") as overlay:
             tmp = overlay["path"]
-            dependency_prewarm.link_shared_runtime(repo, tmp)
+            # share_generated=False: a production build regenerates .nuxt itself.
+            # Linking the checkout's copy in pointed this build at a DEV-mode
+            # .nuxt (app.config.mjs carries `import.meta.hot`) and postcss died
+            # on it — a red that says nothing about the commit, and the reason
+            # no production proof could be earned from this path.
+            dependency_prewarm.link_shared_runtime(repo, tmp, share_generated=False)
             removed = _apply_vercelignore(tmp, overlay["files"]) if vercel_context else []
-            r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True, text=True, timeout=timeout)
+            # Same shell problem as the test gate: `bash -lc` sources ~/.bash_profile, but
+            # nvm is initialised in ~/.zshrc on this host, so a login bash never sees node.
+            #
+            # This used to `import merge_train` to borrow its _gate_env, falling back to
+            # env=None on any exception -- i.e. silently back to the broken environment,
+            # for a reason as ordinary as an import cycle. gate_env.py exists so no gate
+            # has to reach into another gate's module for its own PATH.
+            # BOUND THE BUILD, NOT THE VERDICT. Nothing limited how many production
+            # builds ran at once: merge_train runs 4 project workers in one process and
+            # build_daemon/release_train build from their own. Measured on this host,
+            # four concurrent `nuxt build`s held 16.1 GB RSS on a 48 GB machine whose
+            # swap was already 94% used, one of them with a 16 GB heap ceiling of its
+            # own -- which is where the v8::OOMDetails crash in the merge-train log came
+            # from, recorded as if the candidate's tests had failed. See build_slots.
+            with build_slots.hold("build_gate %s" % os.path.basename(str(repo)),
+                                  log=lambda m: print(m, flush=True)):
+                r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True,
+                                   text=True, timeout=timeout, env=gate_env.gate_env())
             ok = r.returncode == 0
             context = (f"overlay {overlay['commit'][:12]}; Vercel context removed "
                        f"{len(removed)} tracked file(s)")

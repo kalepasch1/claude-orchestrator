@@ -2,6 +2,7 @@
 processes, DB, or ollama touched."""
 import json
 import os
+import time
 import sys
 import tempfile
 import unittest
@@ -36,7 +37,7 @@ class MemoryGuardTest(unittest.TestCase):
             st = {}
             rm.memory_guard(st)
             gov.set_throttle.assert_called()  # clamped
-            self.assertEqual(st["mem_warn_streak"], 1)
+            self.assertEqual(len(st["mem_episodes"]), 1)
 
     def test_critical_reaps_agent(self):
         gov = MagicMock(); gov.current_limit.return_value = 4
@@ -53,11 +54,18 @@ class MemoryGuardTest(unittest.TestCase):
              patch.dict(os.environ, {"MAX_PARALLEL": "10"}), \
              patch.object(rm, "_set_fleet_config", return_value=True) as setcfg, \
              patch.object(rm, "_escalate") as esc:
-            st = {"mem_warn_streak": 4}
-            rm.memory_guard(st)  # streak hits 5
+            # Four episodes already on the record inside the window; this one is the
+            # fifth. Seeded as timestamps rather than a count because the counter this
+            # replaced could never reach five -- unloading a 16 GB model recovers free%,
+            # which reset the old consecutive-cycle streak to zero every time. The
+            # journal showed 15 unloads between 2026-09-06 and 09-08 and zero durable
+            # fixes.
+            recent = time.time()
+            st = {"mem_episodes": [recent - 60, recent - 50, recent - 40, recent - 30]}
+            rm.memory_guard(st)  # fifth episode in the window
             setcfg.assert_any_call("MAX_PARALLEL", 8)
             esc.assert_called()
-            self.assertEqual(st["mem_warn_streak"], 0)  # reset after durable fix
+            self.assertEqual(st["mem_episodes"], [])  # cleared after the durable fix
 
 
 class ThrashHunterTest(unittest.TestCase):

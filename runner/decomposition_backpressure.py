@@ -62,10 +62,13 @@ def _update_peak_runners(current_running):
     try:
         current_peak = _get_peak_runner_count()
         if current_running > current_peak:
-            db.insert("fleet_config", {
+            # No on_conflict=/merge_patch= keywords exist on db.insert; this
+            # raised TypeError, so the peak was never recorded and the
+            # backpressure ceiling below it was computed from a stale floor.
+            db.upsert("fleet_config", {
                 "key": "peak_runner_count",
                 "value": str(current_running),
-            }, on_conflict="key", merge_patch={"value": "EXCLUDED.value"})
+            })
     except Exception:
         pass
 
@@ -119,10 +122,10 @@ def gate(task=None, project_id=None):
     if not allowed:
         try:
             # Log the backpressure event for observability
-            db.insert("fleet_config", {
+            db.upsert("fleet_config", {
                 "key": f"decompose_backpressure:{int(time.time())}",
                 "value": reason[:500],
-            }, on_conflict="key", merge_patch={"value": "EXCLUDED.value"})
+            })
         except Exception:
             pass
     return allowed

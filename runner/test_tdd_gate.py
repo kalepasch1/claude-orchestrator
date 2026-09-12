@@ -187,15 +187,42 @@ def test_edge_cases():
         self.assertEqual(test_names, {"test_main", "test_edge_cases"})
 
     def test_parse_acceptance_criteria_no_marker(self):
-        """Docstring without marker is still captured."""
+        """A docstring WITHOUT the marker is not an acceptance criterion.
+
+        REVERSED. This asserted the opposite — that "Just a simple test." should
+        come back as a criterion — and it was directly contradicted by
+        runner/tests/test_tdd_gate.py::test_ignores_non_criterion_docstrings,
+        which passes. Two files asserting opposite contracts for one function;
+        the marker-only reading is the one the code implements and the one that
+        means anything, since an acceptance criterion is a deliberate
+        declaration rather than any sentence sitting under a def.
+
+        The confusion came from parse_acceptance_criteria's own docstring, which
+        claimed "Each test docstring IS the acceptance criterion". That line has
+        been corrected.
+        """
         code = '''
 def test_simple():
     """Just a simple test."""
     assert True
 '''
         criteria = tdd_gate.parse_acceptance_criteria(code)
-        self.assertEqual(len(criteria), 1)
-        self.assertEqual(criteria[0]["criterion"], "Just a simple test.")
+        self.assertEqual(criteria, [])
+
+    def test_marked_and_unmarked_docstrings_in_one_file(self):
+        """The discriminating case: only the marked one is collected."""
+        code = '''
+def test_marked():
+    """[ACCEPTANCE CRITERION]: Must survive a cold start."""
+    assert True
+
+def test_unmarked():
+    """Just a simple test."""
+    assert True
+'''
+        criteria = tdd_gate.parse_acceptance_criteria(code)
+        self.assertEqual([c["test_name"] for c in criteria], ["test_marked"])
+        self.assertEqual(criteria[0]["criterion"], "Must survive a cold start.")
 
     def test_parse_acceptance_criteria_no_tests(self):
         """No tests returns empty list."""

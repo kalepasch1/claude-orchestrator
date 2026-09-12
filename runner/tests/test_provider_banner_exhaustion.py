@@ -158,6 +158,40 @@ class TestUnrelatedErrorsStillClassify(unittest.TestCase):
             "import_error")
 
 
+class TestResetIsNotAlwaysAQuotaReset(unittest.TestCase):
+    """"reset" is an ordinary English word and most uses are not billing.
+
+    The shape written to catch "limit · resets Aug 25 at 11pm" was
+    `\\bresets?\\s+\\S+` — the word followed by anything at all. That also
+    matches "ConnectionResetError: [Errno 54] reset by peer", the single most
+    ordinary failure a network client sees. While only provider_banner read the
+    pattern the over-match was invisible; wiring error_taxonomy through it on
+    2026-08-24 turned it into a DEMOTION, evicting a healthy provider from the
+    rotation because one socket dropped.
+    """
+
+    def test_a_dropped_socket_is_not_exhaustion(self):
+        self.assertIsNone(pb.classify(
+            "ConnectionResetError: [Errno 54] reset by peer"))
+
+    def test_a_password_reset_is_not_exhaustion(self):
+        self.assertIsNone(pb.classify("password reset link sent"))
+
+    def test_a_reset_naming_a_date_still_is(self):
+        self.assertEqual(pb.classify("resets Aug 25 at 11pm"), "exhausted")
+
+    def test_a_reset_naming_a_clock_time_still_is(self):
+        self.assertEqual(pb.classify("limit reached - resets 3pm"), "exhausted")
+
+    def test_a_relative_reset_still_is(self):
+        self.assertEqual(pb.classify("quota resets in 2 hours"), "exhausted")
+        self.assertEqual(pb.classify("usage limit reached, resets tomorrow"),
+                         "exhausted")
+
+    def test_the_real_claude_banner_is_unaffected(self):
+        self.assertEqual(pb.classify(CLAUDE_WEEKLY), "exhausted")
+
+
 class TestWrapperStripping(unittest.TestCase):
     """The mechanism of the fix."""
 

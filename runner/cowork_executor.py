@@ -34,6 +34,7 @@ if os.path.isfile(_env_path):
 os.environ.pop("NODE_ENV", None)  # prevent npm devDeps omission
 
 import db
+import worktree_identity
 
 ACCOUNT = f"cowork-executor-{socket.gethostname()}-{os.getpid()}"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
@@ -216,6 +217,12 @@ def execute_task(task):
         subprocess.run(["git", "worktree", "add", "-B", branch, wt_dir, base],
                        cwd=repo, capture_output=True, text=True, timeout=60, check=True)
         wt_path = wt_dir
+        # Record which task this serves. The directory is named for the slug today,
+        # but slugs get shortened when they are long and then the path no longer
+        # proves ownership — which is how the reconciler came to classify a
+        # RUNNING task's worktree as recoverable. Advisory: a failed stamp does
+        # not fail the worktree.
+        worktree_identity.stamp(wt_path, slug, branch=branch, repo=repo)
         print(f"[worktree] created at {wt_path}")
     except Exception as e:
         print(f"[worktree] creation failed ({e}), using repo root")

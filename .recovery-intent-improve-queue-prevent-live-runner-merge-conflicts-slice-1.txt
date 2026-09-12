@@ -1,4 +1,0 @@
-recovery-intent: improve-queue-prevent-live-runner-merge-conflicts-slice-1
-template: 35d5e813aa07
-intent: 07130635 07190257 20251001 77cb48215a1f 9d0155 aaac4e acceptance active adapt adapted adding advice affected after agentic allowed already analysis anything artifacts atomically attempt author automated avoid batch beethoven before behavior below bf0ed633a9c6 blocked blocker build c1486760bb7d check claim class claud coder conflicts contract conventions deepseek deployfix diffs directories drafting excerpt existing exists files first flash focus function gemini google helpers implementation improve instead intent leader library limit limiting local locate matched matching merge mergeable merged module naming narrowest native ollama orchestration
-base: master

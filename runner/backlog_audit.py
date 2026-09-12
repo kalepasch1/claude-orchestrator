@@ -99,22 +99,56 @@ def hex_ratio(text):
         return 0.0
 
 
+#: Markers that begin a real, operator/consolidator-authored body. Everything before the
+#: first one is generated preamble, and everything a consolidated batch quotes from the
+#: stubs it collapsed is history, not the task's own intent.
+_BODY_MARKERS = (
+    "## ORCHESTRATION PIPELINE CONTRACT",
+    "# Original improvement request",
+    "## TASK",
+    "## OBJECTIVE",
+)
+
+#: A template header this far into a long body is quoted evidence (a consolidated batch
+#: listing the stubs it replaced), not the prompt's own header. Mirrors the same rule in
+#: preflight_filter.py / parallel_dispatch.py — keep the three in sync.
+_HEADER_NEAR_TOP_CHARS = 120
+_SHORT_BODY_CHARS = 500
+
+
+def _own_body(prompt):
+    """The part of the prompt that states THIS task's intent, minus quoted history."""
+    text = str(prompt or "")
+    for marker in _BODY_MARKERS:
+        idx = text.find(marker)
+        if idx >= 0:
+            return text[idx:]
+    return text
+
+
 def is_collapsed(prompt):
     """True when this prompt is a generated stub rather than a stated intent.
 
     Two independent signals, either sufficient:
-      * the `PATCH TEMPLATE <hex>` header or `[patch-template:<hex>]` tag is present, or
+      * a `PATCH TEMPLATE <hex>` header / `[patch-template:<hex>]` tag that is THIS
+        prompt's own header — near the top, or in a body too short to be anything else, or
       * the Intent line is mostly hex tokens, which is the collapse itself.
 
     A prompt that merely *mentions* a sha is not collapsed — that is why the ratio, not a
-    substring match, decides the second case.
+    substring match, decides the second case. Likewise a consolidated backlog batch that
+    QUOTES the stubs it replaced is not itself collapsed: it carries a real English
+    directive. Counting those as collapsed is what made the recovery loop re-recover its
+    own output every cycle, which is the churn this audit exists to end.
     """
     text = str(prompt or "")
     if not text.strip():
         return False
-    if _TEMPLATE_HEADER.search(text) or _TEMPLATE_TAG.search(text):
+    body = _own_body(text)
+    match = _TEMPLATE_HEADER.search(body) or _TEMPLATE_TAG.search(body)
+    if match and (match.start() < _HEADER_NEAR_TOP_CHARS
+                  or len(body.strip()) < _SHORT_BODY_CHARS):
         return True
-    match = _INTENT_LINE.search(text)
+    match = _INTENT_LINE.search(body)
     return bool(match) and hex_ratio(match.group(1)) >= HEX_RATIO_COLLAPSED
 
 

@@ -62,3 +62,46 @@ class TestRedactSecrets(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- the two ways a GitHub credential was still getting through ----------------
+
+
+def test_a_bare_github_token_is_redacted_without_a_key_name():
+    """The shape a PAT actually has when it leaks.
+
+    Redaction used to require either a `token=` style key name or 20+ characters
+    after the prefix. A PAT does not arrive that way: it arrives inside git's own
+    error output, bare and often truncated. `ghp_` and its siblings cannot be
+    anything but a GitHub credential, so a short one is still a credential.
+    """
+    from db import redact_secrets
+
+    for token in ("ghp_error_token_123", "gho_shortish_one", "ghs_abcdefgh",
+                  "github_pat_11ABCDEFG0abcdefghij"):
+        assert token not in redact_secrets(token), token
+        assert "[REDACTED]" in redact_secrets(token), token
+
+
+def test_the_fleets_own_pat_variable_name_is_redacted():
+    """ORCH_GIT_PAT is where THIS fleet keeps its GitHub credential.
+
+    `pat` was not among the key names the generic key=value pattern knew, so
+    `ORCH_GIT_PAT=<secret>` passed through untouched while `token=<same secret>`
+    was caught — the redactor was blind to the one spelling this repo uses.
+    """
+    from db import redact_secrets
+
+    redacted = redact_secrets("ORCH_GIT_PAT=ghp_a_real_looking_secret_value")
+    assert "ghp_a_real_looking_secret_value" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_ordinary_prose_is_not_redacted():
+    """The floor may not drop so far that documentation trips it."""
+    from db import redact_secrets
+
+    for benign in ("the ghp_ prefix identifies a GitHub token",
+                   "rotate the token and the password after an incident",
+                   "see docs/credentials.md for the pat rotation runbook"):
+        assert redact_secrets(benign) == benign, benign

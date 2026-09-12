@@ -19,12 +19,37 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 WINDOW = int(os.environ.get("GOV_WINDOW", "300"))
+# The comparison window, in DAYS. `WINDOW` alone is a row cap, and a row cap is not a
+# window: it made every project's sample cover a different span of time. A busy app's
+# most recent 300 outcomes might be two days of work while a quiet app's are six months,
+# and `plan()` then ranks those success rates and costs against each other and hands out
+# fleet capacity on the result. Scoring an app on six-month-old work while its rival is
+# scored on this week is not a comparison. Same days for everyone; the row cap stays as a
+# safety valve on how much is pulled, and now says so when it binds.
+WINDOW_DAYS = int(os.environ.get("GOV_WINDOW_DAYS", "14"))
+MIN_SAMPLES = int(os.environ.get("GOV_MIN_SAMPLES", "10"))
 EPS = 0.25
 
 
-def _project_stats(name):
+def _window_start(now=None):
+    """ISO timestamp WINDOW_DAYS before now. Injectable so tests do not depend on the clock."""
+    import datetime
+    now = now or datetime.datetime.utcnow()
+    return (now - datetime.timedelta(days=WINDOW_DAYS)).isoformat()
+
+
+def _project_stats(name, since=None):
+    """Recent success rate and cost-per-merge for one project, over a FIXED time window.
+
+    Returns None when the project has no outcomes in the window — deliberately, rather than
+    reaching further back to manufacture a sample. A number computed over a different period
+    than every other project's is not comparable to them, and this feeds a ranking.
+    """
+    since = since or _window_start()
     rows = db.select("outcomes", {"select": "integrated,usd",
-                                  "project": f"eq.{name}", "order": "created_at.desc",
+                                  "project": f"eq.{name}",
+                                  "created_at": f"gte.{since}",
+                                  "order": "created_at.desc",
                                   "limit": str(WINDOW)}) or []
     if not rows:
         return None
@@ -33,7 +58,12 @@ def _project_stats(name):
     spend = sum(float(r.get("usd") or 0) for r in rows)
     success = merges / n
     cpm = (spend / merges) if merges else (spend if spend else EPS)
-    return {"n": n, "success": round(success, 3), "cost_per_merge": round(cpm, 4)}
+    return {"n": n, "success": round(success, 3), "cost_per_merge": round(cpm, 4),
+            "window_days": WINDOW_DAYS,
+            # True when the row cap bound inside the window, so the sample is the newest
+            # slice of a busier period rather than the whole window. Reported instead of
+            # silently truncated: the caller is ranking on this.
+            "truncated": n >= WINDOW}
 
 
 def _value_weight(name):
@@ -78,14 +108,25 @@ def _behind_merge_slo(name):
 
 def plan():
     projs = db.select("projects", {"select": "id,name,concurrency_weight,auto_merge"}) or []
-    scored = []
+    # One cutoff for the whole pass. Calling _window_start() per project would drift the
+    # boundary across a slow run, so the projects being ranked against each other would
+    # again be measured over slightly different periods.
+    since = _window_start()
+    scored, thin = [], []
     for p in projs:
-        st = _project_stats(p["name"])
-        if not st or st["n"] < 10:
+        st = _project_stats(p["name"], since=since)
+        if not st or st["n"] < MIN_SAMPLES:
+            # Not scored, so its weight is left alone. Named rather than skipped in silence:
+            # "this app was not allocated on evidence" is a fact worth seeing.
+            thin.append((p["name"], (st or {}).get("n", 0)))
             continue
         ev = _value_weight(p["name"]) * (st["success"] + 0.05) / (st["cost_per_merge"] + EPS)
         scored.append({"id": p["id"], "name": p["name"], "ev": ev, "stats": st,
                        "cur_weight": p.get("concurrency_weight") or 1})
+    if thin:
+        print(f"governor: {len(thin)} project(s) not scored — under {MIN_SAMPLES} outcomes in the "
+              f"last {WINDOW_DAYS}d, weight unchanged: "
+              + ", ".join(f"{n}({c})" for n, c in sorted(thin)))
     if not scored:
         return []
     evs = sorted(s["ev"] for s in scored)
@@ -109,10 +150,13 @@ def run(apply=True):
             if apply:
                 db.update("projects", {"id": s["id"]}, {"concurrency_weight": s["new_weight"]})
             changed += 1
+        cap = " [row-cap bound]" if s["stats"].get("truncated") else ""
         print(f"governor: {s['name']:22s} EV={s['ev']:.3f} success={s['stats']['success']} "
-              f"cpm=${s['stats']['cost_per_merge']} weight {s['cur_weight']}->{s['new_weight']}")
+              f"cpm=${s['stats']['cost_per_merge']} n={s['stats']['n']}/{s['stats']['window_days']}d"
+              f"{cap} weight {s['cur_weight']}->{s['new_weight']}")
     if not scored:
-        print("governor: not enough outcome signal yet")
+        print(f"governor: not enough outcome signal yet (need {MIN_SAMPLES}+ outcomes in "
+              f"{WINDOW_DAYS}d for at least one project)")
     return changed
 
 

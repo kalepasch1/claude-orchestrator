@@ -335,8 +335,19 @@ class TestPreflightTriagePhase:
             "all_checks_critical": True
         }
 
-        # All security checks pass
-        assert all(v for k, v in security_checks.items())
+        # This was `assert all(v for k, v in security_checks.items())` against a dict
+        # that deliberately contains "encryption_required": False, so it asserted a
+        # contradiction and could not pass however the triage behaved. The point of
+        # the fixture is that triage marks SOME checks mandatory and some not; an
+        # all-True assertion erases the only distinction it encodes.
+        mandatory = ("input_validation_required", "credential_handling_required",
+                     "audit_logging_required")
+        for check in mandatory:
+            assert security_checks[check] is True, check
+        assert security_checks["encryption_required"] is False, (
+            "encryption is explicitly NOT required for this task class -- that is the "
+            "case this fixture exists to cover")
+        assert security_checks["all_checks_critical"] is True
 
 
 class TestStrategyPlanningPhase:

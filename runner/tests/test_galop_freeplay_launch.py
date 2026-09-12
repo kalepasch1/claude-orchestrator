@@ -325,10 +325,15 @@ class TestContestAndLeaderboardLoop:
     def test_contest_close_and_settle(self):
         """Test contest closing and settlement process."""
         contest_id = "contest_freeplay_005"
+        # end_time is stored as an ISO STRING, which is what the settlement path
+        # below parses and what a contest row actually holds. It used to be a
+        # datetime object, so datetime.fromisoformat(...) raised
+        # "argument must be str" before the branch could be taken and the test
+        # could never reach either assertion.
         contest_state = {
             "contest_id": contest_id,
             "status": "active",
-            "end_time": datetime.now() - timedelta(hours=1)
+            "end_time": (datetime.now() - timedelta(hours=1)).isoformat()
         }
 
         # Close and settle
@@ -574,9 +579,14 @@ class TestGracefulDegradation:
 
     def test_degradation_cached_data_freshness_check(self):
         """Test that cached/delayed data freshness is checked."""
+        # One clock reading for both fields. Calling datetime.now() twice put a few
+        # hundred nanoseconds between them, so the age came out as
+        # 15.000000166666666 and `== 15` could never hold. Deriving both from a
+        # single `now` makes the arithmetic exact and the assertion meaningful.
+        now = datetime.now()
         cached_data = {
-            "fetch_time": datetime.now() - timedelta(minutes=15),
-            "current_time": datetime.now(),
+            "fetch_time": now - timedelta(minutes=15),
+            "current_time": now,
             "max_age_minutes": 30
         }
 

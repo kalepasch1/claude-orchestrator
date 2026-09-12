@@ -23,15 +23,40 @@ MIN_PARALLEL = int(os.environ.get("ORCH_MIN_PARALLEL", "1"))
 MAX_PARALLEL = int(os.environ.get("ORCH_MAX_PARALLEL", "8"))
 
 
-def _recent_queue_stats():
-    """Return (queued, running, done_last_window) from the tasks table."""
+def _state_count(state, since=None):
+    """Rows in `tasks` with this state, optionally updated since `since`. 0 on error.
+
+    db.count() asks PostgREST for an exact count without downloading the rows,
+    which is what the SQL these functions used to send was for.
+    """
+    params = {"state": f"eq.{state}"}
+    if since:
+        params["updated_at"] = f"gte.{since}"
     try:
-        rows = db.query(
-            "SELECT state, count(*) as cnt FROM tasks GROUP BY state"
-        ) or []
+        return int(db.count("tasks", params) or 0)
     except Exception:
-        rows = []
-    counts = {r["state"]: int(r["cnt"]) for r in rows}
+        return 0
+
+
+def _recent_queue_stats():
+    """Return (queued, running, done_last_window) from the tasks table.
+
+    THESE NUMBERS WERE ALWAYS ZERO. The body was
+
+        rows = db.query("SELECT state, count(*) as cnt FROM tasks GROUP BY state")
+
+    inside a bare `except Exception: rows = []`. db has never had a `query`
+    function -- it speaks PostgREST, and there has never been a raw-SQL channel
+    on it -- so every call raised AttributeError and the handler swallowed it.
+    recommend() therefore saw pressure 0 and throughput 0 on every invocation,
+    whatever the queue actually held, and returned the idle branch every time:
+    poll_interval_s = MAX_POLL_S, max_parallel = MIN_PARALLEL. A meta-optimizer
+    that always recommends the slowest cadence is worse than none, because
+    apply() writes it to fleet_config as though it were a measurement.
+    """
+    counts = {}
+    for state in ("QUEUED", "RUNNING", "DEPLOYED_AND_VERIFIED"):
+        counts[state] = _state_count(state)
     queued = counts.get("QUEUED", 0)
     running = counts.get("RUNNING", 0)
     # REWARD HYGIENE (2026-08-04): DONE+MERGED counted as "done", but ~96% of MERGED rows
@@ -41,26 +66,37 @@ def _recent_queue_stats():
     return queued, running, done
 
 
+def _merged_since(cutoff):
+    """MERGED task rows updated since `cutoff`, with their artifact_commit. [] on error."""
+    try:
+        return db.select_all("tasks", {
+            "select": "id,artifact_commit",
+            "state": "eq.MERGED",
+            "updated_at": f"gte.{cutoff}",
+        }) or []
+    except Exception:
+        return []
+
+
 def _throughput_last_window():
     """Verified deliveries in the last WINDOW_H hours.
 
     REWARD HYGIENE (2026-08-04): previously counted DONE+MERGED, i.e. self-reported
     throughput. Now DEPLOYED_AND_VERIFIED counts fully, and MERGED counts 0.5 only when
-    it carries a real artifact_commit (evidence of an integrated sha)."""
+    it carries a real artifact_commit (evidence of an integrated sha).
+
+    Same defect as _recent_queue_stats: this sent raw SQL through db.query(),
+    which does not exist, so it returned 0 unconditionally. The two counts are
+    now two PostgREST reads. The MERGED half must still be filtered on
+    "artifact_commit is a non-empty string", which PostgREST cannot express as a
+    single operator, so those rows are read and filtered here -- bounded by the
+    window, and MERGED-with-evidence is the small set by construction.
+    """
     cutoff = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
-    try:
-        rows = db.query(
-            f"SELECT count(*) FILTER (WHERE state = 'DEPLOYED_AND_VERIFIED') AS verified, "
-            f"count(*) FILTER (WHERE state = 'MERGED' AND coalesce(artifact_commit,'') <> '') AS merged_ev "
-            f"FROM tasks WHERE updated_at >= '{cutoff}'"
-        ) or []
-        if not rows:
-            return 0
-        verified = int(rows[0].get("verified") or 0)
-        merged_ev = int(rows[0].get("merged_ev") or 0)
-        return int(verified + 0.5 * merged_ev)
-    except Exception:
-        return 0
+    verified = _state_count("DEPLOYED_AND_VERIFIED", since=cutoff)
+    merged = _merged_since(cutoff)
+    merged_ev = sum(1 for r in merged if str(r.get("artifact_commit") or "").strip())
+    return int(verified + 0.5 * merged_ev)
 
 
 def recommend():

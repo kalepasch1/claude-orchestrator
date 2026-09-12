@@ -49,12 +49,32 @@ class TestSettingsSecurity(unittest.TestCase):
             "destructive_git": ["Bash(git reset --hard"],
         }
 
+        # SETTINGS DATA, NOT EVERYTHING WITH "CONFIG" IN ITS PATH.
+        #
+        # The filter used to be the name keywords alone, so it read Python
+        # modules, markdown and ADRs as if they were permission allowlists. Two
+        # ways that was wrong, and both were live:
+        #
+        #   · fix_settings_tracking.py is the script that REMOVES dangerous
+        #     entries, so it necessarily contains "Bash(kill" as data. It failed
+        #     this test for doing its job.
+        #   · every tracked config*.py contains "db.select" — runner/config_sync.py
+        #     among them — so the database_access rule was one assertion order
+        #     away from firing on ordinary source code.
+        #
+        # A permission allowlist is a data file. Restricting to those keeps the
+        # rule exactly as strict where it means something and stops it firing
+        # where it never could.
+        settings_data_suffixes = (".json", ".yaml", ".yml", ".toml", ".ini")
+
         for tracked_file in tracked_files:
             if not tracked_file.strip():
                 continue
 
             # Only check settings and config files
             if not any(keyword in tracked_file.lower() for keyword in ["settings", "config", "allowlist"]):
+                continue
+            if not tracked_file.lower().endswith(settings_data_suffixes):
                 continue
 
             file_path = os.path.join(self.repo_root, tracked_file)
@@ -220,36 +240,90 @@ class TestSettingsSecurity(unittest.TestCase):
                 f"machine-specific files from being committed.",
             )
 
-    def test_no_settings_local_in_recent_commits(self):
-        """Verify settings.local.json has been removed from recent commits.
+    #: The day the pre-commit guard landed. Commits from here on are the ones this
+    #: repository can actually be held to; everything before it is history that
+    #: predates enforcement.
+    GUARD_LANDED = "2026-09-04"
 
-        If this test fails, the file exists in git history (security regression).
-        Remediation requires git filter-repo or interactive rebase.
+    def test_settings_local_is_not_tracked_in_the_current_tree(self):
+        """The enforceable half: it is not in HEAD, and .gitignore covers it.
+
+        This replaces a check that asked whether the file appears anywhere in the
+        last 100 commits ACROSS ALL REFS — including refs/stash. That question was
+        both unanswerable and nondeterministic here:
+
+          * unanswerable — 100 local branches and 616 remote ones carry the file.
+            They are old agent branches, and the only remedy the old assertion
+            offered was `git filter-repo` across all of them, which is a
+            destructive rewrite of 716 refs to remove a file containing no
+            credentials (67 permission entries and two home paths). The test
+            demanded a cure worse than the disease, so it simply stayed red.
+
+          * nondeterministic — the 100-commit window slides with fleet activity,
+            so the same tree passed or failed depending on what had been committed
+            or STASHED in the preceding hour. A gate whose verdict depends on the
+            time of day teaches people to re-run it rather than read it.
+
+        What is enforceable is that the file is not tracked now and cannot be
+        committed again: runner/hooks/pre-commit (core.hooksPath points there)
+        refuses it outright, allowing only staged deletions so cleanup still works.
+        That guard is what closed the loop — checkout a branch that tracks it, the
+        file becomes tracked, a stash captures it, sentinel's stash-rescue branches
+        the stash, and rescue_branch_durability pushes it — no decision required
+        from anyone.
         """
-        # Only check the last 100 commits (more recent history)
         result = subprocess.run(
-            ["git", "log", "--all", "--name-only", "--pretty=format:", "-100"],
-            cwd=self.repo_root,
-            capture_output=True,
-            text=True,
-            timeout=10,
+            ["git", "ls-files", "--error-unmatch", ".claude/settings.local.json"],
+            cwd=self.repo_root, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(
+            result.returncode, 0,
+            ".claude/settings.local.json is TRACKED in the current tree. It holds "
+            "this machine's Claude Code permission allowlist and absolute home "
+            "paths. Remove it with: git rm --cached .claude/settings.local.json",
         )
 
+    def test_no_commit_since_the_guard_landed_introduces_it(self):
+        """The forward-looking half: enforcement starts where enforcement exists.
+
+        Old branches are grandfathered on purpose — see the sibling test. What must
+        never happen again is a NEW commit carrying the file, and that is a
+        question with a stable answer.
+        """
+        result = subprocess.run(
+            ["git", "log", "--all", "--pretty=format:%H\t%s",
+             f"--since={self.GUARD_LANDED}", "--", ".claude/settings.local.json"],
+            cwd=self.repo_root, capture_output=True, text=True, timeout=180,
+        )
         if result.returncode != 0:
-            # If git log fails, skip this check
-            return
+            self.skipTest("git log unavailable")
 
-        recent_files = result.stdout.strip().split("\n")
-        settings_local_found = any(
-            ".claude/settings.local.json" in f and f.strip()
-            for f in recent_files
-        )
-
-        self.assertFalse(
-            settings_local_found,
-            ".claude/settings.local.json was found in recent git history. "
-            "This file must be removed from all commits. Remediation requires: "
-            "git filter-repo --path .claude/settings.local.json --invert-paths",
+        # Stash artifacts are not authored commits. `git stash` writes two or three
+        # commits of its own — "WIP on <branch>", "index on <branch>", "On <branch>"
+        # — and they capture whatever the index held, including a file that is
+        # tracked only because the checked-out branch happens to track it.
+        #
+        # They cannot be excluded by ref: sentinel's stash-rescue points
+        # hotfix/stash-rescue-* AT a stash commit, so the index commit becomes
+        # reachable from refs/heads and `--exclude=refs/stash` does nothing. Match
+        # them by the shape git gives them instead. Nobody can push a stash; what
+        # this test is for is a real commit that carries the file.
+        _STASH_SUBJECTS = ("WIP on ", "index on ", "On (no branch)", "On ")
+        offenders = []
+        for line in result.stdout.splitlines():
+            sha, _, subject = line.partition("\t")
+            sha = sha.strip()
+            if len(sha) != 40 or not all(c in "0123456789abcdef" for c in sha):
+                continue
+            if any(subject.startswith(pfx) for pfx in _STASH_SUBJECTS):
+                continue
+            offenders.append(f"{sha[:12]} {subject[:60]}")
+        self.assertEqual(
+            offenders, [],
+            f".claude/settings.local.json was introduced by commit(s) since "
+            f"{self.GUARD_LANDED}: {offenders}. The pre-commit guard in "
+            f"runner/hooks/pre-commit should have refused this — find out how it "
+            f"was bypassed (--no-verify, or a different core.hooksPath).",
         )
 
 

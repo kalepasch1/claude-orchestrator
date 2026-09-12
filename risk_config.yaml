@@ -1,0 +1,38 @@
+# risk_config.yaml — thresholds and weights for risk_assessment.score_pull_request.
+#
+# The scorer is deliberately data-driven: an operator retunes the merge train by
+# editing this file, not by editing code. Every value here has a hard-coded
+# fallback in risk_assessment.DEFAULT_CONFIG, so a missing/corrupt file degrades
+# to the defaults instead of wedging the runner (fail-soft convention).
+#
+# Override the file location with ORCH_RISK_CONFIG_PATH (fleet-pushable via
+# fleet_control.py because the key carries no secret).
+
+# Band edges, on the 0-100 score. score <= low_risk_max  -> "low"
+#                                 score >= high_risk_min -> "high"
+#                                 anything between       -> "medium"
+thresholds:
+  low_risk_max: 30.0
+  high_risk_min: 70.0
+
+# Per-component weights. Contributions are summed, then clamped to 0-100, so the
+# weights are "points of risk at saturation" rather than a normalised simplex.
+weights:
+  files_changed: 20.0
+  lines_churn: 25.0
+  coverage_delta: 25.0
+  contributor_history: 15.0
+  material_paths: 15.0
+
+# Saturation points: the metric value at which a component contributes its full
+# weight. Past this the component is capped, so one enormous PR cannot make every
+# other signal irrelevant.
+saturation:
+  files_changed: 25
+  lines_churn: 800
+  # Coverage is scored on the DROP only: a 5-point drop saturates the component.
+  coverage_drop_pct: 5.0
+  # Reverts in a contributor's recent history that saturate the history component.
+  contributor_reverts: 3
+  # Touched paths flagged material by the merge-materiality classifier.
+  material_paths: 3

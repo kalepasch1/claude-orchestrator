@@ -283,6 +283,94 @@ def for_remediation(remediation_slug):
     ]
 
 
+#: Weight of the learned prior when a candidate has evidence. A remediation the fleet has
+#: watched work is preferred, but never to the point of freezing exploration — an
+#: unevidenced candidate still scores 0.0 rather than -inf, so it stays selectable.
+LEARNED_WEIGHT = float(os.environ.get("ORCH_CAUSAL_LEARNED_WEIGHT", "1.0"))
+
+
+def rank_remediations(bottleneck_key, candidates, confidence_floor=None, lookup_fn=None):
+    """Order candidate remediation slugs by what actually worked on this bottleneck.
+
+    THE GAP THIS CLOSES. This module's own docstring says lookup() exists so the
+    "router queries to weight next action selection", and write() records an outcome on
+    every task completion. The writes happen; the weighting never did — grep on
+    origin/master finds NO caller of causal_feedback anywhere in runner/. The fleet was
+    accumulating evidence about which remediations reduce which bottlenecks and then
+    picking the next action without consulting any of it.
+
+    This is the consuming half: a PURE ordering over candidates, with the DB read
+    injected, so the selection rule is unit-testable without a database — the same
+    shape as the rest of the module, where I/O is fail-soft and logic is separable.
+
+    SCORING. Each candidate scores `positive - negative`, scaled by average confidence
+    and nudged by average delta, all multiplied by LEARNED_WEIGHT. A candidate with no
+    recorded evidence scores exactly 0.0, which puts it above anything that has measurably
+    made this bottleneck WORSE and below anything that has measurably helped — the right
+    default for an action nobody has evidence about. Ties keep the caller's original
+    order, so this never silently reshuffles a list it has nothing to say about.
+
+    Fail-soft: any error returns the candidates unchanged. A learning signal must never be
+    able to stop the router from choosing something.
+    """
+    try:
+        ordered = [c for c in (candidates or []) if isinstance(c, str) and c.strip()]
+        if not ordered or not bottleneck_key:
+            return list(ordered)
+
+        fn = lookup_fn or lookup
+        evidence = {}
+        for row in (fn(bottleneck_key, confidence_floor) or []):
+            slug = (row or {}).get("remediation_slug")
+            if isinstance(slug, str) and slug:
+                evidence[slug] = row
+
+        scored = [
+            (index, candidate, _learned_score(evidence.get(candidate)))
+            for index, candidate in enumerate(ordered)
+        ]
+        scored.sort(key=lambda item: (-item[2], item[0]))
+        return [candidate for _index, candidate, _score in scored]
+    except Exception:
+        return list(candidates or [])
+
+
+def _learned_score(row):
+    """Score one candidate from its evidence row. 0.0 when there is no evidence."""
+    if not isinstance(row, dict):
+        return 0.0
+    try:
+        positive = int(row.get("positive_count", 0) or 0)
+        negative = int(row.get("negative_count", 0) or 0)
+        confidence = float(row.get("avg_confidence", 0.0) or 0.0)
+        delta_pct = float(row.get("avg_delta_pct", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    # Confidence scales the count evidence; delta only breaks ties between candidates
+    # with comparable records, so a single huge delta cannot outvote a consistent record.
+    return LEARNED_WEIGHT * ((positive - negative) * max(confidence, 0.0) + delta_pct / 1000.0)
+
+
+def explain_ranking(bottleneck_key, candidates, confidence_floor=None, lookup_fn=None):
+    """[(candidate, score, evidence_or_None)] in ranked order — for logs and audits.
+
+    A router that silently reorders its options is unreviewable; this makes the reason
+    inspectable without re-deriving it.
+    """
+    try:
+        fn = lookup_fn or lookup
+        evidence = {}
+        for row in (fn(bottleneck_key, confidence_floor) or []):
+            slug = (row or {}).get("remediation_slug")
+            if isinstance(slug, str) and slug:
+                evidence[slug] = row
+        ranked = rank_remediations(bottleneck_key, candidates, confidence_floor,
+                                   lookup_fn=lambda *_a, **_k: list(evidence.values()))
+        return [(c, _learned_score(evidence.get(c)), evidence.get(c)) for c in ranked]
+    except Exception:
+        return [(c, 0.0, None) for c in (candidates or [])]
+
+
 def stats():
     """Return write statistics (for monitoring and testing)."""
     with _write_lock:

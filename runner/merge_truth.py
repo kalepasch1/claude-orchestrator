@@ -61,6 +61,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
+import stderr_digest  # noqa: E402
 
 # Verdicts
 OK = "ok"
@@ -123,7 +124,7 @@ def _fetch(repo, branch):
     except OSError as exc:
         return f"fetch origin {branch} failed: {exc}"
     if r.returncode:
-        return f"fetch origin {branch} failed: {(r.stderr or '').strip()[-160:]}"
+        return f"fetch origin {branch} failed: {stderr_digest.digest(r.stderr, 160)}"
     _fetched[key] = now
     return None
 
@@ -229,14 +230,15 @@ def verify_merge_reachable(repo, sha, target_branch, fetch=True, also_branches=(
         # Any other exit code is git failing to answer, not answering "no". Returning
         # here rather than continuing keeps a broken git from being read as a negative.
         # Conflict resolution note (2026-08-17): the original commit called
-        # stderr_digest.digest(...) here. runner/stderr_digest.py does not exist on
-        # master -- it shipped in a layer of PR #24 that is NOT part of this branch --
-        # so importing it would make this module unimportable. Kept master's existing
-        # [-160:] tail truncation, which is what every other error path in this file
-        # already uses. Swap to stderr_digest only if that module actually lands.
+        # stderr_digest.digest(...) here, and runner/stderr_digest.py did not exist on
+        # master -- it shipped in a layer of PR #24 that was not part of that branch --
+        # so the tail truncation every other error path in this file used was kept, with
+        # a note to swap once the module landed. It has landed, and this is that swap:
+        # git prints the actionable line FIRST and its hint block after, so a fixed-size
+        # tail reliably stored the advice and threw away the cause.
         return INFRA_ERROR, (
             f"merge-base exit {anc.returncode}: "
-            f"{(anc.stderr or '').strip()[-160:]}"
+            f"{stderr_digest.digest(anc.stderr, 160)}"
         )
     return PHANTOM, f"commit {sha[:12]} is not an ancestor of any of {', '.join(checked)}"
 

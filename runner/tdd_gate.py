@@ -61,9 +61,21 @@ def get_required_kinds():
     return kinds
 
 
+# NO FUNCTION-LOCAL RE-IMPORTS OF db / time (2026-08-26).
+#
+# is_tdd_enabled() and get_task_kinds() each began with `import time` and
+# `import db`, shadowing the module-level bindings above with a fresh lookup in
+# sys.modules. Both are already imported at module scope, so the locals bought
+# nothing — and they defeated the one idiom every caller's tests use:
+# `patch("tdd_gate.db")` replaces the MODULE ATTRIBUTE, which a local import
+# immediately overwrote. Nine tests across runner/test_tdd_gate.py and
+# runner/tests/test_tdd_gate.py were therefore reading the operator's real
+# fleet_config instead of their own stub, and asserting against whatever the
+# live control plane happened to say.
+
+
 def is_tdd_enabled():
     """Read ORCH_TDD_ENABLED from fleet_config or environment. Default: false."""
-    import time
     now = time.time()
 
     if _TDD_CACHE["enabled"] is not None and (now - _TDD_CACHE["enabled_at"]) < 30:
@@ -71,7 +83,6 @@ def is_tdd_enabled():
 
     enabled = False
     try:
-        import db
         rows = db.select("fleet_config", {"select": "key,value", "key": "eq.ORCH_TDD_ENABLED"}) or []
         if rows:
             value = str(rows[0].get("value", "false")).lower()
@@ -93,7 +104,6 @@ def get_task_kinds():
     Returns a set of task kind identifiers that require TDD.
     Default: {"feature", "new-module"}
     """
-    import time
     now = time.time()
 
     if _TDD_CACHE["task_kinds"] is not None and (now - _TDD_CACHE["task_kinds_at"]) < 30:
@@ -103,7 +113,6 @@ def get_task_kinds():
     default_kinds = {"feature", "new-module"}
 
     try:
-        import db
         rows = db.select("fleet_config", {"select": "key,value", "key": "eq.ORCH_TDD_TASK_KINDS"}) or []
         if rows:
             value = rows[0].get("value")
@@ -124,11 +133,35 @@ def get_task_kinds():
     return kinds_set
 
 
+def gated_kinds():
+    """Every kind TDD gates, from EITHER config path. Empty set means off.
+
+    ONE RESOLVER, BECAUSE THE TWO PATHS DRIFTED (2026-08-26). There are two ways
+    to configure this gate: ORCH_TDD_REQUIRED_KINDS (fleet_config only) and the
+    older ORCH_TDD_ENABLED + ORCH_TDD_TASK_KINDS pair, which also honours env
+    vars. planner.py already resolves both, and its comment records why:
+    "Consulting only the first meant a fleet configured the documented way had
+    TDD silently off."
+
+    is_tdd_gated() did not get that fix. So the planner would compute a correct
+    gated_kinds set, and then — three lines later — ask is_tdd_gated(slug), which
+    consulted ORCH_TDD_REQUIRED_KINDS alone and answered False for every task.
+    The fallback the planner added was defeated by the function the planner
+    called next, and a fleet configured the documented way still gated nothing.
+
+    Both callers now go through here, so the two paths cannot separate again.
+    """
+    kinds = get_required_kinds()
+    if not kinds and is_tdd_enabled():
+        kinds = get_task_kinds()
+    return kinds
+
+
 def is_tdd_gated(task_kind):
     """Check if a task kind is gated for TDD-first execution."""
     if not task_kind or str(task_kind).lower() == "contracts":
         return False
-    kinds = get_required_kinds()
+    kinds = gated_kinds()
     normalized = str(task_kind).lower()
     return any(normalized == str(kind).lower() or
                normalized.startswith(str(kind).lower() + "-") or
@@ -162,9 +195,20 @@ def extract_test_file_path(agent_output):
 
 def parse_acceptance_criteria(test_code):
     """
-    Extract acceptance criteria (test docstrings) from a test file.
-    Returns a list of dicts: {"test_name": str, "criterion": str}
-    Each test docstring IS the acceptance criterion.
+    Extract acceptance criteria from a test file.
+
+    Only docstrings that OPEN with the literal marker "[ACCEPTANCE CRITERION]:"
+    are collected; the marker is stripped from the text that is returned.
+    Returns a list of dicts: {"test_name": str, "criterion": str}.
+
+    The docstring used to say "Each test docstring IS the acceptance criterion",
+    which is not what the code does and never was — and it misled a test into
+    asserting that an unmarked "Just a simple test." docstring should count
+    (runner/test_tdd_gate.py::test_parse_acceptance_criteria_no_marker, red for
+    exactly that reason). The marker is the point: an acceptance criterion is a
+    deliberate declaration, not any sentence that happens to sit under a def.
+    runner/tests/test_tdd_gate.py::test_ignores_non_criterion_docstrings pins
+    the real contract.
     """
     criteria = []
 

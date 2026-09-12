@@ -2,6 +2,11 @@
 """
 config_sync_realtime.py — real-time configuration synchronization.
 
+DEPRECATED — zero importers. Note the name: this is `realtime_config_sync.py`
+with the words transposed, and the two modules solve the same problem twice.
+`realtime_config_sync.py` is canonical and is the one runner.py schedules
+(job "rtconfig"). Do not extend this file.
+
 Improves on config_sync.py's polling model by adding mtime-based file
 watching and DB change detection so config updates propagate within seconds
 instead of waiting for the 300s polling interval.
