@@ -262,6 +262,28 @@ def _append_transcript(rec):
 
 
 # ── the tournament ───────────────────────────────────────────────────────────────────────────────
+def _tournament_call(user, tools, model=None):
+    return frontier.complete(user, system=SYSTEM, need=9, model=model, tools=tools,
+                             max_turns=MAX_TURNS if tools else 1, json_schema=SCHEMA,
+                             timeout=int(os.environ.get("ORCH_CONSILIUM_TIMEOUT_S", "1500")),
+                             tag="consilium.tournament")
+
+
+def _usable(r):
+    j = r.get("json") if isinstance(r, dict) else None
+    return bool(r) and not r.get("error") and isinstance(j, dict) and isinstance(j.get("memo"), dict)
+
+
+def _retryable(r):
+    """A second frontier call is worth its tokens only when the first one actually ran and was
+    refused or came back malformed — not when the budget, the kill switch or a timeout stopped it."""
+    err = str((r or {}).get("error") or "").lower()
+    if not err:
+        return True  # ran, returned, but not the schema we asked for
+    return not any(k in err for k in ("unavailable", "timeout", "timed out", "skipped", "circuitopen",
+                                       "usage limit", "rate limit", "cooldown"))
+
+
 def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priority=None):
     """Return the memo-grade aggregate (gauntlet.run() shape) or None to let the legacy path run."""
     if not ENABLED or not frontier.available(min_tokens=MIN_TOKENS):
@@ -276,15 +298,30 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                        today=datetime.date.today().isoformat(),
                        seats="\n".join(_seat_block(e) for e in panel))
     t0 = time.time()
-    r = frontier.complete(user, system=SYSTEM, need=9, tools=tools,
-                          max_turns=MAX_TURNS if tools else 1, json_schema=SCHEMA,
-                          timeout=int(os.environ.get("ORCH_CONSILIUM_TIMEOUT_S", "1500")),
-                          tag="consilium.tournament")
-    j = r.get("json")
-    if r.get("error") or not isinstance(j, dict) or not isinstance(j.get("memo"), dict):
-        print(f"consilium_v2: tournament unusable ({r.get('error') or 'malformed output'}); "
-              f"legacy gauntlet will run", flush=True)
+    r = _tournament_call(user, tools)
+    fallback = None
+    if not _usable(r):
+        # MID-TIER RETRY (2026-09-12). The third live tournament (a prediction-market wagering
+        # question, gaming vertical) died after 7 minutes and 199K weighted tokens with "API Error:
+        # Fable's safeguards flagged this message" — a content classifier on the frontier tier, not
+        # a rate limit, so no cooldown applied and the question fell to the 21-call local path on a
+        # 27B model. Wagering, AML and enforcement questions are the docket's core, so one retry on
+        # the mid tier (Opus 5) keeps the frontier-grade path; budget and timeouts still gate it.
+        reason = r.get("error") or "malformed output"
+        if _retryable(r) and frontier.available(min_tokens=MIN_TOKENS):
+            print(f"consilium_v2: {r.get('model')} tournament failed ({reason[:160]}); "
+                  f"retrying once on {frontier.OPUS}", flush=True)
+            r2 = _tournament_call(user, tools, model=frontier.OPUS)
+            if _usable(r2):
+                fallback = {"from": r.get("model"), "to": frontier.OPUS, "reason": reason[:200],
+                            "wasted_tokens_in": r.get("tokens_in"), "wasted_tokens_out": r.get("tokens_out")}
+                r = r2
+            else:
+                reason = f"{reason[:120]} | retry on {frontier.OPUS}: {r2.get('error') or 'malformed output'}"
+    if not _usable(r):
+        print(f"consilium_v2: tournament unusable ({reason}); legacy gauntlet will run", flush=True)
         return None
+    j = r["json"]
     memo = j["memo"]
     seats_out = [s for s in (j.get("seats") or []) if isinstance(s, dict)]
     bouts = [b for b in (j.get("bouts") or []) if isinstance(b, dict)]
@@ -360,7 +397,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                "sources_opened": ((j.get("research") or {}).get("sources_opened") or [])[:25],
                "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
                "turns": r.get("turns"), "latency_s": round(time.time() - t0, 1),
-               "cross_vendor": cross}
+               "fallback": fallback, "cross_vendor": cross}
     agg = {"question": question,
            "verdict": _s(memo.get("verdict")),
            "opinion": _s(memo.get("memo")),
