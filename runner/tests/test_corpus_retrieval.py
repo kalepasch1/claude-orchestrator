@@ -25,6 +25,37 @@ def test_truncate_normalize_and_cosine():
     assert cr.cosine([1, 0], [0, 1]) == 0
 
 
+def test_embed_uses_guarded_transport_and_preserves_normalization(monkeypatch):
+    import corpus_retrieval as cr
+    import local_embeddings
+    from unittest.mock import Mock
+    transport = Mock(return_value=[[3.0, 4.0]])
+    monkeypatch.setattr(local_embeddings, "embed", transport)
+    assert cr.embed(["complete source"], model="selected-model", timeout=600) == [[0.6, 0.8]]
+    transport.assert_called_once_with(["complete source"], "selected-model", cr.OLLAMA, timeout=600)
+    assert 1 <= cr.BATCH <= 8
+
+
+def test_embed_capacity_denial_is_not_a_partial_or_successful_batch(monkeypatch):
+    import corpus_retrieval as cr
+    import local_embeddings
+    from unittest.mock import Mock
+    transport = Mock(side_effect=local_embeddings.slots.LocalCapacityError("host_headroom"))
+    monkeypatch.setattr(local_embeddings, "embed", transport)
+    assert cr.embed(["source"]) == []
+    assert transport.call_count == 1
+
+
+def test_embed_empty_input_does_not_call_transport(monkeypatch):
+    import corpus_retrieval as cr
+    import local_embeddings
+    from unittest.mock import Mock
+    transport = Mock()
+    monkeypatch.setattr(local_embeddings, "embed", transport)
+    assert cr.embed([]) == []
+    transport.assert_not_called()
+
+
 def test_index_round_trip_ranking_and_dossier(monkeypatch, tmp_path):
     cr = _use_tmp(monkeypatch, tmp_path)
     rows = [{"clause_id": "a#p0", "doc_id": "a", "heading": "h1", "doc_title": "Banking Law 641", "jurisdiction": "NY",
