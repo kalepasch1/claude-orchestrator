@@ -289,10 +289,47 @@ def _telemetry(project, tag, provider, model, prompt, latency_s, ok, tokens_in=0
 
 
 # ── Claude (subscription CLI) ────────────────────────────────────────────────────────────────────
+# Per-model budget weights (2026-09-12). The ledger counts input-token equivalents at Opus price;
+# the subscription's limits are cost-based across models, so Sonnet (API price 1/5 of Opus) is
+# weighted 0.2. Fable is unknown and therefore counted at 1.0 (conservative). Override with
+# ORCH_FRONTIER_MODEL_WEIGHTS='{"claude-sonnet-5": 0.2, ...}'.
+try:
+    MODEL_WEIGHTS = json.loads(os.environ.get("ORCH_FRONTIER_MODEL_WEIGHTS") or '{"claude-sonnet-5": 0.2}')
+except Exception:
+    MODEL_WEIGHTS = {"claude-sonnet-5": 0.2}
+
+
+def model_weight(model):
+    try:
+        return float(MODEL_WEIGHTS.get(model, 1.0))
+    except Exception:
+        return 1.0
+
+
+SALVAGE_PROMPT = ("STOP. Your tool budget is spent. Using ONLY what you have already opened and read in this "
+                  "conversation, return the JSON object you were asked for now — complete every required "
+                  "field; mark anything you could not open as unverified. No more tool calls. JSON only.")
+
+
+def max_turns_hit(raw):
+    """True when a headless call ended because the turn cap fired mid-tool-use (no final answer)."""
+    raw = raw if isinstance(raw, dict) else {}
+    tail = " ".join(str(raw.get(k) or "") for k in ("subtype", "terminal_reason", "stop_reason")).lower()
+    return "max_turns" in tail or "tool_use" in tail
+
+
 def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=None,
-             json_schema=None, timeout=900, project="consilium", tag="frontier"):
+             json_schema=None, timeout=900, project="consilium", tag="frontier",
+             salvage=True, resume=None):
     """One lean frontier call. Returns
-    {text, json, model, tokens_in, tokens_out, rc, error, degraded, turns, latency_s}."""
+    {text, json, model, tokens_in, tokens_out, rc, error, degraded, turns, latency_s}.
+
+    SALVAGE (2026-09-12). Eleven research calls in one afternoon died on the turn cap with
+    stop_reason=tool_use — 1.16M weighted tokens of opened pages thrown away because the model
+    never got a turn to write the JSON. A tool call that uses tools and asks for a schema now keeps
+    its session and, on a turn-cap death, is resumed ONCE with tools off and max_turns=1 to write
+    the object from what it already read. The salvage re-reads the cached context (cheap) instead
+    of starting over (expensive)."""
     model = model or model_for(need) or OPUS
     out = {"text": "", "json": None, "model": model, "tokens_in": 0, "tokens_out": 0,
            "rc": None, "error": "", "degraded": False, "turns": 0, "latency_s": 0.0}
@@ -301,8 +338,11 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
                    degraded=True, budget=budget())
         return out
     _ensure_home()
-    extra = ["--no-session-persistence", "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
-             "--setting-sources", ""]
+    keep_session = bool(resume) or bool(tools and salvage and json_schema)
+    extra = ([] if keep_session else ["--no-session-persistence"]) + \
+            ["--strict-mcp-config", "--mcp-config", EMPTY_MCP, "--setting-sources", ""]
+    if resume:
+        extra += ["--resume", str(resume)]
     if tools:
         extra += ["--tools", ",".join(tools), "--allowedTools", ",".join(tools)]
     else:
@@ -352,13 +392,30 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
     parsed = None
     if raw.get("structured_output") is not None:
         parsed = raw["structured_output"]
-    elif json_schema:
+    elif json_schema and not err:
+        # On an errored call `text` is the CLI's own envelope (duration_api_ms, stop_reason,
+        # session_id ...), which parses as JSON and used to be handed back as the "result".
         parsed = extract_json(text)
-    _record("claude", tin_weighted + tout * OUTPUT_WEIGHT, model, ok=not err, err=err)
+    weighted = int((tin_weighted + tout * OUTPUT_WEIGHT) * model_weight(model))
+    _record("claude", weighted, model, ok=not err, err=err)
     _telemetry(project, tag, "claude", model, prompt, lat, ok=not err, tokens_in=tin, tokens_out=tout)
-    out.update(text=text, json=parsed, tokens_in=tin, tokens_out=tout, tokens_weighted=tin_weighted + tout * OUTPUT_WEIGHT,
+    out.update(text=text, json=parsed, tokens_in=tin, tokens_out=tout, tokens_weighted=weighted,
                cache_read=cr, cache_create=cc, rc=rc, error=err,
-               degraded=bool(err), turns=int(raw.get("num_turns") or 0), latency_s=round(lat, 1))
+               degraded=bool(err), turns=int(raw.get("num_turns") or 0), latency_s=round(lat, 1),
+               session_id=raw.get("session_id"))
+    if (err and keep_session and not resume and json_schema and parsed is None
+            and max_turns_hit(raw) and raw.get("session_id") and available()):
+        s2 = complete(SALVAGE_PROMPT, system=system, model=model, tools=None, max_turns=1,
+                      json_schema=json_schema, timeout=min(timeout, 600), project=project,
+                      tag=f"{tag}.salvage", salvage=False, resume=raw["session_id"])
+        out["salvage"] = {"error": s2.get("error") or "", "tokens_in": s2.get("tokens_in"),
+                          "tokens_out": s2.get("tokens_out")}
+        if not s2.get("error") and s2.get("json") is not None:
+            out.update(text=s2.get("text") or text, json=s2["json"], error="", degraded=False,
+                       tokens_in=tin + int(s2.get("tokens_in") or 0), tokens_out=tout + int(s2.get("tokens_out") or 0),
+                       tokens_weighted=weighted + int(s2.get("tokens_weighted") or 0),
+                       turns=out["turns"] + int(s2.get("turns") or 0), latency_s=round(time.time() - t0, 1),
+                       salvaged=True)
     return out
 
 

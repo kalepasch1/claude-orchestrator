@@ -65,6 +65,10 @@ JOBS = [
     ("theory_lab",       "theory_lab.py",           [],        10800, 3000),
     ("ambiguity_miner",  "ambiguity_miner.py",      [],        21600, 3000),
     ("reg_opportunity_scan", "reg_opportunity_scan.py", [],    43200, 2400),
+    # 2026-09-12 — event-driven card staleness, benchmark sourcing, corpus embedding refresh.
+    ("card_freshness",   "card_freshness.py",       ["--apply"], 21600, 600),
+    ("benchmark_ingest", "benchmark_ingest.py",     [],        43200, 1500),
+    ("corpus_index",     "corpus_retrieval.py",     ["build"], 86400, 3000),
 ]
 
 
@@ -143,11 +147,9 @@ def tick():
         _log("kill switch paused — nothing run")
         return None
     state = _load()
-    now = time.time()
-    for name, script, args, interval, timeout_s in JOBS:
-        last = float((state.get(name) or {}).get("at") or 0)
-        if now - last < interval:
-            continue
+    job = next_due(state)
+    if job:
+        name, script, args, interval, timeout_s = job
         res = run_job(name, script, args, timeout_s)
         state[name] = {"at": time.time(), **res}
         _save(state)
@@ -155,6 +157,24 @@ def tick():
         return name
     heartbeat(state)
     return None
+
+
+def next_due(state, now=None):
+    """The due job that is MOST overdue relative to its own interval. (2026-09-12: a fixed priority
+    order let the 20-minute docket and the 30-minute commission take every slot — the theory lab,
+    the corps tick, the forecaster and both scans had not run once in six hours. Never-run jobs
+    sort first.)"""
+    now = now or time.time()
+    best, best_ratio = None, 0.0
+    for job in JOBS:
+        name, _script, _args, interval, _timeout = job
+        last = float((state.get(name) or {}).get("at") or 0)
+        if now - last < interval:
+            continue
+        ratio = float("inf") if not last else (now - last) / float(interval)
+        if ratio > best_ratio:
+            best, best_ratio = job, ratio
+    return best
 
 
 def status():

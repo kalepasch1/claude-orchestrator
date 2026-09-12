@@ -65,8 +65,15 @@ MAX_TURNS = int(os.environ.get("ORCH_CONSILIUM_MAX_TURNS", "18"))
 # takes the research loop out of the frontier call. Dossiers are cached per question and every
 # opened source goes into an authority cache that later questions on the same vertical reuse.
 MODE = os.environ.get("ORCH_CONSILIUM_MODE", "two_phase").strip().lower()
-RESEARCH_NEED = int(os.environ.get("ORCH_CONSILIUM_RESEARCH_NEED", "8"))
-RESEARCH_TURNS = int(os.environ.get("ORCH_CONSILIUM_RESEARCH_TURNS", "12"))
+# Research clerk on Sonnet 5 by default (need 6): the dossier is verified mechanically by URL and the
+# debate runs on Fable, so the clerk's job is retrieval, and Sonnet is weighted 0.2 in the ledger.
+# Measured 2026-09-12 afternoon: Opus at 12 turns died on the turn cap 9 times out of 9.
+RESEARCH_NEED = int(os.environ.get("ORCH_CONSILIUM_RESEARCH_NEED", "6"))
+RESEARCH_TURNS = int(os.environ.get("ORCH_CONSILIUM_RESEARCH_TURNS", "16"))
+RESEARCH_TOOL_BUDGET = int(os.environ.get("ORCH_CONSILIUM_RESEARCH_TOOL_BUDGET", str(max(4, RESEARCH_TURNS - 4))))
+# A question whose tournament failed twice in 24h is skipped until the window passes: a retry loop
+# on a question the models cannot finish (refusals, turn-cap deaths) is the fastest way to burn a day.
+FAIL_LIMIT = int(os.environ.get("ORCH_CONSILIUM_FAIL_LIMIT", "2"))
 COMPACT = os.environ.get("ORCH_CONSILIUM_COMPACT", "true").lower() not in ("0", "false", "no", "off")
 CORPUS_K = int(os.environ.get("ORCH_CONSILIUM_CORPUS_K", "8"))
 DOSSIER_TTL_S = int(os.environ.get("ORCH_CONSILIUM_DOSSIER_TTL_S", str(7 * 86400)))
@@ -78,6 +85,7 @@ HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestr
 TRANSCRIPTS = os.path.join(HOME, "consilium", "tournaments.jsonl")
 DOSSIER_DIR = os.path.join(HOME, "consilium", "dossiers")
 AUTHORITY_CACHE = os.path.join(HOME, "consilium", "authority_cache.jsonl")
+FAILURES = os.path.join(HOME, "consilium", "failures.json")
 
 CITATION = {"type": "object", "properties": {
     "source": {"type": "string"}, "proposition": {"type": "string"},
@@ -154,7 +162,10 @@ RULES
    (copy url/quote, verified=true) when they supply what is needed; re-open only when a different
    passage is required. This saves the tribunal's budget.
  * At most 14 sources; name at most 6 issues; list what you could not resolve. Do not argue the
-   question — that is the tribunal's job. Return ONLY the JSON object."""
+   question — that is the tribunal's job. Return ONLY the JSON object.
+ * TOOL BUDGET: at most {tool_budget} tool calls in total (WebSearch + WebFetch). Count them. When the
+   budget is spent — or earlier, once the operative authority is on the record — STOP and write the
+   JSON. A dossier with 6 opened sources beats a dead session with 14 half-read ones."""
 
 RESEARCH_USER = """QUESTION: {question}
 CONTEXT: {context}
@@ -477,12 +488,14 @@ def _research_phase(question, context, vertical, docket_id):
     prompt = RESEARCH_USER.format(question=(question or "")[:3000], context=(context or "")[:2000],
                                   vertical=vertical or "n/a", today=datetime.date.today().isoformat(),
                                   prior=_render_prior(prior) or "(none yet)", corpus=corpus or "(none available)")
-    r = frontier.complete(prompt, system=RESEARCH_SYSTEM, need=RESEARCH_NEED, tools=frontier.WEB_TOOLS,
+    r = frontier.complete(prompt, system=RESEARCH_SYSTEM.format(tool_budget=RESEARCH_TOOL_BUDGET),
+                          need=RESEARCH_NEED, tools=frontier.WEB_TOOLS,
                           max_turns=RESEARCH_TURNS, json_schema=DOSSIER,
                           timeout=int(os.environ.get("ORCH_CONSILIUM_RESEARCH_TIMEOUT_S", "900")),
                           tag="consilium.research")
     info = {"cached": False, "model": r.get("model"), "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
             "turns": r.get("turns"), "latency_s": r.get("latency_s"), "error": r.get("error") or "",
+            "salvaged": bool(r.get("salvaged")),
             "corpus_passages": corpus.count("\n[") if corpus else 0, "prior_hits": len(prior)}
     j = r.get("json")
     if r.get("error") or not isinstance(j, dict) or not isinstance(j.get("sources"), list):
@@ -499,6 +512,34 @@ def _research_phase(question, context, vertical, docket_id):
     _save_dossier(key, j)
     _append_authority_cache(srcs, vertical, key)
     return j, info
+
+
+def _failures_load():
+    try:
+        with open(FAILURES) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _recent_failures(key, horizon=86400):
+    cut = time.time() - horizon
+    return [t for t in (_failures_load().get(key) or []) if isinstance(t, (int, float)) and t >= cut]
+
+
+def _note_failure(key, reason=""):
+    try:
+        os.makedirs(os.path.dirname(FAILURES), exist_ok=True)
+        d = _failures_load()
+        d[key] = _recent_failures(key) + [time.time()]
+        d["_last"] = {"key": key, "reason": str(reason)[:200], "at": time.time()}
+        tmp = FAILURES + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f)
+        os.replace(tmp, FAILURES)
+    except Exception:
+        pass
 
 
 def _enforce_dossier(cites, dossier):
@@ -553,6 +594,10 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     if len(panel) < 2:
         return None
     priority = (priority or _priority_from(context)).lower()
+    fkey = _dossier_key(question, docket_id)
+    if len(_recent_failures(fkey)) >= FAIL_LIMIT:
+        print(f"consilium_v2: '{(question or '')[:60]}' failed {FAIL_LIMIT}x in 24h; skipping until the window passes", flush=True)
+        return None
     t0 = time.time()
     fmt = dict(question=(question or "")[:3000], context=(context or "")[:3000], vertical=vertical or "n/a",
                priority=priority, today=datetime.date.today().isoformat(),
@@ -571,6 +616,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                   f"single-call tournament instead", flush=True)
             if not frontier.available(min_tokens=ENVELOPE["single"]):
                 print("consilium_v2: budget cannot fund a single-call tournament; legacy gauntlet will run", flush=True)
+                _note_failure(fkey, phases["research"].get("error") or "research unusable")
                 return None
     if mode == "single":
         user = USER.format(**fmt)
@@ -595,6 +641,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                 reason = f"{reason[:120]} | retry on {frontier.OPUS}: {r2.get('error') or 'malformed output'}"
     if not _usable(r):
         print(f"consilium_v2: tournament unusable ({reason}); legacy gauntlet will run", flush=True)
+        _note_failure(fkey, reason)
         return None
     phases["debate"] = {"model": r.get("model"), "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
                         "turns": r.get("turns"), "latency_s": r.get("latency_s")}

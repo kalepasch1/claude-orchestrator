@@ -342,3 +342,112 @@ def test_docket_leaves_questions_pending_when_frontier_cannot_fund_them(monkeypa
     monkeypatch.setattr(c, "run", lambda q, **kw: None)
     out = ld.run(2)
     assert legacy == [] and out["left_pending"] == 2 and out["cards_minted"] == 0
+
+
+# ── 2026-09-12 afternoon: salvage, weights, backoff, fair scheduling, commission filter ──────────
+def _frontier_sandbox(monkeypatch, tmp_path):
+    import frontier
+    monkeypatch.setattr(frontier, "STATE", str(tmp_path / "budget.json"))
+    monkeypatch.setattr(frontier, "EMPTY_MCP", str(tmp_path / "empty.json"))
+    monkeypatch.setattr(frontier, "HOME", str(tmp_path))
+    monkeypatch.setattr(frontier, "_night_mult", lambda: 1.0)
+    monkeypatch.setattr(frontier, "_telemetry", lambda *a, **k: None)
+    monkeypatch.setattr(frontier, "available", lambda min_tokens=4000: True)
+    return frontier
+
+
+def test_turn_cap_death_is_salvaged_by_resuming_the_session(monkeypatch, tmp_path):
+    frontier = _frontier_sandbox(monkeypatch, tmp_path)
+    import claude_cli
+    calls = []
+
+    def fake_run(prompt, model, **kw):
+        calls.append({"prompt": prompt, "model": model, **kw})
+        extra = kw.get("extra_args") or []
+        if "--resume" in extra:
+            return {"text": '{"sources": [1]}', "returncode": 0, "stderr": "", "input_tokens": 200, "output_tokens": 50,
+                    "raw": {"structured_output": {"sources": [1]}, "num_turns": 1, "usage": {"cache_read_input_tokens": 40000}}}
+        return {"text": '{"type":"result","subtype":"error_max_turns"}', "returncode": 1, "stderr": "",
+                "input_tokens": 1000, "output_tokens": 6000,
+                "raw": {"is_error": True, "subtype": "error_max_turns", "stop_reason": "tool_use",
+                        "session_id": "sid-1", "num_turns": 16, "usage": {"cache_read_input_tokens": 500000}}}
+    monkeypatch.setattr(claude_cli, "run", fake_run)
+    out = frontier.complete("research this", system="S", need=6, tools=frontier.WEB_TOOLS, max_turns=16,
+                            json_schema={"type": "object", "properties": {"sources": {"type": "array"}}})
+    assert len(calls) == 2
+    first, second = calls
+    assert "--no-session-persistence" not in first["extra_args"]          # session kept for salvage
+    assert second["extra_args"][second["extra_args"].index("--resume") + 1] == "sid-1"
+    assert second["max_turns"] == 1 and "--tools" in second["extra_args"]
+    assert second["extra_args"][second["extra_args"].index("--tools") + 1] == ""
+    assert second["prompt"].startswith("STOP.")
+    assert out["json"] == {"sources": [1]} and out["error"] == "" and out["salvaged"] is True
+    assert out["tokens_in"] == 1000 + 500000 + 200 + 40000 and out["tokens_out"] == 6050 and out["turns"] == 17
+    b = frontier.budget()
+    assert b["calls_24h"] == 2
+    # Sonnet weight 0.2: first call (1000 + 50000 + 30000) * 0.2 = 16200 ; salvage (200 + 4000 + 250) * 0.2 = 890
+    assert b["hour_used"] == 16200 + 890
+
+
+def test_no_salvage_without_tools_and_sessions_are_not_persisted(monkeypatch, tmp_path):
+    frontier = _frontier_sandbox(monkeypatch, tmp_path)
+    import claude_cli
+    calls = []
+
+    def fake_run(prompt, model, **kw):
+        calls.append(kw.get("extra_args") or [])
+        return {"text": "nope", "returncode": 1, "stderr": "", "input_tokens": 10, "output_tokens": 1,
+                "raw": {"is_error": True, "subtype": "error_max_turns", "session_id": "sid", "usage": {}}}
+    monkeypatch.setattr(claude_cli, "run", fake_run)
+    out = frontier.complete("x", need=9, json_schema={"type": "object"})
+    assert len(calls) == 1 and "--no-session-persistence" in calls[0] and out["error"] and "salvaged" not in out
+    assert frontier.model_weight("claude-sonnet-5") == 0.2 and frontier.model_weight("claude-fable-5-1") == 1.0
+    assert frontier.max_turns_hit({"subtype": "error_max_turns"}) and frontier.max_turns_hit({"stop_reason": "tool_use"})
+    assert not frontier.max_turns_hit({"subtype": "success"})
+
+
+def test_failed_questions_back_off_after_two_failures(monkeypatch, tmp_path):
+    import consilium_v2 as c
+    import frontier
+    monkeypatch.setattr(c, "FAILURES", str(tmp_path / "failures.json"))
+    called = []
+    _wire(monkeypatch, c, frontier, tmp_path, lambda prompt, **kw: called.append(1) or {"error": "API Error: refused", "model": "m", "json": None})
+    monkeypatch.setattr(c, "MODE", "single")
+    assert c.run("q?", context="PRIORITY: low", vertical="gaming", docket_id="dX") is None
+    assert c.run("q?", context="PRIORITY: low", vertical="gaming", docket_id="dX") is None
+    n = len(called)
+    assert n >= 2 and len(c._recent_failures(c._dossier_key("q?", "dX"))) == 2
+    assert c.run("q?", context="PRIORITY: low", vertical="gaming", docket_id="dX") is None
+    assert len(called) == n                       # third attempt skipped without a model call
+    assert c._recent_failures(c._dossier_key("other?", "dY")) == []
+
+
+def test_tick_picks_the_most_overdue_job_by_ratio():
+    import consilium_tick as t
+    now = 1_000_000.0
+    state = {"legal_docket": {"at": now - 1300}, "publication_commission": {"at": now - 1900},
+             "paper_drafter": {"at": now - 100}}
+    # never-run jobs first
+    assert t.next_due(state, now=now)[0] == "expert_corps"
+    full = {name: {"at": now - 10} for name, *_ in t.JOBS}
+    full["legal_docket"] = {"at": now - 1300}          # ratio 1.08
+    full["publication_commission"] = {"at": now - 3700}  # ratio 2.05
+    assert t.next_due(full, now=now)[0] == "publication_commission"
+    assert t.next_due({name: {"at": now} for name, *_ in t.JOBS}, now=now) is None
+
+
+def test_commission_only_scores_frontier_grade_cards(monkeypatch):
+    import publication_commission as pc
+    monkeypatch.setattr(pc, "ENGINE_FILTER", "consilium_v2")
+
+    def fake_select(table, params=None):
+        if table == "publication_reviews":
+            return [{"artifact_id": "done"}]
+        if table == "verdict_cards":
+            return [{"id": "done", "process": '{"engine": "consilium_v2"}', "citations": "[]"},
+                    {"id": "old8b", "process": '{"seats": []}', "citations": "[]"},
+                    {"id": "v2", "process": '{"engine": "consilium_v2"}', "citations": '[{"source": "s"}]', "question": "Q"}]
+        return []
+    monkeypatch.setattr(pc.db, "select", fake_select)
+    out = pc._candidates(5)
+    assert [a["id"] for a in out] == ["v2"] and out[0]["citations"] == [{"source": "s"}]

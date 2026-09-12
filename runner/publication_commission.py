@@ -50,6 +50,10 @@ SCORE_SCHEMA = {"type": "object", "properties": {"score": {"type": "number"}, "r
 PUBLISH_BAR = float(os.environ.get("PUBCOM_PUBLISH_BAR", "0.78"))
 STEER_BAR = float(os.environ.get("PUBCOM_STEER_BAR", "0.62"))
 BATCH = int(os.environ.get("PUBCOM_BATCH", "12"))
+# 2026-09-12: the commission spent its afternoon scoring 8B-era cards with fabricated citations
+# (24 reviews, 24 rejects, ~10K weighted tokens each). Only cards whose process names this engine
+# are worth five frontier reviewers; set PUBCOM_ENGINE_FILTER="" to score everything again.
+ENGINE_FILTER = os.environ.get("PUBCOM_ENGINE_FILTER", "consilium_v2")
 
 # Each reviewer hunts ONE failure mode. Weights sum to 1.0.
 REVIEWERS = [
@@ -169,11 +173,13 @@ def _candidates(limit: int):
     out = []
     cards = db.select("verdict_cards", {
         "select": "id,vertical,question,verdict,position,citations,assumptions,dissent,flips_if,"
-                  "conditions,unsettled,confidence,publication_state,status,minted_at",
+                  "conditions,unsettled,confidence,publication_state,status,minted_at,process",
         "status": "eq.fresh", "publication_state": "eq.internal",
         "order": "minted_at.desc", "limit": str(limit * 3)}) or []
     for c in cards:
         if c.get("id") in done:
+            continue
+        if ENGINE_FILTER and ENGINE_FILTER not in str(c.get("process") or ""):
             continue
         content = (f"POSITION:\n{c.get('position') or ''}\n\nDISSENT: {c.get('dissent') or 'none'}\n"
                    f"FLIPS IF: {c.get('flips_if') or ''}\nCONDITIONS: {c.get('conditions') or ''}\n"
