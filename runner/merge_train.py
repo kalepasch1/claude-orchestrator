@@ -1966,6 +1966,26 @@ class _Phase:
         return False   # never swallow
 
 
+def _failure_detail(stdout, stderr):
+    """Extract test identifiers from the FULL output, then append the 6000-char tail.
+
+    The identifier list is PREPENDED (not substituted) so a human reading a
+    TESTFAIL still gets the error text in the tail. Logs with no structured
+    test IDs (tsc/lint/build) return just the tail unchanged.
+    """
+    full = (stdout or "") + "\n" + (stderr or "")
+    tail = ((stdout or "")[-6000:] + (stderr or "")[-6000:]).strip()
+    try:
+        import differential_qa
+        ids = differential_qa.test_identifiers(full)
+    except Exception:
+        ids = []
+    if not ids:
+        return tail
+    header = "FAILING TEST IDENTIFIERS (%d):\n%s" % (len(ids), "\n".join("  - " + i for i in ids))
+    return header + "\n\n" + tail
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -2032,7 +2052,7 @@ def _run_tests(repo, test_cmd, ref=None):
                        "MERGE_TRAIN_TEST_TIMEOUT above the suite's real runtime, or find "
                        "what is hanging.")
     if r.returncode != 0:
-        tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
+        tail = _failure_detail(r.stdout, r.stderr)
         # One retry after a forced install if the failure looks like missing deps (env, not code).
         # Node says "cannot find module"; vite/rollup — which is what actually runs
         # a vitest suite — says "[UNRESOLVED_IMPORT] Could not resolve 'vitest/config'".
@@ -2050,7 +2070,7 @@ def _run_tests(repo, test_cmd, ref=None):
                                     text=True, timeout=timeout, env=_gate_env())
                 if r2.returncode == 0:
                     return True, "green (after dep install)"
-                return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
+                return False, _failure_detail(r2.stdout, r2.stderr)
             except subprocess.TimeoutExpired:
                 return False, (f"tests did not finish within {timeout}s — NO verdict on this "
                        "candidate, which is not the same as a red suite. Raise "

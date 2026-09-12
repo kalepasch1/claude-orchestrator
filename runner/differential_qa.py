@@ -14,8 +14,37 @@ _LOC = re.compile(r"(?<=[:(])\d+(?=[:),])")
 _HASH = re.compile(r"\b[0-9a-f]{12,40}\b", re.I)
 _SIGNAL = re.compile(r"error|fail|assert|TS\d{4}|✖|×|not assignable|cannot find", re.I)
 _INFRA = re.compile(r"timed out|timeout|ENOMEM|out of memory|killed|cannot find module|module not found|command not found|dependency prewarm", re.I)
+_SIGNATURE_CAP = 200
 _CACHE_SCHEMA = "v2-equal-qa-evidence"
 _CACHE_LOG_CHARS = 24000
+
+# Patterns for extracting structured test identifiers from runner output.
+# TAP: "not ok 3 - my test name"
+_TAP_FAIL = re.compile(r"^not ok\s+\d+\s*[-–]\s*(.+)", re.M)
+# vitest / jest: "  ✕ my test name" or "  × my test name" or "  ✖ my test name" or "FAIL src/foo.test.ts"
+_VITEST_FAIL = re.compile(r"^\s*[✕×✖]\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", re.M)
+_JEST_FAIL_FILE = re.compile(r"^FAIL\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", re.M)
+# pytest: "FAILED path/to/test.py::test_name"
+_PYTEST_FAIL = re.compile(r"^FAILED\s+(\S+::\S+)", re.M)
+# node:test "✖ name" at start of line
+_NODE_FAIL = re.compile(r"^✖\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", re.M)
+
+
+def test_identifiers(log):
+    """Parse failing-test IDs from the FULL output into a deduplicated sorted set.
+
+    Returns a sorted list of unique test-failure identifiers extracted from TAP,
+    vitest/jest, pytest, and node:test output formats. Empty list if no
+    structured test IDs are found (e.g. tsc/lint/build output).
+    """
+    text = _ANSI.sub("", str(log or ""))
+    ids = set()
+    for pat in (_TAP_FAIL, _VITEST_FAIL, _JEST_FAIL_FILE, _PYTEST_FAIL, _NODE_FAIL):
+        for m in pat.finditer(text):
+            ident = m.group(1).strip()
+            if ident:
+                ids.add(ident)
+    return sorted(ids)
 
 
 def signatures(log):
@@ -30,13 +59,37 @@ def signatures(log):
         line = re.sub(r"\s+", " ", line)[:500]
         if line not in found:
             found.append(line)
-    return found[:200]
+    # Sort before capping so the surviving set is deterministic regardless of
+    # runner ordering — the original encounter-order cap made the waiver
+    # decision nondeterministic under concurrent test execution.
+    found.sort()
+    return found[:_SIGNATURE_CAP]
+
+
+def _compare_by_identifiers(candidate_ids, baseline_ids):
+    """Set-based comparison: every candidate failure must appear in the baseline."""
+    new = sorted(set(candidate_ids) - set(baseline_ids))
+    return {"allowed": not new,
+            "basis": "test_identifiers",
+            "reason": "candidate introduces no failures beyond production baseline" if not new
+                      else f"candidate introduces {len(new)} new failing test(s)",
+            "candidate_identifiers": len(candidate_ids),
+            "baseline_identifiers": len(baseline_ids),
+            "new": new[:20]}
 
 
 def compare(candidate_log, baseline_log, similarity=0.92):
     """Return a waiver only when every candidate failure already exists on prod."""
     if _INFRA.search(str(candidate_log or "")) or _INFRA.search(str(baseline_log or "")):
         return {"allowed": False, "reason": "infrastructure failures are never waived", "new": []}
+    # Prefer structured test identifiers when both sides carry them — they are
+    # order-independent and truncation-safe by construction.
+    cand_ids = test_identifiers(candidate_log)
+    base_ids = test_identifiers(baseline_log)
+    if cand_ids and base_ids:
+        return _compare_by_identifiers(cand_ids, base_ids)
+    # Fall back to the existing fuzzy signature match for logs with no
+    # structured test IDs (tsc, lint, build output).
     candidate = signatures(candidate_log)
     baseline = signatures(baseline_log)
     if not candidate or not baseline:
@@ -49,6 +102,7 @@ def compare(candidate_log, baseline_log, similarity=0.92):
                    for old in baseline):
             new.append(item)
     return {"allowed": not new,
+            "basis": "fuzzy_signatures",
             "reason": "candidate introduces no failures beyond production baseline" if not new
                       else f"candidate introduces {len(new)} new failure signature(s)",
             "candidate_signatures": len(candidate), "baseline_signatures": len(baseline),
