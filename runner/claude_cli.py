@@ -299,7 +299,8 @@ def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
 # ---------------------------------------------------------------------------
 
 def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
-        permission="acceptEdits", timeout=None, output_only=True, sandbox=False):
+        permission="acceptEdits", timeout=None, output_only=True, sandbox=False,
+        extra_args=None):
     """Metered Claude call.
 
     Returns {text, cost_usd, notional_usd, input_tokens, output_tokens, returncode, raw}.
@@ -344,14 +345,14 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         cwd = _sandbox_dir
     try:
         return _run_inner(prompt, model, cwd, env, project, max_turns,
-                          permission, timeout, output_only)
+                          permission, timeout, output_only, extra_args=extra_args)
     finally:
         if _sandbox_dir:
             shutil.rmtree(_sandbox_dir, ignore_errors=True)
 
 
 def _run_inner(prompt, model, cwd, env, project, max_turns,
-               permission, timeout, output_only):
+               permission, timeout, output_only, extra_args=None):
 
     # --- Route: Agent SDK vs CLI subprocess ---
     # Both paths use subscription tokens (not API billing). The SDK path gives us
@@ -461,6 +462,14 @@ def _run_inner(prompt, model, cwd, env, project, max_turns,
         cmd += ["--permission-mode", permission]
     if max_turns:
         cmd += ["--max-turns", str(max_turns)]
+    # LEAN / STRUCTURED CALLS (2026-09-11, frontier.py): callers may append CLI flags — an
+    # explicit --system-prompt, an empty --mcp-config with --strict-mcp-config, --tools, a
+    # --json-schema. A default headless call carries 30-60K tokens of Claude Code preamble and
+    # every configured MCP server's tool list; the lean set measured 768. The flags are
+    # appended AFTER the metered/guarded part of the command so nothing here bypasses the kill
+    # switch, the circuit breaker or usage metering.
+    if extra_args:
+        cmd += [str(a) for a in extra_args]
     proc = subprocess.run(cmd, cwd=cwd, env=runenv, capture_output=True, text=True, timeout=timeout)
     text, cost, itok, otok, raw = proc.stdout, 0.0, 0, 0, None
     try:

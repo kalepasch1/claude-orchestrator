@@ -31,10 +31,20 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# 2026-09-11: this module imported a `llm` helper that does not exist in the repo, so every
+# reviewer failed closed with "llm unavailable" and the commission never scored a single
+# artifact (publication_reviews was empty after six weeks of Consilium output). Reviewers now
+# route through frontier.py: rigor on Fable 5.1, evidence on Opus 5 WITH WebFetch so it can open
+# the cited URLs, novelty/utility on the mid tier, exposure on the cross-vendor model (GPT-5.5)
+# when available. Fail-closed semantics are unchanged: a scoring error still blocks publication.
 try:
-    import llm  # project's model helper
+    import frontier
 except Exception:  # pragma: no cover
-    llm = None
+    frontier = None
+
+REVIEWER_TIER = {"rigor": 9, "evidence": 8, "novelty": 7, "utility": 6, "risk": 7}
+SCORE_SCHEMA = {"type": "object", "properties": {"score": {"type": "number"}, "rationale": {"type": "string"}},
+                "required": ["score", "rationale"]}
 
 # Bars are deliberately different: publishing is a higher bar than steering.
 PUBLISH_BAR = float(os.environ.get("PUBCOM_PUBLISH_BAR", "0.78"))
@@ -70,13 +80,33 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
         "content": (artifact.get("content") or "")[:6000],
         "citations": artifact.get("citations") or [],
     })[:9000]
-    if llm is None:
-        return {"score": 0.0, "rationale": "llm unavailable — fail-closed"}
+    if frontier is None:
+        return {"score": 0.0, "rationale": "frontier unavailable — fail-closed"}
+    instr = system_prompt + "\n\nReturn ONLY JSON: {\"score\": <0.0-1.0>, \"rationale\": \"<=200 chars\"}"
     try:
-        raw = llm.ask(
-            system_prompt + "\n\nReturn ONLY JSON: {\"score\": <0.0-1.0>, \"rationale\": \"<=200 chars\"}",
-            body, temperature=0)
-        data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+        data = None
+        if reviewer_key == "risk" and frontier.codex_available():
+            r = frontier.codex_complete("ARTIFACT:\n" + body, system=instr, json_schema=SCORE_SCHEMA,
+                                        tag="pubcom.risk")
+            data = r.get("json") if not r.get("error") else None
+        if data is None:
+            tools = frontier.WEB_TOOLS if reviewer_key == "evidence" else None
+            r = frontier.complete("ARTIFACT:\n" + body, system=instr + (
+                "\nOpen the cited URLs with WebFetch and check that each actually supports its "
+                "proposition; a citation that does not resolve or does not say what is claimed is a "
+                "FAILED citation." if tools else ""),
+                need=REVIEWER_TIER.get(reviewer_key, 7), tools=tools,
+                max_turns=(10 if tools else 1), json_schema=SCORE_SCHEMA,
+                tag=f"pubcom.{reviewer_key}")
+            data = r.get("json") if not r.get("error") else None
+            if data is None and r.get("text") and not r.get("error"):
+                data = frontier.extract_json(r["text"])
+        if data is None:
+            # Frontier out of budget: the strong local model may still score. Fail closed on any error.
+            r = frontier.local_complete(instr + "\n\nARTIFACT:\n" + body, tag=f"pubcom.{reviewer_key}")
+            data = frontier.extract_json(r.get("text") or "")
+        if not isinstance(data, dict):
+            raise ValueError("no score returned")
         return {"score": max(0.0, min(1.0, float(data.get("score", 0)))),
                 "rationale": str(data.get("rationale", ""))[:200]}
     except Exception as e:
@@ -123,23 +153,53 @@ def review_artifact(artifact: dict) -> dict:
     }
 
 
+def _loads(v, default):
+    try:
+        return json.loads(v) if isinstance(v, str) else (v if v is not None else default)
+    except Exception:
+        return default
+
+
 def _candidates(limit: int):
-    """Consilium output not yet reviewed by the commission."""
-    rows = db.select("committee_opinions", {
-        "select": "id,committee,subject_title,consensus_verdict,opinion",
-        "order": "created_at.desc", "limit": str(limit * 3)}) or []
+    """Consilium output not yet reviewed by the commission. VERDICT CARDS FIRST (2026-09-11):
+    they are the artifacts that steer Foulkon and feed papers, and the old query never looked at
+    them at all — it only scored engineering-committee opinions."""
     done = {r.get("artifact_id") for r in
-            (db.select("publication_reviews", {"select": "artifact_id", "limit": "1000"}) or [])}
+            (db.select("publication_reviews", {"select": "artifact_id", "limit": "5000"}) or [])}
     out = []
+    cards = db.select("verdict_cards", {
+        "select": "id,vertical,question,verdict,position,citations,assumptions,dissent,flips_if,"
+                  "conditions,unsettled,confidence,publication_state,status,minted_at",
+        "status": "eq.fresh", "publication_state": "eq.internal",
+        "order": "minted_at.desc", "limit": str(limit * 3)}) or []
+    for c in cards:
+        if c.get("id") in done:
+            continue
+        content = (f"POSITION:\n{c.get('position') or ''}\n\nDISSENT: {c.get('dissent') or 'none'}\n"
+                   f"FLIPS IF: {c.get('flips_if') or ''}\nCONDITIONS: {c.get('conditions') or ''}\n"
+                   f"UNSETTLED: {c.get('unsettled')}\nASSUMPTIONS: {_loads(c.get('assumptions'), [])}")
+        out.append({"id": c.get("id"), "type": "verdict_card", "title": c.get("question"),
+                    "verdict": c.get("verdict"), "content": content,
+                    "citations": _loads(c.get("citations"), [])})
+        if len(out) >= limit:
+            return out
+    rows = db.select("committee_opinions", {
+        "select": "id,committee,subject_title,consensus_verdict,opinion,citations",
+        "order": "created_at.desc", "limit": str(limit * 3)}) or []
     for r in rows:
         if r.get("id") in done:
             continue
         out.append({"id": r.get("id"), "type": "committee_opinion",
                     "title": r.get("subject_title"), "verdict": r.get("consensus_verdict"),
-                    "content": r.get("opinion"), "citations": []})
+                    "content": r.get("opinion"), "citations": _loads(r.get("citations"), [])})
         if len(out) >= limit:
             break
     return out
+
+
+#: verdict_cards.publication_state after a commission decision. "internal" is the unreviewed
+#: state; nothing reaches a customer until commission_passed AND an attorney sign-off.
+CARD_STATE = {"publish": "commission_passed", "steer_only": "steer", "revise": "revise", "reject": "rejected"}
 
 
 def run(limit: int = BATCH) -> dict:
@@ -160,6 +220,14 @@ def run(limit: int = BATCH) -> dict:
             }, upsert=True)
         except Exception as e:
             print(f"publication_commission: persist failed for {rec['artifact_id']}: {e}")
+        if rec["artifact_type"] == "verdict_card":
+            try:
+                db.update("verdict_cards", {"id": rec["artifact_id"]},
+                          {"publication_state": CARD_STATE.get(rec["decision"], "internal")})
+            except Exception as e:
+                print(f"publication_commission: card state update failed for {rec['artifact_id']}: {e}")
+        print(f"publication_commission: {rec['artifact_type']} {str(rec['artifact_id'])[:8]} -> "
+              f"{rec['decision']} (composite {rec['composite']}, veto={rec['veto']})", flush=True)
     print("publication_commission: " + json.dumps(tally))
     return tally
 
