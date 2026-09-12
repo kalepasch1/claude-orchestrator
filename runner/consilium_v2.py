@@ -57,9 +57,27 @@ RESEARCH = os.environ.get("ORCH_CONSILIUM_RESEARCH", "true").lower() not in ("0"
 CROSS_VENDOR = os.environ.get("ORCH_CONSILIUM_CROSS_VENDOR", "true").lower() not in ("0", "false", "no", "off")
 SEATS = int(os.environ.get("ORCH_CONSILIUM_SEATS", "5"))
 MAX_TURNS = int(os.environ.get("ORCH_CONSILIUM_MAX_TURNS", "18"))
-MIN_TOKENS = int(os.environ.get("ORCH_CONSILIUM_MIN_TOKENS", "30000"))
+# TWO-PHASE (2026-09-12). The single-call tournament measured 220–310K budget-weighted tokens: a
+# 30–40 turn research loop inside the Fable call re-reads its growing context every turn and the
+# tool calls themselves are output tokens (weighted x5). Splitting the work — a research clerk on
+# the mid tier builds an AUTHORITY DOSSIER (opened URLs + verbatim quotes), then ONE no-tool Fable
+# call debates on that record — keeps the grounding contract (every citation is an opened URL) and
+# takes the research loop out of the frontier call. Dossiers are cached per question and every
+# opened source goes into an authority cache that later questions on the same vertical reuse.
+MODE = os.environ.get("ORCH_CONSILIUM_MODE", "two_phase").strip().lower()
+RESEARCH_NEED = int(os.environ.get("ORCH_CONSILIUM_RESEARCH_NEED", "8"))
+RESEARCH_TURNS = int(os.environ.get("ORCH_CONSILIUM_RESEARCH_TURNS", "12"))
+COMPACT = os.environ.get("ORCH_CONSILIUM_COMPACT", "true").lower() not in ("0", "false", "no", "off")
+CORPUS_K = int(os.environ.get("ORCH_CONSILIUM_CORPUS_K", "8"))
+DOSSIER_TTL_S = int(os.environ.get("ORCH_CONSILIUM_DOSSIER_TTL_S", str(7 * 86400)))
+# What a tournament costs in budget-weighted tokens (measured), so a call is only started when the
+# hour can fund it instead of overshooting the cap mid-tournament.
+ENVELOPE = {"two_phase": 120000, "single": 250000}
+MIN_TOKENS = int(os.environ.get("ORCH_CONSILIUM_MIN_TOKENS", str(ENVELOPE.get(MODE, 250000))))
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 TRANSCRIPTS = os.path.join(HOME, "consilium", "tournaments.jsonl")
+DOSSIER_DIR = os.path.join(HOME, "consilium", "dossiers")
+AUTHORITY_CACHE = os.path.join(HOME, "consilium", "authority_cache.jsonl")
 
 CITATION = {"type": "object", "properties": {
     "source": {"type": "string"}, "proposition": {"type": "string"},
@@ -106,6 +124,79 @@ SCHEMA = {"type": "object", "properties": {
         "sources_opened": {"type": "array", "items": {"type": "string"}}},
         "required": ["queries", "sources_opened"]}},
     "required": ["seats", "bouts", "red_team", "memo", "research"]}
+
+SOURCE = {"type": "object", "properties": {
+    "url": {"type": "string"}, "title": {"type": "string"}, "authority": {"type": "string"},
+    "jurisdiction": {"type": "string"}, "quote": {"type": "string"}, "proposition": {"type": "string"},
+    "verified": {"type": "boolean"}},
+    "required": ["url", "title", "authority", "jurisdiction", "quote", "proposition", "verified"]}
+
+DOSSIER = {"type": "object", "properties": {
+    "issues": {"type": "array", "items": {"type": "string"}},
+    "sources": {"type": "array", "items": SOURCE},
+    "unresolved": {"type": "array", "items": {"type": "string"}},
+    "queries": {"type": "array", "items": {"type": "string"}}},
+    "required": ["issues", "sources", "unresolved", "queries"]}
+
+RESEARCH_SYSTEM = """You are the CONSILIUM's research clerk. Build the AUTHORITY DOSSIER a tribunal will debate
+on — the operative primary authority for the question, opened and quoted, with the strongest authority
+on EACH side of every contested issue.
+
+RULES
+ * Open sources with WebFetch (search with WebSearch only to locate them). Prefer official text:
+   legislature and agency sites, eCFR, Federal Register, court opinions, no-action letters.
+ * For every source record: the URL you actually opened; the citation string (e.g. "31 CFR 1022.380(a)",
+   "NY Banking Law § 641(1)", "Loper Bright v. Raimondo, 603 U.S. 369 (2024)"); the jurisdiction; a
+   VERBATIM quote of at most 40 words that bears on the question; the proposition it supports; and
+   verified=true ONLY if you opened the page and the quote is verbatim. An unopened or paraphrased
+   source is verified=false.
+ * PREVIOUSLY OPENED SOURCES and CORPUS PASSAGES given below are already on the record: reuse them
+   (copy url/quote, verified=true) when they supply what is needed; re-open only when a different
+   passage is required. This saves the tribunal's budget.
+ * At most 14 sources; name at most 6 issues; list what you could not resolve. Do not argue the
+   question — that is the tribunal's job. Return ONLY the JSON object."""
+
+RESEARCH_USER = """QUESTION: {question}
+CONTEXT: {context}
+VERTICAL: {vertical}
+TODAY: {today}
+
+PREVIOUSLY OPENED SOURCES (authority cache; reuse when apt):
+{prior}
+
+CORPUS PASSAGES (the firm's verified corpus; treat as opened):
+{corpus}
+
+Build the dossier now and return the JSON object."""
+
+DOSSIER_RULES = """
+
+NO TOOLS IN THIS CALL. The AUTHORITY DOSSIER in the user message is the record. Cite ONLY dossier
+sources: each citation's url must be a dossier URL and its quote must be that source's quote (or a
+sub-span of it); copy the dossier's verified flag. Authority you believe exists but is not in the
+dossier goes under `assumptions` (verified=false, confidence <= 0.5) — never as a citation.
+`research.sources_opened` = the dossier URLs you relied on; `research.queries` = []."""
+
+LENGTH_RULES = """
+
+LENGTH DISCIPLINE (output tokens are the scarce resource; say each thing once, precisely):
+ * r1_analysis <= 90 words; steelman <= 80 words; r3_grounds <= 60 words; bout grounds <= 40 words;
+   red_team.attack <= 150 words; memo.memo 700-1100 words; each citation quote <= 30 words.
+ * Never restate another seat's text — refer to it by seat name. Never repeat a quote already given."""
+
+DEBATE_USER = """QUESTION: {question}
+CONTEXT: {context}
+VERTICAL: {vertical}
+PRIORITY: {priority}
+TODAY: {today}
+
+SEATS (argue each faithfully from its own doctrine and method):
+{seats}
+
+AUTHORITY DOSSIER (the only citable record; [n] url | authority | jurisdiction | verified):
+{dossier}
+
+Run the full gauntlet now and return the JSON object."""
 
 ATTACK_SCHEMA = {"type": "object", "properties": {
     "breaks": {"type": "boolean"}, "attack": {"type": "string"},
@@ -261,9 +352,179 @@ def _append_transcript(rec):
         pass
 
 
+# ── research phase: dossier + authority cache + corpus ──────────────────────────────────────────
+_STOP = set("""the a an and or of to in for on by with from as at is are be was were that this these those
+its it their they them which who whom what when where how does do did can could would should must may
+shall any all our your his her we you under over into onto about between among than then there here
+such other same also not non per via use used using make makes made company business activities
+regarding whether question""".split())
+
+
+def _keywords(text):
+    toks = re.findall(r"[A-Za-z][A-Za-z\-]{3,}|\d+(?:\.\d+)+|§\s*\d+[\w().-]*", (text or "").lower())
+    return {t.strip() for t in toks if t.strip() and t.strip() not in _STOP}
+
+
+def _norm_url(u):
+    u = str(u or "").strip().lower().split("#")[0]
+    return u[:-1] if u.endswith("/") else u
+
+
+def _dossier_key(question, docket_id):
+    import hashlib
+    return hashlib.sha1(f"{docket_id or ''}|{(question or '').strip().lower()}".encode()).hexdigest()[:16]
+
+
+def _load_dossier(key):
+    try:
+        path = os.path.join(DOSSIER_DIR, key + ".json")
+        if time.time() - os.path.getmtime(path) > DOSSIER_TTL_S:
+            return None
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and d.get("sources") else None
+    except Exception:
+        return None
+
+
+def _save_dossier(key, dossier):
+    try:
+        os.makedirs(DOSSIER_DIR, exist_ok=True)
+        with open(os.path.join(DOSSIER_DIR, key + ".json"), "w") as f:
+            json.dump(dossier, f)
+    except Exception:
+        pass
+
+
+def _append_authority_cache(sources, vertical, key):
+    try:
+        os.makedirs(os.path.dirname(AUTHORITY_CACHE), exist_ok=True)
+        at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with open(AUTHORITY_CACHE, "a") as f:
+            for src in sources:
+                if not src.get("verified") or not src.get("url"):
+                    continue
+                rec = {k: _s(src.get(k))[:600] for k in ("url", "title", "authority", "jurisdiction", "quote", "proposition")}
+                rec.update(vertical=vertical or "", key=key, at=at)
+                f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def _cache_hits(question, vertical, k=8, min_score=2):
+    """Previously opened, verified sources whose authority/title/proposition overlap this question."""
+    qk = _keywords(question)
+    if not qk:
+        return []
+    best = {}
+    try:
+        with open(AUTHORITY_CACHE) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                url = _norm_url(rec.get("url"))
+                if not url:
+                    continue
+                score = len(qk & _keywords(" ".join([rec.get("authority", ""), rec.get("title", ""),
+                                                     rec.get("proposition", "")])))
+                if vertical and rec.get("vertical") == vertical:
+                    score += 1
+                if score >= min_score and score > best.get(url, (0, None))[0]:
+                    best[url] = (score, rec)
+    except Exception:
+        return []
+    ranked = sorted(best.values(), key=lambda x: -x[0])[:k]
+    return [r for _, r in ranked]
+
+
+def _corpus_block(question):
+    try:
+        import corpus_retrieval
+        return corpus_retrieval.dossier_block(question, k=CORPUS_K, max_chars=5000) or ""
+    except Exception:
+        return ""
+
+
+def _render_prior(hits):
+    return "\n".join(f"- {h.get('url')} | {h.get('authority')} | {h.get('jurisdiction')}\n"
+                     f"  quote: \"{_s(h.get('quote'))[:300]}\" — {_s(h.get('proposition'))[:200]}" for h in hits)
+
+
+def _render_dossier(dossier):
+    lines = []
+    if dossier.get("issues"):
+        lines.append("ISSUES: " + "; ".join(_s(i)[:160] for i in dossier["issues"][:6]))
+    for n, src in enumerate(dossier.get("sources") or [], 1):
+        lines.append(f"[{n}] {src.get('url')} | {_s(src.get('authority'))[:120]} | "
+                     f"{_s(src.get('jurisdiction'))[:40]} | {'verified' if src.get('verified') else 'UNVERIFIED'}")
+        lines.append(f"    quote: \"{_s(src.get('quote'))[:320]}\" — {_s(src.get('proposition'))[:240]}")
+    if dossier.get("unresolved"):
+        lines.append("UNRESOLVED: " + "; ".join(_s(u)[:160] for u in dossier["unresolved"][:6]))
+    return "\n".join(lines)
+
+
+def _research_phase(question, context, vertical, docket_id):
+    """Return (dossier or None, info). The dossier is cached per question for DOSSIER_TTL_S."""
+    key = _dossier_key(question, docket_id)
+    cached = _load_dossier(key)
+    if cached:
+        return cached, {"cached": True, "sources": len(cached.get("sources") or []),
+                        "verified_sources": sum(1 for x in cached["sources"] if x.get("verified"))}
+    prior = _cache_hits(question, vertical)
+    corpus = _corpus_block(question)
+    prompt = RESEARCH_USER.format(question=(question or "")[:3000], context=(context or "")[:2000],
+                                  vertical=vertical or "n/a", today=datetime.date.today().isoformat(),
+                                  prior=_render_prior(prior) or "(none yet)", corpus=corpus or "(none available)")
+    r = frontier.complete(prompt, system=RESEARCH_SYSTEM, need=RESEARCH_NEED, tools=frontier.WEB_TOOLS,
+                          max_turns=RESEARCH_TURNS, json_schema=DOSSIER,
+                          timeout=int(os.environ.get("ORCH_CONSILIUM_RESEARCH_TIMEOUT_S", "900")),
+                          tag="consilium.research")
+    info = {"cached": False, "model": r.get("model"), "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
+            "turns": r.get("turns"), "latency_s": r.get("latency_s"), "error": r.get("error") or "",
+            "corpus_passages": corpus.count("\n[") if corpus else 0, "prior_hits": len(prior)}
+    j = r.get("json")
+    if r.get("error") or not isinstance(j, dict) or not isinstance(j.get("sources"), list):
+        return None, info
+    srcs = [x for x in j["sources"] if isinstance(x, dict) and _s(x.get("url")).strip()][:16]
+    for x in srcs:
+        x["verified"] = bool(x.get("verified")) and bool(_s(x.get("quote")).strip())
+    if not srcs:
+        info["error"] = info["error"] or "dossier had no sources"
+        return None, info
+    j["sources"] = srcs
+    info["sources"] = len(srcs)
+    info["verified_sources"] = sum(1 for x in srcs if x.get("verified"))
+    _save_dossier(key, j)
+    _append_authority_cache(srcs, vertical, key)
+    return j, info
+
+
+def _enforce_dossier(cites, dossier):
+    """A citation is verified only if its URL is a verified dossier source — the model's flag is not
+    trusted. Returns the kept citations (unknown URLs are demoted, not dropped)."""
+    ok = {_norm_url(x.get("url")) for x in (dossier.get("sources") or []) if x.get("verified")}
+    known = {_norm_url(x.get("url")) for x in (dossier.get("sources") or [])}
+    demoted = 0
+    for c in cites:
+        u = _norm_url(c.get("url"))
+        v = bool(u) and u in ok
+        if c.get("verified") and not v:
+            demoted += 1
+        c["verified"] = v
+        if u and u not in known:
+            c["confidence"] = min(float(c.get("confidence") or 0.5), 0.5)
+    return demoted
+
+
 # ── the tournament ───────────────────────────────────────────────────────────────────────────────
-def _tournament_call(user, tools, model=None):
-    return frontier.complete(user, system=SYSTEM, need=9, model=model, tools=tools,
+def _system(tools):
+    return SYSTEM + ("" if tools else DOSSIER_RULES) + (LENGTH_RULES if COMPACT else "")
+
+
+def _tournament_call(user, tools, model=None, system=None):
+    return frontier.complete(user, system=system or _system(tools), need=9, model=model, tools=tools,
                              max_turns=MAX_TURNS if tools else 1, json_schema=SCHEMA,
                              timeout=int(os.environ.get("ORCH_CONSILIUM_TIMEOUT_S", "1500")),
                              tag="consilium.tournament")
@@ -292,14 +553,28 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     if len(panel) < 2:
         return None
     priority = (priority or _priority_from(context)).lower()
-    tools = frontier.WEB_TOOLS if RESEARCH else None
-    user = USER.format(question=(question or "")[:3000], context=(context or "")[:3000],
-                       vertical=vertical or "n/a", priority=priority,
-                       today=datetime.date.today().isoformat(),
-                       seats="\n".join(_seat_block(e) for e in panel))
     t0 = time.time()
+    fmt = dict(question=(question or "")[:3000], context=(context or "")[:3000], vertical=vertical or "n/a",
+               priority=priority, today=datetime.date.today().isoformat(),
+               seats="\n".join(_seat_block(e) for e in panel))
+    mode = MODE if RESEARCH else "single"
+    dossier, phases, fallback = None, {}, None
+    tools = frontier.WEB_TOOLS if RESEARCH else None
+    if mode == "two_phase":
+        dossier, phases["research"] = _research_phase(question, context, vertical, docket_id)
+        if dossier:
+            tools = None
+            user = DEBATE_USER.format(dossier=_render_dossier(dossier), **fmt)
+        else:
+            mode = "single"
+            print(f"consilium_v2: research phase unusable ({phases['research'].get('error') or 'no dossier'}); "
+                  f"single-call tournament instead", flush=True)
+            if not frontier.available(min_tokens=ENVELOPE["single"]):
+                print("consilium_v2: budget cannot fund a single-call tournament; legacy gauntlet will run", flush=True)
+                return None
+    if mode == "single":
+        user = USER.format(**fmt)
     r = _tournament_call(user, tools)
-    fallback = None
     if not _usable(r):
         # MID-TIER RETRY (2026-09-12). The third live tournament (a prediction-market wagering
         # question, gaming vertical) died after 7 minutes and 199K weighted tokens with "API Error:
@@ -321,6 +596,8 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     if not _usable(r):
         print(f"consilium_v2: tournament unusable ({reason}); legacy gauntlet will run", flush=True)
         return None
+    phases["debate"] = {"model": r.get("model"), "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
+                        "turns": r.get("turns"), "latency_s": r.get("latency_s")}
     j = r["json"]
     memo = j["memo"]
     seats_out = [s for s in (j.get("seats") or []) if isinstance(s, dict)]
@@ -385,7 +662,10 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                 cross["revised"] = True
 
     cites = [c for c in (memo.get("citations") or []) if isinstance(c, dict)]
+    demoted = _enforce_dossier(cites, dossier) if dossier else 0
     verified = [c for c in cites if c.get("verified") and c.get("url")]
+    rin = int((phases.get("research") or {}).get("tokens_in") or 0)
+    rout = int((phases.get("research") or {}).get("tokens_out") or 0)
     flipped = sum(1 for s in seats_out if s.get("moved"))
     conceded = sum(1 for s in seats_out if str(s.get("r3_outcome", "")).lower() in ("concede", "partial"))
     process = {"engine": "consilium_v2", "model": r.get("model"), "research": bool(tools),
@@ -395,8 +675,11 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                "red_team_severity": red.get("severity"),
                "citation_count": len(cites), "verified_citations": len(verified),
                "sources_opened": ((j.get("research") or {}).get("sources_opened") or [])[:25],
-               "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
-               "turns": r.get("turns"), "latency_s": round(time.time() - t0, 1),
+               "tokens_in": int(r.get("tokens_in") or 0) + rin, "tokens_out": int(r.get("tokens_out") or 0) + rout,
+               "turns": int(r.get("turns") or 0) + int((phases.get("research") or {}).get("turns") or 0),
+               "latency_s": round(time.time() - t0, 1),
+               "mode": mode, "phases": phases,
+               "dossier_sources": len((dossier or {}).get("sources") or []), "citations_demoted": demoted,
                "fallback": fallback, "cross_vendor": cross}
     agg = {"question": question,
            "verdict": _s(memo.get("verdict")),
@@ -412,11 +695,11 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
            "process": process}
     _append_transcript({"at": datetime.datetime.utcnow().isoformat(), "docket_id": docket_id,
                         "vertical": vertical, "priority": priority, "question": question,
-                        "tournament": j, "final_memo": memo, "process": process})
-    print(f"consilium_v2: {r.get('model')} tournament on '{(question or '')[:70]}' -> "
-          f"{len(cites)} citations ({len(verified)} verified), red={red.get('severity')}, "
-          f"flipped={flipped}, conceded={conceded}, tokens={r.get('tokens_in')}+{r.get('tokens_out')}, "
-          f"{process['latency_s']}s", flush=True)
+                        "tournament": j, "final_memo": memo, "process": process, "dossier": dossier})
+    print(f"consilium_v2[{mode}]: {r.get('model')} tournament on '{(question or '')[:70]}' -> "
+          f"{len(cites)} citations ({len(verified)} verified, {demoted} demoted), red={red.get('severity')}, "
+          f"flipped={flipped}, conceded={conceded}, tokens={process['tokens_in']}+{process['tokens_out']} "
+          f"(research {rin}+{rout}), {process['latency_s']}s", flush=True)
     return agg
 
 
