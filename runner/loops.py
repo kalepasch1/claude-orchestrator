@@ -12,6 +12,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 DEFAULTS = {"remediate": 300, "optimize": 86400, "learn": 604800, "review": 86400}
+# Fleet-wide loops: ONE row (owned by the orchestrator's own project) whose handler
+# iterates the whole portfolio internally — the security_rls pattern. Listed here so a
+# fresh control plane grows them without a hand INSERT, and so a deleted row comes back.
+FLEET_LOOPS = {"db_steering": int(os.environ.get("ORCH_DB_STEERING_CADENCE_S", "600"))}
+FLEET_LOOP_PROJECT = "claude-orchestrator"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -41,6 +46,12 @@ def ensure_all():
             if (p["name"], typ) not in existing:
                 db.insert("loops", {"project": p["name"], "type": typ, "cadence_seconds": cad, "enabled": True})
                 made += 1
+    fleet_types = {typ for (_proj, typ) in existing}
+    for typ, cad in FLEET_LOOPS.items():
+        if typ not in fleet_types:
+            db.insert("loops", {"project": FLEET_LOOP_PROJECT, "type": typ, "cadence_seconds": cad,
+                                "enabled": True, "config": {"loop": typ}})
+            made += 1
     print(f"loops.ensure_all: created {made} missing loops"); return made
 
 
@@ -109,6 +120,11 @@ def run_due():
                 import growth_learn; growth_learn.run()
             elif typ == "security_rls":
                 import rls_guard; rls_guard.run()
+            elif typ == "db_steering":
+                # Perpetual read-only review of every linked database (Supabase auto-discovered,
+                # AWS/Google/others linked by the operator): findings -> coder-prompt brief,
+                # swarm remediation, legal-memo evidence. See runner/db_steering.py.
+                import db_steering; db_steering.run()
             elif typ == "deploy_watch":
                 import deploy_watch; deploy_watch.run()
             elif typ == "queue_groom":

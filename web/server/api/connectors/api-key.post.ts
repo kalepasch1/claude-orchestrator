@@ -2,6 +2,7 @@ import { CONNECTOR_BY_ID } from '~/config/connectors'
 import { organizationContext } from '../../utils/adaptiveFabric'
 import { auditConnector, encryptSecret, hashState, requireConnectorUser, safeAccount } from '../../utils/connectorFabric'
 import { serviceClient } from '../../utils/fleetSupabase'
+import { dialectFor, mapConnectorToProvider, nonSecretConfig, refFromCredentials } from '../../utils/dbSteering'
 
 export default defineEventHandler(async (event) => {
   const user = await requireConnectorUser(event); const body = await readBody<any>(event); const definition = CONNECTOR_BY_ID[body?.provider]
@@ -25,5 +26,12 @@ export default defineEventHandler(async (event) => {
   const { data, error } = await serviceClient().from('connector_accounts').upsert({ organization_id: context.membership.organization_id, user_id: user.id, provider: definition.id, kind: definition.kind, label, status: 'connected', environment, scopes: definition.defaultScopes, token_audience: definition.tokenAudience, access_token_ciphertext: brokered ? `hsm-ref:${hashState(credentialRef)}` : encryptSecret(secret), metadata, updated_at: new Date().toISOString() }, { onConflict: 'user_id,provider,label' }).select().single()
   if (error) throw createError({ statusCode: 500, message: 'credential_persistence_failed' })
   await auditConnector(user.id, definition.id, brokered ? 'hsm_credential_reference_connected' : 'credential_connected', 'success', definition.defaultScopes, definition.tokenAudience, data.id, { organization_id: context.membership.organization_id, environment, credential_mode: brokered ? 'short_lived_lease' : 'encrypted_static' })
+  // Database Steering: a Databases connector also registers a db_sources row. Only a `vault:<account id>` REFERENCE and the non-secret fields are stored; the runner decrypts the account with CONNECTOR_VAULT_KEY.
+  const dbProvider = definition.category === 'Databases' ? mapConnectorToProvider(definition.id, { aurora: body?.aurora === true }) : null
+  if (dbProvider) {
+    const config = nonSecretConfig(brokered ? null : credentials); const ref = refFromCredentials(brokered ? null : credentials, definition.id)
+    const { error: sourceError } = await serviceClient().from('db_sources').upsert({ provider: dbProvider, dialect: dialectFor(dbProvider, config), ref, label, region: config.region || null, config, credential_ref: `vault:${data.id}`, discovered_via: 'web_connector', status: 'active', enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'provider,ref' })
+    if (sourceError) await auditConnector(user.id, definition.id, 'db_source_registration_failed', 'error', definition.defaultScopes, definition.tokenAudience, data.id, { provider: dbProvider, ref, message: sourceError.message })
+  }
   return { account: safeAccount(data) }
 })
