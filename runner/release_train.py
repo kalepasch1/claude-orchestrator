@@ -16,7 +16,7 @@ Flow per project:
   4. if green AND batch/cadence gates are satisfied: record last_good = prod tip, merge staging -> prod, push.
      deploy_verify then confirms Vercel success or rolls back to last_good.
 """
-import concurrent.futures, os, sys, subprocess, datetime, json, tempfile, threading
+import concurrent.futures, os, sys, subprocess, datetime, json, tempfile, threading, time
 import contextlib
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(RUNNER_DIR)
@@ -2235,6 +2235,7 @@ def _run_for_unlocked(project, repo_override=None, lock_lease=None):
     # the outcome is known so it records the SHA actually shipped, not a pre-integration tip.
     pushed = None
     push_log = ""
+    _release_t0 = time.time()
     if push_on:
         cooling = _push_family_cooling(project, to_sha)
         if cooling:
@@ -2252,11 +2253,30 @@ def _run_for_unlocked(project, repo_override=None, lock_lease=None):
             test_cmd, require_tests, bcmd, manifest=manifest)
     ver = _next_version()
     changelog = _git(repo, "log", "--oneline", f"{last_good}..{to_sha}").stdout[:2000]
+    _deploy_status = ("building" if pushed else "failed") if push_on else "pending"
     rel = _insert_release({"project": project, "version": ver, "from_sha": last_good,
                     "to_sha": to_sha, "n_changes": int(ahead), "changelog": changelog,
-                    "deploy_status": ("building" if pushed else "failed") if push_on else "pending",
+                    "deploy_status": _deploy_status,
                     "note": "" if (pushed or not push_on)
                     else stderr_digest.digest(push_log or "push failed", 160)})
+    # Deploy KPI telemetry — records every release attempt so the dashboard can
+    # surface deploy count, success rate, and recent failures. Fail-soft: a KPI
+    # write must never take down a release.
+    try:
+        from runner.deploy_kpi import write_deploy_kpi
+        _kpi_status = "succeeded" if pushed else ("failed" if push_on else "started")
+        _kpi_dur = round(time.time() - _release_t0, 2)
+        write_deploy_kpi(
+            deploy_id=f"{project}-{(to_sha or '')[:12]}-{ver}",
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            status=_kpi_status,
+            duration_seconds=_kpi_dur,
+            error_message=(stderr_digest.digest(push_log, 200)
+                           if push_on and not pushed else None),
+        )
+    except Exception as _kpi_exc:
+        print(f"release_train {project}: deploy KPI write skipped ({_kpi_exc})",
+              flush=True)
     withdrawn = []
     if push_on and not pushed:
         # Nothing reached origin, so no task in this batch may keep claiming MERGED.
