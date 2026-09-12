@@ -172,6 +172,57 @@ def _paused(project=None):
         return False
 
 
+# A run that ended because it ran out of turns is recoverable — give it more turns
+# and it finishes. A run that ended because the work is genuinely broken is not.
+# Downstream (runner retry policy, ev_scheduler) can only tell them apart if the
+# reason survives, so both transports write it to the same key.
+_MAX_TURNS_TEXT_MARKERS = (
+    "reached maximum number of turns",
+    "maximum number of turns",
+    "max turns reached",
+)
+
+
+def _looks_like_max_turns(*values):
+    """True when any provider field spells out the ran-out-of-turns condition.
+
+    The SDK says subtype="error_max_turns", the CLI JSON says subtype="max_turns"
+    or puts "Reached maximum number of turns" in the result/error string. All three
+    mean the same thing and none of them is worth making thirty callers know about.
+    """
+    for value in values:
+        if not value:
+            continue
+        lowered = str(value).lower()
+        if "max_turns" in lowered or "max-turns" in lowered:
+            return True
+        if any(marker in lowered for marker in _MAX_TURNS_TEXT_MARKERS):
+            return True
+    return False
+
+
+def _normalise_terminal_reason(raw, is_error=False, subtype=None, text=None):
+    """Set raw["terminal_reason"] from whatever the transport actually reported.
+
+    Fail-soft and never destructive: a `terminal_reason` the provider supplied
+    itself is left exactly as it came, and a bad/non-dict `raw` is a no-op rather
+    than an exception — this runs on the return path of every model call and must
+    not be able to turn a completed run into a crash.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    if raw.get("terminal_reason"):
+        return raw
+    error = raw.get("error") or raw.get("stop_reason")
+    if _looks_like_max_turns(subtype, error, raw.get("subtype"), text):
+        raw["terminal_reason"] = "max_turns"
+    elif is_error or raw.get("is_error"):
+        reason = subtype or raw.get("subtype") or error
+        if reason:
+            raw["terminal_reason"] = str(reason)
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # Agent SDK path — uses subscription tokens via the CLI's OAuth auth.
 # Same billing as the CLI subprocess path, but with structured output,
@@ -262,10 +313,7 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
         # should not have to know which transport produced the result, so both paths
         # now answer to raw["terminal_reason"].
         raw["subtype"] = subtype
-        if "max_turns" in str(subtype):
-            raw["terminal_reason"] = "max_turns"
-        elif is_error:
-            raw["terminal_reason"] = str(subtype)
+    _normalise_terminal_reason(raw, is_error=is_error, subtype=subtype, text=text)
 
     return {
         "text": text,
@@ -471,8 +519,23 @@ def _run_inner(prompt, model, cwd, env, project, max_turns,
         usage = raw.get("usage", {}) or {}
         itok = int(usage.get("input_tokens", 0) or 0)
         otok = int(usage.get("output_tokens", 0) or 0)
+        # The CLI reports WHY it stopped in `subtype` (and sometimes only in the
+        # result string); it does not emit `terminal_reason`. Without this the SDK
+        # path's contract — "both paths answer to raw['terminal_reason']" — held on
+        # one path only, and a CLI run that died on max_turns reached callers as a
+        # bare returncode=1, indistinguishable from a genuine failure.
+        _normalise_terminal_reason(
+            raw,
+            is_error=bool(raw.get("is_error")) or proc.returncode != 0,
+            subtype=raw.get("subtype"),
+            text=text,
+        )
     except Exception:
         text = proc.stdout + proc.stderr      # non-JSON fallback (older CLI)
+        # An older CLI that emits no JSON still says it in prose. Keep `raw` None
+        # (callers check for it) but surface the reason on the returned dict.
+        if _looks_like_max_turns(text):
+            raw = {"terminal_reason": "max_turns", "result": text}
     # Subscription calls are costless; explicit API fallback is real billable spend and is recorded
     # as such so the billing guard can enforce the daily cap.
     real_usd = cost if using_api else 0.0
