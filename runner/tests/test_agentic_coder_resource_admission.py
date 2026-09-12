@@ -84,6 +84,13 @@ class LocalCoderResourceAdmissionTest(unittest.TestCase):
         with patch.dict(sys.modules, {"local_model_slots": None}):
             self.assert_deferred(self.run_local(), "guard_unavailable")
 
+    def test_secondary_local_model_does_not_replace_requested_primary_model(self):
+        self.spec.return_value["cmd"] = "aider --model openai/primary --weak-model ollama/tiny:3b --message {prompt}"
+        result = self.module.run("local-coder", "private task", "openai/primary")
+        self.assert_deferred(result, "local_coder_policy_unverified")
+        self.assertEqual(result["model"], "ollama/tiny:3b")
+        self.assertEqual(result["requested_model"], "openai/primary")
+
     def test_missing_guard_api_defers(self):
         for guard in (types.SimpleNamespace(), types.SimpleNamespace(LocalCapacityError=CapacityError)):
             with self.subTest(guard=guard), patch.dict(sys.modules, {"local_model_slots": guard}):
@@ -229,6 +236,14 @@ class RunnerCapacityConsumerTest(unittest.TestCase):
                 self.assertEqual(self.consume({"id": "task-id"}, result, "remote"), "continued")
         self.state.assert_not_called()
         self.assertEqual(self.repair.call_count, 4)
+
+    def test_configuration_hold_preserves_requested_primary_route(self):
+        self.consume({"id": "task-id"}, {"deferred": True, "skipped": "local_capacity",
+                     "model": "ollama/secondary", "requested_model": "openai/primary"}, "mixed-coder")
+        self.assertEqual(self.state.call_args.kwargs["model"], "openai/primary")
+        self.assertEqual(self.state.call_args.kwargs["force_coder"], "mixed-coder")
+        self.assertEqual(self.state.call_args.kwargs["state"], "BLOCKED")
+        self.repair.assert_not_called()
 
     def test_consumer_sanitizes_reason_only_diagnostics(self):
         self.consume({"id": "task-id"}, {"deferred": True, "skipped": "local_capacity",
