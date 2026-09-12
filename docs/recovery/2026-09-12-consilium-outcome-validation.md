@@ -93,6 +93,10 @@ Ollama `/api/ps` is empty. The original Consilium LaunchAgent is registered on
 its 600-second interval, not paused (17 runs at inspection). Native limits are
 one loaded model, one parallel request, queue 2, context 4096, idle residency 30s.
 Host pressure remains warning level 2, so inference is correctly deferred.
+Read-only scheduler status also confirms `paused=false`, frontier enabled,
+no cooldown, 600,000 hourly tokens available but zero remaining in the configured
+3,000,000-token daily budget. Subscription budget exhaustion is independent of
+local RAM; freeing memory alone does not authorize another frontier call.
 
 Four Smarter Nuxt processes (ports 3008, 3019, 3002, 3021) account for roughly
 45 GB of process footprint including compressed allocations. This is not RSS and
