@@ -258,6 +258,17 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
     """Run the full gauntlet. Returns a memo-grade result with dissent and calibration preserved."""
     if not ENABLED:
         return None
+    # CONSILIUM V2 (2026-09-11): the same five rounds, hosted inside ONE frontier-model call with
+    # web-grounded citations and Elo/Brier writeback. Returns the same aggregate shape; None means
+    # the frontier is unavailable and the ~21-call legacy path below runs on local models.
+    try:
+        import consilium_v2
+        _v2 = consilium_v2.run(question, context=context, vertical=vertical, docket_id=docket_id,
+                               seats=seats)
+        if _v2:
+            return _v2
+    except Exception as _e:
+        print(f"gauntlet: consilium_v2 unavailable ({type(_e).__name__}: {str(_e)[:120]}); legacy path", flush=True)
     panel = _seat_pool(vertical, seats)
     if len(panel) < 2:
         return {"error": "expert corps too small; run expert_corps.py tick first"}

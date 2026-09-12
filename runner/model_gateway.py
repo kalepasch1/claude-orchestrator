@@ -60,6 +60,8 @@ PRICES = {
     ("claude", "claude-sonnet-5"): (3.0, 15.0),
     ("claude", "claude-opus-4-8"): (5.0, 25.0),
     ("claude", "claude-fable-5"): (10.0, 50.0),
+    ("claude", "claude-fable-5-1"): (10.0, 50.0),
+    ("claude", "claude-opus-5"): (5.0, 25.0),
     # OpenAI (Jul 2026)
     ("openai", "gpt-5.6-sol"): (5.0, 30.0),
     ("openai", "gpt-5.6-terra"): (2.50, 15.0),

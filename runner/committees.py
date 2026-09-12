@@ -229,6 +229,22 @@ def _seat_need(committee, seat):
 
 
 def _complete(prompt, kind="review", need=None):
+    # CONSILIUM V2 ROUTING (2026-09-11, frontier.py): seats that carry weight — legal/regulatory/
+    # security seats (need 8+), the red seat (7), the chair (9) — run on the frontier tier on
+    # subscription capacity; ordinary seats and triage run on the strong local model. The old
+    # cross-provider rotation remains the fallback when the frontier is paused or out of budget.
+    try:
+        import frontier
+        if frontier.ENABLED:
+            if isinstance(need, (int, float)) and need >= 7 and frontier.available():
+                r = frontier.complete(prompt, need=int(need), tag=f"committee.need{int(need)}")
+                if r.get("text") and not r.get("error"):
+                    return r["text"]
+            r = frontier.local_complete(prompt, tag="committee.seat")
+            if r.get("text"):
+                return r["text"]
+    except Exception:
+        pass
     try:
         import model_policy, model_gateway
         prov, model, _ = model_policy.choose_diverse(kind, need=need)
@@ -710,7 +726,10 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
         f"- {p['seat']}: verdict={p.get('verdict')} score={p.get('score')} conviction={p.get('conviction')} "
         f"| basis: {p.get('basis','')} | risk: {p.get('risk','')} | conditions: {p.get('conditions','')} "
         f"| rec: {p.get('recommendation','')}" for p in positions)[:2000]
-    syn = _json(CHAIR_PROMPT.replace("{chair}", chair).replace("{committee}", name).replace("{positions}", pos_txt))
+    # The chair DECIDES — it gets the frontier tier (need 9) so the memo that steers a build is
+    # written by the strongest model available, not the cheapest.
+    syn = _json(CHAIR_PROMPT.replace("{chair}", chair).replace("{committee}", name).replace("{positions}", pos_txt),
+                need=9)
     if not syn:  # fallback: conviction-weighted seat aggregate
         tw = sum(float(p.get("conviction", 5) or 5) for p in positions) or 1.0
         score = sum(float(p.get("score", 5) or 5) * float(p.get("conviction", 5) or 5) for p in positions) / tw

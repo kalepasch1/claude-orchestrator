@@ -40,6 +40,9 @@ TRANCHES = [
     ("openai",   os.environ.get("OPENAI_STRONG_MODEL", "gpt-5.5"),           "mid",    9),
     ("claude",   os.environ.get("ORCH_ESCALATION_MODEL", "claude-sonnet-4-6"), "sub",  8),   # subscription $0/call
     ("claude",   "claude-opus-4-8",                          "sub",    10),  # subscription but heavy tokens
+    # FRONTIER TIER (2026-09-11): Fable 5.1 on the same subscription. Reachable for need>=10 work;
+    # frontier.py is the direct route for the expert subsystem (lean calls, token budget).
+    ("claude",   os.environ.get("ORCH_FRONTIER_MODEL", "claude-fable-5-1"), "sub", 10),
 ]
 TRANCHES = [t for t in TRANCHES if t[1]]  # drop the strong-local row when not configured
 
