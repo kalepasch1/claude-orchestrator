@@ -84,6 +84,21 @@ The canonical checkout and the active Consilium worktree contain unrelated
 work. Preserve it; promote shared code through `orchestrator/dev` using an
 isolated branch, not a direct production push or a whole feature-branch merge.
 
+Canonical-source verification: the shared patch applied cleanly to staging base
+`817651866`; its offline CI selection passes **248 tests and 64 subtests**, and
+all runner modules compile. Shared integration is separate from local rollout.
+
+At 20:43:51 UTC the resumed scheduler exited zero after recording
+`corpus_forecaster` as `deferred / host_headroom`, with no last completion and
+an explicit retry time. Read-only scheduling then selected `theory_lab` next.
+The daemon remains registered on its original 600-second interval. This proves
+a swallowed local denial is not misreported as job completion.
+
+Unverified local coding CLI transports are held as configuration-blocked, not
+automatically retried or rerouted. Bounded gateway and embedding work remains
+available; no model quality downgrade was introduced. Background cache warming
+now reads residency only, without generating requests or extending residency.
+
 ## Operational limits and recovery
 
 Inspect `host_admission_status()` and `admission_status(model)` before inference;
