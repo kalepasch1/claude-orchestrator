@@ -24,6 +24,8 @@ CONSUMERS (this is the point — the score must be USED, not just recorded):
 """
 from __future__ import annotations
 import json
+import hashlib
+import math
 import os
 import sys
 import time
@@ -81,11 +83,15 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
     body = json.dumps({
         "title": artifact.get("title"),
         "verdict": artifact.get("verdict"),
-        "content": (artifact.get("content") or "")[:6000],
+        "content": artifact.get("content") or "",
         "citations": artifact.get("citations") or [],
-    })[:9000]
+    })
+    # Never slice serialized evidence: that previously removed the citations and
+    # left malformed JSON. A large record needs an explicit bounded review route.
+    if len(body.encode("utf-8")) > 96000:
+        return {"score": 0.0, "rationale": "review input exceeds bounded envelope", "error": "review_input_oversized"}
     if frontier is None:
-        return {"score": 0.0, "rationale": "frontier unavailable — fail-closed"}
+        return {"score": 0.0, "rationale": "frontier unavailable — fail-closed", "error": "frontier_unavailable"}
     instr = system_prompt + "\n\nReturn ONLY JSON: {\"score\": <0.0-1.0>, \"rationale\": \"<=200 chars\"}"
     try:
         data = None
@@ -105,16 +111,17 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
             data = r.get("json") if not r.get("error") else None
             if data is None and r.get("text") and not r.get("error"):
                 data = frontier.extract_json(r["text"])
-        if data is None:
-            # Frontier out of budget: the strong local model may still score. Fail closed on any error.
-            r = frontier.local_complete(instr + "\n\nARTIFACT:\n" + body, tag=f"pubcom.{reviewer_key}")
-            data = frontier.extract_json(r.get("text") or "")
+        # A local completion cannot open the evidence reviewer's cited URLs. An
+        # unavailable reviewer is a deferred review, not an adverse merits decision.
         if not isinstance(data, dict):
             raise ValueError("no score returned")
-        return {"score": max(0.0, min(1.0, float(data.get("score", 0)))),
+        score = data.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score) or not 0 <= score <= 1:
+            raise ValueError("invalid score")
+        return {"score": score,
                 "rationale": str(data.get("rationale", ""))[:200]}
     except Exception as e:
-        return {"score": 0.0, "rationale": f"scoring error (fail-closed): {type(e).__name__}"}
+        return {"score": 0.0, "rationale": f"scoring error (fail-closed): {type(e).__name__}", "error": "reviewer_unavailable"}
 
 
 def review_artifact(artifact: dict) -> dict:
@@ -122,6 +129,9 @@ def review_artifact(artifact: dict) -> dict:
     scores, rationales = {}, {}
     for key, _w, prompt in REVIEWERS:
         r = _score_one(key, prompt, artifact)
+        if r.get("error"):
+            return {"artifact_id": artifact.get("id"), "artifact_type": artifact.get("type", "committee_opinion"),
+                    "decision": "deferred", "reason": r["error"]}
         scores[key] = r["score"]
         rationales[key] = r["rationale"]
 
@@ -168,8 +178,14 @@ def _candidates(limit: int):
     """Consilium output not yet reviewed by the commission. VERDICT CARDS FIRST (2026-09-11):
     they are the artifacts that steer Foulkon and feed papers, and the old query never looked at
     them at all — it only scored engineering-committee opinions."""
-    done = {r.get("artifact_id") for r in
-            (db.select("publication_reviews", {"select": "artifact_id", "limit": "5000"}) or [])}
+    reviews = db.select("publication_reviews", {"select": "id,artifact_id,artifact_type,decision,composite,detail,created_at", "limit": "5000"}) or []
+    # A verified transport repair is not a merits reversal. Keep the old review
+    # and its reasons, but permit one fresh review of the now-readable evidence.
+    repaired = {r.get("artifact_id"): r for r in reviews
+                if r.get("artifact_type") == "verdict_card"
+                and isinstance(_loads(r.get("detail"), {}), dict)
+                and _loads(r.get("detail"), {}).get("requires_rereview") is True}
+    done = {r.get("artifact_id") for r in reviews if r.get("artifact_id") not in repaired}
     out = []
     cards = db.select("verdict_cards", {
         "select": "id,vertical,question,verdict,position,citations,assumptions,dissent,flips_if,"
@@ -184,9 +200,17 @@ def _candidates(limit: int):
         content = (f"POSITION:\n{c.get('position') or ''}\n\nDISSENT: {c.get('dissent') or 'none'}\n"
                    f"FLIPS IF: {c.get('flips_if') or ''}\nCONDITIONS: {c.get('conditions') or ''}\n"
                    f"UNSETTLED: {c.get('unsettled')}\nASSUMPTIONS: {_loads(c.get('assumptions'), [])}")
-        out.append({"id": c.get("id"), "type": "verdict_card", "title": c.get("question"),
+        candidate = {"id": c.get("id"), "type": "verdict_card", "title": c.get("question"),
                     "verdict": c.get("verdict"), "content": content,
-                    "citations": _loads(c.get("citations"), [])})
+                    "citations": _loads(c.get("citations"), [])}
+        if c.get("id") in repaired:
+            prior = repaired[c.get("id")]
+            detail = _loads(prior.get("detail"), {})
+            digest = hashlib.sha256(json.dumps(candidate["citations"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if detail.get("repaired_citations_sha256") != digest:
+                continue  # repair receipt does not describe this evidence version
+            candidate["prior_review"] = prior
+        out.append(candidate)
         if len(out) >= limit:
             return out
     rows = db.select("committee_opinions", {
@@ -205,32 +229,56 @@ def _candidates(limit: int):
 
 #: verdict_cards.publication_state after a commission decision. "internal" is the unreviewed
 #: state; nothing reaches a customer until commission_passed AND an attorney sign-off.
-CARD_STATE = {"publish": "commission_passed", "steer_only": "steer", "revise": "revise", "reject": "rejected"}
+# Match the deployed state machine. Passing the model commission only requests
+# attorney review; it never creates publication or customer-steering authority.
+CARD_STATE = {"publish": "attorney_review", "steer_only": "attorney_review",
+              "revise": "commission_review", "reject": "withdrawn"}
 
 
 def run(limit: int = BATCH) -> dict:
     """Score a batch; persist decisions. Safe to run on a schedule."""
-    tally = {"reviewed": 0, "publish": 0, "steer_only": 0, "revise": 0, "reject": 0}
+    tally = {"reviewed": 0, "publish": 0, "steer_only": 0, "revise": 0, "reject": 0, "deferred": 0, "persist_failed": 0}
     for art in _candidates(limit):
         rec = review_artifact(art)
-        tally["reviewed"] += 1
-        tally[rec["decision"]] = tally.get(rec["decision"], 0) + 1
+        if rec["decision"] == "deferred":
+            tally["deferred"] += 1
+            # Do not spend four more reviewers when the first cannot execute.
+            break
         try:
-            db.insert("publication_reviews", {
+            detail = {"scores": rec["scores"], "rationales": rec["rationales"], "veto": rec["veto"],
+                      "reviewed_at": rec["reviewed_at"]}
+            prior = art.get("prior_review")
+            if prior:
+                # Preserve the exact prior verdict and repair provenance; do not
+                # overwrite the only evidence that the original review failed.
+                detail["previous_review"] = prior
+                if len(json.dumps(detail).encode()) > 32000:
+                    raise RuntimeError("review history requires archival")
+            row = {
                 "artifact_id": rec["artifact_id"],
                 "artifact_type": rec["artifact_type"],
                 "composite": rec["composite"],
                 "decision": rec["decision"],
-                "detail": json.dumps({"scores": rec["scores"], "rationales": rec["rationales"],
-                                      "veto": rec["veto"]}),
-            }, upsert=True)
+                "detail": detail,
+            }
+            if prior:
+                row["created_at"] = rec["reviewed_at"]
+            saved = (db.update("publication_reviews", {"id": prior["id"], "created_at": prior["created_at"]}, row)
+                     if prior else db.insert("publication_reviews", row, upsert=True))
+            if not saved:
+                raise RuntimeError("review persistence unconfirmed")
         except Exception as e:
+            tally["persist_failed"] += 1
             print(f"publication_commission: persist failed for {rec['artifact_id']}: {e}")
+            continue
+        tally["reviewed"] += 1
+        tally[rec["decision"]] = tally.get(rec["decision"], 0) + 1
         if rec["artifact_type"] == "verdict_card":
             try:
                 db.update("verdict_cards", {"id": rec["artifact_id"]},
                           {"publication_state": CARD_STATE.get(rec["decision"], "internal")})
             except Exception as e:
+                tally["persist_failed"] += 1
                 print(f"publication_commission: card state update failed for {rec['artifact_id']}: {e}")
         print(f"publication_commission: {rec['artifact_type']} {str(rec['artifact_id'])[:8]} -> "
               f"{rec['decision']} (composite {rec['composite']}, veto={rec['veto']})", flush=True)

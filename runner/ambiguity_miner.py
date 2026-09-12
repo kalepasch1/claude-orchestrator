@@ -24,10 +24,12 @@ under docs/consilium/ambiguity/. Nothing here contacts a regulator.
 from __future__ import annotations
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -107,18 +109,55 @@ def _save_ledger(d):
 
 def _pick_documents(n):
     done = _ledger()
-    rows = corpus_db.select("corpus_documents", {
-        "select": "doc_id,title,source,source_url,doc_type,jurisdiction_id,effective_date,product_types,quality_score",
-        "doc_type": f"in.({','.join(DOC_TYPES)})", "body_fetched": "eq.true", "low_quality": "eq.false",
-        "order": "created_at.desc", "limit": "120"})
     out = []
-    for r in rows:
-        if r.get("doc_id") in done:
-            continue
-        out.append(r)
-        if len(out) >= n:
-            break
-    return out
+    n = min(10, max(0, int(n)))
+    if not n:
+        return out
+    # Bound each read and the total scan; don't let the first 120 ledger entries
+    # hide the rest of the corpus indefinitely.
+    for page in range(8):
+        rows = corpus_db.select("corpus_documents", {
+            "select": "doc_id,title,source,source_url,doc_type,jurisdiction_id,effective_date,product_types,quality_score",
+            "doc_type": f"in.({','.join(DOC_TYPES)})", "body_fetched": "eq.true", "low_quality": "eq.false",
+            "order": "created_at.desc,doc_id.asc", "limit": "120", "offset": str(page * 120)}, strict=True)
+        for row in rows:
+            if not isinstance(row.get("doc_id"), str) or not row["doc_id"]:
+                raise corpus_db.CorpusReadError("corpus_response_invalid")
+            if not _retry_due(done.get(row["doc_id"])):
+                continue
+            out.append(row)
+            if len(out) >= n:
+                return out
+        if len(rows) < 120:
+            return out
+    # A bounded partial scan is not proof that no eligible documents exist.
+    raise corpus_db.CorpusReadError("corpus_scan_budget")
+
+
+def _retry_due(entry, now=None):
+    if not isinstance(entry, dict):
+        return True
+    if entry.get("result") == "judged" or (entry.get("result") == "no_findings" and not entry.get("reason")):
+        return False
+    # Historical no_text/judgment_failed and failed scans mislabeled no_findings
+    # are retryable immediately once, then acquire the bounded cooldown below.
+    try:
+        deadline = float(entry.get("retry_after", 0))
+        return not math.isfinite(deadline) or deadline <= (time.time() if now is None else now)
+    except (TypeError, ValueError):
+        return True
+
+
+def _record_retry(ledger, doc_id, result, reason=None):
+    previous = ledger.get(doc_id) or {}
+    try:
+        attempts = min(10, max(0, int(previous.get("attempts", 0))) + 1)
+    except (TypeError, ValueError, AttributeError):
+        attempts = 1
+    base = 21600 if result == "no_text" else 3600
+    delay = min(7 * 86400 if result == "no_text" else 86400, base * 2 ** (attempts - 1))
+    ledger[doc_id] = {"at": datetime.date.today().isoformat(), "result": result,
+                      "attempts": attempts, "retry_after": time.time() + delay, "reason": reason}
 
 
 def _mine(text, source_ref):
@@ -126,10 +165,13 @@ def _mine(text, source_ref):
         proc = subprocess.run([NODE, BRIDGE], input=json.dumps({"text": text, "sourceRef": source_ref, "limit": 15}),
                               capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
-            return {"ok": False, "reason": (proc.stderr or "")[-200:], "findings": [], "total": 0}
-        return json.loads(proc.stdout)
-    except Exception as e:
-        return {"ok": False, "reason": f"{type(e).__name__}: {str(e)[:120]}", "findings": [], "total": 0}
+            return {"ok": False, "reason": "miner_process_failed", "findings": [], "total": 0}
+        result = json.loads(proc.stdout)
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(result.get("findings"), list) or any(not isinstance(f, dict) for f in result["findings"]):
+            return {"ok": False, "reason": "miner_response_invalid", "findings": [], "total": 0}
+        return result
+    except Exception:
+        return {"ok": False, "reason": "miner_unavailable", "findings": [], "total": 0}
 
 
 def _vertical(v, product_types):
@@ -161,29 +203,51 @@ def _insert_docket(vertical, question):
 
 
 def run(n=DOCS_PER_RUN):
-    out = {"docs": 0, "mined_findings": 0, "material": 0, "docketed": 0, "skipped": None}
+    out = {"docs": 0, "mined_findings": 0, "material": 0, "docketed": 0, "skipped": None,
+           "status": "noop", "errors": [], "reviewed": 0, "deferred_docs": 0}
     if not corpus_db.available():
         out["skipped"] = "corpus unavailable"
+        out.update(status="failed", errors=["corpus_unconfigured"])
         print("ambiguity_miner: " + json.dumps(out), flush=True)
         return out
     ledger = _ledger()
     today = datetime.date.today().isoformat()
     os.makedirs(OUT_DIR, exist_ok=True)
-    for doc in _pick_documents(n):
+    try:
+        documents = _pick_documents(n)
+    except corpus_db.CorpusReadError as error:
+        out.update(status="failed", errors=[error.reason])
+        print("ambiguity_miner: " + json.dumps(out), flush=True)
+        return out
+    for doc in documents:
         doc_id = doc.get("doc_id")
-        text = corpus_db.document_text(doc_id, max_chars=60000)
+        try:
+            text = corpus_db.document_text(doc_id, max_chars=60000, strict=True)
+        except corpus_db.CorpusReadError as error:
+            out["errors"].append(error.reason)
+            _record_retry(ledger, doc_id, "corpus_read_failed", error.reason)
+            continue
         if len(text) < 800:
-            ledger[doc_id] = {"at": today, "result": "no_text"}
+            _record_retry(ledger, doc_id, "no_text", "source_text_unavailable")
+            out["deferred_docs"] += 1
             continue
         mined = _mine(text, doc_id)
         findings = mined.get("findings") or []
         out["docs"] += 1
         out["mined_findings"] += len(findings)
-        if not mined.get("ok") or not findings:
-            ledger[doc_id] = {"at": today, "result": "no_findings", "reason": mined.get("reason")}
+        if not mined.get("ok"):
+            reason = mined.get("reason") or "miner_failed"
+            out["errors"].append(reason)
+            _record_retry(ledger, doc_id, "miner_failed", reason)
+            continue
+        if not findings:
+            ledger[doc_id] = {"at": today, "result": "no_findings"}
+            out["reviewed"] += 1
             continue
         if not frontier.available(min_tokens=40000):
             out["skipped"] = "frontier unavailable (findings mined, judgment deferred)"
+            out["deferred_docs"] += 1
+            _record_retry(ledger, doc_id, "judgment_deferred", "frontier_unavailable")
             break
         fl = "\n".join(f"- [{f.get('kind')} / weight {f.get('weight')}] term=\"{f.get('term')}\" para {f.get('paragraph')}: "
                        f"\"{_s(f.get('quote'))[:260]}\" — {f.get('note')}" for f in findings)
@@ -195,7 +259,8 @@ def run(n=DOCS_PER_RUN):
             timeout=1500, tag="ambiguity.judge")
         j = r.get("json")
         if r.get("error") or not isinstance(j, dict):
-            ledger[doc_id] = {"at": today, "result": "judgment_failed", "reason": r.get("error")}
+            _record_retry(ledger, doc_id, "judgment_failed", "judgment_failed")
+            out["errors"].append("judgment_failed")
             continue
         mat = [m for m in (j.get("material_findings") or []) if isinstance(m, dict)]
         out["material"] += len(mat)
@@ -247,8 +312,10 @@ def run(n=DOCS_PER_RUN):
                 print(f"ambiguity_miner: approvals insert failed: {e}", flush=True)
         out["docketed"] += docketed
         ledger[doc_id] = {"at": today, "result": "judged", "material": len(mat), "docketed": docketed}
+        out["reviewed"] += 1
         print(f"ambiguity_miner: {doc_id} -> {len(findings)} findings, {len(mat)} material, {docketed} docketed", flush=True)
     _save_ledger(ledger)
+    out["status"] = "failed" if out["errors"] else "deferred" if out["deferred_docs"] else "completed" if out["reviewed"] else "noop"
     print("ambiguity_miner: " + json.dumps(out), flush=True)
     return out
 
