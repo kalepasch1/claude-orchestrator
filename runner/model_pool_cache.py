@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-model_pool_cache.py - keep local Ollama warm and cache stable prompt prefixes to cut
-per-call latency and tokens across providers.
+model_pool_cache.py - observe local Ollama residency and cache stable prompt prefixes.
 
 Two mechanisms:
-  1. Warm-ping: periodically sends a tiny completion to the local Ollama model so it stays
-     resident in memory (avoids cold-start on first real call).
+  1. Residency probe: observe a model already loaded by useful work. A background
+     cache must not load models or keep them resident after useful work has ended.
   2. Prefix cache: stores the SHA-256 of stable system-prompt prefixes and their token counts
      so callers can skip re-sending unchanged preamble when the provider supports prompt caching.
 
@@ -57,23 +56,32 @@ def invalidate(key: str = "") -> None:
             _prefix_cache.clear()
 
 
-# ── Ollama warm-ping ──────────────────────────────────────────────────────────
+# ── Ollama residency probe (legacy warm() API) ─────────────────────────────────
 
 def _ping_ollama() -> bool:
-    """Send a trivial completion to keep the model resident."""
+    """Read residency without inference, model loading, or keep-alive renewal."""
     try:
-        payload = json.dumps({"model": OLLAMA_MODEL, "prompt": "ping", "stream": False,
-                              "options": {"num_predict": 1}}).encode()
-        req = urllib.request.Request(f"{OLLAMA_HOST}/api/generate",
-                                    data=payload, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
+        req = urllib.request.Request(f"{OLLAMA_HOST.rstrip('/')}/api/ps")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            raw = resp.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            return False
+        data = json.loads(raw)
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return False
+        def canonical(model):
+            model = str(model or "")
+            return model if ":" in model else model + ":latest"
+        return any(isinstance(row, dict) and
+                   canonical(row.get("model") or row.get("name")) == canonical(OLLAMA_MODEL)
+                   for row in models)
     except Exception:
         return False
 
 
 def warm(force: bool = False) -> bool:
-    """Warm the local model if interval has elapsed. Returns True if ping succeeded."""
+    """Check existing residency on the old warm cadence; never start inference."""
     global _last_warm, _warm_ok
     now = time.time()
     if not force and (now - _last_warm) < WARM_INTERVAL:

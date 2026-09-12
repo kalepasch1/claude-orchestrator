@@ -32,30 +32,35 @@ class TestLocalModelSlots(unittest.TestCase):
         self.assertTrue(local_model_slots.is_heavy("gemma3:12b"))
         self.assertFalse(local_model_slots.is_heavy("tiny:1b"))
 
-    def test_slot_unloads_other_heavy_models(self):
+    def test_slot_does_not_evict_other_possibly_active_models(self):
         fake = FakeDB()
-        with patch.object(local_model_slots, "LOCK", os.path.join(tempfile.mkdtemp(), "slot.lock")), \
-             patch.object(local_model_slots, "loaded_models", return_value=["qwen3-coder:30b", "llama3.1"]), \
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(local_model_slots, "LOCK", os.path.join(temporary, "slot.lock")), \
+             patch.object(local_model_slots, "_resident_models", return_value=[{"name": "qwen3-coder:30b"}]), \
+             patch.object(local_model_slots, "_pressure_level", return_value=1), \
+             patch.object(local_model_slots, "_load_per_core", return_value=.2), \
              patch.object(local_model_slots, "unload", return_value=True) as unload, \
              patch.object(local_model_slots, "_free_ram_gb", return_value=20), \
+             patch.dict(os.environ, {}, clear=True), \
              patch.dict(sys.modules, {"db": fake}):
-            with local_model_slots.slot("gemma3:12b") as meta:
-                self.assertTrue(meta["locked"])
-        unload.assert_any_call("qwen3-coder:30b")
-        unload.assert_any_call("gemma3:12b")
+            with self.assertRaises(local_model_slots.LocalCapacityError) as caught:
+                with local_model_slots.slot("gemma3:12b"):
+                    self.fail("another resident should defer admission")
+        self.assertEqual(caught.exception.reason, "other_model_resident")
+        unload.assert_not_called()
 
-    def test_heavy_models_do_not_stay_resident_by_default(self):
+    def test_request_completion_does_not_force_unload(self):
         with patch.object(local_model_slots, "unload", return_value=True) as unload:
-            self.assertTrue(local_model_slots.maybe_unload_after("qwen3-coder:30b"))
-        unload.assert_called_once_with("qwen3-coder:30b")
+            self.assertFalse(local_model_slots.maybe_unload_after("qwen3-coder:30b"))
+        unload.assert_not_called()
 
-    def test_agentic_ollama_uses_local_model_slot(self):
+    def test_agentic_ollama_uses_slot_but_defers_unverified_request_contract(self):
         entered = []
 
         class Slot:
             def __enter__(self):
                 entered.append("enter")
-                return {}
+                return {"admitted": True, "locked": True}
             def __exit__(self, exc_type, exc, tb):
                 entered.append("exit")
 
@@ -75,9 +80,11 @@ class TestLocalModelSlots(unittest.TestCase):
              patch.object(agentic_coders.lane_guard, "run_supervised", return_value=proc) as lane:
             out = agentic_coders.run("ollama", "make a tiny edit", "ollama/llama3.1:latest")
 
-        lane.assert_called_once()
+        lane.assert_not_called()
 
-        self.assertEqual(out["returncode"], 0)
+        self.assertEqual(out["returncode"], 75)
+        self.assertTrue(out["deferred"])
+        self.assertEqual(out["reason"], "local_coder_policy_unverified")
         slot.assert_called_once_with("llama3.1:latest", operation="agentic:ollama")
         self.assertEqual(entered, ["enter", "exit"])
 

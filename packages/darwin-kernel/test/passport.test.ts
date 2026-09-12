@@ -513,7 +513,11 @@ test('passport: canonical claim order is total, not merely stable', () => {
     ].map((order) =>
       buildPassport({
         subject: 'user_1',
-        claims: order.map((i) => claims[i]),
+        claims: order.map((i) => {
+          const selected = claims[i];
+          assert.ok(selected, 'permutation index must reference a fixture claim');
+          return selected;
+        }),
         issuedAt: iso,
       }).digest,
     ),

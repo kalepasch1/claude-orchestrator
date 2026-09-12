@@ -98,17 +98,17 @@ class EmbedFallbackChainTest(unittest.TestCase):
         self.assertEqual(row["reason"], "circuit open")
 
     def test_ollama_embed_returns_none_on_connection_error(self):
-        with patch.object(ke, "_http_json", side_effect=OSError("connection refused")):
+        with patch("local_embeddings.embed", side_effect=OSError("connection refused")):
             self.assertIsNone(ke._ollama_embed("text"))
 
     def test_ollama_embed_pads_short_vector_to_dim(self):
-        with patch.object(ke, "_http_json", return_value={"embedding": [1.0, 2.0]}):
+        with patch("local_embeddings.embed", return_value=[[1.0, 2.0]]):
             v = ke._ollama_embed("text")
         self.assertEqual(len(v), ke.DIM)
         self.assertEqual(v[:2], [1.0, 2.0])
 
     def test_ollama_embed_missing_embedding_key_returns_none(self):
-        with patch.object(ke, "_http_json", return_value={}):
+        with patch("local_embeddings.embed", return_value=[]):
             self.assertIsNone(ke._ollama_embed("text"))
 
 

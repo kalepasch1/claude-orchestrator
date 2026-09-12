@@ -126,7 +126,18 @@ jobs:
         env:
           SUPABASE_URL: ''
           SUPABASE_SERVICE_KEY: ''
-        run: python -m pytest tests/test_ci_offline.py -q --no-header
+        run: >-
+          python -m pytest
+          tests/test_ci_offline.py
+          tests/test_local_model_slots.py
+          tests/test_local_model_slot_deadline.py
+          tests/test_local_inference_safety.py
+          tests/test_local_model_optimization.py
+          tests/test_agentic_coder_resource_admission.py
+          tests/test_model_pool_cache.py
+          tests/test_local_embeddings_safety.py
+          tests/test_knowledge_embed.py
+          -q --no-header
 
       - name: Syntax-check every runner module
         working-directory: runner
