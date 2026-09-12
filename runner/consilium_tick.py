@@ -14,8 +14,9 @@ due (sequential — one model-heavy job at a time, so RAM and the subscription r
 shared predictably), records the run, writes a heartbeat, and exits. No long-running process,
 nothing to keep alive, nothing to restart. Guards that matter still apply: the kill switch,
 each job's own single-instance lock, a per-job timeout, and the frontier token budget (jobs
-degrade to local models when it is out). It never claims coding tasks, never touches a repo
-checkout, never merges or deploys.
+degrade to local models when it is out). Host resource admission applies before both scheduled
+and manual runs; deferred jobs remain due with bounded retry backoff. It never claims coding
+tasks, never touches a repo checkout, never merges or deploys.
 
 Usage:
     consilium_tick.py                   # run the next due job (launchd)
@@ -25,23 +26,28 @@ Usage:
 from __future__ import annotations
 import datetime
 import json
+import math
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ.pop("NODE_ENV", None)
 
-# Defaults the expert subsystem wants; a value already in the environment (launchd plist, shell)
-# wins, and db._load_env's setdefault means runner/.env cannot override these once set here.
+# Load the normal configuration before applying subsystem fallbacks. Shell/launchd values
+# still win through db._load_env's setdefault; central runner/.env must win over these defaults.
+import db  # noqa: E402  (loads runner/.env with setdefault)
+
 _DEFAULTS = {
     "ORCH_CONSILIUM_V2": "true",
     "ORCH_FRONTIER_ENABLED": "true",
     "OLLAMA_STRONG_MODEL": "qwen3.5:27b-mlx",
     "OLLAMA_MODEL": "llama3.1:8b",
-    "ORCH_OLLAMA_NUM_CTX": "16384",
+    "ORCH_OLLAMA_NUM_CTX": "4096",
     "LEGAL_DOCKET_BATCH": "3",
     "ORCH_EXPERT_RESEARCH_PER_TICK": "2",
     "ORCH_NIGHT_RESEARCH_MULT": "2",
@@ -49,8 +55,6 @@ _DEFAULTS = {
 }
 for _k, _v in _DEFAULTS.items():
     os.environ.setdefault(_k, _v)
-
-import db  # noqa: E402  (loads runner/.env with setdefault)
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 SCHED = os.path.join(HOME, "consilium", "schedule.json")
@@ -104,11 +108,86 @@ def _log(msg):
     print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] consilium: {msg}", flush=True)
 
 
+def _reason_code(reason, fallback):
+    """Receipts and telemetry carry resource codes, never free-form child content."""
+    return reason if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,80}", reason) else fallback
+
+
+def _finite_number(value, default=0):
+    try:
+        value = float(value)
+        return value if math.isfinite(value) and value >= 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _retry_delay(attempts):
+    base = min(3600, max(60, _finite_number(os.environ.get("ORCH_CONSILIUM_CAPACITY_RETRY_SECONDS"), 600)))
+    return min(3600, base * 2 ** min(6, max(0, attempts - 1)))
+
+
+def _capacity_receipt(path):
+    """Only a bounded, per-child capacity signal; never job output or request content."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(4097)
+        if len(raw) > 4096:
+            raise ValueError("oversized receipt")
+        receipt = json.loads(raw)
+        if not isinstance(receipt, dict):
+            raise ValueError("invalid receipt")
+        if receipt.get("deferred") is False:
+            return None
+        reason = receipt.get("reason")
+        if receipt.get("deferred") is not True:
+            raise ValueError("invalid receipt")
+        return _reason_code(reason, "local_capacity_receipt_invalid")
+    except (OSError, ValueError, TypeError):
+        return "local_capacity_receipt_invalid"
+
+
 def run_job(name, script, args, timeout_s):
+    # Gate the host, not the strong local model: a healthy job may use frontier/cloud.
+    # Per-model admission belongs to the model gateway at the time of the actual call.
+    try:
+        from local_model_slots import host_admission_status
+        admission = host_admission_status()
+    except Exception:
+        admission = {"admitted": False, "reason": "host_telemetry_unavailable"}
+    if not isinstance(admission, dict) or admission.get("admitted") is not True:
+        reason = admission.get("reason") if isinstance(admission, dict) else None
+        reason = _reason_code(reason, "host_telemetry_unavailable")
+        _log(f"{name} deferred: {reason}; remains due")
+        return {"status": "deferred", "deferred": True, "reason": reason,
+                "rc": None, "secs": 0, "tail": []}
     cmd = [sys.executable, os.path.join(HERE, script)] + [str(a) for a in args]
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, cwd=HERE, capture_output=True, text=True, timeout=timeout_s)
+        # Some expert callers swallow a denied local fallback and exit zero. A private
+        # receipt preserves that deferral without confusing it with a successful job.
+        with tempfile.TemporaryDirectory(prefix="consilium-admission-") as receipt_dir:
+            fd, receipt_path = tempfile.mkstemp(prefix="orch-local-capacity-", suffix=".json", dir=receipt_dir)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"deferred": False}, f)
+            child_env = dict(os.environ, ORCH_LOCAL_CAPACITY_RECEIPT=receipt_path)
+            failure = None
+            try:
+                proc = subprocess.run(cmd, cwd=HERE, capture_output=True, text=True, timeout=timeout_s, env=child_env)
+            except subprocess.TimeoutExpired:
+                _log(f"{name} TIMEOUT after {timeout_s}s")
+                failure = {"rc": -1, "secs": timeout_s, "tail": ["timeout"]}
+            except Exception as e:
+                _log(f"{name} failed to launch: {type(e).__name__}")
+                failure = {"rc": -2, "secs": 0, "tail": [type(e).__name__]}
+            capacity_reason = _capacity_receipt(receipt_path)
+        if capacity_reason:
+            rc = failure["rc"] if failure else proc.returncode
+            _log(f"{name} local capacity deferred: {capacity_reason}; rc={rc}; partial work possible; remains due")
+            return {"status": "deferred" if rc == 0 else "failed",
+                    "deferred": True, "partial": True, "reason": capacity_reason,
+                    "rc": rc, "secs": failure["secs"] if failure else round(time.time() - t0), "tail": []}
+        if failure:
+            return failure
         tail = (proc.stdout or "").strip().splitlines()[-8:]
         err = (proc.stderr or "").strip().splitlines()[-3:]
         _log(f"{name} rc={proc.returncode} in {time.time() - t0:.0f}s" +
@@ -121,6 +200,22 @@ def run_job(name, script, args, timeout_s):
     except Exception as e:
         _log(f"{name} failed to launch: {type(e).__name__}: {e}")
         return {"rc": -2, "secs": 0, "tail": [str(e)[:120]]}
+
+
+def _record_result(state, name, result):
+    """A resource deferral is an attempt, never a completed run or a new due date."""
+    now = time.time()
+    if result.get("deferred") is True:
+        previous = state.get(name)
+        previous_attempt = previous.get("last_attempt") if isinstance(previous, dict) else None
+        attempts = min(7, int(_finite_number(previous_attempt.get("attempts"))) + 1) if isinstance(previous_attempt, dict) else 1
+        state[name] = {**(previous if isinstance(previous, dict) else {}),
+                       "last_attempt": {"at": now, "attempts": attempts, "retry_after": now + _retry_delay(attempts), **{k: result[k] for k in
+                                        ("status", "reason", "rc", "secs", "partial") if k in result}}}
+    else:
+        state[name] = {"at": now, **result}
+    _save(state)
+    heartbeat(state)
 
 
 def heartbeat(state):
@@ -151,10 +246,8 @@ def tick():
     if job:
         name, script, args, interval, timeout_s = job
         res = run_job(name, script, args, timeout_s)
-        state[name] = {"at": time.time(), **res}
-        _save(state)
-        heartbeat(state)
-        return name
+        _record_result(state, name, res)
+        return None if res.get("deferred") else name
     heartbeat(state)
     return None
 
@@ -163,15 +256,24 @@ def next_due(state, now=None):
     """The due job that is MOST overdue relative to its own interval. (2026-09-12: a fixed priority
     order let the 20-minute docket and the 30-minute commission take every slot — the theory lab,
     the corps tick, the forecaster and both scans had not run once in six hours. Never-run jobs
-    sort first.)"""
+    sort first.) A deferral never advances completion, but does get bounded backoff and
+    resets selection urgency so one permanently unavailable model cannot starve other jobs."""
     now = now or time.time()
     best, best_ratio = None, 0.0
     for job in JOBS:
         name, _script, _args, interval, _timeout = job
-        last = float((state.get(name) or {}).get("at") or 0)
+        st = state.get(name) or {}
+        last = _finite_number(st.get("at"))
         if now - last < interval:
             continue
-        ratio = float("inf") if not last else (now - last) / float(interval)
+        attempt = st.get("last_attempt")
+        attempted = 0
+        if isinstance(attempt, dict):
+            if _finite_number(attempt.get("retry_after")) > now:
+                continue
+            attempted = _finite_number(attempt.get("at"))
+        selection_at = max(last, attempted)
+        ratio = float("inf") if not selection_at else (now - selection_at) / float(interval)
         if ratio > best_ratio:
             best, best_ratio = job, ratio
     return best
@@ -187,7 +289,8 @@ def status():
         rows.append({"job": name, "interval_min": interval // 60,
                      "last_run": datetime.datetime.fromtimestamp(last).isoformat() if last else None,
                      "due_in_min": max(0, round((last + interval - now) / 60)) if last else 0,
-                     "rc": st.get("rc"), "secs": st.get("secs")})
+                     "rc": st.get("rc"), "secs": st.get("secs"),
+                     "last_attempt": st.get("last_attempt")})
     try:
         import frontier
         fb = frontier.status()
@@ -196,19 +299,28 @@ def status():
     return {"paused": _paused(), "jobs": rows, "frontier": fb}
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--status":
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "--status":
         print(json.dumps(status(), indent=2, default=str))
-    elif len(sys.argv) > 1 and sys.argv[1] == "--once" and len(sys.argv) > 2:
-        want = sys.argv[2]
+    elif len(argv) > 1 and argv[0] == "--once":
+        want = argv[1]
         for name, script, args, interval, timeout_s in JOBS:
             if name == want:
-                res = run_job(name, script, (sys.argv[3:] or args), timeout_s)
-                st = _load(); st[name] = {"at": time.time(), **res}; _save(st)
+                if _paused():
+                    _log("kill switch paused — nothing run")
+                    print(json.dumps({"status": "paused", "deferred": True, "reason": "kill_switch_paused", "rc": None}))
+                    break
+                res = run_job(name, script, (argv[2:] or args), timeout_s)
+                _record_result(_load(), name, res)
                 print(json.dumps(res, default=str))
                 break
         else:
             print(f"unknown job {want}; known: {[j[0] for j in JOBS]}")
     else:
         ran = tick()
-        _log(f"tick done: ran {ran or 'nothing (no job due)'}")
+        _log(f"tick done: ran {ran or 'nothing (paused, deferred, or no job due)'}")
+
+
+if __name__ == "__main__":
+    main()

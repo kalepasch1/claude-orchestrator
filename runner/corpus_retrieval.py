@@ -40,7 +40,7 @@ META_PATH = os.path.join(INDEX_DIR, "meta.jsonl")
 EMBED_MODEL = os.environ.get("ORCH_EMBED_MODEL", "qwen3-embedding:4b")
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 DIMS = int(os.environ.get("ORCH_EMBED_DIMS", "256"))
-BATCH = int(os.environ.get("ORCH_EMBED_BATCH", "24"))
+BATCH = max(1, min(8, int(os.environ.get("ORCH_EMBED_BATCH", "8"))))
 MIN_TEXT = 40
 
 _CACHE = {"mtime": None, "vecs": None, "meta": None}
@@ -66,12 +66,9 @@ def embed(texts, model=EMBED_MODEL, timeout=600):
     """Embed a list of strings with Ollama; returns a list of truncated unit vectors (or [] on error)."""
     if not texts:
         return []
-    body = json.dumps({"model": model, "input": list(texts)}).encode()
-    req = urllib.request.Request(f"{OLLAMA}/api/embed", data=body, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-        embs = data.get("embeddings") or []
+        import local_embeddings
+        embs = local_embeddings.embed(texts, model, OLLAMA, timeout=timeout)
         return [truncate_normalize(e) for e in embs] if len(embs) == len(texts) else []
     except Exception:
         return []
