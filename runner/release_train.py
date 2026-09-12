@@ -785,8 +785,13 @@ def _prepare_generated_types(worktree):
         if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
             continue
         cmd, how = _prepare_cmd(root, worktree)
-        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
-                              timeout=PREPARE_TIMEOUT_S)
+        try:
+            proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                                  timeout=PREPARE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            logs.append(f"[{os.path.relpath(root, worktree)}] {how}: timed out after "
+                        f"{PREPARE_TIMEOUT_S}s")
+            return False, "\n".join(logs)
         log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
         logs.append(f"[{os.path.relpath(root, worktree)}] via {how}\n{log}")
         generated = os.path.join(root, ".nuxt", "tsconfig.json")
