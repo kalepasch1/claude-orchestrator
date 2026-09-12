@@ -82,14 +82,15 @@ Edits to existing code (all fail-soft, all fall back to the old path):
 | Model on a seat | llama3.1:8b | Fable 5.1 (chair, red team, research), Opus 5 (judges), qwen3.5:27b local (routine seats) |
 | Calls per docket question | ~21 | 1 (+1 Codex attack, +1 revision on high priority) |
 | Preamble per call | 31–60K tokens | ~0.8K tokens |
-| Tokens per question at frontier grade | ~1M (never attempted) | 15–40K measured envelope |
+| Tokens per question at frontier grade | ~1M (never attempted) | 220–310K budget-weighted per tournament, measured in production (§8); raw 220–255K in / 32–51K out |
 | Grounding | none (recall) | every citation carries an opened URL + verbatim quote, or is demoted to an assumption |
 | Budget | none | 3M tokens/day (operator choice), 600K/hour, x2 at night; cooldown on any limit signal; degrades to local |
 | Marginal $ | $0 | $0 |
 
-At 3M tokens/day the Consilium runs on the order of 100–200 frontier tournaments per day. The
-700-question backlog clears in under a week; after that the budget goes to re-debating stale
-cards, opportunity scans, ambiguity reviews and calibration.
+At the measured envelope (§8) 3M weighted tokens/day is roughly 10–13 frontier tournaments per
+day and the 600K/hour cap admits two per hour — an order of magnitude below the first estimate,
+which assumed the 768-token preamble was the cost and missed that output tokens (weighted x5)
+dominate a 30–50K-output tournament. Cutting the envelope is the next engineering task (§7, §8).
 
 ## 5. What "intelligence" now means, measurably
 
@@ -132,3 +133,56 @@ Knobs (runner/.env): `ORCH_FRONTIER_TOKENS_PER_DAY`, `ORCH_FRONTIER_TOKENS_PER_H
 5. **Foulkon sync** from v2 cards once the fleet is back (needs the illuminati checkout).
 6. **Steering for code**: route `illuminati_cothink` premerge verdicts and `committees.review`
    on material tasks through `consilium_v2` with the repo diff as context.
+
+## 8. First production day (2026-09-12) — measured
+
+launchd job loaded 09:51 EDT; first tick ran `legal_docket 3`. Everything below is read from
+`.runtime/frontier_budget.json`, `.runtime/consilium/tournaments.jsonl`, `app_operations` and
+`verdict_cards` (the worktree's `.runtime` is the state home while the launchd job points at it).
+
+| Tournament | Vertical | Cites (verified) | Flipped / conceded | Red team | Raw in / out | Weighted | Turns | Time |
+|---|---|---|---|---|---|---|---|---|
+| 09:24 `6437c44f` NY BitLicense / MSB as MTL condition | finserv | 21 (19) | 4 / 4 | medium | 255K / 51K | 306K | 40 | 11.5 min |
+| 10:00 `d0af873e` §5318(g)(1) "relies solely on a depository institution" | finserv | 18 (16) | 5 / 2 | medium | 222K / 32K | 218K | 30 | 8.2 min |
+| 10:07 (gaming: AI-generated odds on a prediction market) | gaming | — | — | — | ~199K weighted, then refused | — | — | 7.0 min |
+
+Verified-citation ratio 35/39 = 0.90. Ten Brier positions staked (5 per tournament). Both cards
+minted `internal`, confidence 0.88 and 0.93.
+
+Three defects found on the first day, all fixed on `agent/consilium-v2`:
+
+1. **Cross-vendor adversary never ran.** Both cards show `cross_vendor.ran=false`. Root cause:
+   OpenAI's structured output requires `additionalProperties:false` on every object and all
+   properties listed in `required`; `ATTACK_SCHEMA` had neither, so codex returned HTTP 400
+   `invalid_json_schema` in 4 s. The logged error was the stderr tail — unrelated `rmcp` noise from
+   the `apparently` MCP server in `~/.codex/config.toml` (`-c mcp_servers={}` does not disable
+   configured servers in codex 0.145; the turn still succeeds). Fix: `frontier.strict_schema()`
+   applied to every codex schema, and `parse_codex_events()` reports the `turn.failed` message.
+   Re-run live on card `6437c44f`: GPT-5.5 answered in 111 s (88K in / 10K out), severity
+   **material** — the memo's unconditional "No" misses that the DFS/NMLS money-transmitter
+   application checklist asks for the applicant's FinCEN MSB registration number (Banking Law
+   §641(2)(e) hook), so FinCEN registration is a practical application condition when the firm is
+   federally an MSB. That is exactly the class of gap the cross-vendor pass exists to catch; both
+   first-day cards were minted without it and should be re-debated (set their docket rows to
+   `stale`).
+2. **Fable's safeguards refused a wagering question mid-tournament.** The third question died after
+   7 minutes with `API Error: Fable's safeguards flagged this message (…/legal/aup)`. Not a rate
+   limit (correctly no cooldown), but the question fell to the 21-call legacy path on the local 27B.
+   Gaming/AML/enforcement questions are the docket's core. Fix: `consilium_v2` retries once on the
+   mid tier (`claude-opus-5`) when the frontier call was refused or returned malformed JSON —
+   never on budget, kill-switch or timeout — and records `process.fallback` with the wasted tokens.
+3. **Budget ledger split by import order.** `frontier.HOME` resolved to `~/.claude-orchestrator`
+   when frontier was imported before `db`, and to `<repo>/.runtime` otherwise, so a probe could
+   not see what the tick had spent. Fix: frontier imports db first.
+
+Reading the cards: `verdict_cards.process`, `citations`, `assumptions` and `authority_chain` are
+JSON **strings** inside jsonb (the docket serialises them), so the grounding signals in §5 read as
+`((process #>> '{}')::jsonb)->>'verified_citations'`, and engine filters as
+`(process #>> '{}') like '%consilium_v2%'`.
+
+Cost correction: the budget weights output tokens x5 (API price ratio), so a 51K-output tournament
+is ~255K weighted before any input — output, not the preamble, is the envelope. The §4 estimate of
+100–200 tournaments/day was wrong by 10x; the real figure at 3M/day is 10–13, two per hour under
+the 600K/hour cap. The not-yet-run jobs (commission, drafter, theory lab, scans) had produced no
+artifacts at the time of this note because the tick runs one job at a time and the docket batch
+held the slot for its first 50 minutes.

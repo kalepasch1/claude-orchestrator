@@ -47,6 +47,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# STATE PATH (2026-09-12). db._load_env resolves CLAUDE_ORCH_HOME to <repo>/.runtime; a process
+# that imported frontier BEFORE db (a probe, a test, `python3 frontier.py`) resolved it to
+# ~/.claude-orchestrator instead, so the budget ledger split across two files and a probe could
+# not see what the tick had spent. Importing db first makes the answer independent of order.
+try:
+    import db as _db  # noqa: F401
+except Exception:
+    pass
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 STATE = os.path.join(HOME, "frontier_budget.json")
 EMPTY_MCP = os.path.join(HOME, "empty-mcp.json")
@@ -355,6 +363,69 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
 
 
 # ── Codex (ChatGPT subscription CLI) — the cross-vendor adversary ────────────────────────────────
+def strict_schema(schema):
+    """Return a copy of a JSON schema in the strict form OpenAI's response_format demands: every
+    object carries additionalProperties=false and lists ALL of its properties as required.
+    Measured 2026-09-12: the first two live tournaments lost their cross-vendor attack because
+    codex returned HTTP 400 `invalid_json_schema` ("'additionalProperties' is required to be
+    supplied and to be false") and the stderr tail we logged was unrelated MCP noise."""
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema)
+        except Exception:
+            return schema
+    def walk(node):
+        if isinstance(node, dict):
+            out = {k: walk(v) for k, v in node.items() if k not in ("properties", "items")}
+            if node.get("type") == "object" or "properties" in node:
+                props = node.get("properties") or {}
+                out["properties"] = {k: walk(v) for k, v in props.items()}
+                out["required"] = list(props.keys())
+                out["additionalProperties"] = False
+            if "items" in node:
+                out["items"] = walk(node["items"])
+            return out
+        if isinstance(node, list):
+            return [walk(x) for x in node]
+        return node
+    return walk(schema)
+
+
+_CODEX_NOISE = ("rmcp::transport", "codex_models_manager", "skills context budget")
+
+
+def parse_codex_events(stdout, stderr=""):
+    """Reduce `codex exec --json` output to (text, tokens_in, tokens_out, error). The error is
+    the turn's own failure message when there is one; the stderr tail (minus MCP/cache noise)
+    only when the turn produced nothing and said nothing."""
+    text, tin, tout, err = "", 0, 0, ""
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        et = ev.get("type")
+        if et == "item.completed":
+            it = ev.get("item") or {}
+            if it.get("type") == "agent_message" and it.get("text"):
+                text = it["text"]
+        elif et == "turn.completed":
+            u = ev.get("usage") or {}
+            tin += int(u.get("input_tokens") or 0) + int(u.get("cached_input_tokens") or 0)
+            tout += int(u.get("output_tokens") or 0) + int(u.get("reasoning_output_tokens") or 0)
+        elif et == "turn.failed":
+            err = str((ev.get("error") or {}).get("message") or ev.get("error") or "turn.failed")
+        elif et == "error" and not err:
+            err = str(ev.get("message") or "error")
+    if not text and not err:
+        clean = [l for l in (stderr or "").splitlines() if l.strip() and not any(n in l for n in _CODEX_NOISE)]
+        err = ("\n".join(clean)[-300:]).strip() or "no agent_message"
+    return text, tin, tout, " ".join(err.split())[:300]
+
+
 def codex_complete(prompt, *, system=None, model=None, json_schema=None, timeout=900,
                    project="consilium", tag="codex"):
     model = model or CODEX_MODEL
@@ -374,33 +445,19 @@ def codex_complete(prompt, *, system=None, model=None, json_schema=None, timeout
         if json_schema:
             schema_path = os.path.join(tmp, "schema.json")
             with open(schema_path, "w") as f:
-                f.write(json_schema if isinstance(json_schema, str) else json.dumps(json_schema))
+                f.write(json.dumps(strict_schema(json_schema)))
             args += ["--output-schema", schema_path]
         args.append("-")
         full = (system.rstrip() + "\n\n" if system else "") + prompt
         t0 = time.time()
         proc = subprocess.run(args, input=full, cwd=tmp, capture_output=True, text=True, timeout=timeout)
         lat = time.time() - t0
-        text, tin, tout = "", 0, 0
-        for line in (proc.stdout or "").splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                ev = json.loads(line)
-            except Exception:
-                continue
-            if ev.get("type") == "item.completed":
-                it = ev.get("item") or {}
-                if it.get("type") == "agent_message" and it.get("text"):
-                    text = it["text"]
-            elif ev.get("type") == "turn.completed":
-                u = ev.get("usage") or {}
-                tin += int(u.get("input_tokens") or 0) + int(u.get("cached_input_tokens") or 0)
-                tout += int(u.get("output_tokens") or 0) + int(u.get("reasoning_output_tokens") or 0)
-        err = ""
-        if proc.returncode != 0 or not text:
-            err = ((proc.stderr or "")[-300:] or f"rc={proc.returncode}").strip()
+        text, tin, tout, err = parse_codex_events(proc.stdout, proc.stderr)
+        if (proc.returncode != 0 or not text) and not err:
+            err = f"rc={proc.returncode}"
+        elif text and proc.returncode == 0:
+            err = ""
+        if err:
             blob = ((proc.stderr or "") + (proc.stdout or "")).lower()
             if any(p in blob for p in _RATE_PATTERNS):
                 _mark_cooldown(err, kind="codex")
