@@ -48,6 +48,8 @@ Measured live on apparently-law (Supabase, 28 Postgres probes, ~295 findings):
 | `runner/db_probes.py` | The probe catalog (30 probes; 28 Postgres, 9 MySQL, 3 BigQuery, 2 Snowflake). Pure SQL + deterministic parse; `score()`, `summarize()`, `validate_catalog()`. |
 | `runner/db_steering.py` | The loop (`loops` type `db_steering`): due tiers, fingerprint reconciliation, posture snapshots, the coder brief, swarm remediation, memo hand-off, budget and stalest-first ordering. |
 | `runner/db_memo.py` | Attaches each finding to the legal-memo argument it supports or undermines, keeps `legal_memo_drafts` current, gauntlet review for material changes, `steering_signals()` for the brief. |
+| `runner/db_remediate.py` | Turns mechanical findings (anon/public grants, unindexed FKs, missing audit columns) into **draft PRs** on the project's own repo — one migration per group, fingerprints in the body, never auto-merged. Plan-only until `ORCH_DB_REMEDIATE=1`. |
+| `runner/db_deploy_gate.py` | Database posture as a deploy signal: evaluates per project (open high-severity security findings or live-ahead schema drift ⇒ fail) and posts a `db-steering/posture` commit status — or a marked commit comment when the GitHub App lacks `statuses:write`. Evaluate-only until `ORCH_DB_DEPLOY_GATE=1`. |
 | `runner/db_link.py` | Operator CLI: `discover`, `add`, `test`, `scan`, `list`, `pause`, `resume`, `remove`, `brief`, `memos`, `doctor`. |
 | `runner/prompt_assembler.py` | Layer `db_steering`: the per-project brief goes into every coder prompt for that project. |
 | `web/…/db-steering/*`, `web/pages/admin/data-steering.vue`, `web/config/connectors.ts` (category Databases) | Dashboard: sources, posture, findings, briefs, memos; linking through Connectors. |
@@ -177,7 +179,11 @@ the signature is unchanged), `ORCH_DB_SNAPSHOT_MIN_INTERVAL_S` (3600),
 (2000), `ORCH_DB_PROBE_TIMEOUT_S` (20), `ORCH_DB_PROBE_MAX_ROWS` (500),
 `ORCH_DB_DISCOVERY_INTERVAL_S` (3600), `ORCH_DB_MEMO_MAX_PER_RUN` (3),
 `ORCH_DB_MEMO_GAUNTLET` (`false` to skip expert review), `ORCH_DB_MEMO_GAUNTLET_MIN_INTERVAL_S`
-(86400). Pause the whole loop from the Loops page (`enabled=false` on the `db_steering` row).
+(86400). Auto-remediation: `ORCH_DB_REMEDIATE` (default `0` = plan-only; `1` opens draft PRs),
+`ORCH_DB_REMEDIATE_MAX_PRS` (3 per cycle), `ORCH_DB_REMEDIATE_REPOS` (JSON project→owner/repo
+override). Deploy gate: `ORCH_DB_DEPLOY_GATE` (default `0` = evaluate-only; `1` posts commit
+statuses/comments), `ORCH_DB_DEPLOY_GATE_MAX` (10 projects per cycle). Pause the whole loop
+from the Loops page (`enabled=false` on the `db_steering` row).
 
 ## Tests
 

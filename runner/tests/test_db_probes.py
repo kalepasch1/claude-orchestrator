@@ -299,15 +299,18 @@ class TestParseIntegrity(unittest.TestCase):
 
     def test_unindexed_fk(self):
         rows = [{"schemaname": "public", "tablename": "orders", "conname": "orders_user_fk", "referenced_table": "users",
-                 "referenced_rows": 100001, "est_rows": 50},
+                 "referenced_rows": 100001, "est_rows": 50, "fk_columns": ["user_id"]},
                 {"schemaname": "public", "tablename": "orders", "conname": "orders_shop_fk", "referenced_table": "shops",
-                 "referenced_rows": "100000", "est_rows": None}]
+                 "referenced_rows": "100000", "est_rows": None, "fk_columns": ["shop_id", "tenant_id"]}]
         out = run_parse("unindexed_foreign_keys", rows)
         by = {f["metrics"]["constraint"]: f for f in out}
         self.assertEqual(by["orders_user_fk"]["severity"], "high")
         self.assertEqual(by["orders_shop_fk"]["severity"], "medium")
         self.assertEqual(by["orders_user_fk"]["metrics"],
-                         {"constraint": "orders_user_fk", "referenced_table": "users", "referenced_rows": 100001, "est_rows": 50})
+                         {"constraint": "orders_user_fk", "referenced_table": "users", "columns": ["user_id"],
+                          "referenced_rows": 100001, "est_rows": 50})
+        self.assertEqual(by["orders_shop_fk"]["metrics"]["columns"], ["shop_id", "tenant_id"],
+                         "composite keys keep key order for the covering index")
         self.assertEqual(by["orders_shop_fk"]["metrics"]["est_rows"], 0)
         self.assertEqual(out[0]["category"], "performance")
         self.assertEqual(out[0]["evidence_kinds"], ["availability", "integrity"])

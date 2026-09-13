@@ -785,6 +785,7 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
     rows = sorted(rows, key=lambda s: _ts(s.get("last_scan_at")))
     out["sources"] = len(rows)
     touched_projects = set()
+    proj_deltas = {}
     tasks_budget = MAX_TASKS_PER_RUN
     out["modes"] = {}
     for s, res in _scan_many(rows, started, budget_s, out, dry_run=dry_run):
@@ -807,6 +808,9 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
         proj = s.get("project")
         if proj:
             touched_projects.add(proj)
+            d = proj_deltas.setdefault(proj, {"new": 0, "resolved": 0})
+            d["new"] += len(delta.get("new") or [])
+            d["resolved"] += len(delta.get("resolved") or [])
             if memo:
                 try:
                     memo.attach_evidence(proj, (delta.get("all") or []) + (delta.get("resolved") or []))
@@ -824,6 +828,12 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
     memo_slots = MEMO_MAX_PER_CYCLE
     for proj in sorted(touched_projects):
         signals = []
+        pd = proj_deltas.get(proj) or {}
+        if pd.get("new") or pd.get("resolved"):
+            # The cycle delta is the steering signal a coder actually reads: posture changed
+            # THIS cycle, not just a static pile of open gaps.
+            signals.append("Δ this cycle: +%d new, −%d resolved finding(s)" % (pd.get("new") or 0,
+                                                                               pd.get("resolved") or 0))
         if memo:
             try:
                 if memo_slots > 0 and time.time() - memo_started <= MEMO_BUDGET_S:
@@ -835,10 +845,27 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
                     # Evidence is already attached; the draft catches up next cycle. The
                     # signals and the brief never wait on a model.
                     out["memos_deferred"] = out.get("memos_deferred", 0) + 1
-                signals = memo.steering_signals(proj) or []
+                signals.extend(memo.steering_signals(proj) or [])
             except Exception as e:
                 print("db_steering: memo rebuild failed for %s: %s" % (proj, str(e)[:120]))
         refresh_brief(proj, signals=signals)
+    # Auto-remediation draft PRs and the deploy gate ride the same cycle. Both are
+    # env-gated off by default, self-capped (MAX_PRS / MAX_PROJECTS), and fail soft —
+    # neither is allowed to starve scans or wed the loop on a GitHub/Vercel outage.
+    rem = _import("db_remediate")
+    if rem is not None:
+        try:
+            prows = [p for p in (db.select("projects", {"select": "name,repo_path,vercel_project,superseded_by"}) or [])
+                     if p.get("name") in touched_projects]
+            out["remediation"] = rem.run_cycle(prows)
+        except Exception as e:
+            print("db_steering: remediation pass failed: %s" % str(e)[:120])
+    gate = _import("db_deploy_gate")
+    if gate is not None:
+        try:
+            out["deploy_gate"] = gate.run_cycle()
+        except Exception as e:
+            print("db_steering: deploy gate failed: %s" % str(e)[:120])
     out["duration_s"] = round(time.time() - started, 1)
     print("db_steering: " + json.dumps(out, default=str))
     return out

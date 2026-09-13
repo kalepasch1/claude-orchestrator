@@ -245,10 +245,12 @@ def _p_unindexed_fk(rows, source, facts=None):
         con = _s(_v(r, "conname"))
         ref_rows = max(0.0, _num(_v(r, "referenced_rows")))
         sev = "high" if ref_rows > 100000 else "medium"
+        cols = [str(c) for c in _list(_v(r, "fk_columns")) if str(c or "").strip()]
         out.append(make_finding("unindexed_foreign_keys", "performance", sev,
                                 f"Foreign key {con} on {schema}.{table} has no covering index", object_schema=schema,
                                 object_name=table, extra=con, evidence_kinds=("availability", "integrity"),
                                 metrics={"constraint": con, "referenced_table": _s(_v(r, "referenced_table")),
+                                         "columns": cols,
                                          "referenced_rows": int(ref_rows), "est_rows": int(max(0.0, _num(_v(r, "est_rows"))))},
                                 detail="Deletes/updates on the referenced table scan this table; joins on the key do too."))
     return out
@@ -357,11 +359,13 @@ def _p_missing_audit(rows, source, facts=None):
             out.append(make_finding("missing_audit_columns", "audit", "medium",
                                     f"No created_at/inserted_at on {schema}.{table}", object_schema=schema,
                                     object_name=table, evidence_kinds=("audit_trail",),
+                                    metrics={"missing": ["created_at"] + ([] if has_updated else ["updated_at"])},
                                     detail="Rows cannot be shown to have been recorded contemporaneously."))
         elif not has_updated and has_upd_grants:
             out.append(make_finding("missing_audit_columns", "audit", "low",
                                     f"Updatable table {schema}.{table} has created_at but no updated_at",
                                     object_schema=schema, object_name=table, evidence_kinds=("audit_trail",),
+                                    metrics={"missing": ["updated_at"]},
                                     detail="UPDATE is granted to non-owner roles yet modifications leave no timestamp."))
     facts["tables_missing_created_at"] = missing
     if rows and missing == 0:
@@ -1042,7 +1046,9 @@ _SQL = {
                  "and k.table_name = t.table_name and k.constraint_type = 'PRIMARY KEY') order by t.table_rows desc limit 200"},
     "unindexed_foreign_keys": {
         "postgres": "select n.nspname as schemaname, c.relname as tablename, k.conname, rc.relname as referenced_table, "
-                    "rc.reltuples::bigint as referenced_rows, c.reltuples::bigint as est_rows "
+                    "rc.reltuples::bigint as referenced_rows, c.reltuples::bigint as est_rows, "
+                    "(select array_agg(a.attname order by x.ord) from unnest(k.conkey) with ordinality as x(attnum, ord) "
+                    "join pg_catalog.pg_attribute a on a.attrelid = k.conrelid and a.attnum = x.attnum) as fk_columns "
                     "from pg_catalog.pg_constraint k join pg_catalog.pg_class c on c.oid = k.conrelid "
                     "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
                     "join pg_catalog.pg_class rc on rc.oid = k.confrelid "
