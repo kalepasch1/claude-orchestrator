@@ -15,7 +15,7 @@ DEFAULTS = {"remediate": 300, "optimize": 86400, "learn": 604800, "review": 8640
 # Fleet-wide loops: ONE row (owned by the orchestrator's own project) whose handler
 # iterates the whole portfolio internally — the security_rls pattern. Listed here so a
 # fresh control plane grows them without a hand INSERT, and so a deleted row comes back.
-FLEET_LOOPS = {"db_steering": int(os.environ.get("ORCH_DB_STEERING_CADENCE_S", "600"))}
+FLEET_LOOPS = {"db_steering": int(os.environ.get("ORCH_DB_STEERING_CADENCE_S", "120"))}
 FLEET_LOOP_PROJECT = "claude-orchestrator"
 HERE = os.path.dirname(os.path.abspath(__file__))
 

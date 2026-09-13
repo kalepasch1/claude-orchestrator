@@ -240,6 +240,39 @@ def supabase_advisors(source, kind: str, timeout: float = None) -> list:
     return [lint for lint in lints if isinstance(lint, dict)]
 
 
+# A resource path is plain segments only: no query string, fragment, scheme or dot-segment
+# can be smuggled in from a probe definition, and the ref is a bare identifier.
+_CONFIG_PATH_RE = re.compile(r"^/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-.]+)*$")
+_PROJECT_REF_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+
+
+def supabase_config(source, path: str, timeout: float = None):  # noqa: FAIL_SOFT_ERROR — a config probe that silently reads None as "in order" would report a missing control as present; run_probe captures the AdapterError per probe
+    """GET one Management API resource for `source`'s project and return the parsed JSON.
+
+    `path` is relative to /v1/projects/{ref}: "/config/auth", "/database/backups",
+    "/network-restrictions", "/ssl-enforcement", "/functions". Config probes in db_probes
+    declare `config_path` and receive `[{path: payload}]`; this is the transport they use.
+    Raises AdapterError (token missing, ref missing, path not a plain resource path, HTTP
+    or JSON failure). The token is sent in the Authorization header only: never logged,
+    never part of the error text.
+    """
+    source = source or {}
+    token = os.environ.get("SUPABASE_ACCESS_TOKEN")
+    if not token:
+        raise AdapterError("SUPABASE_ACCESS_TOKEN unset")
+    ref = str(source.get("ref") or "")
+    if not _PROJECT_REF_RE.match(ref):
+        raise AdapterError("supabase source has no project ref")
+    p = "/" + str(path or "").strip().lstrip("/")
+    if not _CONFIG_PATH_RE.match(p) or "/./" in p + "/" or "/../" in p + "/":
+        raise AdapterError(f"supabase config path {p[:60]!r} is not a plain resource path")
+    try:
+        return _mgmt_json(f"{_MGMT_BASE}/projects/{ref}{p}", "GET", None, token, float(timeout or DEFAULT_TIMEOUT_S))
+    except AdapterError as e:
+        # A response body could echo the bearer; scrub before the message leaves this frame.
+        raise AdapterError(_scrub(str(e), [token])[:500]) from None
+
+
 # ── supabase management api ────────────────────────────────────────────────────────────
 
 def _mgmt_json(url, method, body, token, timeout, retries=_RETRY_BACKOFF_S):

@@ -69,6 +69,9 @@ PROMPT_CAP = int(os.environ.get("ORCH_DB_MEMO_PROMPT_CAP", "12000"))
 MODEL_NEED = int(os.environ.get("ORCH_DB_MEMO_NEED", "7"))
 GAUNTLET_CONTEXT_CAP = 6000
 FP_LEN = 12  # the citation form: [fp:<first 12 hex of the finding fingerprint>]
+#: Evidence rows per bulk POST. PostgREST inserts an array atomically, so a chunk is
+#: the unit that falls back to per-row on failure.
+BULK_CHUNK = int(os.environ.get("ORCH_DB_MEMO_BULK_CHUNK", "200"))
 
 CLOSING_LINE = ("Internal work product — not legal advice; evidence is machine-collected "
                 "and should be verified before reliance.")
@@ -294,39 +297,123 @@ def _ensure_memo(project: str, memo_kind: str, cache: dict):
     return row
 
 
-def _upsert_evidence(memo_id, finding: dict, argument_key: str) -> bool:
+def _evidence_row(memo_id, finding: dict, argument_key: str) -> dict:
+    """The legal_memo_evidence row a finding produces for one argument of one memo."""
     direction = finding.get("direction") if finding.get("direction") in EVIDENCE_DIRECTIONS else "undermines"
-    weight = evidence_weight(finding)
     note = None
     if str(finding.get("status") or "") == "resolved":
         note = "resolved %s" % _date_of(finding.get("resolved_at") or finding.get("last_seen_at"))
-    existing = db.select(EVIDENCE_TABLE, {"select": "id,direction,weight", "memo_id": f"eq.{memo_id}",
-                                          "finding_id": f"eq.{finding['id']}",
-                                          "argument_key": f"eq.{argument_key}", "limit": "1"}) or []
-    if existing:
-        cur = existing[0]
+    return {"memo_id": memo_id, "finding_id": finding["id"], "argument_key": argument_key,
+            "direction": direction, "weight": evidence_weight(finding), "note": note}
+
+
+def _existing_evidence(memo_id) -> dict:
+    """ONE read per memo: every evidence row keyed (finding_id, argument_key)."""
+    rows = db.select_all(EVIDENCE_TABLE, {"select": "id,finding_id,argument_key,direction,weight,note",
+                                          "memo_id": f"eq.{memo_id}"}, order="id.asc") or []
+    return {(str(r.get("finding_id")), str(r.get("argument_key"))): r for r in rows if isinstance(r, dict)}
+
+
+def _bulk_insert_evidence(rows: list) -> int:
+    """Insert evidence rows in chunks through one PostgREST POST each (an array body),
+    falling back to per-row inserts for a chunk that fails so one bad row cannot lose a
+    batch (a duplicate on the unique key rejects the whole array). Returns the number of
+    rows that stand afterwards; a None echo on the per-row path is a lost race, and the
+    other writer's row stands, so it counts."""
+    n = 0
+    for chunk in _chunks(rows, BULK_CHUNK):
         try:
-            same = (abs(float(cur.get("weight") or 0) - weight) < 1e-9 and cur.get("direction") == direction)
+            res = db._req("POST", f"/rest/v1/{EVIDENCE_TABLE}", body=chunk,
+                          headers={"Prefer": "return=representation"})
+            if isinstance(res, list) and len(res) == len(chunk):
+                n += len(chunk)
+                continue
+            raise RuntimeError("bulk insert echoed %s rows for %d" % (
+                len(res) if isinstance(res, list) else type(res).__name__, len(chunk)))
+        except Exception as e:
+            print(f"db_memo: bulk insert of {len(chunk)} evidence rows fell back to per-row: {str(e)[:120]}")
+            for rec in chunk:
+                try:
+                    db.insert(EVIDENCE_TABLE, rec)
+                    n += 1
+                except Exception as e2:
+                    print(f"db_memo: evidence insert {rec.get('argument_key')} for finding "
+                          f"{rec.get('finding_id')} failed: {type(e2).__name__}: {str(e2)[:120]}")
+    return n
+
+
+def _apply_evidence_updates(memo_id, changed: list) -> int:
+    """`changed` is [(existing_row, patch)]. Rows sharing an identical patch go out as ONE
+    PATCH (id=in.(...)); a lone row uses db.update. A failed batch falls back to per-row
+    updates. Returns the number of rows updated."""
+    groups = {}
+    for cur, patch in changed:
+        key = json.dumps(patch, sort_keys=True, default=str)
+        groups.setdefault(key, (patch, []))[1].append(str(cur.get("id")))
+    n = 0
+    for patch, ids in groups.values():
+        if len(ids) > 1:
+            try:
+                db._req("PATCH", f"/rest/v1/{EVIDENCE_TABLE}", body=patch,
+                        headers={"Prefer": "return=representation"},
+                        params={"memo_id": f"eq.{memo_id}", "id": "in.(%s)" % ",".join(ids)})
+                n += len(ids)
+                continue
+            except Exception as e:
+                print(f"db_memo: batched evidence update of {len(ids)} rows fell back to per-row: {str(e)[:120]}")
+        for rid in ids:
+            try:
+                db.update(EVIDENCE_TABLE, {"id": rid}, patch)
+                n += 1
+            except Exception as e:
+                print(f"db_memo: evidence update {rid} failed: {type(e).__name__}: {str(e)[:120]}")
+    return n
+
+
+def _sync_memo_evidence(memo_id, pairs: list) -> int:
+    """Bring one memo's evidence in line with `pairs` = [(finding, argument_key)]: read the
+    existing rows ONCE, bulk-insert what is missing, patch only what changed direction or
+    weight. Round trips: 1 read + ceil(new/200) POSTs + one PATCH per distinct change —
+    never one per (finding, key). Returns the number of pairs that now have a row."""
+    existing = _existing_evidence(memo_id)
+    new_rows, changed, seen, n_same = [], [], set(), 0
+    for finding, key in pairs:
+        pk = (str(finding["id"]), str(key))
+        if pk in seen:
+            continue
+        seen.add(pk)
+        want = _evidence_row(memo_id, finding, key)
+        cur = existing.get(pk)
+        if cur is None:
+            new_rows.append(want)
+            continue
+        try:
+            same = (abs(float(cur.get("weight") or 0) - want["weight"]) < 1e-9
+                    and cur.get("direction") == want["direction"])
         except Exception:
             same = False
-        if not same:
-            db.update(EVIDENCE_TABLE, {"id": cur["id"]}, {"weight": weight, "direction": direction, "note": note})
-        return True
-    row = db.insert(EVIDENCE_TABLE, {"memo_id": memo_id, "finding_id": finding["id"],
-                                     "argument_key": argument_key, "direction": direction,
-                                     "weight": weight, "note": note})
-    if row is None:  # lost a race on the unique key; the other writer's row stands
-        return True
-    return True
+        if same:
+            n_same += 1
+        else:
+            changed.append((cur, {"weight": want["weight"], "direction": want["direction"], "note": want["note"]}))
+    n = n_same
+    if changed:
+        n += _apply_evidence_updates(memo_id, changed)
+    if new_rows:
+        n += _bulk_insert_evidence(new_rows)
+    return n
 
 
 def attach_evidence(project: str, findings: list) -> dict:
     """Attach db_findings ROWS (with id) to every memo argument they speak to. Pure
     bookkeeping, no model. Resolved findings keep their row with weight 0 so a memo can
-    say "was a gap, closed on <date>". Fail-soft: returns what it managed."""
+    say "was a gap, closed on <date>". Cost is O(memos), not O(findings x keys): the
+    routing is planned first, then each memo is synchronised with one read and chunked
+    writes. Fail-soft: returns what it managed."""
     touched, n_rows = [], 0
     cache = {}
     try:
+        planned = {}  # memo_kind -> [(finding, argument_key)] in first-seen order
         for f in findings or []:
             if not isinstance(f, dict) or not f.get("id"):
                 continue
@@ -337,22 +424,21 @@ def attach_evidence(project: str, findings: list) -> dict:
                     keys = argument_keys_for(memo_kind, f)
                     if not keys:
                         continue
-                    try:
-                        memo = _ensure_memo(project, memo_kind, cache)
-                    except Exception as e:
-                        print(f"db_memo: ensure memo {project}/{memo_kind} failed: {type(e).__name__}: {str(e)[:120]}")
-                        continue
-                    if not memo or not memo.get("id"):
-                        continue
-                    for key in keys:
-                        try:
-                            if _upsert_evidence(memo["id"], f, key):
-                                n_rows += 1
-                        except Exception as e:
-                            print(f"db_memo: evidence upsert {memo_kind}/{key} for finding {f.get('id')} failed: "
-                                  f"{type(e).__name__}: {str(e)[:120]}")
-                    if memo_kind not in touched:
-                        touched.append(memo_kind)
+                    planned.setdefault(memo_kind, []).extend((f, key) for key in keys)
+        for memo_kind, pairs in planned.items():
+            try:
+                memo = _ensure_memo(project, memo_kind, cache)
+            except Exception as e:
+                print(f"db_memo: ensure memo {project}/{memo_kind} failed: {type(e).__name__}: {str(e)[:120]}")
+                continue
+            if not memo or not memo.get("id"):
+                continue
+            try:
+                n_rows += _sync_memo_evidence(memo["id"], pairs)
+            except Exception as e:
+                print(f"db_memo: evidence sync {project}/{memo_kind} failed: {type(e).__name__}: {str(e)[:120]}")
+            if memo_kind not in touched:
+                touched.append(memo_kind)
     except Exception as e:
         print(f"db_memo: attach_evidence({project}) aborted: {type(e).__name__}: {str(e)[:160]}")
     return {"memos_touched": touched, "evidence_rows": n_rows}
@@ -539,6 +625,32 @@ def render_markdown(memo_row: dict, evidence_rows: list) -> str:
 
 # ── model drafting ─────────────────────────────────────────────────────────────────────
 
+BASELINE_MAX_LINES = 3
+BASELINE_LINE_CHARS = 240
+
+
+def _baseline_lines(project) -> list:
+    """Comparative context from `db_baselines.baseline_lines(project)` when that module is
+    importable and well-behaved; [] otherwise. The module is owned elsewhere, so nothing
+    here depends on its shape beyond "returns an iterable of strings". No model call."""
+    try:
+        import db_baselines
+        fn = getattr(db_baselines, "baseline_lines", None)
+        if not callable(fn):
+            return []
+        out = []
+        for line in fn(project) or []:
+            text = _s(line).strip()
+            if text:
+                out.append(text[:BASELINE_LINE_CHARS])
+            if len(out) >= BASELINE_MAX_LINES:
+                break
+        return out
+    except Exception as e:
+        print(f"db_memo: baseline lines unavailable for {project}: {type(e).__name__}: {str(e)[:100]}")
+        return []
+
+
 def _build_prompt(memo_row: dict, ledger: list, args: list) -> str:
     memo_kind = memo_row.get("memo_kind") or ""
     spec = MEMO_KINDS.get(memo_kind, {})
@@ -554,6 +666,11 @@ def _build_prompt(memo_row: dict, ledger: list, args: list) -> str:
     for a in args:
         head.append(f"- {a['key']} — {a['claim']} — {a['strength']} "
                     f"(for {a['weight_for']}, against {a['weight_against']})")
+    baseline = _baseline_lines(memo_row.get("project"))
+    if baseline:
+        # Context only: the rules below still forbid asserting anything without a ledger
+        # citation, so the baseline can shape emphasis but never becomes a cited fact.
+        head += ["", "Fleet baseline (comparative context):"] + [f"- {line}" for line in baseline]
     head += [
         "",
         "RULES — a memo that breaks any of these is a failing answer:",
@@ -874,6 +991,103 @@ def steering_signals(project: str, max_lines: int = 6, max_chars: int = 200) -> 
     except Exception as e:
         print(f"db_memo: steering_signals({project}) failed: {type(e).__name__}: {str(e)[:120]}")
     return lines
+
+
+POSTURE_TABLE = "db_posture_snapshots"
+#: Most recent snapshots consulted for "latest score per project". Snapshots are written
+#: per source per cycle only when the score or counts moved, so a few hundred of the
+#: newest rows cover every active project; a deterministic order makes the window
+#: reproducible (this is a SAMPLE in db.py's classification, not a scan).
+POSTURE_WINDOW = 500
+
+
+def _fmt_score(v) -> str:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "?"
+    return str(int(f)) if f == int(f) else f"{f:.1f}"
+
+
+def owner_report_line() -> str:
+    """One line for the weekly owner report, computed from control-plane tables only:
+    `Data steering: <N> projects reviewed · posture <min>-<max> · memo arguments supported
+    <s> / contested <c> / undermined <u> · <k> open critical/high gaps`. Returns "" when
+    the tables are absent (a read raises) or hold nothing yet, so the report can drop the
+    line rather than print zeros. No model call."""
+    try:
+        memos = db.select_all(MEMO_TABLE, {"select": "project,arguments"}, order="project.asc,id.asc") or []
+        snaps = db.select(POSTURE_TABLE, {"select": "project,score,taken_at", "order": "taken_at.desc",
+                                          "limit": str(POSTURE_WINDOW)}) or []
+        strengths = {"supported": 0, "contested": 0, "undermined": 0}
+        projects = set()
+        for m in memos:
+            if not isinstance(m, dict):
+                continue
+            if m.get("project"):
+                projects.add(str(m["project"]))
+            for a in _jsonish(m.get("arguments"), []) or []:
+                s = (a or {}).get("strength") if isinstance(a, dict) else None
+                if s in strengths:
+                    strengths[s] += 1
+        latest = {}  # project -> score of the newest snapshot (window is newest-first)
+        for s in snaps:
+            if not isinstance(s, dict) or not s.get("project"):
+                continue
+            p = str(s["project"])
+            projects.add(p)
+            if p not in latest and s.get("score") is not None:
+                try:
+                    latest[p] = float(s["score"])
+                except (TypeError, ValueError):
+                    continue
+        if not projects:
+            return ""
+        posture = (f"{_fmt_score(min(latest.values()))}-{_fmt_score(max(latest.values()))}"
+                   if latest else "n/a")
+        gaps = db.count(FINDINGS_TABLE, {"status": "in.(open,acknowledged)",
+                                         "severity": "in.(critical,high)", "direction": "eq.undermines"})
+        gaps = int(gaps or 0)
+        return (f"Data steering: {len(projects)} projects reviewed · posture {posture} · memo arguments "
+                f"supported {strengths['supported']} / contested {strengths['contested']} / "
+                f"undermined {strengths['undermined']} · {gaps} open critical/high gaps")
+    except Exception as e:
+        print(f"db_memo: owner_report_line failed: {type(e).__name__}: {str(e)[:120]}")
+        return ""
+
+
+# ── legal docket seed (expert corps "data" vertical) ───────────────────────────────────
+
+DOCKET_TABLE = "legal_docket"
+DOCKET_VERTICAL = "data"
+#: Process-level latch: the seed is idempotent on the unique (vertical, question) key, but
+#: there is no reason to pay even the count more than once per runner process.
+_DOCKET_SEED_DONE = False
+
+
+def ensure_docket_seed() -> dict:
+    """Seed the expert-corps legal docket for the data vertical, at most once per process
+    and only when the docket holds no `data` question at all. The loop calls this every
+    cycle; every path is fail-soft and a control-plane outage simply retries next cycle
+    (the latch is set only after a successful decision). Returns what happened."""
+    global _DOCKET_SEED_DONE
+    if _DOCKET_SEED_DONE:
+        return {"seeded": False, "reason": "already checked this process"}
+    try:
+        n = db.count(DOCKET_TABLE, {"vertical": f"eq.{DOCKET_VERTICAL}"})
+        if n is None:
+            return {"seeded": False, "reason": "count unavailable"}
+        if int(n) > 0:
+            _DOCKET_SEED_DONE = True
+            return {"seeded": False, "reason": f"{int(n)} data questions already docketed"}
+        import db_docket_seed
+        res = db_docket_seed.ensure_seeded(db)
+        _DOCKET_SEED_DONE = True
+        print(f"db_memo: legal docket seeded for '{DOCKET_VERTICAL}': {res}")
+        return {"seeded": True, **(res if isinstance(res, dict) else {})}
+    except Exception as e:
+        print(f"db_memo: ensure_docket_seed failed: {type(e).__name__}: {str(e)[:120]}")
+        return {"seeded": False, "reason": f"{type(e).__name__}: {str(e)[:80]}"}
 
 
 # ── orchestration ──────────────────────────────────────────────────────────────────────

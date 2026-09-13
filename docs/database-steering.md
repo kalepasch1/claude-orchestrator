@@ -18,6 +18,26 @@ legal-memo drafts. Every claim below names the module that implements it._
 
 Cost scales with how often the databases change, not with how often they are looked at.
 
+### Second pass (2026-09-12 afternoon): what one cycle costs now
+
+Measured live on apparently-law (Supabase, 28 Postgres probes, ~295 findings):
+
+| | First pass (morning) | Second pass |
+|---|---|---|
+| Round trips for a full probe run | 28 (one statement per probe) | 6 — `db_probes.run_batch` folds every plain SELECT of a tier into ONE `json_build_object(...)::text` statement; batches run on a small pool in two waves |
+| Wall time for a full probe run | 12.4 s | 1.8 s |
+| Unchanged schema | re-probed in full every cycle | `db_probes.schema_signature` (one catalog round trip, 0.5 s) — equal signature ⇒ **incremental** cycle: only data-dependent probes (statistics, sessions, advisors), 3 round trips, 3 s; structural findings are carried, never resolved by absence |
+| Findings touch | one PATCH per unchanged finding once an hour (291 requests, ~40 s) | one PATCH per 100 ids (`_bulk_touch`, `id=in.(...)`) |
+| Sources per cycle | sequential | `ORCH_DB_STEERING_SOURCE_PARALLEL` (3) at a time, stalest first, results processed in order |
+| Posture snapshots | one row per source per cycle | written when the posture moved, else hourly (`ORCH_DB_SNAPSHOT_MIN_INTERVAL_S`) |
+| Evidence attachment | ~2 requests per evidence row | one read per memo, bulk inserts of 200 (`db_memo`) |
+| Cadence | 600 s | **120 s** (`ORCH_DB_STEERING_CADENCE_S`; the loop row follows the knob) |
+| Memo drafting per cycle | up to 3 memos, unbounded time | 1 memo (`ORCH_DB_STEERING_MEMOS_PER_CYCLE`) inside `ORCH_DB_STEERING_MEMO_BUDGET_S` (180 s); evidence, signals and briefs never wait on a model |
+| Comparative context | none | `db_baselines`: posture rank and per-category gaps against the fleet median, in the brief and the memo prompt |
+| Brief per task | the same project brief for every task | `db_steering.focus_brief`: lines naming objects the task text mentions come first ("Touched by this task") |
+| Remediation vs release backpressure | refused while a project is RED | bypassed for `swarm-db-*` tasks (operator decision 2026-09-12; `bypass_backpressure` on the swarm record) |
+| 64-bit ids through the Management API | precision loss past 2^53 changed `pg_stat_statements` fingerprints | batch payload travels as text; Python parses every digit |
+
 ## Modules
 
 | Module | Role |
@@ -125,7 +145,7 @@ without affecting any other. Supabase needs no driver at all.
 - Per-run wall-clock budget (`ORCH_DB_STEERING_BUDGET_S`, 240 s), stalest source first,
   per-source and per-probe failure isolation, three consecutive failures mark a source
   `unreachable` but keep retrying it. The memo-drafting phase that follows has its own
-  budget (`ORCH_DB_STEERING_MEMO_BUDGET_S`, 300 s): a costless local model can take
+  budget (`ORCH_DB_STEERING_MEMO_BUDGET_S`, 180 s): a costless local model can take
   minutes per memo, so drafting defers to the next cycle rather than overlapping the
   cadence; evidence attachment, steering signals and the brief never wait on a model.
 - Nothing here writes to an application database, a repo, a worktree or the intake
@@ -138,14 +158,20 @@ python3 runner/db_link.py doctor                                 # which optiona
 python3 runner/db_link.py list                                   # registry
 python3 runner/db_link.py scan supabase:<ref> --tiers cheap,medium,heavy   # dry run, prints findings
 python3 runner/db_link.py scan supabase:<ref> --write            # one real cycle for one source
+python3 runner/db_link.py scan supabase:<ref> --write --full     # ignore the schema signature; every due probe
 python3 runner/db_steering.py                                    # one full loop cycle
 python3 runner/db_link.py brief apparently-law                   # what agents are being told
 python3 runner/db_link.py memos apparently-law                   # memo summary
 python3 runner/db_link.py memos apparently-law --render records_integrity_and_audit_trail
 ```
 
-Knobs (all `ORCH_`-prefixed, fleet-pushable): `ORCH_DB_STEERING_CADENCE_S` (600),
-`ORCH_DB_STEERING_BUDGET_S` (240), `ORCH_DB_STEERING_MEMO_BUDGET_S` (300),
+Knobs (all `ORCH_`-prefixed, fleet-pushable): `ORCH_DB_STEERING_CADENCE_S` (120),
+`ORCH_DB_STEERING_BUDGET_S` (90), `ORCH_DB_STEERING_MEMO_BUDGET_S` (180),
+`ORCH_DB_STEERING_MEMOS_PER_CYCLE` (1), `ORCH_DB_STEERING_SOURCE_PARALLEL` (3),
+`ORCH_DB_SCHEMA_FULL_MAX_AGE_S` (21600: a full structural run at least this often even when
+the signature is unchanged), `ORCH_DB_SNAPSHOT_MIN_INTERVAL_S` (3600),
+`ORCH_DB_PROBE_BATCH` (`false` to run one statement per probe), `ORCH_DB_PROBE_BATCH_SIZE` (12),
+`ORCH_DB_PROBE_PARALLEL` (4), `ORCH_DB_BASELINE_TTL_S` (300),
 `ORCH_DB_STEERING_MAX_TASKS_PER_RUN` (3), `ORCH_DB_STEERING_UNFILED_RETRY_LIMIT` (200),
 `ORCH_DB_STEERING_REMEDIATION` (`false` to stop filing tasks), `ORCH_DB_STEERING_BRIEF_CHARS`
 (2000), `ORCH_DB_PROBE_TIMEOUT_S` (20), `ORCH_DB_PROBE_MAX_ROWS` (500),
@@ -156,5 +182,6 @@ Knobs (all `ORCH_`-prefixed, fleet-pushable): `ORCH_DB_STEERING_CADENCE_S` (600)
 ## Tests
 
 `runner/tests/test_db_registry.py`, `test_db_steering.py`, `test_db_steering_wiring.py`,
-`test_db_adapters.py`, `test_db_probes.py`, `test_db_memo.py`;
+`test_db_adapters.py`, `test_db_probes.py`, `test_db_probes_engine.py`, `test_db_baselines.py`,
+`test_db_memo.py`, `test_owner_report_db_line.py`;
 `web/server/utils/__tests__/dbSteering.test.ts`. None touches a network or a database.

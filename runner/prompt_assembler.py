@@ -111,14 +111,15 @@ def _project_brief(project, repo):
     return brief
 
 
-def _db_steering_brief(project):
+def _db_steering_brief(project, context=""):
     """The live database-steering brief for `project` (runner/db_steering.py keeps it in
-    db_steering_briefs; <=2KB, cached there for 5 min). Never raises; '' when absent."""
+    db_steering_briefs; <=2KB, cached there for 5 min), focused on the objects the task
+    text names when `context` is given. Never raises; '' when absent."""
     if not project:
         return ""
     try:
         import db_steering
-        return db_steering.steering_brief(project) or ""
+        return db_steering.steering_brief(project, context=context or None) or ""
     except Exception:
         return ""
 
@@ -184,7 +185,7 @@ def assemble(task_body, *, project="", repo="", kind="build", source="unknown", 
     # review steers the agents editing the schema without paging anyone: the next task in
     # the project simply sees it. Bounded (<=2KB), cached 5 min, and never load-bearing —
     # a missing table or a DB hiccup contributes nothing.
-    db_brief = _db_steering_brief(project)
+    db_brief = _db_steering_brief(project, body)
     if db_brief:
         layers.append("db_steering")
 

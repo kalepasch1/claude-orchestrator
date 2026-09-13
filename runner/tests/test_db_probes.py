@@ -52,9 +52,9 @@ def only(findings):
 # ── catalog hygiene ────────────────────────────────────────────────────────────────────
 
 class TestCatalog(unittest.TestCase):
-    def test_thirty_probes_with_unique_ids(self):
+    def test_forty_six_probes_with_unique_ids(self):
         ids = [p["id"] for p in PROBES]
-        self.assertEqual(len(ids), 30)
+        self.assertEqual(len(ids), 46)
         self.assertEqual(len(set(ids)), len(ids))
         self.assertTrue(all(re.match(r"^[a-z][a-z0-9_]+$", i) for i in ids))
 
@@ -75,9 +75,21 @@ class TestCatalog(unittest.TestCase):
                 if p.get("advisor_kind"):
                     self.assertIn(p["advisor_kind"], ("security", "performance"))
                     self.assertEqual(p["providers"], ["supabase"])
+                elif p.get("config_path"):
+                    # Management API config probe: parser, no SQL, Supabase only, explicit dialect.
+                    self.assertTrue(callable(p["parse"]))
+                    self.assertEqual(p["sql"], {}, "a config probe carries no SQL")
+                    self.assertEqual(p["providers"], ["supabase"])
+                    self.assertEqual(p["dialects"], ["postgres"])
+                    self.assertEqual(p["depends_on"], "data", "configuration moves without DDL")
+                    paths = p["config_path"] if isinstance(p["config_path"], list) else [p["config_path"]]
+                    for path in paths:
+                        self.assertRegex(path, r"^/[a-z0-9\-]+(?:/[a-z0-9\-]+)*$")
                 else:
                     self.assertTrue(callable(p["parse"]))
                     self.assertTrue(p["sql"], "a SQL probe needs at least one statement")
+                if "depends_on" in p:
+                    self.assertIn(p["depends_on"], ("schema", "data"))
 
     def test_every_statement_is_one_read_without_semicolons(self):
         for p in PROBES:
@@ -729,6 +741,396 @@ class TestRunAll(unittest.TestCase):
         self.assertEqual(out["stats"]["ok"], 0)
         self.assertEqual(out["findings"], [])
         self.assertEqual(out["score"], 100.0)
+
+
+# ── coverage extension (2026-09-12): 12 SQL probes + 4 Management API config probes ───
+
+# id -> (tier, category, dialects, depends_on, evidence_kinds, providers or None)
+NEW_PROBE_GATES = {
+    "privileged_login_roles": ("cheap", "security", ["postgres"], "schema", ["access_control"], None),
+    "invalid_indexes": ("cheap", "integrity", ["postgres"], "schema", ["integrity", "availability"], None),
+    "disabled_triggers": ("cheap", "integrity", ["postgres"], "schema", ["integrity", "audit_trail"], None),
+    "views_exposed_over_rls_tables": ("cheap", "security", ["postgres"], "schema",
+                                      ["access_control", "data_minimization"], None),
+    "pii_readable_by_anon": ("cheap", "privacy", ["postgres"], "schema", ["data_minimization", "access_control"], None),
+    "idle_in_transaction_sessions": ("cheap", "availability", ["mysql", "postgres"], "data", ["availability"], None),
+    "connection_saturation": ("cheap", "availability", ["mysql", "postgres"], "data", ["availability"], None),
+    "cascade_delete_blast_radius": ("medium", "integrity", ["postgres"], "data", ["integrity"], None),
+    "large_tables_without_index": ("medium", "performance", ["mysql", "postgres"], "data", ["availability"], None),
+    "replication_slots_lagging": ("medium", "availability", ["postgres"], "data", ["availability"], None),
+    "updated_at_without_trigger": ("heavy", "audit", ["mysql", "postgres"], "schema", ["audit_trail"], None),
+    "public_storage_buckets": ("cheap", "security", ["postgres"], "data", ["access_control", "data_minimization"],
+                               ["supabase"]),
+    "supabase_auth_config": ("medium", "security", ["postgres"], "data", ["access_control"], ["supabase"]),
+    "supabase_backups_pitr": ("medium", "availability", ["postgres"], "data", ["availability"], ["supabase"]),
+    "supabase_network_and_ssl": ("medium", "security", ["postgres"], "data", ["access_control"], ["supabase"]),
+    "supabase_edge_functions_verify_jwt": ("medium", "security", ["postgres"], "data", ["access_control"], ["supabase"]),
+}
+NEW_CONFIG_PATHS = {
+    "supabase_auth_config": "/config/auth",
+    "supabase_backups_pitr": "/database/backups",
+    "supabase_network_and_ssl": ["/network-restrictions", "/ssl-enforcement"],
+    "supabase_edge_functions_verify_jwt": "/functions",
+}
+
+
+def vocab_ok(test, f, probe_id):
+    """Every field the contract and the engine rely on, spelled from the vocabulary."""
+    test.assertEqual(f["probe_id"], probe_id)
+    test.assertIn(f["category"], CATEGORIES)
+    test.assertIn(f["severity"], SEVERITIES)
+    test.assertIn(f["direction"], ("supports", "undermines"))
+    test.assertTrue(f["evidence_kinds"])
+    for k in f["evidence_kinds"]:
+        test.assertIn(k, EVIDENCE_KINDS)
+    test.assertTrue(f["title"].strip())
+    test.assertIsInstance(f["metrics"], dict)
+    test.assertEqual(f["fingerprint"], fingerprint(probe_id, f["object_schema"], f["object_name"],
+                                                   extra=f.get("_extra", "")) if "_extra" in f else f["fingerprint"])
+    return f
+
+
+class TestNewProbeCatalogEntries(unittest.TestCase):
+    def test_each_new_probe_is_declared_with_engine_fields(self):
+        for pid, (tier, category, dialects, depends_on, kinds, providers) in NEW_PROBE_GATES.items():
+            with self.subTest(probe=pid):
+                p = probe_by_id(pid)
+                self.assertIsNotNone(p, f"{pid} missing from PROBES")
+                self.assertEqual(p["tier"], tier)
+                self.assertEqual(p["category"], category)
+                self.assertEqual(p["dialects"], dialects)
+                self.assertEqual(p["evidence_kinds"], kinds)
+                self.assertTrue(callable(p["parse"]))
+                self.assertTrue(str(p["remediation"]).strip())
+                self.assertTrue(str(p["title"]).strip())
+                self.assertEqual(db_probes.probe_depends_on(p), depends_on)
+                if depends_on == "data":
+                    self.assertEqual(p.get("depends_on"), "data", "data-dependent probes declare it in their gates")
+                if providers:
+                    self.assertEqual(p["providers"], providers)
+                else:
+                    self.assertNotIn("providers", p)
+                if pid in NEW_CONFIG_PATHS:
+                    self.assertEqual(p["config_path"], NEW_CONFIG_PATHS[pid])
+                    self.assertEqual(p["sql"], {})
+                else:
+                    self.assertNotIn("config_path", p)
+                    self.assertEqual(sorted(p["sql"]), dialects)
+
+    def test_every_new_statement_is_read_only_bounded_and_batchable(self):
+        for pid in NEW_PROBE_GATES:
+            for dialect, sql in probe_by_id(pid)["sql"].items():
+                with self.subTest(probe=pid, dialect=dialect):
+                    self.assertEqual(assert_read_only(sql), sql)
+                    self.assertNotIn(";", sql)
+                    self.assertNotIn("{", sql, "no placeholders: plain SELECTs batch into one round trip")
+                    self.assertRegex(sql, r"^\s*(select|with)\b")
+                    if pid != "connection_saturation":  # single aggregate row
+                        self.assertRegex(sql, r"\blimit \d+$")
+                        self.assertIn("order by", sql)
+                    if dialect == "postgres":
+                        self.assertTrue(db_probes._batchable(probe_by_id(pid), "postgres"))
+
+    def test_config_probes_are_not_batchable_and_skip_non_supabase(self):
+        for pid in NEW_CONFIG_PATHS:
+            self.assertFalse(db_probes._batchable(probe_by_id(pid), "postgres"))
+        out = db_probes.run_all(PG, query_fn=make_query_fn(), advisors_fn=lambda s, k: [])
+        ran = {r["probe_id"] for r in out["results"]}
+        for pid in list(NEW_CONFIG_PATHS) + ["public_storage_buckets"]:
+            self.assertNotIn(pid, ran, f"{pid} is Supabase-only")
+        for pid, gates in NEW_PROBE_GATES.items():
+            if gates[5] is None:
+                self.assertIn(pid, ran)
+        self.assertEqual(out["stats"]["failed"], 0)
+
+    def test_platform_roles_are_excluded_in_sql_not_in_python(self):
+        sql = probe_by_id("privileged_login_roles")["sql"]["postgres"]
+        for role in ("supabase_admin", "authenticator", "postgres", "rds_superuser", "cloudsqlsuperuser"):
+            self.assertIn(f"'{role}'", sql)
+        self.assertIn("rolcanlogin", sql)
+
+
+class TestNewCatalogParsers(unittest.TestCase):
+    def test_privileged_login_roles(self):
+        rows = [{"rolname": "app_admin", "rolsuper": True, "rolbypassrls": False, "rolcreaterole": "t"},
+                {"ROLNAME": "reporting", "ROLSUPER": "f", "ROLBYPASSRLS": "t", "rolvaliduntil": "2027-01-01"}]
+        by = {f["object_name"]: vocab_ok(self, f, "privileged_login_roles") for f in run_parse("privileged_login_roles", rows)}
+        self.assertEqual(by["app_admin"]["severity"], "high")
+        self.assertEqual(by["app_admin"]["title"], "Login role app_admin is a superuser")
+        self.assertTrue(by["app_admin"]["metrics"]["rolcreaterole"])
+        self.assertEqual(by["reporting"]["severity"], "medium")
+        self.assertIn("bypassrls", by["reporting"]["title"])
+        self.assertEqual(by["reporting"]["metrics"]["valid_until"], "2027-01-01")
+        self.assertEqual(by["reporting"]["fingerprint"], fingerprint("privileged_login_roles", "", "reporting"))
+        self.assertTrue(all(f["direction"] == "undermines" and f["category"] == "security" for f in by.values()))
+        self.assertEqual(run_parse("privileged_login_roles", []), [])
+
+    def test_invalid_indexes(self):
+        rows = [{"schemaname": "public", "tablename": "users", "indexname": "users_email_key", "indisunique": True, "index_bytes": "1048576"},
+                {"schemaname": "public", "tablename": "users", "indexname": "users_name_idx", "indisunique": "f", "index_bytes": 0}]
+        by = {f["metrics"]["index"]: vocab_ok(self, f, "invalid_indexes") for f in run_parse("invalid_indexes", rows)}
+        self.assertEqual(by["users_email_key"]["severity"], "high")
+        self.assertIn("NOT enforced", by["users_email_key"]["detail"])
+        self.assertEqual(by["users_email_key"]["metrics"]["index_bytes"], 1048576)
+        self.assertEqual(by["users_name_idx"]["severity"], "medium")
+        self.assertEqual(by["users_name_idx"]["title"], "Invalid index users_name_idx on public.users")
+        self.assertEqual(len({f["fingerprint"] for f in by.values()}), 2, "two invalid indexes on one table are two findings")
+        self.assertEqual(by["users_name_idx"]["fingerprint"], fingerprint("invalid_indexes", "public", "users", extra="users_name_idx"))
+        self.assertEqual(run_parse("invalid_indexes", []), [])
+
+    def test_disabled_triggers(self):
+        rows = [{"schemaname": "public", "tablename": "orders", "triggername": "RI_ConstraintTrigger_c_1", "tgisinternal": True, "tgenabled": "D"},
+                {"schemaname": "public", "tablename": "orders", "triggername": "set_updated_at", "tgisinternal": "f", "tgenabled": "D"}]
+        by = {f["metrics"]["trigger"]: vocab_ok(self, f, "disabled_triggers") for f in run_parse("disabled_triggers", rows)}
+        self.assertEqual(by["RI_ConstraintTrigger_c_1"]["severity"], "high")
+        self.assertEqual(by["RI_ConstraintTrigger_c_1"]["evidence_kinds"], ["integrity"])
+        self.assertIn("foreign key", by["RI_ConstraintTrigger_c_1"]["detail"])
+        self.assertEqual(by["set_updated_at"]["severity"], "medium")
+        self.assertEqual(by["set_updated_at"]["evidence_kinds"], ["integrity", "audit_trail"])
+        self.assertEqual(by["set_updated_at"]["title"], "Trigger set_updated_at disabled on public.orders")
+        self.assertEqual(run_parse("disabled_triggers", []), [])
+
+    def test_cascade_delete_blast_radius(self):
+        rows = [{"schemaname": "public", "tablename": "matter_events", "conname": "matter_events_matter_fk",
+                 "referenced_schema": "public", "referenced_table": "matters", "est_rows": 2000000, "referenced_rows": "5000"},
+                {"schemaname": "public", "tablename": "notes", "conname": "notes_matter_fk", "referenced_schema": "public",
+                 "referenced_table": "matters", "est_rows": "200000", "referenced_rows": 5000}]
+        by = {f["object_name"]: vocab_ok(self, f, "cascade_delete_blast_radius") for f in run_parse("cascade_delete_blast_radius", rows)}
+        self.assertEqual(by["matter_events"]["severity"], "high")
+        self.assertEqual(by["notes"]["severity"], "medium")
+        self.assertEqual(by["notes"]["title"], "Deleting from public.matters cascades into public.notes (~200000 rows) via notes_matter_fk")
+        self.assertEqual(by["notes"]["metrics"], {"constraint": "notes_matter_fk", "referenced_table": "public.matters",
+                                                  "est_rows": 200000, "referenced_rows": 5000})
+        self.assertEqual(by["notes"]["fingerprint"], fingerprint("cascade_delete_blast_radius", "public", "notes", extra="notes_matter_fk"))
+        self.assertEqual(run_parse("cascade_delete_blast_radius", []), [])
+
+    def test_large_tables_without_index(self):
+        f = vocab_ok(self, only(run_parse("large_tables_without_index", [{"schemaname": "public", "tablename": "events",
+                                                                          "est_rows": "3000000", "total_bytes": 2 * 1048576}])),
+                     "large_tables_without_index")
+        self.assertEqual((f["severity"], f["category"]), ("high", "performance"))
+        self.assertEqual(f["title"], "public.events (~3000000 rows) has no index at all")
+        self.assertEqual(f["metrics"], {"est_rows": 3000000, "total_bytes": 2 * 1048576})
+        self.assertIn("2 MB", f["detail"])
+        self.assertEqual(run_parse("large_tables_without_index", []), [])
+
+    def test_views_exposed_over_rls_tables(self):
+        rows = [{"schemaname": "public", "viewname": "client_summary", "relkind": "v", "reloptions": "",
+                 "grantees": "{anon,authenticated}", "base_tables": "{public.clients,public.matters}"},
+                {"schemaname": "public", "viewname": "safe_view", "relkind": "v", "reloptions": "{security_invoker=true}",
+                 "grantees": ["anon"], "base_tables": ["public.clients"]},
+                {"schemaname": "public", "viewname": "stats_mv", "relkind": "m", "reloptions": "{security_invoker=on}",
+                 "grantees": ["PUBLIC"], "base_tables": ["public.orders"]}]
+        out = run_parse("views_exposed_over_rls_tables", rows)
+        by = {f["object_name"]: vocab_ok(self, f, "views_exposed_over_rls_tables") for f in out}
+        self.assertEqual(set(by), {"client_summary", "stats_mv"}, "a security_invoker VIEW is fine; a matview never is")
+        self.assertEqual(by["client_summary"]["severity"], "high", "clients is a PII table name")
+        self.assertEqual(by["client_summary"]["evidence_kinds"], ["access_control", "data_minimization"])
+        self.assertEqual(by["client_summary"]["title"],
+                         "View public.client_summary exposes RLS-protected public.clients, public.matters to anon, authenticated")
+        self.assertEqual(by["client_summary"]["metrics"]["grantees"], ["anon", "authenticated"])
+        self.assertEqual(by["stats_mv"]["severity"], "medium")
+        self.assertEqual(by["stats_mv"]["evidence_kinds"], ["access_control"])
+        self.assertTrue(by["stats_mv"]["title"].startswith("Materialized view public.stats_mv"))
+        self.assertIn("own copy", by["stats_mv"]["detail"])
+        self.assertEqual(run_parse("views_exposed_over_rls_tables", []), [])
+
+    def test_pii_readable_by_anon(self):
+        rows = [{"schemaname": "public", "tablename": "leads", "rowsecurity": False, "columns": "{email,phone}", "grantees": "{anon}"},
+                {"schemaname": "public", "tablename": "profiles", "rowsecurity": "t", "columns": ["email"], "grantees": ["PUBLIC", "anon"]},
+                {"schemaname": "public", "tablename": "legacy", "columns": ["ssn"]}]
+        by = {f["object_name"]: vocab_ok(self, f, "pii_readable_by_anon") for f in run_parse("pii_readable_by_anon", rows)}
+        self.assertEqual(by["leads"]["severity"], "critical")
+        self.assertEqual(by["leads"]["title"], "Plain-text personal data in public.leads is granted to anon (email, phone)")
+        self.assertIn("RLS is OFF", by["leads"]["detail"])
+        self.assertEqual(by["profiles"]["severity"], "medium")
+        self.assertEqual(by["profiles"]["metrics"], {"columns": ["email"], "rowsecurity": True, "grantees": ["PUBLIC", "anon"]})
+        self.assertEqual(by["legacy"]["severity"], "medium", "missing rowsecurity column defaults to gated")
+        self.assertIn("granted to anon (ssn)", by["legacy"]["title"])
+        self.assertTrue(all(f["category"] == "privacy" and f["evidence_kinds"] == ["data_minimization", "access_control"]
+                            for f in by.values()))
+        self.assertEqual(run_parse("pii_readable_by_anon", []), [])
+
+    def test_updated_at_without_trigger(self):
+        f = vocab_ok(self, only(run_parse("updated_at_without_trigger", [{"schemaname": "public", "tablename": "matters"}])),
+                     "updated_at_without_trigger")
+        self.assertEqual((f["severity"], f["category"], f["evidence_kinds"]), ("low", "audit", ["audit_trail"]))
+        self.assertEqual(f["title"], "public.matters has updated_at but no trigger maintains it")
+        self.assertEqual(f["fingerprint"], fingerprint("updated_at_without_trigger", "public", "matters"))
+        self.assertEqual(run_parse("updated_at_without_trigger", []), [])
+
+    def test_idle_in_transaction_sessions(self):
+        rows = [{"pid": 7, "usename": "app", "application_name": "worker", "state": "idle in transaction", "idle_s": "400.2", "xact_age_s": 500},
+                {"pid": 8, "usename": "app", "state": "idle in transaction", "idle_s": 1801, "xact_age_s": 1900},
+                {"pid": 9, "usename": "app", "state": "idle in transaction (aborted)", "idle_s": 301, "xact_age_s": 301}]
+        by = {f["metrics"]["pid"]: vocab_ok(self, f, "idle_in_transaction_sessions") for f in run_parse("idle_in_transaction_sessions", rows)}
+        self.assertEqual(by["7"]["severity"], "medium")
+        self.assertEqual(by["7"]["title"], "Session idle in transaction for 6 min (pid 7, app)")
+        self.assertEqual(by["7"]["metrics"], {"pid": "7", "idle_s": 400, "xact_age_s": 500, "state": "idle in transaction", "application": "worker"})
+        self.assertEqual(by["8"]["severity"], "high", "> 30 min idle")
+        self.assertEqual(by["9"]["severity"], "high", "aborted transaction still holding the session")
+        self.assertEqual(by["7"]["fingerprint"], fingerprint("idle_in_transaction_sessions", extra="7"))
+        self.assertEqual(run_parse("idle_in_transaction_sessions", []), [])
+
+    def test_connection_saturation(self):
+        facts = {}
+        f = vocab_ok(self, only(run_parse("connection_saturation", [{"connections": 85, "active": "3", "max_connections": "100"}], facts=facts)),
+                     "connection_saturation")
+        self.assertEqual((f["severity"], f["direction"]), ("high", "undermines"))
+        self.assertEqual(f["title"], "Connections at 85% of max_connections (85/100)")
+        self.assertEqual(f["metrics"], {"connections": 85, "active": 3, "max_connections": 100, "ratio": 0.85})
+        self.assertEqual(facts, {"connections": 85, "max_connections": 100})
+        g = only(run_parse("connection_saturation", [{"connections": 90, "active": 0, "max_connections": 100}]))
+        self.assertEqual(g["severity"], "critical")
+        h = only(run_parse("connection_saturation", [{"connections": 79, "active": 0, "max_connections": 100}]))
+        self.assertEqual((h["severity"], h["direction"]), ("info", "supports"))
+        self.assertEqual(f["fingerprint"], h["fingerprint"], "headroom and saturation are one fact that flips")
+        self.assertEqual(run_parse("connection_saturation", [{"connections": 5, "max_connections": 0}]), [])
+        self.assertEqual(run_parse("connection_saturation", []), [])
+
+    def test_replication_slots_lagging(self):
+        gb = 1073741824
+        rows = [{"slot_name": "dead_slot", "slot_type": "logical", "active": False, "database": "postgres", "retained_bytes": "524288000"},
+                {"slot_name": "healthy", "slot_type": "physical", "active": "t", "retained_bytes": 0.5 * gb},
+                {"slot_name": "behind", "slot_type": "logical", "active": True, "retained_bytes": 5 * gb},
+                {"slot_name": "far_behind", "slot_type": "logical", "active": 1, "retained_bytes": 20 * gb}]
+        by = {f["object_name"]: vocab_ok(self, f, "replication_slots_lagging") for f in run_parse("replication_slots_lagging", rows)}
+        self.assertEqual(set(by), {"dead_slot", "behind", "far_behind"}, "an active slot within 1 GB is healthy")
+        self.assertEqual(by["dead_slot"]["severity"], "high")
+        self.assertEqual(by["dead_slot"]["title"], "Replication slot dead_slot is inactive, 0.5 GB of WAL retained")
+        self.assertEqual(by["behind"]["severity"], "medium")
+        self.assertEqual(by["far_behind"]["severity"], "high")
+        self.assertIn("lagging", by["far_behind"]["title"])
+        self.assertEqual(by["behind"]["metrics"]["retained_bytes"], 5 * gb)
+        self.assertEqual(run_parse("replication_slots_lagging", []), [])
+
+    def test_public_storage_buckets(self):
+        facts = {}
+        rows = [{"id": "avatars", "name": "avatars", "public": True},
+                {"id": "documents", "name": "documents", "public": "t", "file_size_limit": 52428800},
+                {"id": "private", "name": "private", "public": False}]
+        by = {f["object_name"]: vocab_ok(self, f, "public_storage_buckets") for f in run_parse("public_storage_buckets", rows, source=SUPA, facts=facts)}
+        self.assertEqual(set(by), {"avatars", "documents"})
+        self.assertEqual(by["avatars"]["severity"], "medium")
+        self.assertEqual(by["documents"]["severity"], "high", "document matches the PII table pattern")
+        self.assertEqual(by["documents"]["evidence_kinds"], ["access_control", "data_minimization"])
+        self.assertEqual(by["documents"]["metrics"]["file_size_limit"], "52428800")
+        self.assertEqual(by["avatars"]["object_schema"], "storage")
+        self.assertEqual(facts, {"storage_buckets": 3, "public_storage_buckets": 2})
+        g = only(run_parse("public_storage_buckets", [{"name": "private", "public": "f"}], source=SUPA))
+        self.assertEqual((g["direction"], g["severity"], g["title"]), ("supports", "info", "All 1 storage buckets are private"))
+        self.assertEqual(g["fingerprint"], fingerprint("public_storage_buckets", "storage", "", extra="all_private"))
+        self.assertEqual(run_parse("public_storage_buckets", [], source=SUPA), [])
+
+
+class TestConfigProbeParsers(unittest.TestCase):
+    """Parsers receive rows = [{path: payload, ...}] — one dict, one key per config_path."""
+
+    def test_cfg_lookup_is_slash_tolerant(self):
+        rows = [{"config/auth": {"a": 1}, "/functions": []}]
+        self.assertEqual(db_probes._cfg(rows, "/config/auth"), {"a": 1})
+        self.assertEqual(db_probes._cfg(rows, "functions"), [])
+        self.assertIsNone(db_probes._cfg(rows, "/database/backups"))
+        self.assertIsNone(db_probes._cfg([], "/config/auth"))
+        self.assertIsNone(db_probes._cfg(["junk", None], "/config/auth"))
+
+    def test_auth_config_weaknesses(self):
+        payload = {"site_url": "http://localhost:3000", "password_min_length": 6, "mailer_autoconfirm": True,
+                   "sms_autoconfirm": False, "external_anonymous_users_enabled": True, "security_captcha_enabled": False,
+                   "jwt_exp": 604800, "security_manual_linking_enabled": True,
+                   "security_update_password_require_reauthentication": False, "refresh_token_rotation_enabled": False}
+        out = run_parse("supabase_auth_config", [{"/config/auth": payload}], source=SUPA)
+        by = {f["object_name"]: vocab_ok(self, f, "supabase_auth_config") for f in out}
+        self.assertEqual(set(by), {"site_url", "password_min_length", "mailer_autoconfirm", "external_anonymous_users_enabled",
+                                   "security_captcha_enabled", "jwt_exp", "security_manual_linking_enabled",
+                                   "security_update_password_require_reauthentication", "refresh_token_rotation_enabled"})
+        self.assertEqual(by["password_min_length"]["severity"], "low", "6 is weak, below 6 is medium")
+        self.assertEqual(by["mailer_autoconfirm"]["severity"], "medium")
+        self.assertEqual(by["external_anonymous_users_enabled"]["severity"], "medium")
+        self.assertEqual(by["jwt_exp"]["title"], "Access tokens live 168 hours (jwt_exp)")
+        self.assertEqual(by["site_url"]["severity"], "medium")
+        self.assertEqual(by["security_captcha_enabled"]["severity"], "low")
+        self.assertTrue(all(f["object_schema"] == "auth" and f["category"] == "security" and f["direction"] == "undermines"
+                            for f in by.values()))
+        self.assertEqual(len({f["fingerprint"] for f in by.values()}), len(by), "one finding per setting")
+        self.assertEqual(by["jwt_exp"]["fingerprint"], fingerprint("supabase_auth_config", "auth", "jwt_exp", extra="jwt_exp"))
+        short = only(run_parse("supabase_auth_config", [{"/config/auth": {"password_min_length": "4"}}], source=SUPA))
+        self.assertEqual((short["severity"], short["title"]), ("medium", "Minimum password length is 4"))
+
+    def test_auth_config_positive_and_empty(self):
+        good = {"site_url": "https://app.example.com", "password_min_length": 12, "mailer_autoconfirm": False,
+                "external_anonymous_users_enabled": False, "security_captcha_enabled": True, "jwt_exp": 3600}
+        f = vocab_ok(self, only(run_parse("supabase_auth_config", [{"/config/auth": good}], source=SUPA)), "supabase_auth_config")
+        self.assertEqual((f["direction"], f["severity"]), ("supports", "info"))
+        self.assertEqual(f["title"], "Auth configuration: no weaknesses in 6 reviewed settings")
+        self.assertEqual(sorted(f["metrics"]["reviewed"]), sorted(["site_url", "password_min_length", "mailer_autoconfirm",
+                                                                   "external_anonymous_users_enabled", "security_captcha_enabled",
+                                                                   "jwt_exp"]))
+        self.assertEqual(run_parse("supabase_auth_config", [{"/config/auth": {}}], source=SUPA), [], "nothing reviewed, nothing claimed")
+        self.assertEqual(run_parse("supabase_auth_config", [{"/config/auth": "unexpected"}], source=SUPA), [])
+        self.assertEqual(run_parse("supabase_auth_config", [], source=SUPA), [])
+
+    def test_backups_pitr(self):
+        facts = {}
+        out = run_parse("supabase_backups_pitr", [{"/database/backups": {"pitr_enabled": True, "walg_enabled": True,
+                                                                          "backups": [{"id": 1}, {"id": 2}]}}], source=SUPA, facts=facts)
+        for f in out:
+            vocab_ok(self, f, "supabase_backups_pitr")
+        self.assertEqual([(f["direction"], f["severity"], f["title"]) for f in out],
+                         [("supports", "info", "Point-in-time recovery is enabled"), ("supports", "info", "2 database backups on file")])
+        self.assertEqual(facts, {"pitr_enabled": True, "backups_on_file": 2})
+        out = run_parse("supabase_backups_pitr", [{"/database/backups": {"pitr_enabled": False, "walg_enabled": False, "backups": [{"id": 1}]}}], source=SUPA)
+        self.assertEqual([(f["direction"], f["severity"]) for f in out], [("undermines", "medium"), ("supports", "info")])
+        self.assertEqual(out[0]["title"], "Point-in-time recovery is disabled")
+        none = run_parse("supabase_backups_pitr", [{"/database/backups": {"pitr_enabled": False, "walg_enabled": False, "backups": [], "region": "us-east-1"}}], source=SUPA)
+        self.assertEqual([(f["severity"], f["title"]) for f in none],
+                         [("medium", "Point-in-time recovery is disabled"), ("high", "No database backups on file")])
+        self.assertEqual(none[1]["metrics"]["region"], "us-east-1")
+        self.assertEqual(none[0]["fingerprint"], out[0]["fingerprint"])
+        self.assertEqual(none[0]["fingerprint"], fingerprint("supabase_backups_pitr", extra="pitr"))
+        self.assertEqual(run_parse("supabase_backups_pitr", [], source=SUPA), [])
+        self.assertEqual(run_parse("supabase_backups_pitr", [{"/database/backups": []}], source=SUPA), [])
+
+    def test_network_and_ssl(self):
+        rows = [{"/network-restrictions": {"entitlement": "allowed", "config": {"dbAllowedCidrs": ["0.0.0.0/0"]}, "status": "applied"},
+                 "/ssl-enforcement": {"currentConfig": {"database": False}, "appliedSuccessfully": True}}]
+        out = run_parse("supabase_network_and_ssl", rows, source=SUPA)
+        by = {f["title"]: vocab_ok(self, f, "supabase_network_and_ssl") for f in out}
+        self.assertEqual(set(by), {"Database accepts connections from any IP address", "SSL is not enforced on database connections"})
+        self.assertTrue(all(f["severity"] == "medium" and f["direction"] == "undermines" for f in by.values()))
+        self.assertEqual(by["Database accepts connections from any IP address"]["metrics"]["cidrs"], ["0.0.0.0/0"])
+        rows = [{"/network-restrictions": {"entitlement": "allowed", "config": {"dbAllowedCidrs": ["10.0.0.0/8"], "dbAllowedCidrsV6": ["fd00::/8"]}},
+                 "/ssl-enforcement": {"currentConfig": {"database": True}}}]
+        good = run_parse("supabase_network_and_ssl", rows, source=SUPA)
+        self.assertEqual([(f["direction"], f["severity"], f["title"]) for f in good],
+                         [("supports", "info", "Database network access restricted to 2 CIDR ranges"),
+                          ("supports", "info", "SSL is enforced on database connections")])
+        self.assertEqual({f["fingerprint"] for f in good}, {f["fingerprint"] for f in out}, "same two facts, flipped")
+        plan = only(run_parse("supabase_network_and_ssl", [{"/network-restrictions": {"entitlement": "disallowed", "config": {}}}], source=SUPA))
+        self.assertIn("not available on this plan", plan["detail"])
+        self.assertEqual(plan["fingerprint"], fingerprint("supabase_network_and_ssl", extra="network"))
+        self.assertEqual(run_parse("supabase_network_and_ssl", [], source=SUPA), [])
+        self.assertEqual(run_parse("supabase_network_and_ssl", [{"/ssl-enforcement": "nope"}], source=SUPA), [])
+
+    def test_edge_functions_verify_jwt(self):
+        facts = {}
+        fns = [{"slug": "admin-api", "verify_jwt": False, "status": "ACTIVE", "version": 3},
+               {"slug": "stripe-webhook", "verify_jwt": "false"},
+               {"slug": "ok-fn", "verify_jwt": True}, {"name": "legacy", "verify_jwt": None}, "junk"]
+        out = run_parse("supabase_edge_functions_verify_jwt", [{"/functions": fns}], source=SUPA, facts=facts)
+        by = {f["object_name"]: vocab_ok(self, f, "supabase_edge_functions_verify_jwt") for f in out}
+        self.assertEqual(set(by), {"admin-api", "stripe-webhook"})
+        self.assertEqual(by["admin-api"]["severity"], "medium")
+        self.assertEqual(by["admin-api"]["title"], "Edge function admin-api does not verify JWTs")
+        self.assertEqual(by["admin-api"]["metrics"], {"slug": "admin-api", "verify_jwt": False, "status": "ACTIVE", "version": "3", "webhook_name": False})
+        self.assertEqual(by["stripe-webhook"]["severity"], "low", "webhook targets verify a signature instead")
+        self.assertEqual(by["admin-api"]["object_schema"], "supabase_functions")
+        self.assertEqual(facts, {"edge_functions": 4})
+        self.assertEqual(by["admin-api"]["fingerprint"], fingerprint("supabase_edge_functions_verify_jwt", "supabase_functions", "admin-api", extra="admin-api"))
+        g = only(run_parse("supabase_edge_functions_verify_jwt", [{"/functions": {"functions": [{"slug": "a", "verify_jwt": True}]}}], source=SUPA))
+        self.assertEqual((g["direction"], g["title"]), ("supports", "All 1 edge functions verify JWTs"))
+        self.assertEqual(run_parse("supabase_edge_functions_verify_jwt", [{"/functions": []}], source=SUPA), [])
+        self.assertEqual(run_parse("supabase_edge_functions_verify_jwt", [], source=SUPA), [])
 
 
 # ── scoring / summary ──────────────────────────────────────────────────────────────────

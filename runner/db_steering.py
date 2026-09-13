@@ -41,10 +41,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import concurrent.futures
 import json
 import os
 import re
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -54,12 +56,24 @@ import db_registry  # noqa: E402
 
 LOOP_TYPE = "db_steering"
 LOOP_PROJECT = "claude-orchestrator"
-LOOP_CADENCE_S = int(os.environ.get("ORCH_DB_STEERING_CADENCE_S", "600"))
-BUDGET_S = float(os.environ.get("ORCH_DB_STEERING_BUDGET_S", "240"))
+LOOP_CADENCE_S = int(os.environ.get("ORCH_DB_STEERING_CADENCE_S", "120"))
+BUDGET_S = float(os.environ.get("ORCH_DB_STEERING_BUDGET_S", "90"))
 MAX_TASKS_PER_RUN = int(os.environ.get("ORCH_DB_STEERING_MAX_TASKS_PER_RUN", "3"))
 #: Wall-clock budget for the memo-drafting phase that follows the scans. A costless local
 #: model can take minutes per memo; without a cap one run could overlap the next cadence.
-MEMO_BUDGET_S = float(os.environ.get("ORCH_DB_STEERING_MEMO_BUDGET_S", "300"))
+MEMO_BUDGET_S = float(os.environ.get("ORCH_DB_STEERING_MEMO_BUDGET_S", "180"))
+#: Memos redrafted per cycle across all projects. At a 120 s cadence one per cycle is
+#: thirty an hour — far more than the evidence moves — while keeping every cycle short.
+MEMO_MAX_PER_CYCLE = max(1, int(os.environ.get("ORCH_DB_STEERING_MEMOS_PER_CYCLE", "1")))
+#: Sources scanned concurrently. Each scan is a handful of round trips now that probes are
+#: batched, so a small pool covers the fleet inside one budget window without hammering a
+#: rate-limited management API.
+SOURCE_PARALLEL = max(1, int(os.environ.get("ORCH_DB_STEERING_SOURCE_PARALLEL", "3")))
+#: A schema whose signature has not moved is not re-probed structurally more often than
+#: this; data-dependent probes (statistics, sessions, advisors) still run every cycle.
+SCHEMA_FULL_MAX_AGE_S = int(os.environ.get("ORCH_DB_SCHEMA_FULL_MAX_AGE_S", "21600"))
+#: A posture snapshot is written when the posture moved, else at most this often.
+SNAPSHOT_MIN_INTERVAL_S = int(os.environ.get("ORCH_DB_SNAPSHOT_MIN_INTERVAL_S", "3600"))
 #: How many open, material, still-unfiled findings are re-offered for remediation each
 #: scan (findings first written by a manual `db_link scan --write`, or whose swarm task
 #: was refused by release backpressure, would otherwise never be filed).
@@ -96,8 +110,12 @@ def ensure_loop_row(enabled=True):
     """Make sure the `loops` table carries a db_steering row so loops.py fires us.
     Idempotent; never raises."""
     try:
-        rows = db.select("loops", {"select": "id,enabled", "type": "eq.%s" % LOOP_TYPE, "limit": "1"}) or []
+        rows = db.select("loops", {"select": "id,enabled,cadence_seconds", "type": "eq.%s" % LOOP_TYPE, "limit": "1"}) or []
         if rows:
+            if int(rows[0].get("cadence_seconds") or 0) != LOOP_CADENCE_S:
+                # The env knob is the fleet-pushable source of truth for the cadence.
+                db.update("loops", {"id": rows[0]["id"]}, {"cadence_seconds": LOOP_CADENCE_S})
+                rows[0]["cadence_seconds"] = LOOP_CADENCE_S
             return rows[0]
         res = db.insert("loops", {"project": LOOP_PROJECT, "type": LOOP_TYPE,
                                   "cadence_seconds": LOOP_CADENCE_S, "enabled": bool(enabled),
@@ -197,11 +215,35 @@ def _repo_migration_drift(source, facts):
     return out
 
 
-def scan_source(source, tiers=None, dry_run=False, adapters=None, probes=None):
+def _scan_mode(source, caps, adapters, probes, force_full=False, now=None):
+    """Decide between a FULL scan and an INCREMENTAL one (data-dependent probes only).
+
+    One cheap catalog round trip yields the schema signature. When it equals the one
+    recorded at the last successful full run, and that run is younger than
+    SCHEMA_FULL_MAX_AGE_S, the structural probes cannot have new findings and are skipped.
+    Returns (mode, signature, skip_probe_ids)."""
+    now = now or time.time()
+    if force_full or not hasattr(probes, "schema_signature") or not hasattr(probes, "probe_depends_on"):
+        return "full", None, None
+    sig = None
+    try:
+        sig = probes.schema_signature(source, getattr(adapters, "query", None))
+    except Exception as e:
+        print("db_steering: signature failed for %s: %s" % (source.get("label"), str(e)[:120]))
+    if not sig:
+        return "full", None, None
+    if sig == caps.get("schema_signature") and now - _ts(caps.get("schema_full_ok_at")) < SCHEMA_FULL_MAX_AGE_S:
+        skip = [p["id"] for p in getattr(probes, "PROBES", []) if probes.probe_depends_on(p) == "schema"]
+        return "incremental", sig, skip
+    return "full", sig, None
+
+
+def scan_source(source, tiers=None, dry_run=False, adapters=None, probes=None, force_full=False):
     """Run the due probes against one source and reconcile findings.
 
-    Returns {"ok", "findings", "delta", "snapshot", "error", "duration_ms"}.
-    `dry_run` runs the probes but writes nothing (the CLI uses it).
+    Returns {"ok", "findings", "delta", "snapshot", "error", "duration_ms", "mode"}.
+    `dry_run` runs the probes but writes nothing (the CLI uses it). `force_full` ignores
+    the schema signature and runs every due probe.
     """
     started = time.time()
     adapters = adapters or _import("db_adapters")
@@ -210,10 +252,12 @@ def scan_source(source, tiers=None, dry_run=False, adapters=None, probes=None):
         return {"ok": False, "error": "db_adapters/db_probes unavailable", "findings": [], "delta": {}}
     caps = _capabilities(source, adapters)
     tiers = tuple(tiers or _due_tiers(source))
+    mode, sig, skip_ids = _scan_mode(source, caps, adapters, probes, force_full=force_full)
+    extra = {"skip_probe_ids": skip_ids} if skip_ids else {}
     try:
         result = probes.run_all(source, query_fn=adapters.query, tiers=tiers,
                                 advisors_fn=getattr(adapters, "supabase_advisors", None),
-                                capabilities=caps) or {}
+                                capabilities=caps, **extra) or {}
     except Exception as e:
         err = "%s: %s" % (type(e).__name__, str(e)[:200])
         if not dry_run:
@@ -230,19 +274,33 @@ def scan_source(source, tiers=None, dry_run=False, adapters=None, probes=None):
     ok_probes = {r.get("probe_id") for r in results if r.get("ok")}
     failed = [r for r in results if not r.get("ok")]
     all_failed = bool(results) and not ok_probes
+    stats = dict(result.get("stats") or {})
+    stats["mode"] = mode
     if dry_run:
         return {"ok": not all_failed, "findings": findings, "facts": facts, "results": results,
-                "delta": {}, "duration_ms": round((time.time() - started) * 1000)}
+                "delta": {}, "mode": mode, "stats": stats,
+                "duration_ms": round((time.time() - started) * 1000)}
 
     delta = reconcile_findings(source, findings, ok_probes)
-    snapshot = write_snapshot(source, findings, results, facts, probes)
+    # The posture is the OPEN ledger after reconciliation — this cycle's findings plus the
+    # ones carried by probes that did not run — never just what one incremental pass saw.
+    posture_rows = delta.get("all") or findings
+    snapshot = write_snapshot(source, posture_rows, results, facts, probes, stats=stats, caps=caps)
+    now = time.time()
     for tier in tiers:
-        caps.setdefault("tiers", {})[tier] = time.time()
+        caps.setdefault("tiers", {})[tier] = now
+    if sig and mode == "full":
+        by_id = {p["id"]: p for p in getattr(probes, "PROBES", [])}
+        schema_ok = all(r.get("ok") for r in results
+                        if r.get("probe_id") in by_id and probes.probe_depends_on(by_id[r["probe_id"]]) == "schema")
+        if schema_ok:
+            caps["schema_signature"] = sig
+            caps["schema_full_ok_at"] = now
     db_registry.record_scan(source["id"], ok=not all_failed,
                             error=("; ".join(str(f.get("error"))[:80] for f in failed[:3]) or None) if failed else None,
                             capabilities=caps)
     return {"ok": not all_failed, "findings": findings, "delta": delta, "snapshot": snapshot,
-            "facts": facts, "results": results, "error": None,
+            "facts": facts, "results": results, "error": None, "mode": mode, "stats": stats,
             "duration_ms": round((time.time() - started) * 1000)}
 
 
@@ -283,6 +341,34 @@ def _bulk_insert(table, rows):
     return out
 
 
+def _bulk_touch(table, rows, patch):
+    """PATCH the same `patch` onto many rows: one request per BULK_CHUNK ids through
+    PostgREST's `id=in.(...)` filter, per-row fallback for a chunk that fails. Returns the
+    number of rows patched. Only ever used for non-state fields (last_seen_at)."""
+    n = 0
+    for i in range(0, len(rows), max(1, BULK_CHUNK)):
+        chunk = rows[i:i + BULK_CHUNK]
+        ids = [str(r.get("id")) for r in chunk if r.get("id")]
+        if not ids:
+            continue
+        try:
+            db._req("PATCH", "/rest/v1/%s" % table, body=patch, headers={"Prefer": "return=minimal"},
+                    params={"id": "in.(%s)" % ",".join(ids)})
+            for r in chunk:
+                r.update(patch)
+            n += len(ids)
+        except Exception as e:
+            print("db_steering: bulk touch of %d rows fell back to per-row: %s" % (len(ids), str(e)[:120]))
+            for r in chunk:
+                try:
+                    db.update(table, {"id": r["id"]}, patch)
+                    r.update(patch)
+                    n += 1
+                except Exception as e2:
+                    print("db_steering: touch %s failed: %s" % (r.get("id"), str(e2)[:80]))
+    return n
+
+
 def reconcile_findings(source, findings, ok_probes):
     """Upsert this cycle's findings and resolve the ones that disappeared.
 
@@ -297,21 +383,37 @@ def reconcile_findings(source, findings, ok_probes):
         # Paged to exhaustion: PostgREST caps a single select at 1000 rows and a large
         # schema (tomorrow: 628 tables, apparently: 917) yields more findings than that. A
         # truncated read here would re-insert live rows and never resolve the tail.
+        # Resolved rows are read too: (source_id, fingerprint) is unique, so a gap that
+        # comes back must REOPEN its row rather than fail a fresh insert with a 409.
         existing = db.select_all("db_findings", {"select": "*", "source_id": "eq.%s" % sid,
-                                                 "status": "in.(open,acknowledged)"}, order="id.asc") or []
+                                                 "status": "in.(open,acknowledged,resolved)"}, order="id.asc") or []
     except Exception as e:
         print("db_steering: cannot read existing findings: %s" % str(e)[:120])
         existing = []
     by_fp = {r.get("fingerprint"): r for r in existing}
     now = _now_iso()
     now_ts = time.time()
-    new_rows, updated, seen, all_rows, pending = [], 0, set(), [], []
+    new_rows, updated, seen, all_rows, pending, touch, reopened = [], 0, set(), [], [], [], []
     for f in findings:
         fp = f.get("fingerprint")
         if not fp or fp in seen:
             continue
         seen.add(fp)
         row = by_fp.get(fp)
+        if row and row.get("status") == "resolved":
+            patch = {k: f.get(k) for k in ("severity", "title", "detail", "metrics", "remediation", "direction")
+                     if f.get(k) != row.get(k)}
+            patch.update({"status": "open", "resolved_at": None, "last_seen_at": now,
+                          "occurrences": int(row.get("occurrences") or 0) + 1, "task_slug": None})
+            try:
+                db.update("db_findings", {"id": row["id"]}, patch)
+                row.update(patch)
+                reopened.append(row)
+                new_rows.append(row)  # a recurrence is steered like a new gap
+                all_rows.append(row)
+            except Exception as e:
+                print("db_steering: reopen finding failed: %s" % str(e)[:120])
+            continue
         if row:
             # WRITE ECONOMY: a finding that is exactly as it was is not re-written every
             # cycle. Its `last_seen_at` is touched at most once per FINDING_TOUCH_S; a
@@ -323,7 +425,7 @@ def reconcile_findings(source, findings, ok_probes):
                 if f.get(k) != row.get(k):
                     patch[k] = f.get(k)
             stale = now_ts - _ts(row.get("last_seen_at")) >= FINDING_TOUCH_S
-            if patch or stale:
+            if patch:
                 patch.update({"last_seen_at": now, "occurrences": int(row.get("occurrences") or 0) + 1})
                 try:
                     db.update("db_findings", {"id": row["id"]}, patch)
@@ -331,6 +433,10 @@ def reconcile_findings(source, findings, ok_probes):
                     updated += 1
                 except Exception as e:
                     print("db_steering: update finding failed: %s" % str(e)[:120])
+            elif stale:
+                # Unchanged and due a touch: ONE PATCH per chunk (id=in.(...)) instead of one
+                # per row. The first fleet cycle at 291 rows spent 40 s here.
+                touch.append(row)
             all_rows.append(row)
             continue
         pending.append({"source_id": sid, "project": project, "probe_id": f["probe_id"], "category": f["category"],
@@ -342,9 +448,16 @@ def reconcile_findings(source, findings, ok_probes):
     for saved in _bulk_insert("db_findings", pending):
         new_rows.append(saved)
         all_rows.append(saved)
-    resolved = []
+    updated += _bulk_touch("db_findings", touch, {"last_seen_at": now})
+    resolved, carried = [], []
     for fp, row in by_fp.items():
-        if fp in seen or row.get("probe_id") not in ok_probes:
+        if fp in seen or row.get("status") == "resolved":
+            continue
+        if row.get("probe_id") not in ok_probes:
+            # The probe did not run (skipped, incremental cycle, or it errored): its open
+            # rows stand and stay part of the posture.
+            carried.append(row)
+            all_rows.append(row)
             continue
         try:
             db.update("db_findings", {"id": row["id"]}, {"status": "resolved", "resolved_at": now, "last_seen_at": row.get("last_seen_at")})
@@ -353,10 +466,14 @@ def reconcile_findings(source, findings, ok_probes):
             resolved.append(row)
         except Exception as e:
             print("db_steering: resolve finding failed: %s" % str(e)[:120])
-    return {"new": new_rows, "resolved": resolved, "updated": updated, "all": all_rows}
+    return {"new": new_rows, "resolved": resolved, "updated": updated, "all": all_rows, "carried": carried,
+            "reopened": reopened}
 
 
-def write_snapshot(source, findings, results, facts, probes=None):
+def write_snapshot(source, findings, results, facts, probes=None, stats=None, caps=None):
+    """Compute the posture and persist a snapshot when it moved (or the last one is older
+    than SNAPSHOT_MIN_INTERVAL_S). The computed snapshot is returned either way; the
+    last-written marker travels in `caps` so it persists with the source row."""
     counts = {"by_severity": {}, "by_category": {}, "supports": 0, "undermines": 0}
     for f in findings:
         if f.get("direction") == "supports":
@@ -370,19 +487,28 @@ def write_snapshot(source, findings, results, facts, probes=None):
     except Exception as e:
         print("db_steering: score failed: %s" % str(e)[:80])
         score = None
-    stats = {"probes_run": len(results), "probes_ok": sum(1 for r in results if r.get("ok")),
-             "probes_failed": [r.get("probe_id") for r in results if not r.get("ok")][:20],
-             "duration_ms": sum(float(r.get("duration_ms") or 0) for r in results)}
+    pstats = {"probes_run": len(results), "probes_ok": sum(1 for r in results if r.get("ok")),
+              "probes_failed": [r.get("probe_id") for r in results if not r.get("ok")][:20],
+              "duration_ms": sum(float(r.get("duration_ms") or 0) for r in results),
+              "mode": (stats or {}).get("mode", "full"), "round_trips": (stats or {}).get("round_trips")}
     summary = ""
     try:
         summary = probes.summarize(findings, limit=8) if probes else ""
     except Exception as e:
         print("db_steering: summarize failed: %s" % str(e)[:80])
     snap = {"source_id": source["id"], "project": source.get("project"), "taken_at": _now_iso(),
-            "score": score, "counts": counts, "probe_stats": stats, "facts": C._jsonable(facts),
+            "score": score, "counts": counts, "probe_stats": pstats, "facts": C._jsonable(facts),
             "summary": (summary or "")[:4000]}
+    marker = hashlib.sha256(json.dumps({"score": score, "counts": counts}, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    last = (caps or {}).get("snapshot") or {}
+    if last.get("marker") == marker and time.time() - _ts(last.get("at")) < SNAPSHOT_MIN_INTERVAL_S:
+        snap["written"] = False
+        return snap
     try:
         db.insert("db_posture_snapshots", snap)
+        snap["written"] = True
+        if caps is not None:
+            caps["snapshot"] = {"marker": marker, "at": time.time()}
     except Exception as e:
         print("db_steering: snapshot insert failed: %s" % str(e)[:120])
     return snap
@@ -429,6 +555,8 @@ def build_brief(project, findings=None, signals=None):
         lines.append("Open gaps: " + ", ".join("%d %s" % (counts[s], s) for s in reversed(C.SEVERITIES) if counts.get(s)))
     for s in (signals or [])[:6]:
         lines.append("- " + str(s).strip())
+    for s in _baseline_lines(project)[:2]:
+        lines.append("- " + s)
     groups = {}
     for f in findings:
         groups.setdefault(f.get("probe_id"), []).append(f)
@@ -453,6 +581,48 @@ def build_brief(project, findings=None, signals=None):
     return text + "\n\n", counts
 
 
+def _baseline_lines(project):
+    """Comparative context from db_baselines; [] when unavailable. Never raises."""
+    try:
+        import db_baselines
+        return list(db_baselines.baseline_lines(project) or [])
+    except Exception:
+        return []
+
+
+_OBJ_RE = re.compile(r"\b[a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]{2,})\b")
+_TOKEN_RE = re.compile(r"[a-z_][a-z0-9_]{2,}")
+
+
+def focus_brief(brief, context, max_chars=None):
+    """Reorder a brief for ONE task: lines that name objects the task text mentions come
+    first, marked, so the coder sees the gaps on the tables it is about to touch before
+    the project-wide list. Deterministic, no model, returns the brief unchanged when the
+    task names nothing in it."""
+    if not brief or not context:
+        return brief
+    tokens = set(_TOKEN_RE.findall(str(context).lower()))
+    if not tokens:
+        return brief
+    text = brief.rstrip("\n")
+    lines = text.split("\n")
+    head, hits, rest = lines[:1], [], []
+    for line in lines[1:]:
+        names = {m.lower() for m in _OBJ_RE.findall(line)}
+        if names and names & tokens:
+            hits.append(line)
+        else:
+            rest.append(line)
+    if not hits:
+        return brief
+    out = head + ["Touched by this task (fix these in the same change):"] + hits + ["Project-wide:"] + rest
+    joined = "\n".join(out)
+    cap = max_chars or BRIEF_MAX_CHARS
+    if len(joined) > cap:
+        joined = joined[:cap - 2].rsplit("\n", 1)[0] + "\n…"
+    return joined + "\n\n"
+
+
 def refresh_brief(project, signals=None):
     """Write db_steering_briefs when the content changed. Returns the brief text."""
     text, counts = build_brief(project, signals=signals)
@@ -473,13 +643,14 @@ def refresh_brief(project, signals=None):
     return text
 
 
-def steering_brief(project):
-    """Read side used by prompt_assembler: cached, fail-soft, '' when there is none."""
+def steering_brief(project, context=None):
+    """Read side used by prompt_assembler: cached, fail-soft, '' when there is none.
+    With `context` (the task text) the brief is focused on the objects that task names."""
     if not project:
         return ""
     hit = _brief_cache.get(project)
     if hit and time.time() - hit[0] < BRIEF_CACHE_TTL_S:
-        return hit[1]
+        return focus_brief(hit[1], context) if context else hit[1]
     text = ""
     try:
         rows = db.select("db_steering_briefs", {"select": "brief", "project": "eq.%s" % project, "limit": "1"}) or []
@@ -487,7 +658,7 @@ def steering_brief(project):
     except Exception:
         text = ""
     _brief_cache[project] = (time.time(), text)
-    return text
+    return focus_brief(text, context) if context else text
 
 
 # ── remediation through the swarm filer ──────────────────────────────────────────────
@@ -558,8 +729,12 @@ def file_remediation(source, new_rows, budget=MAX_TASKS_PER_RUN):
                 ", ".join(objs[:25]) or "n/a", (rows[0].get("remediation") or "")[:800],
                 ", ".join((r.get("fingerprint") or "")[:12] for r in rows[:12])))
         try:
+            # Operator decision 2026-09-12: database remediation bypasses release
+            # backpressure. A RED release is usually what these migrations fix, and the
+            # task is a versioned migration plus tests, never a direct write to production.
             res = swarm_enqueue.enqueue({"project_id": proj["id"], "slug": slug, "kind": "bugfix",
-                                         "prompt": prompt, "note": "db_steering %s" % pid})
+                                         "prompt": prompt, "note": "db_steering %s" % pid,
+                                         "bypass_backpressure": True})
             filed.append(slug)
             for r in rows:
                 if r.get("id"):
@@ -574,6 +749,25 @@ def file_remediation(source, new_rows, budget=MAX_TASKS_PER_RUN):
 
 
 # ── the loop ──────────────────────────────────────────────────────────────────────────
+
+def _scan_many(rows, started, budget_s, out, dry_run=False):
+    """Scan `rows` (already stalest-first) in waves of SOURCE_PARALLEL, honouring the
+    wall-clock budget between waves. Yields (source, result) in input order so everything
+    downstream (filing, evidence, briefs) stays deterministic."""
+    width = max(1, min(SOURCE_PARALLEL, len(rows) or 1))
+    for i in range(0, len(rows), width):
+        wave = rows[i:i + width]
+        if time.time() - started > budget_s:
+            out["skipped_budget"] += len(wave)
+            continue
+        if width == 1 or len(wave) == 1:
+            results = [scan_source(s, dry_run=dry_run) for s in wave]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave)) as pool:
+                results = list(pool.map(lambda s: scan_source(s, dry_run=dry_run), wave))
+        for s, res in zip(wave, results):
+            yield s, res
+
 
 def run(budget_s=None, sources=None, dry_run=False, project=None):
     """One cycle. Called by loops.py (type 'db_steering') and by the CLI."""
@@ -592,12 +786,10 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
     out["sources"] = len(rows)
     touched_projects = set()
     tasks_budget = MAX_TASKS_PER_RUN
-    for s in rows:
-        if time.time() - started > budget_s:
-            out["skipped_budget"] += 1
-            continue
-        res = scan_source(s, dry_run=dry_run)
+    out["modes"] = {}
+    for s, res in _scan_many(rows, started, budget_s, out, dry_run=dry_run):
         out["scanned"] += 1
+        out["modes"][res.get("mode") or "full"] = out["modes"].get(res.get("mode") or "full", 0) + 1
         if not res.get("ok"):
             out["failed"] += 1
         if dry_run:
@@ -623,14 +815,22 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
     if dry_run:
         out["duration_s"] = round(time.time() - started, 1)
         return out
+    if memo and hasattr(memo, "ensure_docket_seed"):
+        try:
+            memo.ensure_docket_seed()
+        except Exception as e:
+            print("db_steering: docket seed failed: %s" % str(e)[:120])
     memo_started = time.time()
+    memo_slots = MEMO_MAX_PER_CYCLE
     for proj in sorted(touched_projects):
         signals = []
         if memo:
             try:
-                if time.time() - memo_started <= MEMO_BUDGET_S:
-                    r = memo.rebuild_if_changed(proj) or {}
-                    out["memos"] += int(r.get("drafted") or 0) + int(r.get("deterministic") or 0)
+                if memo_slots > 0 and time.time() - memo_started <= MEMO_BUDGET_S:
+                    r = memo.rebuild_if_changed(proj, max_memos=memo_slots) or {}
+                    drafted = int(r.get("drafted") or 0) + int(r.get("deterministic") or 0)
+                    out["memos"] += drafted
+                    memo_slots -= drafted
                 else:
                     # Evidence is already attached; the draft catches up next cycle. The
                     # signals and the brief never wait on a model.

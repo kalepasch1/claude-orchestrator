@@ -257,6 +257,95 @@ class TestSupabaseAdvisors(Base):
                 self.assertEqual(db_adapters.supabase_advisors(SUPA, "security"), [])
 
 
+class TestSupabaseConfig(Base):
+    """supabase_config(source, path): the transport behind config probes (config_path)."""
+
+    def test_get_with_bearer_returns_parsed_json(self):
+        calls = []
+        payload = {"pitr_enabled": False, "walg_enabled": True, "backups": []}
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", _sequence([_body(payload)], calls)):
+            out = db_adapters.supabase_config(SUPA, "/database/backups")
+        self.assertEqual(out, payload)
+        req = calls[0]
+        self.assertEqual(req.get_method(), "GET")
+        self.assertIsNone(req.data)
+        self.assertEqual(req.full_url, f"https://api.supabase.com/v1/projects/{SUPA['ref']}/database/backups")
+        self.assertEqual(req.get_header("Authorization"), f"Bearer {TOKEN_ENV['SUPABASE_ACCESS_TOKEN']}")
+
+    def test_path_is_normalised_and_list_payloads_pass_through(self):
+        calls = []
+        fns = [{"slug": "a", "verify_jwt": False}]
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", _sequence([_body(fns), _body({"k": 1})], calls)):
+            self.assertEqual(db_adapters.supabase_config(SUPA, "functions"), fns)
+            self.assertEqual(db_adapters.supabase_config(SUPA, " /config/auth "), {"k": 1})
+        self.assertTrue(calls[0].full_url.endswith(f"/projects/{SUPA['ref']}/functions"))
+        self.assertTrue(calls[1].full_url.endswith(f"/projects/{SUPA['ref']}/config/auth"))
+
+    def test_bad_path_token_or_ref_does_no_io(self):
+        urlopen = mock.Mock(side_effect=AssertionError("no I/O for a refused call"))
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", urlopen):
+            for bad in ("", "/", "/config/auth?reveal=true", "/config/auth#x", "https://evil.example/x",
+                        "/../projects/other/config/auth", "/config/./auth", "/config auth", "/config/auth;x"):
+                with self.subTest(path=bad):
+                    with self.assertRaises(AdapterError) as cm:
+                        db_adapters.supabase_config(SUPA, bad)
+                    self.assertNotIn(TOKEN_ENV["SUPABASE_ACCESS_TOKEN"], str(cm.exception))
+            with mock.patch.dict(os.environ, {"SUPABASE_ACCESS_TOKEN": ""}):
+                with self.assertRaises(AdapterError) as cm:
+                    db_adapters.supabase_config(SUPA, "/config/auth")
+            self.assertIn("SUPABASE_ACCESS_TOKEN", str(cm.exception))
+            for src in ({"provider": "supabase"}, {"provider": "supabase", "ref": "../x"}, None):
+                with self.assertRaises(AdapterError):
+                    db_adapters.supabase_config(src, "/config/auth")
+        urlopen.assert_not_called()
+        self.assertEqual(self.slept, [])
+
+    def test_http_error_text_never_carries_the_token(self):
+        token = TOKEN_ENV["SUPABASE_ACCESS_TOKEN"]
+        echo = urllib.error.HTTPError("https://api.supabase.com", 401, "Unauthorized", {},
+                                      io.BytesIO(json.dumps({"message": f"bad bearer {token}"}).encode()))
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", _sequence([echo])), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(AdapterError) as cm:
+                db_adapters.supabase_config(SUPA, "/config/auth")
+        msg = str(cm.exception)
+        self.assertIn("HTTP 401", msg)
+        self.assertNotIn(token, msg)
+        self.assertIn("***", msg)
+        self.assertNotIn(token, out.getvalue() + err.getvalue())
+        self.assertIsNone(cm.exception.__cause__)
+        self.assertEqual(self.slept, [], "401 is not retried")
+
+    def test_transient_errors_retry_and_non_json_is_adapter_error(self):
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", _sequence([_http_error(503), _body({"ok": 1})])):
+            self.assertEqual(db_adapters.supabase_config(SUPA, "/ssl-enforcement"), {"ok": 1})
+        self.assertEqual(self.slept, [1.0])
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", _sequence([io.BytesIO(b"<html>")])):
+            with self.assertRaises(AdapterError) as cm:
+                db_adapters.supabase_config(SUPA, "/network-restrictions")
+        self.assertIn("non-JSON", str(cm.exception))
+
+        def unreachable(req, timeout=None):
+            raise urllib.error.URLError("no route to host")
+
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", unreachable):
+            with self.assertRaises(AdapterError) as cm:
+                db_adapters.supabase_config(SUPA, "/functions")
+        self.assertIn("unreachable", str(cm.exception))
+
+    def test_timeout_is_forwarded(self):
+        seen = {}
+
+        def capture(req, timeout=None):
+            seen["timeout"] = timeout
+            return _body({})
+
+        with mock.patch.object(db_adapters.urllib.request, "urlopen", capture):
+            db_adapters.supabase_config(SUPA, "/config/auth", timeout=7)
+        self.assertEqual(seen["timeout"], 7.0)
+
+
 # ── credentials ────────────────────────────────────────────────────────────────────────
 
 SENTINEL = "s3cret-value-7f3a9c-do-not-print"

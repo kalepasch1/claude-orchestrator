@@ -34,6 +34,7 @@ _bool/_list so "t", true and "true" agree.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import inspect
 import json
 import os
@@ -58,6 +59,19 @@ AUDIT_TABLE_PATTERN = "(_events|_event|_log|_logs|audit|_history|_ledger|_trail|
 AI_TABLE_PATTERN = ("model_call|llm_|ai_call|completion|token_usage|usage_log|inference|prompt_log|"
                     "agent_run|counsel_job|job_event")
 PRIVILEGED_FUNC_RE = re.compile(r"admin|bypass|service", re.I)
+# Edge-function slugs that legitimately skip JWT verification (third-party webhooks, cron).
+WEBHOOK_FUNC_RE = re.compile(r"webhook|hook|cron|callback|public", re.I)
+SECURITY_INVOKER_RE = re.compile(r"security_invoker\s*=\s*(true|on|1)\b", re.I)
+LOCAL_URL_RE = re.compile(r"localhost|127\.0\.0\.1|0\.0\.0\.0", re.I)
+
+# Roles the PLATFORM creates with elevated rights (the Supabase/RDS/Cloud SQL bootstrap
+# roles). privileged_login_roles skips them so a project is blamed only for roles it made.
+_PLATFORM_ROLES = ("postgres", "supabase_admin", "supabase_auth_admin", "supabase_storage_admin",
+                   "supabase_replication_admin", "supabase_read_only_user", "supabase_realtime_admin",
+                   "supabase_functions_admin", "supabase_etl_admin", "authenticator", "dashboard_user", "pgbouncer",
+                   "rds_superuser", "rdsadmin", "rdsrepladmin", "cloudsqlsuperuser", "cloudsqladmin",
+                   "azure_pg_admin", "azuresu", "neon_superuser")
+_PLATFORM_ROLES_SQL = "(" + ", ".join("'%s'" % r for r in _PLATFORM_ROLES) + ")"
 
 # Schemas that belong to the platform, not the application. Object-level probes skip them
 # so a Supabase project is not blamed for auth.users or storage.objects.
@@ -575,6 +589,429 @@ def _p_bq_partition(rows, source, facts=None):
     return out
 
 
+def _p_privileged_roles(rows, source, facts=None):
+    out = []
+    for r in rows:
+        role = _s(_v(r, "rolname"))
+        sup = _bool(_v(r, "rolsuper"))
+        bypass = _bool(_v(r, "rolbypassrls"))
+        what = "a superuser" if sup else "exempt from RLS (bypassrls)"
+        out.append(make_finding("privileged_login_roles", "security", "high" if sup else "medium",
+                                f"Login role {role} is {what}", object_name=role, evidence_kinds=("access_control",),
+                                metrics={"rolsuper": sup, "rolbypassrls": bypass,
+                                         "rolcreaterole": _bool(_v(r, "rolcreaterole")),
+                                         "rolreplication": _bool(_v(r, "rolreplication")),
+                                         "valid_until": _s(_v(r, "rolvaliduntil"))},
+                                detail=("A leaked credential for this role reads and writes every row of every table; "
+                                        "RLS and grants do not apply." if sup else
+                                        "A leaked credential for this role reads every row regardless of policy.")))
+    return out
+
+
+def _p_invalid_indexes(rows, source, facts=None):
+    out = []
+    for r in rows:
+        schema, table = _obj(r)
+        idx = _s(_v(r, "indexname"))
+        unique = _bool(_v(r, "indisunique"))
+        out.append(make_finding("invalid_indexes", "integrity", "high" if unique else "medium",
+                                f"Invalid index {idx} on {schema}.{table}", object_schema=schema, object_name=table,
+                                extra=idx, evidence_kinds=("integrity", "availability"),
+                                metrics={"index": idx, "indisunique": unique,
+                                         "index_bytes": int(_num(_v(r, "index_bytes")))},
+                                detail=("Left behind by a failed or interrupted concurrent build: the planner never uses "
+                                        "it, every write still maintains it"
+                                        + (", and the uniqueness it promises is NOT enforced." if unique else "."))))
+    return out
+
+
+def _p_cascade_blast_radius(rows, source, facts=None):
+    out = []
+    for r in rows:
+        schema, table = _obj(r)
+        con = _s(_v(r, "conname"))
+        est = int(max(0.0, _num(_v(r, "est_rows"))))
+        parent = ".".join(x for x in (_s(_v(r, "referenced_schema")), _s(_v(r, "referenced_table"))) if x)
+        sev = "high" if est > 1000000 else "medium"
+        out.append(make_finding("cascade_delete_blast_radius", "integrity", sev,
+                                f"Deleting from {parent} cascades into {schema}.{table} (~{est} rows) via {con}",
+                                object_schema=schema, object_name=table, extra=con, evidence_kinds=("integrity",),
+                                metrics={"constraint": con, "referenced_table": parent, "est_rows": est,
+                                         "referenced_rows": int(max(0.0, _num(_v(r, "referenced_rows"))))},
+                                detail="One DELETE on the parent silently removes dependent rows here with no audit row "
+                                       "and no confirmation; a bug or an over-broad policy becomes data loss."))
+    return out
+
+
+def _p_disabled_triggers(rows, source, facts=None):
+    out = []
+    for r in rows:
+        schema, table = _obj(r)
+        trg = _s(_v(r, "triggername"))
+        internal = _bool(_v(r, "tgisinternal"))
+        out.append(make_finding("disabled_triggers", "integrity", "high" if internal else "medium",
+                                f"Trigger {trg} disabled on {schema}.{table}", object_schema=schema, object_name=table,
+                                extra=trg, evidence_kinds=("integrity",) if internal else ("integrity", "audit_trail"),
+                                metrics={"trigger": trg, "tgisinternal": internal, "tgenabled": _s(_v(r, "tgenabled"))},
+                                detail=("A constraint trigger is off (DISABLE TRIGGER ALL?): the foreign key it enforces "
+                                        "accepts orphans until it is re-enabled." if internal else
+                                        "Whatever the trigger maintained (timestamps, audit rows, denormalised counts) "
+                                        "has not been maintained since it was disabled.")))
+    return out
+
+
+def _p_large_no_index(rows, source, facts=None):
+    out = []
+    for r in rows:
+        schema, table = _obj(r)
+        est = int(max(0.0, _num(_v(r, "est_rows"))))
+        size = int(_num(_v(r, "total_bytes")))
+        out.append(make_finding("large_tables_without_index", "performance", "high",
+                                f"{schema}.{table} (~{est} rows) has no index at all", object_schema=schema,
+                                object_name=table, evidence_kinds=("availability",),
+                                metrics={"est_rows": est, "total_bytes": size},
+                                detail=f"{size // 1048576} MB; every lookup, join and delete is a full sequential scan."))
+    return out
+
+
+def _p_views_over_rls(rows, source, facts=None):
+    out = []
+    for r in rows:
+        schema = _s(_v(r, "schemaname"))
+        view = _s(_v(r, "viewname"))
+        kind = _s(_v(r, "relkind"))
+        if kind == "v" and SECURITY_INVOKER_RE.search(_s(_v(r, "reloptions"))):
+            continue  # runs as the caller: the base tables' policies still apply
+        grantees = sorted(set(_list(_v(r, "grantees"))))
+        bases = sorted(set(_list(_v(r, "base_tables"))))
+        pii = any(PII_TABLE_RE.search(b.split(".")[-1]) for b in bases)
+        label = "Materialized view" if kind == "m" else "View"
+        out.append(make_finding("views_exposed_over_rls_tables", "security", "high" if pii else "medium",
+                                f"{label} {schema}.{view} exposes RLS-protected {', '.join(bases[:6])} to {', '.join(grantees)}",
+                                object_schema=schema, object_name=view,
+                                evidence_kinds=("access_control", "data_minimization") if pii else ("access_control",),
+                                metrics={"relkind": kind, "grantees": grantees, "base_tables": bases, "pii_name": pii},
+                                detail=("A materialized view stores its own copy of the rows; the base tables' policies "
+                                        "never run against it." if kind == "m" else
+                                        "The view runs with its owner's privileges (no security_invoker), so the base "
+                                        "tables' policies do not apply to callers of the view.")))
+    return out
+
+
+def _p_pii_anon(rows, source, facts=None):
+    out = []
+    for r in rows:
+        schema, table = _obj(r)
+        cols = _list(_v(r, "columns"))
+        rls = _bool(_v(r, "rowsecurity", default=True))
+        grantees = sorted(set(_list(_v(r, "grantees"))))
+        out.append(make_finding("pii_readable_by_anon", "privacy", "medium" if rls else "critical",
+                                f"Plain-text personal data in {schema}.{table} is granted to {', '.join(grantees) or 'anon'} "
+                                f"({', '.join(cols[:8])})", object_schema=schema, object_name=table,
+                                evidence_kinds=("data_minimization", "access_control"),
+                                metrics={"columns": cols, "rowsecurity": rls, "grantees": grantees},
+                                detail=("RLS is OFF: anyone holding the public anon key reads every row of these columns."
+                                        if not rls else
+                                        "RLS is on, so policies decide — but the anon grant means one permissive policy "
+                                        "exposes these columns to the internet.")))
+    return out
+
+
+def _p_updated_at_no_trigger(rows, source, facts=None):
+    out = []
+    for r in rows:
+        schema, table = _obj(r)
+        out.append(make_finding("updated_at_without_trigger", "audit", "low",
+                                f"{schema}.{table} has updated_at but no trigger maintains it", object_schema=schema,
+                                object_name=table, evidence_kinds=("audit_trail",),
+                                detail="No UPDATE trigger fires on the table, so the column is only as accurate as every "
+                                       "code path that remembers to set it; a modification timestamp that can be stale "
+                                       "is weak evidence of when a record last changed."))
+    return out
+
+
+def _p_idle_in_txn(rows, source, facts=None):
+    out = []
+    for r in rows:
+        pid = _s(_v(r, "pid"))
+        idle = _num(_v(r, "idle_s"))
+        state = _s(_v(r, "state"))
+        sev = "high" if idle > 1800 or "aborted" in state.lower() else "medium"
+        out.append(make_finding("idle_in_transaction_sessions", "availability", sev,
+                                f"Session idle in transaction for {int(idle // 60)} min (pid {pid}, {_s(_v(r, 'usename'))})",
+                                extra=pid, evidence_kinds=("availability",),
+                                metrics={"pid": pid, "idle_s": int(idle), "xact_age_s": int(_num(_v(r, "xact_age_s"))),
+                                         "state": state, "application": _s(_v(r, "application_name"))},
+                                detail="A client opened a transaction, stopped talking and never committed: its locks "
+                                       "block DDL and writers, and vacuum cannot reclaim anything newer than it."))
+    return out
+
+
+def _p_connection_saturation(rows, source, facts=None):
+    facts = facts if facts is not None else {}
+    row = rows[0] if rows else None
+    if not isinstance(row, dict):
+        return []
+    total = int(_num(_v(row, "connections")))
+    limit = int(_num(_v(row, "max_connections")))
+    if limit <= 0:
+        return []
+    ratio = total / float(limit)
+    facts["connections"] = total
+    facts["max_connections"] = limit
+    metrics = {"connections": total, "active": int(_num(_v(row, "active"))), "max_connections": limit,
+               "ratio": round(ratio, 3)}
+    if ratio >= 0.8:
+        return [make_finding("connection_saturation", "availability", "critical" if ratio >= 0.9 else "high",
+                             f"Connections at {ratio:.0%} of max_connections ({total}/{limit})", extra="usage",
+                             evidence_kinds=("availability",), metrics=metrics,
+                             detail="When the limit is hit every new client (including this review) is refused; "
+                                    "a leaked pool or a traffic spike turns into an outage.")]
+    return [make_finding("connection_saturation", "availability", "info",
+                         f"Connections at {ratio:.0%} of max_connections ({total}/{limit})", direction="supports",
+                         extra="usage", evidence_kinds=("availability",), metrics=metrics)]
+
+
+def _p_replication_slots(rows, source, facts=None):
+    out = []
+    for r in rows:
+        slot = _s(_v(r, "slot_name"))
+        active = _bool(_v(r, "active"))
+        retained = max(0.0, _num(_v(r, "retained_bytes")))
+        gb = retained / 1073741824.0
+        if active and gb <= 1.0:
+            continue  # healthy: consumer connected and close to the head of the WAL
+        if not active:
+            sev, what = "high", "inactive"
+        else:
+            sev, what = ("high" if gb > 10.0 else "medium"), "lagging"
+        out.append(make_finding("replication_slots_lagging", "availability", sev,
+                                f"Replication slot {slot} is {what}, {gb:.1f} GB of WAL retained", object_name=slot,
+                                evidence_kinds=("availability",),
+                                metrics={"slot": slot, "slot_type": _s(_v(r, "slot_type")), "active": active,
+                                         "retained_bytes": int(retained), "database": _s(_v(r, "database"))},
+                                detail=("No consumer is connected; the server keeps every WAL segment since the slot's "
+                                        "position until the disk fills." if not active else
+                                        "The consumer is far behind; WAL accumulates and vacuum cannot advance past it.")))
+    return out
+
+
+def _p_storage_buckets(rows, source, facts=None):
+    facts = facts if facts is not None else {}
+    out = []
+    public = [r for r in rows if _bool(_v(r, "public"))]
+    facts["storage_buckets"] = len(rows)
+    facts["public_storage_buckets"] = len(public)
+    if rows and not public:
+        out.append(make_finding("public_storage_buckets", "security", "info",
+                                f"All {len(rows)} storage buckets are private", direction="supports",
+                                evidence_kinds=("access_control",), extra="all_private", object_schema="storage",
+                                metrics={"buckets": len(rows)}))
+    for r in public:
+        name = _s(_v(r, "name")) or _s(_v(r, "id"))
+        pii = bool(PII_TABLE_RE.search(name))
+        out.append(make_finding("public_storage_buckets", "security", "high" if pii else "medium",
+                                f"Storage bucket {name} is public", object_schema="storage", object_name=name,
+                                evidence_kinds=("access_control", "data_minimization") if pii else ("access_control",),
+                                metrics={"bucket": name, "pii_name": pii,
+                                         "file_size_limit": _s(_v(r, "file_size_limit"))},
+                                detail="Every object in it is readable by URL without a token, RLS policies notwithstanding."))
+    return out
+
+
+# ── Supabase Management API config probes ─────────────────────────────────────────────
+# ENGINE CONTRACT. A probe carrying `config_path` (one path or a list) has NO SQL. run_probe
+# calls db_adapters.supabase_config(source, path) for each path and hands the parser
+#     rows = [{path: payload, ...}]           — ONE dict element, one key per path
+# where payload is the parsed JSON the Management API returned for
+# GET https://api.supabase.com/v1/projects/{ref}{path}. A parser never sees a token.
+
+def _cfg(rows, path):
+    """The payload a config probe received for `path`, or None (missing / wrong shape)."""
+    want = str(path or "").strip("/")
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        for k, v in r.items():
+            if str(k).strip("/") == want:
+                return v
+    return None
+
+
+def _p_auth_config(rows, source, facts=None):
+    cfg = _cfg(rows, "/config/auth")
+    if not isinstance(cfg, dict):
+        return []
+    out = []
+    reviewed = []
+
+    def flag(key, sev, title, detail, value):
+        out.append(make_finding("supabase_auth_config", "security", sev, title, object_schema="auth", object_name=key,
+                                extra=key, evidence_kinds=("access_control",), metrics={key: value}, detail=detail))
+
+    def has(key):
+        if key in cfg and cfg.get(key) is not None:
+            reviewed.append(key)
+            return True
+        return False
+
+    if has("password_min_length"):
+        n = int(_num(cfg["password_min_length"]))
+        if n < 8:
+            flag("password_min_length", "medium" if n < 6 else "low", f"Minimum password length is {n}",
+                 "Below the 8-character floor every current guideline sets; short passwords fall to online guessing.", n)
+    if has("mailer_autoconfirm") and _bool(cfg["mailer_autoconfirm"]):
+        flag("mailer_autoconfirm", "medium", "Email confirmation is disabled (mailer_autoconfirm)",
+             "Accounts are created for any address without proving control of it; anyone can register as anyone.", True)
+    if has("sms_autoconfirm") and _bool(cfg["sms_autoconfirm"]):
+        flag("sms_autoconfirm", "low", "Phone confirmation is disabled (sms_autoconfirm)",
+             "Phone numbers are accepted unverified.", True)
+    if has("external_anonymous_users_enabled") and _bool(cfg["external_anonymous_users_enabled"]):
+        flag("external_anonymous_users_enabled", "medium", "Anonymous sign-ins are enabled",
+             "Any visitor can mint an `authenticated` session; every policy written for authenticated users applies to them.",
+             True)
+    if has("security_captcha_enabled") and not _bool(cfg["security_captcha_enabled"]):
+        flag("security_captcha_enabled", "low", "Captcha protection is off for auth endpoints",
+             "Sign-up, sign-in and password-reset endpoints accept unlimited scripted attempts.", False)
+    if has("jwt_exp"):
+        exp = int(_num(cfg["jwt_exp"]))
+        if exp > 86400:
+            flag("jwt_exp", "medium", f"Access tokens live {exp // 3600} hours (jwt_exp)",
+                 "A stolen access token stays valid for that long; revocation only takes effect at refresh.", exp)
+    if has("security_manual_linking_enabled") and _bool(cfg["security_manual_linking_enabled"]):
+        flag("security_manual_linking_enabled", "low", "Manual identity linking is enabled",
+             "Clients may link identities to a user themselves; account-takeover paths must be reviewed in the app.", True)
+    if has("security_update_password_require_reauthentication") and \
+            not _bool(cfg["security_update_password_require_reauthentication"]):
+        flag("security_update_password_require_reauthentication", "low",
+             "Password changes do not require re-authentication",
+             "A hijacked session can set a new password without knowing the old one.", False)
+    if has("refresh_token_rotation_enabled") and not _bool(cfg["refresh_token_rotation_enabled"]):
+        flag("refresh_token_rotation_enabled", "low", "Refresh token rotation is off",
+             "A stolen refresh token stays usable indefinitely instead of being invalidated on first reuse.", False)
+    if has("site_url"):
+        site = _s(cfg["site_url"])
+        if LOCAL_URL_RE.search(site):
+            flag("site_url", "medium", f"Auth site_url points at {site}",
+                 "Confirmation and recovery links redirect users to a local address; production mail is broken or "
+                 "the project is a dev configuration serving real users.", site)
+    if not out and reviewed:
+        out.append(make_finding("supabase_auth_config", "security", "info",
+                                f"Auth configuration: no weaknesses in {len(reviewed)} reviewed settings",
+                                direction="supports", object_schema="auth", extra="all_ok",
+                                evidence_kinds=("access_control",), metrics={"reviewed": reviewed}))
+    return out
+
+
+def _p_backups(rows, source, facts=None):
+    cfg = _cfg(rows, "/database/backups")
+    if not isinstance(cfg, dict):
+        return []
+    facts = facts if facts is not None else {}
+    pitr = _bool(_v(cfg, "pitr_enabled"))
+    walg = _bool(_v(cfg, "walg_enabled"))
+    backups = cfg.get("backups")
+    n_backups = len(backups) if isinstance(backups, list) else 0
+    facts["pitr_enabled"] = pitr
+    facts["backups_on_file"] = n_backups
+    out = []
+    if pitr:
+        out.append(make_finding("supabase_backups_pitr", "availability", "info", "Point-in-time recovery is enabled",
+                                direction="supports", extra="pitr", evidence_kinds=("availability",),
+                                metrics={"pitr_enabled": True, "walg_enabled": walg, "backups": n_backups}))
+    else:
+        out.append(make_finding("supabase_backups_pitr", "availability", "medium", "Point-in-time recovery is disabled",
+                                extra="pitr", evidence_kinds=("availability",),
+                                metrics={"pitr_enabled": False, "walg_enabled": walg, "backups": n_backups},
+                                detail="Recovery is limited to the last daily snapshot: up to 24 hours of records are "
+                                       "unrecoverable after a bad migration or a destructive query."))
+    if n_backups == 0 and not walg and not pitr:
+        out.append(make_finding("supabase_backups_pitr", "availability", "high", "No database backups on file",
+                                extra="backups", evidence_kinds=("availability",),
+                                metrics={"backups": 0, "walg_enabled": False, "region": _s(_v(cfg, "region"))},
+                                detail="The Management API lists no backups and WAL archiving is off: a destructive "
+                                       "change cannot be undone at all."))
+    elif n_backups:
+        out.append(make_finding("supabase_backups_pitr", "availability", "info", f"{n_backups} database backups on file",
+                                direction="supports", extra="backups", evidence_kinds=("availability",),
+                                metrics={"backups": n_backups}))
+    return out
+
+
+def _p_network_ssl(rows, source, facts=None):
+    out = []
+    net = _cfg(rows, "/network-restrictions")
+    if isinstance(net, dict):
+        config = net.get("config") if isinstance(net.get("config"), dict) else {}
+        cidrs = _list(config.get("dbAllowedCidrs")) + _list(config.get("dbAllowedCidrsV6"))
+        entitlement = _s(_v(net, "entitlement"))
+        wide_open = not cidrs or any(c.strip() in ("0.0.0.0/0", "::/0") for c in cidrs)
+        metrics = {"cidrs": cidrs, "entitlement": entitlement, "status": _s(_v(net, "status"))}
+        if wide_open:
+            out.append(make_finding("supabase_network_and_ssl", "security", "medium",
+                                    "Database accepts connections from any IP address", extra="network",
+                                    evidence_kinds=("access_control",), metrics=metrics,
+                                    detail=("Network restrictions are not available on this plan." if entitlement == "disallowed"
+                                            else "No CIDR allow-list is applied (or it contains 0.0.0.0/0); the only "
+                                                 "barrier to the database port is the password.")))
+        else:
+            out.append(make_finding("supabase_network_and_ssl", "security", "info",
+                                    f"Database network access restricted to {len(cidrs)} CIDR ranges",
+                                    direction="supports", extra="network", evidence_kinds=("access_control",),
+                                    metrics=metrics))
+    ssl = _cfg(rows, "/ssl-enforcement")
+    if isinstance(ssl, dict):
+        current = ssl.get("currentConfig") if isinstance(ssl.get("currentConfig"), dict) else {}
+        enforced = _bool(current.get("database"))
+        metrics = {"database": enforced, "applied": _bool(_v(ssl, "appliedSuccessfully", default=True))}
+        if enforced:
+            out.append(make_finding("supabase_network_and_ssl", "security", "info",
+                                    "SSL is enforced on database connections", direction="supports", extra="ssl",
+                                    evidence_kinds=("access_control",), metrics=metrics))
+        else:
+            out.append(make_finding("supabase_network_and_ssl", "security", "medium",
+                                    "SSL is not enforced on database connections", extra="ssl",
+                                    evidence_kinds=("access_control",), metrics=metrics,
+                                    detail="Clients may connect in clear text; credentials and rows can be read on the path."))
+    return out
+
+
+def _p_edge_functions(rows, source, facts=None):
+    fns = _cfg(rows, "/functions")
+    if isinstance(fns, dict) and isinstance(fns.get("functions"), list):
+        fns = fns["functions"]
+    if not isinstance(fns, list):
+        return []
+    facts = facts if facts is not None else {}
+    out = []
+    seen = 0
+    for fn in fns:
+        if not isinstance(fn, dict):
+            continue
+        seen += 1
+        slug = _s(_v(fn, "slug")) or _s(_v(fn, "name")) or _s(_v(fn, "id"))
+        verify = _v(fn, "verify_jwt")
+        if verify is None or _bool(verify):
+            continue
+        webhook = bool(WEBHOOK_FUNC_RE.search(slug))
+        out.append(make_finding("supabase_edge_functions_verify_jwt", "security", "low" if webhook else "medium",
+                                f"Edge function {slug} does not verify JWTs", object_schema="supabase_functions",
+                                object_name=slug, extra=slug, evidence_kinds=("access_control",),
+                                metrics={"slug": slug, "verify_jwt": False, "status": _s(_v(fn, "status")),
+                                         "version": _s(_v(fn, "version")), "webhook_name": webhook},
+                                detail=("Name suggests a webhook target; confirm the handler validates the sender's "
+                                        "signature itself." if webhook else
+                                        "Anyone on the internet can invoke it without a Supabase session; whatever it "
+                                        "does with the service key is public.")))
+    facts["edge_functions"] = seen
+    if seen and not out:
+        out.append(make_finding("supabase_edge_functions_verify_jwt", "security", "info",
+                                f"All {seen} edge functions verify JWTs", direction="supports", extra="all_verify",
+                                object_schema="supabase_functions", evidence_kinds=("access_control",),
+                                metrics={"functions": seen}))
+    return out
+
+
 # ── SQL (one SELECT/WITH each, catalog-only, bounded) ─────────────────────────────────
 
 _PG_PII = f"'({PII_COLUMN_PATTERN})'"
@@ -788,6 +1225,116 @@ _SQL = {
                     "and not exists (select 1 from `{project}.{dataset}`.INFORMATION_SCHEMA.COLUMNS c "
                     "where c.table_name = t.table_name and (c.is_partitioning_column = 'YES' "
                     "or c.clustering_ordinal_position is not null)) order by s.size_bytes desc limit 50"},
+    "privileged_login_roles": {
+        "postgres": "select r.rolname, r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, r.rolreplication, "
+                    "r.rolvaliduntil from pg_catalog.pg_roles r where r.rolcanlogin and (r.rolsuper or r.rolbypassrls) "
+                    f"and r.rolname not in {_PLATFORM_ROLES_SQL} and r.rolname not like 'pg\\_%' "
+                    "order by r.rolname limit 100"},
+    "invalid_indexes": {
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, ic.relname as indexname, i.indisunique, "
+                    "pg_catalog.pg_relation_size(i.indexrelid) as index_bytes "
+                    "from pg_catalog.pg_index i join pg_catalog.pg_class ic on ic.oid = i.indexrelid "
+                    "join pg_catalog.pg_class c on c.oid = i.indrelid "
+                    "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    f"where not i.indisvalid and {_user_schema('n.nspname')} "
+                    "order by n.nspname, c.relname, ic.relname limit 100"},
+    "cascade_delete_blast_radius": {
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, k.conname, rn.nspname as referenced_schema, "
+                    "rc.relname as referenced_table, c.reltuples::bigint as est_rows, rc.reltuples::bigint as referenced_rows "
+                    "from pg_catalog.pg_constraint k join pg_catalog.pg_class c on c.oid = k.conrelid "
+                    "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    "join pg_catalog.pg_class rc on rc.oid = k.confrelid "
+                    "join pg_catalog.pg_namespace rn on rn.oid = rc.relnamespace "
+                    f"where k.contype = 'f' and k.confdeltype = 'c' and c.reltuples > 100000 and {_user_schema('n.nspname')} "
+                    "order by c.reltuples desc, k.conname limit 100"},
+    "disabled_triggers": {
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, t.tgname as triggername, t.tgisinternal, "
+                    "t.tgenabled::text as tgenabled from pg_catalog.pg_trigger t "
+                    "join pg_catalog.pg_class c on c.oid = t.tgrelid "
+                    "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    f"where t.tgenabled = 'D' and {_user_schema('n.nspname')} "
+                    "order by n.nspname, c.relname, t.tgname limit 100"},
+    "large_tables_without_index": {
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, c.reltuples::bigint as est_rows, "
+                    "pg_catalog.pg_total_relation_size(c.oid) as total_bytes "
+                    "from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    f"where c.relkind in ('r', 'p') and c.reltuples > 1000000 and {_user_schema('n.nspname')} "
+                    "and not exists (select 1 from pg_catalog.pg_index i where i.indrelid = c.oid) "
+                    "order by c.reltuples desc limit 50",
+        "mysql": "select t.table_schema as schemaname, t.table_name as tablename, t.table_rows as est_rows, "
+                 "t.data_length + t.index_length as total_bytes from information_schema.tables t "
+                 "where t.table_schema = database() and t.table_type = 'BASE TABLE' and t.table_rows > 1000000 "
+                 "and not exists (select 1 from information_schema.statistics s where s.table_schema = t.table_schema "
+                 "and s.table_name = t.table_name) order by t.table_rows desc limit 50"},
+    "views_exposed_over_rls_tables": {
+        "postgres": "select vn.nspname as schemaname, v.relname as viewname, v.relkind::text as relkind, "
+                    "coalesce(v.reloptions::text, '') as reloptions, array_agg(distinct g.grantee::text) as grantees, "
+                    "array_agg(distinct tn.nspname || '.' || t.relname) as base_tables "
+                    "from pg_catalog.pg_class v join pg_catalog.pg_namespace vn on vn.oid = v.relnamespace "
+                    "join pg_catalog.pg_rewrite rw on rw.ev_class = v.oid "
+                    "join pg_catalog.pg_depend d on d.classid = 'pg_catalog.pg_rewrite'::regclass and d.objid = rw.oid "
+                    "and d.refclassid = 'pg_catalog.pg_class'::regclass "
+                    "join pg_catalog.pg_class t on t.oid = d.refobjid and t.oid <> v.oid and t.relkind in ('r', 'p') "
+                    "join pg_catalog.pg_namespace tn on tn.oid = t.relnamespace "
+                    "join information_schema.role_table_grants g on g.table_schema = vn.nspname "
+                    "and g.table_name = v.relname and g.privilege_type = 'SELECT' "
+                    "and g.grantee in ('anon', 'authenticated', 'PUBLIC') "
+                    f"where v.relkind in ('v', 'm') and t.relrowsecurity and {_user_schema('vn.nspname')} "
+                    "group by vn.nspname, v.relname, v.relkind, v.reloptions order by vn.nspname, v.relname limit 200"},
+    "pii_readable_by_anon": {
+        "postgres": "select c.table_schema as schemaname, c.table_name as tablename, t.rowsecurity, "
+                    "array_agg(c.column_name order by c.column_name) as columns, "
+                    "(select array_agg(distinct g.grantee::text) from information_schema.role_table_grants g "
+                    "where g.table_schema = c.table_schema and g.table_name = c.table_name "
+                    "and g.privilege_type = 'SELECT' and g.grantee in ('anon', 'PUBLIC')) as grantees "
+                    "from information_schema.columns c "
+                    "join pg_catalog.pg_tables t on t.schemaname = c.table_schema and t.tablename = c.table_name "
+                    f"where c.table_schema = 'public' and c.column_name ~* {_PG_PII} "
+                    "and c.data_type in ('text', 'character varying', 'character', 'json', 'jsonb') "
+                    "and exists (select 1 from information_schema.role_table_grants g where g.table_schema = c.table_schema "
+                    "and g.table_name = c.table_name and g.privilege_type = 'SELECT' and g.grantee in ('anon', 'PUBLIC')) "
+                    "group by c.table_schema, c.table_name, t.rowsecurity order by c.table_name limit 200"},
+    "updated_at_without_trigger": {
+        "postgres": "select t.schemaname, t.tablename from pg_catalog.pg_tables t "
+                    "join information_schema.columns c on c.table_schema = t.schemaname and c.table_name = t.tablename "
+                    "where t.schemaname = 'public' and c.column_name = 'updated_at' "
+                    "and not exists (select 1 from pg_catalog.pg_trigger tg "
+                    "join pg_catalog.pg_class tc on tc.oid = tg.tgrelid "
+                    "join pg_catalog.pg_namespace tn on tn.oid = tc.relnamespace "
+                    "where tn.nspname = t.schemaname and tc.relname = t.tablename and not tg.tgisinternal "
+                    "and (tg.tgtype::int & 16) <> 0) order by t.tablename limit 500",
+        "mysql": "select c.table_schema as schemaname, c.table_name as tablename from information_schema.columns c "
+                 "where c.table_schema = database() and c.column_name = 'updated_at' "
+                 "and lower(c.extra) not like '%on update%' "
+                 "and not exists (select 1 from information_schema.triggers tr where tr.event_object_schema = c.table_schema "
+                 "and tr.event_object_table = c.table_name and tr.event_manipulation = 'UPDATE') "
+                 "order by c.table_name limit 500"},
+    "idle_in_transaction_sessions": {
+        "postgres": "select pid, usename, application_name, state, extract(epoch from now() - state_change) as idle_s, "
+                    "extract(epoch from now() - xact_start) as xact_age_s from pg_catalog.pg_stat_activity "
+                    "where state in ('idle in transaction', 'idle in transaction (aborted)') "
+                    "and state_change < now() - interval '5 minutes' and pid <> pg_backend_pid() "
+                    "and backend_type = 'client backend' order by state_change limit 50",
+        "mysql": "select p.id as pid, p.user as usename, '' as application_name, t.trx_state as state, p.time as idle_s, "
+                 "timestampdiff(second, t.trx_started, now()) as xact_age_s from information_schema.innodb_trx t "
+                 "join information_schema.processlist p on p.id = t.trx_mysql_thread_id "
+                 "where p.command = 'Sleep' and p.time > 300 order by p.time desc limit 50"},
+    "connection_saturation": {
+        "postgres": "select count(*) as connections, count(*) filter (where state = 'active') as active, "
+                    "count(*) filter (where backend_type = 'client backend') as client_connections, "
+                    "current_setting('max_connections')::int as max_connections from pg_catalog.pg_stat_activity",
+        "mysql": "select (select count(*) from information_schema.processlist) as connections, "
+                 "(select count(*) from information_schema.processlist where command <> 'Sleep') as active, "
+                 "(select count(*) from information_schema.processlist) as client_connections, "
+                 "@@max_connections as max_connections"},
+    "replication_slots_lagging": {
+        "postgres": "select s.slot_name, s.slot_type, s.active, s.database, s.active_pid, "
+                    "pg_catalog.pg_wal_lsn_diff(case when pg_catalog.pg_is_in_recovery() "
+                    "then pg_catalog.pg_last_wal_replay_lsn() else pg_catalog.pg_current_wal_lsn() end, "
+                    "s.restart_lsn) as retained_bytes from pg_catalog.pg_replication_slots s "
+                    "order by retained_bytes desc nulls last, s.slot_name limit 50"},
+    "public_storage_buckets": {
+        "postgres": "select id, name, public, file_size_limit, created_at from storage.buckets order by name limit 200"},
 }
 
 
@@ -902,6 +1449,85 @@ PROBES = [
            ("availability",), _p_bq_partition,
            "Recreate the table partitioned by its time column and clustered by the dominant filter columns "
            "(`create table … partition by … cluster by … as select …`), then swap."),
+    # ── coverage extension (2026-09-12): catalog, statistics and Supabase config ──────
+    _probe("privileged_login_roles", "Login roles that are superuser or bypass RLS", "security", "cheap",
+           ("access_control",), _p_privileged_roles,
+           "`alter role <r> nosuperuser nobypassrls` in a migration; give the application a dedicated least-privilege "
+           "role and keep the bootstrap role for migrations only. Rotate the credential if it was ever shipped to an app."),
+    _probe("invalid_indexes", "Indexes marked invalid (failed concurrent build)", "integrity", "cheap",
+           ("integrity", "availability"), _p_invalid_indexes,
+           "`drop index concurrently <idx>` then `create index concurrently <idx> …` again in a migration run outside a "
+           "transaction (`reindex index concurrently <idx>` on PG12+); fix the duplicate rows first if it is unique."),
+    _probe("disabled_triggers", "Triggers left disabled", "integrity", "cheap",
+           ("integrity", "audit_trail"), _p_disabled_triggers,
+           "`alter table <t> enable trigger <trg>` (or `enable trigger all`) in a migration; if the trigger is obsolete, "
+           "drop it instead of leaving it off. For a constraint trigger, re-validate the foreign key afterwards."),
+    _probe("views_exposed_over_rls_tables", "anon/authenticated views over RLS-protected tables", "security", "cheap",
+           ("access_control", "data_minimization"), _p_views_over_rls,
+           "`alter view <v> set (security_invoker = true)` in a migration so the base tables' policies apply, or revoke "
+           "select on the view from anon/authenticated; a materialized view needs its own grants review."),
+    _probe("pii_readable_by_anon", "Plain-text personal data granted to anon / PUBLIC", "privacy", "cheap",
+           ("data_minimization", "access_control"), _p_pii_anon,
+           "`revoke select on public.<table> from anon` in a migration (expose a column-limited view if the app needs "
+           "public reads); enable RLS with owner-scoped policies; encrypt or drop columns that are not needed."),
+    _probe("idle_in_transaction_sessions", "Sessions idle in transaction longer than 5 minutes", "availability", "cheap",
+           ("availability",), _p_idle_in_txn,
+           "Set `idle_in_transaction_session_timeout = '60s'` on the application role (`alter role <r> set …`) and fix the "
+           "code path that opens a transaction and awaits I/O; the pid/application_name names the client.",
+           depends_on="data"),
+    _probe("connection_saturation", "Connection usage vs max_connections", "availability", "cheap",
+           ("availability",), _p_connection_saturation,
+           "Route the app through the pooler (transaction mode) and cap its pool size; find the leaking client by "
+           "application_name in pg_stat_activity; raise max_connections only after the pool is bounded.",
+           depends_on="data"),
+    _probe("cascade_delete_blast_radius", "ON DELETE CASCADE into large tables", "integrity", "medium",
+           ("integrity",), _p_cascade_blast_radius,
+           "Prefer `on delete restrict` (or soft delete on the parent) and an explicit, audited purge for the children; "
+           "if cascade is intended, ensure an audit row is written for the parent delete and the child table is backed up.",
+           depends_on="data"),
+    _probe("large_tables_without_index", "Tables over 1M rows with no index at all", "performance", "medium",
+           ("availability",), _p_large_no_index,
+           "Add a primary key and `create index concurrently` on the columns the hot queries filter or join on "
+           "(check pg_stat_statements for the predicates).", depends_on="data"),
+    _probe("replication_slots_lagging", "Replication slots inactive or retaining WAL", "availability", "medium",
+           ("availability",), _p_replication_slots,
+           "Reconnect or remove the consumer; `select pg_drop_replication_slot('<slot>')` for an abandoned slot "
+           "(operator action, not a migration); set `max_slot_wal_keep_size` so a dead slot cannot fill the disk.",
+           depends_on="data"),
+    _probe("updated_at_without_trigger", "updated_at columns not maintained by a trigger", "audit", "heavy",
+           ("audit_trail",), _p_updated_at_no_trigger,
+           "`create trigger set_updated_at before update on <t> for each row execute function moddatetime(updated_at)` "
+           "(extension moddatetime) in a migration, so the timestamp is set by the database, not by every code path."),
+    _probe("public_storage_buckets", "Public storage buckets", "security", "cheap",
+           ("access_control", "data_minimization"), _p_storage_buckets,
+           "Make the bucket private (`update storage.buckets set public = false`, in a migration) and serve files through "
+           "signed URLs; keep a public bucket only for assets that are meant to be public and hold no personal data.",
+           providers=["supabase"], depends_on="data"),
+    # Management API config probes. No SQL: `config_path` names the GET path(s) under
+    # /v1/projects/{ref}; run_probe passes the parser rows = [{path: payload, ...}] (see _cfg).
+    # Configuration changes without DDL, so every one of these is depends_on="data".
+    _probe("supabase_auth_config", "Auth service configuration weaknesses", "security", "medium",
+           ("access_control",), _p_auth_config,
+           "Change the setting in Authentication → Settings (or `PATCH /v1/projects/{ref}/config/auth`) and record the "
+           "value in supabase/config.toml so it is reviewed like code.",
+           dialects=["postgres"], providers=["supabase"], depends_on="data", config_path="/config/auth"),
+    _probe("supabase_backups_pitr", "Backups and point-in-time recovery", "availability", "medium",
+           ("availability",), _p_backups,
+           "Enable the PITR add-on for the project (Settings → Add-ons); until then, take a `pg_dump` before every "
+           "destructive migration and keep it outside the project.",
+           dialects=["postgres"], providers=["supabase"], depends_on="data", config_path="/database/backups"),
+    _probe("supabase_network_and_ssl", "Network restrictions and SSL enforcement", "security", "medium",
+           ("access_control",), _p_network_ssl,
+           "Apply a CIDR allow-list (Settings → Database → Network Restrictions, or "
+           "`POST /v1/projects/{ref}/network-restrictions/apply`) covering only the app's egress addresses, and turn on "
+           "SSL enforcement (`PUT /v1/projects/{ref}/ssl-enforcement`).",
+           dialects=["postgres"], providers=["supabase"], depends_on="data",
+           config_path=["/network-restrictions", "/ssl-enforcement"]),
+    _probe("supabase_edge_functions_verify_jwt", "Edge functions deployed with verify_jwt=false", "security", "medium",
+           ("access_control",), _p_edge_functions,
+           "Redeploy with `--no-verify-jwt` removed (or `verify_jwt = true` in supabase/config.toml); for a genuine webhook "
+           "target, verify the sender's signature in the handler and document it next to the function.",
+           dialects=["postgres"], providers=["supabase"], depends_on="data", config_path="/functions"),
     # Supabase advisor lints: free, already computed by the platform. No SQL; run_probe calls advisors_fn.
     {"id": "supabase_advisor_security", "title": "Supabase security advisor lints", "category": "security",
      "tier": "cheap", "dialects": ["postgres"], "providers": ["supabase"], "evidence_kinds": ["access_control"],
@@ -1003,6 +1629,16 @@ def run_probe(probe, source, query_fn=None, facts=None, advisors_fn=None) -> dic
             lints = advisors_fn(source, probe["advisor_kind"]) or []
             out["rows"] = len(lints)
             findings = advisors_to_findings(lints, probe["advisor_kind"], source)
+        elif probe.get("config_path"):
+            # Management-API configuration probe: one GET per path, the parser receives
+            # [{path: payload, ...}]. Only providers with a config API declare these.
+            paths = probe["config_path"] if isinstance(probe["config_path"], (list, tuple)) else [probe["config_path"]]
+            fetch = getattr(db_adapters, "supabase_config", None)
+            if not fetch:
+                raise LookupError("config probes need db_adapters.supabase_config")
+            payload = {str(path): fetch(source, str(path)) for path in paths}
+            out["rows"] = len(payload)
+            findings = _call_parse(probe["parse"], [payload], source, facts) or []
         else:
             dialect = db_adapters.dialect_of(source)
             sql = (probe.get("sql") or {}).get(dialect)
@@ -1026,16 +1662,204 @@ def run_probe(probe, source, query_fn=None, facts=None, advisors_fn=None) -> dic
     return out
 
 
-def run_all(source, query_fn=None, tiers=PROBE_TIERS, advisors_fn=None, capabilities=None) -> dict:
-    """Run every applicable probe in catalog order; dedup findings by fingerprint keeping the
-    most severe. Skips: wrong dialect/provider, tier not requested, capability known absent,
-    required fact not established. Never raises."""
+# ── execution engine: batches, waves, schema signature ─────────────────────────────────
+#
+# Round trips are the cost that matters. The Supabase Management API is rate limited per
+# token and every wire connection pays a handshake, so thirty probes as thirty statements
+# is the slow, expensive shape. Postgres lets us fold any number of SELECTs into ONE
+# statement that returns each probe's rows as a JSON array:
+#
+#     select json_build_object('probe_a', (select coalesce(json_agg(t), '[]') from (<sql_a>) t),
+#                              'probe_b', ...) as batch
+#
+# so a tier's structural probes cost one round trip. A batch that fails (one member's
+# statement is wrong for this server) falls back to per-probe execution, so a single bad
+# statement can never lose the wave. Probes gated on a fact run in a second wave after the
+# fact-establishing ones. Units of work (batches and single probes) run on a small pool.
+
+BATCH_ENABLED = str(os.environ.get("ORCH_DB_PROBE_BATCH", "true")).strip().lower() not in ("0", "false", "no", "off")
+BATCH_SIZE = max(1, int(os.environ.get("ORCH_DB_PROBE_BATCH_SIZE", "12")))
+PARALLEL_UNITS = max(1, int(os.environ.get("ORCH_DB_PROBE_PARALLEL", "4")))
+_BATCH_DIALECTS = ("postgres",)
+_BATCHABLE_RE = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
+
+#: Probes whose findings move WITHOUT a DDL change (statistics, sessions, queue tables,
+#: external advisors). Everything else depends on the schema alone and can be skipped when
+#: the schema signature has not moved since the last successful full run.
+_DATA_DEPENDENT = {
+    "table_inventory_facts", "schema_migrations_latest", "sequence_headroom",
+    "long_running_transactions", "unused_indexes", "dead_tuple_bloat", "vacuum_stale",
+    "slow_query_classes", "pg_cron_jobs", "soft_delete_without_purge",
+    "supabase_advisor_security", "supabase_advisor_performance",
+}
+
+#: One statement whose single value changes iff the schema (relations, columns, indexes,
+#: constraints, policies, grants, functions, extensions) changes. Statistics are excluded on
+#: purpose: a signature that moved with every insert would never let a scan be skipped.
+SCHEMA_SIGNATURE_SQL = {
+    "postgres": (
+        "select md5(string_agg(x, '|' order by x)) as signature, count(*) as parts from ("
+        "select 'rel:' || c.oid::text || ':' || n.nspname || '.' || c.relname || ':' || c.relkind::text "
+        "|| ':' || c.relnatts::text || ':' || c.relrowsecurity::text || ':' || c.relforcerowsecurity::text "
+        "|| ':' || coalesce(c.relacl::text, '') as x "
+        "from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+        "where n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast') and n.nspname not like 'pg_temp%' "
+        "union all "
+        "select 'att:' || a.attrelid::text || ':' || a.attnum::text || ':' || a.attname || ':' || a.atttypid::text "
+        "|| ':' || a.attnotnull::text || ':' || coalesce(a.atttypmod::text, '') || ':' || a.attisdropped::text "
+        "from pg_catalog.pg_attribute a join pg_catalog.pg_class c on c.oid = a.attrelid "
+        "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+        "where a.attnum > 0 and n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast') "
+        "union all "
+        "select 'idx:' || i.indexrelid::text || ':' || i.indrelid::text || ':' || i.indkey::text || ':' "
+        "|| i.indisunique::text || ':' || i.indisvalid::text from pg_catalog.pg_index i "
+        "union all "
+        "select 'con:' || k.oid::text || ':' || k.conrelid::text || ':' || k.contype::text || ':' || k.convalidated::text "
+        "|| ':' || coalesce(k.confdeltype::text, '') from pg_catalog.pg_constraint k "
+        "union all "
+        "select 'pol:' || p.oid::text || ':' || p.polrelid::text || ':' || p.polname || ':' || p.polcmd::text "
+        "|| ':' || p.polpermissive::text || ':' || coalesce(p.polroles::text, '') from pg_catalog.pg_policy p "
+        "union all "
+        "select 'fn:' || f.oid::text || ':' || f.proname || ':' || f.prosecdef::text || ':' "
+        "|| coalesce(f.proconfig::text, '') || ':' || coalesce(f.proacl::text, '') "
+        "from pg_catalog.pg_proc f join pg_catalog.pg_namespace n on n.oid = f.pronamespace "
+        "where n.nspname not in ('pg_catalog', 'information_schema') "
+        "union all "
+        "select 'ext:' || e.extname || ':' || e.extversion || ':' || e.extnamespace::text from pg_catalog.pg_extension e "
+        "union all "
+        "select 'trg:' || t.oid::text || ':' || t.tgrelid::text || ':' || t.tgname || ':' || t.tgenabled::text "
+        "from pg_catalog.pg_trigger t where not t.tgisinternal "
+        "union all "
+        "select 'role:' || r.oid::text || ':' || r.rolname || ':' || r.rolsuper::text || ':' || r.rolbypassrls::text "
+        "|| ':' || r.rolcanlogin::text from pg_catalog.pg_roles r"
+        ") s"
+    ),
+}
+
+
+def schema_signature(source, query_fn=None):
+    """The schema signature for `source`, or None when the dialect has none or the query
+    fails. One cheap catalog round trip; never raises."""
+    query_fn = query_fn or db_adapters.query
+    sql = SCHEMA_SIGNATURE_SQL.get(db_adapters.dialect_of(source))
+    if not sql:
+        return None
+    try:
+        assert_read_only(sql)
+        rows = query_fn(source, sql) or []
+        if rows and isinstance(rows[0], dict) and rows[0].get("signature"):
+            return "%s:%s" % (rows[0]["signature"], rows[0].get("parts") or 0)
+    except Exception as e:
+        _log(f"schema_signature on {db_adapters.describe(source)}: {type(e).__name__}: {str(e)[:200]}")
+    return None
+
+
+def probe_depends_on(probe) -> str:
+    """'data' when the probe's findings can move without DDL, else 'schema'."""
+    return str(probe.get("depends_on") or ("data" if probe.get("id") in _DATA_DEPENDENT else "schema"))
+
+
+def _batchable(probe, dialect) -> bool:
+    if probe.get("advisor_kind") or probe.get("requires_fact"):
+        return False
+    sql = (probe.get("sql") or {}).get(dialect)
+    return bool(sql) and dialect in _BATCH_DIALECTS and bool(_BATCHABLE_RE.match(sql)) and "{" not in sql
+
+
+def _batch_sql(members, dialect) -> str:
+    parts = []
+    for probe in members:
+        sql = str(probe["sql"][dialect]).strip().rstrip(";").strip()
+        parts.append("'%s', (select coalesce(json_agg(t), '[]'::json) from (%s) t)" % (probe["id"], sql))
+    # ::text — the Management API parses JSON in JavaScript, where a bigint (a
+    # pg_stat_statements queryid, a relation oid) loses precision past 2^53 and changes a
+    # fingerprint. As text it reaches Python intact and json.loads keeps every digit.
+    return "select json_build_object(" + ", ".join(parts) + ")::text as batch"
+
+
+def _coerce_batch(rows) -> dict:
+    """The one-row/one-column batch result as {probe_id: [rows]} whatever the transport
+    handed back (a parsed object, or JSON text)."""
+    if not rows or not isinstance(rows[0], dict):
+        raise ValueError("batch returned no row")
+    val = rows[0].get("batch")
+    if val is None and len(rows[0]) == 1:
+        val = next(iter(rows[0].values()))
+    if isinstance(val, (str, bytes)):
+        val = json.loads(val)
+    if not isinstance(val, dict):
+        raise ValueError("batch value is %s, not an object" % type(val).__name__)
+    return val
+
+
+def _finish_probe_result(out, probe, findings, t0, rows_n):
+    out["rows"] = rows_n
+    for f in findings or []:
+        if isinstance(f, dict):
+            if not f.get("remediation"):
+                f["remediation"] = str(probe.get("remediation") or "")[:2000]
+            out["findings"].append(f)
+    out["ok"] = True
+    out["duration_ms"] = round((time.monotonic() - t0) * 1000, 2)
+    return out
+
+
+def run_batch(members, source, query_fn=None, facts=None) -> list:
+    """Run several SQL probes as ONE statement; per-probe fallback when the batch fails.
+    Returns one result dict per member, in member order. Never raises."""
+    query_fn = query_fn or db_adapters.query
+    facts = facts if facts is not None else {}
+    dialect = db_adapters.dialect_of(source)
+    t0 = time.monotonic()
+    try:
+        sql = _batch_sql(members, dialect)
+        assert_read_only(sql)
+        payload = _coerce_batch(query_fn(source, sql) or [])
+    except Exception as e:
+        _log(f"batch of {len(members)} on {db_adapters.describe(source)} fell back to per-probe: "
+             f"{type(e).__name__}: {str(e)[:200]}")
+        return [run_probe(p, source, query_fn=query_fn, facts=facts) for p in members]
+    elapsed = round((time.monotonic() - t0) * 1000 / max(1, len(members)), 2)
+    results = []
+    for probe in members:
+        pid = probe["id"]
+        out = {"probe_id": pid, "findings": [], "ok": False, "error": None, "duration_ms": elapsed, "rows": 0,
+               "batched": True}
+        try:
+            rows = payload.get(pid)
+            if rows is None:
+                raise LookupError("batch result lacks this probe")
+            rows = db_adapters._truncate(list(rows))
+            findings = _call_parse(probe["parse"], rows, source, facts) or []
+            _finish_probe_result(out, probe, findings, t0, len(rows))
+            out["duration_ms"] = elapsed
+        except Exception as e:
+            out["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+            _log(f"probe {pid} (batched) on {db_adapters.describe(source)}: {out['error']}")
+        results.append(out)
+    return results
+
+
+def run_all(source, query_fn=None, tiers=PROBE_TIERS, advisors_fn=None, capabilities=None,
+            probe_ids=None, skip_probe_ids=None, batch=None, parallel=None) -> dict:
+    """Run every applicable probe; dedup findings by fingerprint keeping the most severe.
+
+    Skips: wrong dialect/provider, tier not requested, capability known absent, required
+    fact not established, id not in `probe_ids` (when given) or in `skip_probe_ids`.
+    Batchable statements run as one round trip per BATCH_SIZE; units run on a small pool in
+    two waves (fact producers first). Results keep catalog order. Never raises."""
     source = source or {}
     tiers = tuple(tiers or PROBE_TIERS)
+    batch = BATCH_ENABLED if batch is None else bool(batch)
+    parallel = PARALLEL_UNITS if parallel is None else max(1, int(parallel))
     dialect = db_adapters.dialect_of(source)
     provider = str(source.get("provider") or "")
     caps = capabilities if capabilities is not None else (source.get("capabilities") or {})
-    facts, results, skipped, by_fp = {}, [], [], {}
+    only = set(probe_ids) if probe_ids is not None else None
+    skip = set(skip_probe_ids or ())
+    facts, skipped, by_fp = {}, [], {}
+    results_by_id = {}
+    wave1, wave2 = [], []
     for probe in PROBES:
         pid = probe["id"]
         if probe.get("tier") not in tiers:
@@ -1044,16 +1868,60 @@ def run_all(source, query_fn=None, tiers=PROBE_TIERS, advisors_fn=None, capabili
             continue
         if probe.get("providers") and provider not in probe["providers"]:
             continue
+        if (only is not None and pid not in only) or pid in skip:
+            skipped.append({"probe_id": pid, "reason": "not selected this cycle"})
+            continue
         cap = probe.get("requires_capability")
         if cap and cap in caps and not caps.get(cap):
             skipped.append({"probe_id": pid, "reason": f"capability {cap} absent"})
             continue
+        (wave2 if probe.get("requires_fact") else wave1).append(probe)
+
+    def _units(probes):
+        units, pending = [], []
+        for probe in probes:
+            if batch and _batchable(probe, dialect):
+                pending.append(probe)
+                if len(pending) >= BATCH_SIZE:
+                    units.append(("batch", list(pending)))
+                    pending = []
+            else:
+                units.append(("single", probe))
+        if pending:
+            units.append(("batch", pending))
+        return units
+
+    def _run_unit(unit):
+        kind, payload = unit
+        if kind == "batch":
+            return run_batch(payload, source, query_fn=query_fn, facts=facts)
+        return [run_probe(payload, source, query_fn=query_fn, facts=facts, advisors_fn=advisors_fn)]
+
+    def _run_wave(probes):
+        units = _units(probes)
+        if not units:
+            return
+        if parallel == 1 or len(units) == 1:
+            outs = [_run_unit(u) for u in units]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(parallel, len(units))) as pool:
+                outs = list(pool.map(_run_unit, units))
+        for res_list in outs:
+            for res in res_list:
+                results_by_id[res["probe_id"]] = res
+
+    _run_wave(wave1)
+    ready = []
+    for probe in wave2:
         fact = probe.get("requires_fact")
         if fact and not facts.get(fact):
-            skipped.append({"probe_id": pid, "reason": f"fact {fact} not established"})
+            skipped.append({"probe_id": probe["id"], "reason": f"fact {fact} not established"})
             continue
-        res = run_probe(probe, source, query_fn=query_fn, facts=facts, advisors_fn=advisors_fn)
-        results.append(res)
+        ready.append(probe)
+    _run_wave(ready)
+
+    results = [results_by_id[p["id"]] for p in PROBES if p["id"] in results_by_id]
+    for res in results:
         for f in res["findings"]:
             fp = f.get("fingerprint")
             prev = by_fp.get(fp)
@@ -1064,6 +1932,7 @@ def run_all(source, query_fn=None, tiers=PROBE_TIERS, advisors_fn=None, capabili
             "score": score(findings),
             "stats": {"run": len(results), "ok": sum(1 for r in results if r["ok"]),
                       "failed": sum(1 for r in results if not r["ok"]), "skipped": len(skipped),
+                      "round_trips": len(_units(wave1)) + len(_units(ready)),
                       "duration_ms": round(sum(r["duration_ms"] for r in results), 2)}}
 
 

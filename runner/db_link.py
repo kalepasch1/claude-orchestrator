@@ -131,14 +131,16 @@ def cmd_scan(a):
         if t not in C.PROBE_TIERS:
             print("unknown tier %r" % t)
             return 2
-    res = db_steering.scan_source(s, tiers=tiers, dry_run=not a.write)
+    res = db_steering.scan_source(s, tiers=tiers, dry_run=not a.write, force_full=bool(getattr(a, "full", False)))
     findings = res.get("findings") or []
     gaps = [f for f in findings if f.get("direction", "undermines") == "undermines"]
     if a.json:
         print(json.dumps(res, indent=2, default=str))
         return 0
-    print("source: %s   ok=%s   probes=%d   findings=%d (gaps %d, positives %d)   %sms%s" % (
-        s.get("label"), res.get("ok"), len(res.get("results") or []), len(findings), len(gaps),
+    st = res.get("stats") or {}
+    print("source: %s   ok=%s   mode=%s   probes=%d in %s round trips   findings=%d (gaps %d, positives %d)   %sms%s" % (
+        s.get("label"), res.get("ok"), res.get("mode", "full"), len(res.get("results") or []),
+        st.get("round_trips", "?"), len(findings), len(gaps),
         len(findings) - len(gaps), res.get("duration_ms"), "" if a.write else "   [dry run — nothing written]"))
     if res.get("error"):
         print("error: %s" % res["error"])
@@ -191,9 +193,13 @@ def cmd_memos(a):
         if not rows:
             print("no memo %s for %s" % (a.render, a.project))
             return 2
-        ev = db.select_all("legal_memo_evidence", {"select": "*", "memo_id": "eq.%s" % rows[0]["id"]},
-                           order="argument_key.asc,id.asc") or []
-        print(rows[0].get("body") or db_memo.render_markdown(rows[0], ev))
+        # render_markdown expects ledger entries (evidence joined to findings), not raw
+        # legal_memo_evidence rows — _load_ledger builds exactly that shape. A stored body
+        # makes the join unnecessary.
+        if rows[0].get("body"):
+            print(rows[0]["body"])
+        else:
+            print(db_memo.render_markdown(rows[0], db_memo._load_ledger(rows[0]["id"])))
         return 0
     print(json.dumps(db_memo.memo_summary(a.project), indent=2, default=str))
     return 0
@@ -284,6 +290,7 @@ def main(argv=None):
     p.set_defaults(fn=cmd_add)
     p = sub.add_parser("test"); p.add_argument("ident"); p.set_defaults(fn=cmd_test)
     p = sub.add_parser("scan"); p.add_argument("ident"); p.add_argument("--tiers"); p.add_argument("--write", action="store_true")
+    p.add_argument("--full", action="store_true", help="ignore the schema signature; run every due probe")
     p.add_argument("--limit", type=int, default=40); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_scan)
     p = sub.add_parser("pause"); p.add_argument("ident"); p.set_defaults(fn=lambda a: cmd_toggle(a, False))
     p = sub.add_parser("resume"); p.add_argument("ident"); p.set_defaults(fn=lambda a: cmd_toggle(a, True))

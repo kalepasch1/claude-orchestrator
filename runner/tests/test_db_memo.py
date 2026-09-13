@@ -41,13 +41,51 @@ NOW = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeDb:
-    """In-memory stand-in for db.select/insert/upsert/update keyed by table, honouring the
-    PostgREST filters db_memo uses (eq., in.(...), order, limit) and the two unique keys."""
+    """In-memory stand-in for db.select/insert/upsert/update/count/_req keyed by table,
+    honouring the PostgREST filters db_memo uses (eq., in.(...), order, limit) and the
+    unique keys of legal_memo_drafts, legal_memo_evidence and legal_docket. Every call is
+    appended to `log`, so a test can count HTTP-shaped round trips."""
 
     def __init__(self):
         self.tables = {"legal_memo_drafts": [], "legal_memo_evidence": [], "db_findings": []}
         self.log = []
         self._n = 0
+        self.bulk_fails = False  # make the array POST refuse, as a duplicate in the chunk would
+
+    def calls(self, kind, table=None):
+        """Log entries of one kind ('select', 'insert', 'update', 'POST', 'PATCH', 'count'),
+        optionally for one table."""
+        return [e for e in self.log if e[0] == kind and (table is None or e[1] == table)]
+
+    def _req(self, method, path, body=None, headers=None, params=None):
+        """The bulk paths: POST /rest/v1/<table> with an array body echoes the rows (all or
+        nothing, like PostgREST); PATCH with params applies one patch to every matching row."""
+        assert path.startswith("/rest/v1/"), path
+        table = path.split("/rest/v1/", 1)[1]
+        self.log.append((method, table, body, dict(params or {})))
+        if method == "POST":
+            assert isinstance(body, list), "bulk insert body must be an array"
+            if self.bulk_fails:
+                raise RuntimeError("bulk refused")
+            rows = self.tables.setdefault(table, [])
+            for r in body:  # atomic: a duplicate anywhere in the chunk rejects the whole array
+                if table == "legal_memo_evidence" and any(
+                        (x["memo_id"], x["finding_id"], x["argument_key"]) ==
+                        (r["memo_id"], r["finding_id"], r["argument_key"]) for x in rows):
+                    raise RuntimeError("409 duplicate key in bulk insert")
+            return [self.insert(table, r, _log=False)[0] for r in body]
+        if method == "PATCH":
+            out = []
+            for r in self.tables.get(table, []):
+                if self._match(r, params or {}):
+                    r.update(body or {})
+                    out.append(dict(r))
+            return out
+        raise AssertionError(f"unexpected _req {method} {path}")
+
+    def count(self, table, params=None):
+        self.log.append(("count", table, dict(params or {})))
+        return len(self.select(table, dict(params or {}), _log=False))
 
     @staticmethod
     def _match(row, params):
@@ -65,13 +103,18 @@ class FakeDb:
                     return False
         return True
 
-    def select(self, table, params=None):
+    def select(self, table, params=None, _log=True):
         params = params or {}
+        if _log:
+            self.log.append(("select", table, dict(params)))
         rows = [dict(r) for r in self.tables.get(table, []) if self._match(r, params)]
         order = params.get("order")
         if order:
-            col, _, direction = order.partition(".")
+            # Only the first order key matters for the fake: the real db orders by the full list.
+            col, _, direction = order.split(",")[0].partition(".")
             rows.sort(key=lambda r: str(r.get(col) or ""), reverse=(direction == "desc"))
+        if params.get("offset"):
+            rows = rows[int(params["offset"]):]
         if params.get("limit"):
             rows = rows[:int(params["limit"])]
         return rows
@@ -79,13 +122,14 @@ class FakeDb:
     def select_all(self, table, params=None, page_size=None, max_rows=None, order=None):
         q = dict(params or {})
         q.pop("limit", None)
-        # Only the first order key matters for the fake: the real db orders by the full list.
-        q["order"] = (order or q.get("order") or "id.asc").split(",")[0]
+        q["order"] = order or q.get("order") or "id.asc"
         return self.select(table, q)
 
-    def insert(self, table, row, upsert=False):
+    def insert(self, table, row, upsert=False, _log=True):
         r = dict(row)
         rows = self.tables.setdefault(table, [])
+        if _log:
+            self.log.append(("insert", table, dict(r)))
         if table == "legal_memo_drafts":
             if any(x["project"] == r["project"] and x["memo_kind"] == r["memo_kind"] for x in rows):
                 return None
@@ -93,6 +137,9 @@ class FakeDb:
             if any((x["memo_id"], x["finding_id"], x["argument_key"]) ==
                    (r["memo_id"], r["finding_id"], r["argument_key"]) for x in rows):
                 return None
+        if table == "legal_docket":
+            if any((x["vertical"], x["question"]) == (r["vertical"], r["question"]) for x in rows):
+                return None  # 409 on unique (vertical, question)
         self._n += 1
         r.setdefault("id", f"{table[:4]}-{self._n}")
         r.setdefault("created_at", (NOW + timedelta(seconds=self._n)).isoformat())
@@ -100,7 +147,6 @@ class FakeDb:
             r.setdefault("publication_state", "internal")
             r.setdefault("status", "draft")
         rows.append(r)
-        self.log.append(("insert", table, dict(r)))
         return [dict(r)]  # PostgREST echoes the representation as a list
 
     def upsert(self, table, row):
@@ -115,13 +161,14 @@ class FakeDb:
         self.log.append(("update", table, dict(match), dict(patch)))
         return out
 
-    # convenience
+    # convenience (test-side inspection: never logged, so it cannot count as a round trip)
     def memo(self, project, kind):
-        rows = self.select("legal_memo_drafts", {"project": f"eq.{project}", "memo_kind": f"eq.{kind}"})
+        rows = self.select("legal_memo_drafts", {"project": f"eq.{project}", "memo_kind": f"eq.{kind}"},
+                           _log=False)
         return rows[0] if rows else None
 
     def evidence(self, memo_id):
-        return self.select("legal_memo_evidence", {"memo_id": f"eq.{memo_id}"})
+        return self.select("legal_memo_evidence", {"memo_id": f"eq.{memo_id}"}, _log=False)
 
 
 def _finding(n, probe, category, severity, kinds, direction="undermines", status="open",
@@ -181,8 +228,11 @@ def good_memo(fps, extra_cites=()):
 class Base(unittest.TestCase):
     def setUp(self):
         self.db = FakeDb()
-        for fn in ("select", "insert", "upsert", "update"):
+        # select_all is deliberately NOT patched: the real one pages through select(), so
+        # the fake's select log counts its round trips the way production would.
+        for fn in ("select", "insert", "upsert", "update", "count", "_req"):
             self.enterContext(mock.patch.object(db_memo.db, fn, getattr(self.db, fn)))
+        self.enterContext(mock.patch.object(db_memo, "_DOCKET_SEED_DONE", False))
         self.model = _FakeModel()
         self.rag_calls = []
         self.gauntlet = mock.MagicMock(return_value=None)
@@ -214,9 +264,18 @@ class Base(unittest.TestCase):
         for r in self.db.tables["legal_memo_drafts"]:
             self.assertEqual(r.get("publication_state"), "internal")
         for entry in self.db.log:
-            payload = entry[2] if entry[0] == "insert" else entry[3]
-            if "publication_state" in payload:
-                self.assertEqual(payload["publication_state"], "internal")
+            kind = entry[0]
+            if kind == "insert" or kind == "PATCH":
+                payloads = [entry[2]]
+            elif kind == "update":
+                payloads = [entry[3]]
+            elif kind == "POST":
+                payloads = list(entry[2] or [])
+            else:
+                continue  # reads carry no publication_state
+            for payload in payloads:
+                if isinstance(payload, dict) and "publication_state" in payload:
+                    self.assertEqual(payload["publication_state"], "internal")
 
 
 # ── argument routing ───────────────────────────────────────────────────────────────────
@@ -343,6 +402,136 @@ class TestAttachEvidence(Base):
             out = db_memo.attach_evidence("proj", [_finding(1, "rls_disabled_tables", "security", "high",
                                                              ["access_control"])])
         self.assertEqual(out["evidence_rows"], 0)
+
+
+class TestAttachEvidenceRoundTrips(Base):
+    """attach_evidence must cost O(memos) HTTP calls, not O(findings x keys). Before the
+    rewrite each (finding, key) paid a select and an insert/update (~2 calls per row; 373
+    rows took about a minute). Now: per memo, ONE read of the existing evidence, chunked
+    array POSTs for new rows, and one PATCH per distinct change."""
+    EV = "legal_memo_evidence"
+
+    def _many(self, n=50, severity="medium"):
+        # extensions_in_public routes to TWO keys of the change-control memo, so n findings
+        # with only the change_control evidence kind produce 2n rows in exactly one memo.
+        return [_finding(1000 + i, "extensions_in_public", "schema_drift", severity, ["change_control"],
+                         object_name=f"ext{i}") for i in range(n)]
+
+    def test_bulk_attach_is_one_select_plus_chunked_posts_per_memo(self):
+        with mock.patch.object(db_memo, "BULK_CHUNK", 30):
+            out = self.seed(self._many(50))
+        self.assertEqual(out["memos_touched"], [CC])
+        self.assertEqual(out["evidence_rows"], 100)
+        memo = self.db.memo("proj", CC)
+        self.assertEqual(len(self.db.evidence(memo["id"])), 100)
+        self.assertEqual(len(self.db.calls("select", self.EV)), 1, "existing evidence is read ONCE per memo")
+        posts = self.db.calls("POST", self.EV)
+        self.assertEqual(len(posts), 4)  # ceil(100 / 30)
+        self.assertEqual([len(p[2]) for p in posts], [30, 30, 30, 10])
+        self.assertEqual(self.db.calls("insert", self.EV), [], "no per-row inserts on the happy path")
+        self.assertEqual(self.db.calls("update", self.EV), [])
+        self.assertEqual(self.db.calls("PATCH", self.EV), [])
+        # The whole attach, memo skeleton included, is a handful of round trips.
+        total = sum(1 for e in self.db.log if e[0] in ("select", "insert", "update", "POST", "PATCH", "count"))
+        self.assertLessEqual(total, 1 + 1 + 1 + 4)  # memo select, memo insert, evidence select, 4 POSTs
+        self.assert_all_internal()
+
+    def test_failed_chunk_falls_back_per_row_and_loses_nothing(self):
+        self.db.bulk_fails = True
+        with mock.patch.object(db_memo, "BULK_CHUNK", 30):
+            out = self.seed(self._many(50))
+        self.assertEqual(out["evidence_rows"], 100)
+        memo = self.db.memo("proj", CC)
+        rows = self.db.evidence(memo["id"])
+        self.assertEqual(len(rows), 100)
+        self.assertEqual({(r["finding_id"], r["argument_key"]) for r in rows},
+                         {(f"f{1000 + i}", k) for i in range(50)
+                          for k in ("schema_matches_migrations", "changes_reviewable")})
+        self.assertEqual(len(self.db.calls("POST", self.EV)), 4)  # every chunk was tried first
+        self.assertEqual(len(self.db.calls("insert", self.EV)), 100)  # then each row on its own
+        self.assertEqual(len(self.db.calls("select", self.EV)), 1)
+
+    def test_known_rows_are_filtered_before_the_post(self):
+        """Rows the single read already shows are never put in a chunk, so a partially
+        known batch cannot trip the unique key and force the per-row fallback."""
+        findings = self._many(5)
+        self.seed(findings[:1])  # 2 rows already there
+        self.db.log.clear()
+        out = db_memo.attach_evidence("proj", findings)
+        self.assertEqual(out["evidence_rows"], 10)
+        self.assertEqual(len(self.db.evidence(self.db.memo("proj", CC)["id"])), 10)
+        self.assertEqual(len(self.db.calls("POST", self.EV)), 1)
+        self.assertEqual(self.db.calls("insert", self.EV), [], "known rows are never re-sent")
+
+    def test_reattach_unchanged_is_read_only(self):
+        findings = self._many(50)
+        self.seed(findings)
+        self.db.log.clear()
+        out = db_memo.attach_evidence("proj", findings)
+        self.assertEqual(out, {"memos_touched": [CC], "evidence_rows": 100})
+        self.assertEqual(self.db.calls("insert", self.EV), [])
+        self.assertEqual(self.db.calls("POST", self.EV), [])
+        self.assertEqual(self.db.calls("update", self.EV), [])
+        self.assertEqual(self.db.calls("PATCH", self.EV), [])
+        self.assertEqual(len(self.db.calls("select", self.EV)), 1)
+
+    def test_changed_weight_is_exactly_one_update(self):
+        f = _finding(1, "rls_disabled_tables", "security", "high", ["access_control"])
+        self.seed([f])
+        self.db.log.clear()
+        f["severity"] = "critical"  # weight 2.0 -> 3.0 in both memos, one row each
+        out = db_memo.attach_evidence("proj", [f])
+        self.assertEqual(out["evidence_rows"], 2)
+        for kind in (AC, DP):
+            memo = self.db.memo("proj", kind)
+            rows = self.db.evidence(memo["id"])
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["weight"], 3.0)
+        self.assertEqual(len(self.db.calls("update", self.EV)), 2)  # one per memo, each a lone row
+        self.assertEqual(self.db.calls("PATCH", self.EV), [])
+        self.assertEqual(self.db.calls("POST", self.EV), [])
+        self.assertEqual(self.db.calls("insert", self.EV), [])
+        # and once applied, nothing moves again
+        self.db.log.clear()
+        db_memo.attach_evidence("proj", [f])
+        self.assertEqual(self.db.calls("update", self.EV), [])
+
+    def test_identical_changes_are_one_batched_patch(self):
+        findings = self._many(20, severity="medium")
+        self.seed(findings)
+        self.db.log.clear()
+        for f in findings:
+            f["severity"] = "high"  # 40 rows all move 1.0 -> 2.0 with the same patch
+        out = db_memo.attach_evidence("proj", findings)
+        self.assertEqual(out["evidence_rows"], 40)
+        patches = self.db.calls("PATCH", self.EV)
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0][2], {"weight": 2.0, "direction": "undermines", "note": None})
+        self.assertIn("id", patches[0][3])
+        self.assertTrue(patches[0][3]["id"].startswith("in.("))
+        self.assertEqual(self.db.calls("update", self.EV), [])
+        memo = self.db.memo("proj", CC)
+        self.assertEqual({r["weight"] for r in self.db.evidence(memo["id"])}, {2.0})
+
+    def test_batched_patch_failure_falls_back_per_row(self):
+        findings = self._many(3)
+        self.seed(findings)
+        self.db.log.clear()
+        for f in findings:
+            f["severity"] = "critical"
+        real = self.db._req
+
+        def refuse_patch(method, path, body=None, headers=None, params=None):
+            if method == "PATCH":
+                raise RuntimeError("patch refused")
+            return real(method, path, body=body, headers=headers, params=params)
+
+        with mock.patch.object(db_memo.db, "_req", refuse_patch):
+            out = db_memo.attach_evidence("proj", findings)
+        self.assertEqual(out["evidence_rows"], 6)
+        self.assertEqual(len(self.db.calls("update", self.EV)), 6)
+        memo = self.db.memo("proj", CC)
+        self.assertEqual({r["weight"] for r in self.db.evidence(memo["id"])}, {3.0})
 
 
 # ── evidence_hash ──────────────────────────────────────────────────────────────────────
@@ -678,6 +867,135 @@ class TestRenderAndReads(Base):
             self.assertEqual(db_memo.memo_summary("proj"), [])
             self.assertEqual(db_memo.steering_signals("proj"), [])
             self.assertEqual(db_memo.run("proj"), {"proj": mock.ANY})
+
+
+# ── fleet baseline hook in the prompt ──────────────────────────────────────────────────
+
+class TestBaselinePromptHook(Base):
+    HEADING = "Fleet baseline (comparative context):"
+
+    def setUp(self):
+        super().setUp()
+        self.seed([_finding(1, "rls_disabled_tables", "security", "critical", ["access_control"])])
+        self.memo = self.db.memo("proj", AC)
+        self.ledger = db_memo._load_ledger(self.memo["id"])
+        self.args = db_memo.score_arguments(AC, self.ledger)
+
+    def test_lines_included_capped_at_three(self):
+        seen = []
+        fake = types.SimpleNamespace(baseline_lines=lambda p: seen.append(p) or [
+            "security: proj scores 41 vs fleet median 72 (bottom quartile)",
+            "  integrity: proj scores 80 vs fleet median 75  ",
+            "", None, "performance: at fleet median",
+            "a fourth line that must be dropped"])
+        with mock.patch.dict(sys.modules, {"db_baselines": fake}):
+            p = db_memo._build_prompt(self.memo, self.ledger, self.args)
+        self.assertEqual(seen, ["proj"])
+        self.assertIn(self.HEADING, p)
+        block = p.split(self.HEADING, 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(block.strip().splitlines(), [
+            "- security: proj scores 41 vs fleet median 72 (bottom quartile)",
+            "- integrity: proj scores 80 vs fleet median 75",
+            "- performance: at fleet median"])
+        self.assertNotIn("fourth line", p)
+        self.assertLess(p.index(self.HEADING), p.index("EVIDENCE LEDGER"))
+
+    def test_absent_module_or_failure_leaves_prompt_unchanged(self):
+        with mock.patch.dict(sys.modules, {"db_baselines": None}):  # import raises
+            p_absent = db_memo._build_prompt(self.memo, self.ledger, self.args)
+        self.assertNotIn(self.HEADING, p_absent)
+        broken = types.SimpleNamespace(baseline_lines=mock.MagicMock(side_effect=RuntimeError("cold")))
+        with mock.patch.dict(sys.modules, {"db_baselines": broken}):
+            p_broken = db_memo._build_prompt(self.memo, self.ledger, self.args)
+        self.assertEqual(p_absent, p_broken)
+        no_fn = types.SimpleNamespace()
+        with mock.patch.dict(sys.modules, {"db_baselines": no_fn}):
+            self.assertEqual(db_memo._build_prompt(self.memo, self.ledger, self.args), p_absent)
+        empty = types.SimpleNamespace(baseline_lines=lambda p: [])
+        with mock.patch.dict(sys.modules, {"db_baselines": empty}):
+            self.assertEqual(db_memo._build_prompt(self.memo, self.ledger, self.args), p_absent)
+
+
+# ── legal docket seed ──────────────────────────────────────────────────────────────────
+
+class TestDocketSeed(Base):
+    def setUp(self):
+        super().setUp()
+        import db_docket_seed
+        self.seed_mod = db_docket_seed
+
+    def _docket(self):
+        return self.db.tables.get("legal_docket", [])
+
+    def test_docket_is_well_formed(self):
+        qs = self.seed_mod.DATA_DOCKET
+        self.assertTrue(10 <= len(qs) <= 14, len(qs))
+        self.assertEqual(len({q["question"] for q in qs}), len(qs), "questions are the unique key")
+        for q in qs:
+            self.assertIn(q["priority"], ("high", "medium"))
+            self.assertTrue(q["question"].rstrip().endswith("?"), q["question"])
+            self.assertGreater(len(q["question"]), 80)
+        for row in self.seed_mod.docket_rows():
+            self.assertEqual(set(row), {"vertical", "question", "priority", "status"})
+            self.assertEqual((row["vertical"], row["status"]), ("data", "pending"))
+        import expert_corps
+        self.assertIn("data", expert_corps.VERTICALS)
+
+    def test_seeding_twice_inserts_once(self):
+        n = len(self.seed_mod.DATA_DOCKET)
+        first = self.seed_mod.ensure_seeded(self.db)
+        self.assertEqual(first, {"inserted": n, "present": 0})
+        self.assertEqual(len(self._docket()), n)
+        second = self.seed_mod.ensure_seeded(self.db)
+        self.assertEqual(second, {"inserted": 0, "present": n}, "a 409 echo (None) counts as present")
+        self.assertEqual(len(self._docket()), n)
+        self.assertEqual(len(self.db.calls("insert", "legal_docket")), 2 * n)
+
+    def test_a_409_echo_counts_as_present(self):
+        echo_none = types.SimpleNamespace(insert=lambda table, row, upsert=False: None)
+        self.assertEqual(self.seed_mod.ensure_seeded(echo_none),
+                         {"inserted": 0, "present": len(self.seed_mod.DATA_DOCKET)})
+
+    def test_db_failure_returns_zeros_without_raising(self):
+        broken = types.SimpleNamespace(insert=mock.MagicMock(side_effect=RuntimeError("control plane down")))
+        self.assertEqual(self.seed_mod.ensure_seeded(broken), {"inserted": 0, "present": 0})
+        self.assertEqual(broken.insert.call_count, len(self.seed_mod.DATA_DOCKET))
+        # the module import path also fails soft
+        with mock.patch.dict(sys.modules, {"db": None}):
+            self.assertEqual(self.seed_mod.ensure_seeded(None), {"inserted": 0, "present": 0})
+
+    def test_ensure_docket_seed_runs_once_per_process_and_only_when_empty(self):
+        n = len(self.seed_mod.DATA_DOCKET)
+        out = db_memo.ensure_docket_seed()
+        self.assertEqual(out, {"seeded": True, "inserted": n, "present": 0})
+        self.assertEqual(len(self._docket()), n)
+        self.assertEqual(len(self.db.calls("count", "legal_docket")), 1)
+        self.assertEqual(self.db.calls("count", "legal_docket")[0][2], {"vertical": "eq.data"})
+        again = db_memo.ensure_docket_seed()
+        self.assertFalse(again["seeded"])
+        self.assertEqual(len(self.db.calls("count", "legal_docket")), 1, "latched: no second count")
+        self.assertEqual(len(self.db.calls("insert", "legal_docket")), n)
+
+    def test_ensure_docket_seed_skips_when_data_questions_exist(self):
+        self.db.tables["legal_docket"] = [{"id": "d1", "vertical": "data", "question": "existing?",
+                                          "priority": "high", "status": "pending"}]
+        out = db_memo.ensure_docket_seed()
+        self.assertFalse(out["seeded"])
+        self.assertEqual(self.db.calls("insert", "legal_docket"), [])
+        self.assertTrue(db_memo._DOCKET_SEED_DONE)
+        # other verticals' questions do not count
+        self.db.tables["legal_docket"] = [{"id": "d1", "vertical": "gaming", "question": "q?",
+                                          "priority": "high", "status": "pending"}]
+        db_memo._DOCKET_SEED_DONE = False
+        self.assertTrue(db_memo.ensure_docket_seed()["seeded"])
+
+    def test_ensure_docket_seed_is_fail_soft_and_retries_next_cycle(self):
+        with mock.patch.object(db_memo.db, "count", side_effect=RuntimeError("control plane down")):
+            out = db_memo.ensure_docket_seed()
+        self.assertFalse(out["seeded"])
+        self.assertFalse(db_memo._DOCKET_SEED_DONE, "an outage must not latch the seed off for the process")
+        self.assertEqual(self._docket(), [])
+        self.assertTrue(db_memo.ensure_docket_seed()["seeded"])
 
 
 # ── expert corps vertical ──────────────────────────────────────────────────────────────

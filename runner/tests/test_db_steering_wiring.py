@@ -70,7 +70,7 @@ class LoopsWiringTest(unittest.TestCase):
 class PromptAssemblerLayerTest(unittest.TestCase):
     def _assemble(self, brief):
         fake = types.ModuleType("db_steering")
-        fake.steering_brief = lambda project: brief if project == "apparently-law" else ""
+        fake.steering_brief = lambda project, context=None: brief if project == "apparently-law" else ""
         with patch.dict(sys.modules, {"db_steering": fake}), \
                 patch.object(prompt_assembler, "_log_assembly", lambda *a, **k: None), \
                 patch.object(prompt_assembler, "_project_brief", lambda p, r: ""):
@@ -83,6 +83,21 @@ class PromptAssemblerLayerTest(unittest.TestCase):
         self.assertIn("rls off: public.matters", out["prompt"])
         # the brief precedes the task body so the agent reads the constraint before the ask
         self.assertLess(out["prompt"].index("rls off"), out["prompt"].index("add a column to matters"))
+
+    def test_task_text_is_passed_as_context_for_focusing(self):
+        seen = {}
+        fake = types.ModuleType("db_steering")
+
+        def brief(project, context=None):
+            seen["context"] = context
+            return "## Database steering\n- [HIGH] rls off: public.matters\n\n"
+        fake.steering_brief = brief
+        with patch.dict(sys.modules, {"db_steering": fake}), \
+                patch.object(prompt_assembler, "_log_assembly", lambda *a, **k: None), \
+                patch.object(prompt_assembler, "_project_brief", lambda p, r: ""):
+            prompt_assembler.assemble("add a column to matters", project="apparently-law",
+                                      repo="/nonexistent", use_retrieval=False)
+        self.assertIn("add a column to matters", seen["context"] or "")
 
     def test_no_brief_no_layer(self):
         out = self._assemble("")
