@@ -19,7 +19,7 @@ Providers (enabled when their key/env is present):
 
 complete(provider, model, prompt) -> {"text","cost_usd","provider","model"}
 """
-import os, sys, json, time, subprocess, urllib.request, urllib.error
+import os, sys, json, math, time, subprocess, urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import provider_credentials
 
@@ -41,6 +41,17 @@ def _load_env():
 
 _load_env()
 provider_credentials.activate_aliases()
+try:
+    # Load after runner configuration, so the shared lock path matches callers
+    # that import the guard through the normal configured runner startup.
+    from local_model_slots import LocalCapacityError
+except Exception:
+    # Hosted providers remain usable when the optional local guard cannot load.
+    # Local dispatch below still refuses to issue a request without that guard.
+    class LocalCapacityError(RuntimeError):
+        def __init__(self, reason="guard_unavailable"):
+            self.reason = "guard_unavailable"
+            super().__init__("local inference deferred: guard_unavailable")
 
 # rough $/1M tokens (input,output) for routing decisions; edit to current pricing
 PRICES = {
@@ -247,36 +258,58 @@ def _deepseek(model, prompt):
 
 
 def _local(model, prompt, timeout=90):
-    host = _ollama_host()
-    if not model:
-        try:
-            import ollama_catalog
-            model = (ollama_catalog.best("completion", need=5) or {}).get("model") or os.environ.get("OLLAMA_MODEL", "llama3.1")
-        except Exception:
-            model = os.environ.get("OLLAMA_MODEL", "llama3.1")
-    # Cap the context window: without an explicit num_ctx Ollama uses the Modelfile default,
-    # which for large coders (qwen3-coder:30b) balloons KV cache to ~2x model size (observed
-    # 44GB resident on 2026-07-10) and drives the sentinel ram-clamp thrash.  Eight thousand
-    # tokens covers bounded review prompts while avoiding the 16k default that exhausted RAM
-    # during merge-train verification. ORCH_OLLAMA_NUM_CTX=0 disables the cap.
-    try:
-        num_ctx = int(os.environ.get("ORCH_OLLAMA_NUM_CTX", "8192"))
-    except ValueError:
-        num_ctx = 8192
-    body = {"model": model, "prompt": prompt, "stream": False,
-            "keep_alive": os.environ.get("ORCH_OLLAMA_KEEP_ALIVE", "0")}
-    if num_ctx > 0:
-        body["options"] = {"num_ctx": num_ctx}
     try:
         import local_model_slots
-    except ImportError:
-        d = _post(f"{host}/api/generate", {}, body, timeout=timeout)
-    else:
-        # Do not reissue a timed-out or failed local request outside the slot.
-        # The old broad except retried every failure, turning one bounded review
-        # into two full model runs and repeatedly pinning the merge train.
-        with local_model_slots.slot(model, operation="local_completion"):
-            d = _post(f"{host}/api/generate", {}, body, timeout=timeout)
+        policy = local_model_slots.request_policy()
+        slot = local_model_slots.slot
+    except Exception:
+        raise LocalCapacityError("guard_unavailable") from None
+    if _local_disabled():
+        raise LocalCapacityError("local_disabled")
+    if not isinstance(model, str) or not model.strip():
+        # Selecting a different model is an explicit routing decision, not a
+        # resource-recovery action hidden inside this request boundary.
+        raise LocalCapacityError("model_unknown")
+    # UTF-8 bytes conservatively upper-bound ordinary text tokens. Reserve both
+    # output and template overhead; never silently truncate a legal/review input
+    # after tightening the old 16k context window.
+    if not isinstance(prompt, str) or len(prompt.encode("utf-8")) > policy["num_ctx"] - policy["num_predict"] - 256:
+        raise LocalCapacityError("context_budget")
+    try:
+        requested_timeout = float(timeout)
+        if not math.isfinite(requested_timeout) or requested_timeout <= 0:
+            requested_timeout = policy["timeout_s"]
+    except (TypeError, ValueError):
+        requested_timeout = policy["timeout_s"]
+    body = {"model": model, "prompt": prompt, "stream": False,
+            "keep_alive": policy["keep_alive"],
+            "options": {"num_ctx": policy["num_ctx"], "num_predict": policy["num_predict"]}}
+    # Never retry or generate outside the guard, even if an older guard returns
+    # fail-open metadata instead of raising. Healthy residency expires naturally.
+    with slot(model, operation="local_completion") as capacity:
+        if not isinstance(capacity, dict) or capacity.get("admitted") is not True or capacity.get("locked") is not True:
+            raise LocalCapacityError("guard_unavailable")
+        try:
+            d = _post(f"{_ollama_host()}/api/generate", {}, body,
+                      timeout=min(requested_timeout, policy["timeout_s"]))
+        except urllib.error.HTTPError as error:
+            if error.code in (429, 503):
+                raise LocalCapacityError("server_busy") from None
+            if error.code in (408, 504):
+                raise LocalCapacityError("request_timeout") from None
+            raise
+        except TimeoutError:
+            raise LocalCapacityError("request_timeout") from None
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, TimeoutError):
+                raise LocalCapacityError("request_timeout") from None
+            raise
+        if not isinstance(d, dict) or d.get("done") is not True:
+            raise LocalCapacityError("response_incomplete")
+        if d.get("done_reason") in ("length", "max_tokens"):
+            raise LocalCapacityError("generation_limit")
+        if not isinstance(d.get("response"), str) or not d["response"].strip():
+            raise LocalCapacityError("response_incomplete")
     return d.get("response", ""), 0.0
 
 
@@ -474,12 +507,16 @@ def _learned_route(project, operation, task_class, sensitivity):
 def complete(provider, model, prompt, project=None, timeout=90, operation="completion",
              task_class="unknown", fallback=True, record_op=True):
     """Non-agentic completion via any provider (for QA/review/rating/planning)."""
+    explicit_local = provider == "local"
+    if explicit_local:
+        # Local overload is backpressure, not permission to switch model/vendor.
+        fallback = False
     # MISROUTE GUARD (2026-07-30, same class as swarm_executor's July 27-28 404 burst — a Claude
     # model name sent to the OpenAI API): run the provider/model coherence check UNCONDITIONALLY.
     # The model name is more specific than the provider hint, so on mismatch the call reroutes to
     # the model's true provider; the correction is logged so the bad caller gets found. A vendor
     # can never again receive another vendor's model name from this gateway.
-    _expected = provider_for_model(model)
+    _expected = None if explicit_local else provider_for_model(model)
     if provider and _expected and provider != _expected and model:
         # only reroute on a DEFINITE mismatch (both sides confidently identified); ambiguous/local
         # names (expected == 'local' fallthrough) keep the caller's explicit choice.
@@ -497,7 +534,7 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         # redirect to a different provider, defeating per-prompt provider isolation.
         fallback = False
     sensitivity = _sensitivity(prompt)
-    learned = _learned_route(project, operation, task_class, sensitivity)
+    learned = None if explicit_local else _learned_route(project, operation, task_class, sensitivity)
     if learned and learned[0] != provider and not confidential:
         provider, model, learned_reason = learned
     else:
@@ -549,6 +586,10 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
             if learned_reason:
                 res["learned_route"] = learned_reason
             return res
+        except LocalCapacityError as e:
+            # No error payloads, prompts, alternate models, or retry fan-out on
+            # temporary host denial. Callers can schedule a later attempt.
+            return _local_deferred_result(prov, mdl, e)
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last = {"provider": prov, "model": mdl, "error": str(e)}
@@ -591,6 +632,12 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
             "error": (last or {}).get("error", "no provider attempted")}
 
 
+def _local_deferred_result(provider, model, error):
+    return {"text": "", "cost_usd": 0, "provider": provider, "model": model,
+            "error": str(error), "deferred": True, "skipped": True,
+            "reason": error.reason, "retry_after_s": 30}
+
+
 def complete_legacy(provider, model, prompt, project=None, timeout=90):
     """Backward-compatible no-fallback/no-telemetry path for old callers that need it."""
     try:
@@ -601,6 +648,8 @@ def complete_legacy(provider, model, prompt, project=None, timeout=90):
         except Exception:
             pass
         return result
+    except LocalCapacityError as e:
+        return _local_deferred_result(provider, model, e)
     except Exception as e:
         return {"text": "", "cost_usd": 0, "provider": provider, "model": model, "error": str(e)}
 

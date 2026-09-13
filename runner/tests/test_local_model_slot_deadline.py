@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import local_model_slots as lms  # noqa: E402
@@ -46,7 +47,9 @@ class _HeldLock:
 
 class SlotDeadlineTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.tmp = self.temp_dir.name
         self.lock = os.path.join(self.tmp, "heavy.lock")
         self._saved = {k: os.environ.get(k) for k in
                        ("ORCH_OLLAMA_SLOT_LOCK", "ORCH_OLLAMA_SLOT_WAIT_S",
@@ -58,11 +61,11 @@ class SlotDeadlineTest(unittest.TestCase):
         # otherwise the tests measure the host's real free RAM and talk to a
         # live Ollama, which makes hold times unbounded and the results a
         # property of the machine rather than of the code under test.
-        self._stubs = {n: getattr(lms, n) for n in
-                       ("unload_others", "wait_for_ram", "maybe_unload_after")}
-        lms.unload_others = lambda *a, **k: []
-        lms.wait_for_ram = lambda *a, **k: (True, 0.0)
-        lms.maybe_unload_after = lambda *a, **k: False
+        self._stubs = {"_wait_admission": lms._wait_admission}
+        lms._wait_admission = lambda *a, **k: ({"admitted": True, "reason": "ok"}, 0.0)
+        receipt_env = patch.dict(os.environ, {"ORCH_LOCAL_CAPACITY_RECEIPT": ""})
+        receipt_env.start()
+        self.addCleanup(receipt_env.stop)
 
     def tearDown(self):
         lms.LOCK = self._orig_lock
@@ -81,17 +84,18 @@ class SlotDeadlineTest(unittest.TestCase):
                 return name
         self.skipTest("no model classifies as heavy in this environment")
 
-    def test_contended_slot_gives_up_and_runs_unslotted(self):
+    def test_contended_slot_defers_without_running_unslotted(self):
         # THE REGRESSION: this used to hang forever instead of returning.
         model = self._heavy()
-        os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = "1"
+        os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = ".05"
         with _HeldLock(self.lock):
             t0 = time.time()
-            with lms.slot(model, operation="test") as s:
-                elapsed = time.time() - t0
-                self.assertTrue(s.get("slot_timeout"), s)
-                self.assertFalse(s.get("locked"), s)
-        self.assertLess(elapsed, 15, "slot() blocked far past its deadline")
+            with self.assertRaises(lms.LocalCapacityError) as caught:
+                with lms.slot(model, operation="test"):
+                    self.fail("contended work ran")
+            elapsed = time.time() - t0
+        self.assertEqual(caught.exception.reason, "slot_busy")
+        self.assertLess(elapsed, 1, "slot() blocked far past its deadline")
 
     def test_uncontended_slot_is_acquired(self):
         model = self._heavy()
@@ -121,25 +125,28 @@ class SlotDeadlineTest(unittest.TestCase):
         t.join(timeout=10)
         self.assertEqual(order, ["first-in", "first-out", "second-in"])
 
-    def test_light_model_never_touches_the_lock(self):
-        # A held lock must not delay a model that is not heavy at all.
+    def test_light_model_uses_the_same_lock(self):
         light = next((m for m in ("llama3.2:3b", "llama3.1:8b")
                       if not lms.is_heavy(m)), None)
         if light is None:
             self.skipTest("no light model available")
+        os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = "0"
         with _HeldLock(self.lock):
             t0 = time.time()
-            with lms.slot(light, operation="test") as s:
-                self.assertFalse(s.get("locked"))
+            with self.assertRaises(lms.LocalCapacityError):
+                with lms.slot(light, operation="test"):
+                    self.fail("small model bypassed busy lock")
             self.assertLess(time.time() - t0, 2)
 
-    def test_scheduler_disabled_is_a_passthrough(self):
+    def test_scheduler_disabled_cannot_bypass_safety(self):
         model = self._heavy()
         os.environ["ORCH_OLLAMA_SLOT_SCHEDULER"] = "false"
+        os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = "0"
         with _HeldLock(self.lock):
             t0 = time.time()
-            with lms.slot(model, operation="test") as s:
-                self.assertFalse(s.get("locked"))
+            with self.assertRaises(lms.LocalCapacityError):
+                with lms.slot(model, operation="test"):
+                    self.fail("legacy flag bypassed safety")
             self.assertLess(time.time() - t0, 2)
 
     def test_zero_wait_does_not_hang(self):
@@ -147,17 +154,39 @@ class SlotDeadlineTest(unittest.TestCase):
         os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = "0"
         with _HeldLock(self.lock):
             t0 = time.time()
-            with lms.slot(model, operation="test") as s:
-                self.assertTrue(s.get("slot_timeout"))
+            with self.assertRaises(lms.LocalCapacityError):
+                with lms.slot(model, operation="test"):
+                    self.fail("zero wait bypassed lock")
             self.assertLess(time.time() - t0, 2)
 
     def test_wait_setting_is_read_from_env(self):
         os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = "42"
-        self.assertEqual(lms._slot_wait_s(), 42.0)
+        self.assertEqual(lms._slot_wait_s(), 5.0)
         os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = "not-a-number"
-        self.assertEqual(lms._slot_wait_s(), 180.0)
+        self.assertEqual(lms._slot_wait_s(), 1.0)
         os.environ.pop("ORCH_OLLAMA_SLOT_WAIT_S")
-        self.assertEqual(lms._slot_wait_s(), 180.0)
+        self.assertEqual(lms._slot_wait_s(), 1.0)
+
+    def test_zero_wait_attempts_uncontended_acquisition(self):
+        os.environ["ORCH_OLLAMA_SLOT_WAIT_S"] = "0"
+        with lms.slot("llama3.2:3b") as meta:
+            self.assertTrue(meta["locked"])
+            self.assertTrue(meta["admitted"])
+
+    def test_capacity_denial_releases_lock_and_never_runs_body(self):
+        with patch.object(lms, "_wait_admission", return_value=({"admitted": False, "reason": "host_headroom"}, 0)):
+            with self.assertRaises(lms.LocalCapacityError):
+                with lms.slot("llama3.2:3b"):
+                    self.fail("denied body ran")
+        with lms.slot("llama3.2:3b") as meta:
+            self.assertTrue(meta["locked"])
+
+    def test_body_exception_releases_lock(self):
+        with self.assertRaises(ValueError):
+            with lms.slot("llama3.2:3b"):
+                raise ValueError("test")
+        with lms.slot("llama3.2:3b") as meta:
+            self.assertTrue(meta["locked"])
 
 
 if __name__ == "__main__":
