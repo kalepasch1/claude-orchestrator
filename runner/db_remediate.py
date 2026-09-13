@@ -288,6 +288,59 @@ def ensure_draft_pr(project, repo, group, sql, fingerprints, base=""):
     return {"ok": True, "pr": pr.get("html_url"), "branch": branch, "path": path}
 
 
+# ── repo-local brief (steering without the fleet) ─────────────────────────────
+
+BRIEF_BRANCH = "steering/briefs"
+BRIEF_PATH = ".claude/db-steering-brief.md"
+BRIEF_RE = re.compile(r"<!--\s*db-steering:([0-9a-f]{8,24})\s*-->")
+
+
+def push_brief(project_row, brief_text, findings_hash):
+    """Commit `.claude/db-steering-brief.md` to the `steering/briefs` branch of the project's
+    own repo when the findings hash changed. A Claude Code session opened DIRECTLY in the
+    project (no fleet prompt assembly, no orchestrator) picks the brief up from the repo
+    itself; the fleet never enters that loop. Fail-soft summary dict."""
+    name = str(project_row.get("name") or "")
+    text = str(brief_text or "").strip()
+    if not text or not findings_hash:
+        return {"project": name, "ok": True, "skipped": "no brief"}
+    if _is_excluded(project_row):
+        return {"project": name, "ok": True, "skipped": "excluded"}
+    repo = repo_for_project(project_row)
+    if not repo:
+        return {"project": name, "ok": True, "skipped": "no repo"}
+    marker = "<!-- db-steering:%s -->" % str(findings_hash)
+    cur = _gh("GET", "/repos/%s/contents/%s?ref=%s" % (repo, BRIEF_PATH, BRIEF_BRANCH))
+    cur_sha = ""
+    if isinstance(cur, dict) and not cur.get("_http_error"):
+        cur_sha = str(cur.get("sha") or "")
+        try:
+            existing = base64.b64decode(str(cur.get("content") or "").replace("\n", "")).decode("utf-8", "replace")
+            if marker in existing:
+                return {"project": name, "ok": True, "skipped": "unchanged"}
+        except Exception as e:  # noqa: FAIL_SOFT_ERROR — an unreadable blob is simply rewritten below
+            print("db_remediate: brief blob for %s unreadable (%s); rewriting" % (name, str(e)[:80]))
+    repo_meta = _gh("GET", "/repos/%s" % repo)
+    base = str(((repo_meta or {}).get("default_branch")) or "main")
+    if _gh("GET", "/repos/%s/git/ref/heads/%s" % (repo, BRIEF_BRANCH)).get("_http_error"):
+        base_sha = str((_gh("GET", "/repos/%s/git/ref/heads/%s" % (repo, base)) or {}).get("object", {}).get("sha") or "")
+        if not base_sha:
+            return {"project": name, "ok": False, "reason": "base ref unreadable"}
+        made = _gh("POST", "/repos/%s/git/refs" % repo, {"ref": "refs/heads/%s" % BRIEF_BRANCH, "sha": base_sha})
+        if (made or {}).get("_http_error") and "already exists" not in str(made.get("_message", "")):
+            return {"project": name, "ok": False, "reason": "branch create failed: %s" % made.get("_message")}
+    body = text + "\n\n%s\n" % marker
+    put_body = {"message": "db-steering: refresh brief (hash %s)" % str(findings_hash)[:12],
+                "content": base64.b64encode(body.encode()).decode(), "branch": BRIEF_BRANCH,
+                "committer": {"name": "kalepasch1", "email": "kalepasch@gmail.com"}}
+    if cur_sha:
+        put_body["sha"] = cur_sha
+    put = _gh("PUT", "/repos/%s/contents/%s" % (repo, BRIEF_PATH), put_body)
+    if (put or {}).get("_http_error"):
+        return {"project": name, "ok": False, "reason": "brief commit failed: %s" % put.get("_message")}
+    return {"project": name, "ok": True, "repo": repo, "branch": BRIEF_BRANCH, "path": BRIEF_PATH}
+
+
 # ── fleet wiring ──────────────────────────────────────────────────────────────
 
 def remediate_project(project_row, *, budget):

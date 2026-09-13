@@ -639,6 +639,18 @@ def refresh_brief(project, signals=None):
                                          "open_counts": counts, "updated_at": _now_iso()})
     except Exception as e:
         print("db_steering: brief write failed for %s: %s" % (project, str(e)[:120]))
+    # The brief also lives IN the project repo (branch steering/briefs) so a directly opened
+    # Claude Code session steers without the fleet. Fires only when the findings hash moved.
+    if text and os.environ.get("ORCH_DB_BRIEF_REPO", "1") == "1":
+        rem = _import("db_remediate")
+        if rem is not None:
+            try:
+                prow = (db.select("projects", {"select": "name,repo_path,vercel_project,superseded_by",
+                                               "name": "eq.%s" % project, "limit": "1"}) or [{}])[0]
+                if prow.get("name"):
+                    rem.push_brief(prow, text, h)
+            except Exception as e:
+                print("db_steering: brief repo push failed for %s: %s" % (project, str(e)[:120]))
     _brief_cache.pop(project, None)
     return text
 
