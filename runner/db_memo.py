@@ -370,11 +370,14 @@ def _apply_evidence_updates(memo_id, changed: list) -> int:
     return n
 
 
-def _sync_memo_evidence(memo_id, pairs: list) -> int:
+def _sync_memo_evidence(memo_id, pairs: list):
     """Bring one memo's evidence in line with `pairs` = [(finding, argument_key)]: read the
     existing rows ONCE, bulk-insert what is missing, patch only what changed direction or
     weight. Round trips: 1 read + ceil(new/200) POSTs + one PATCH per distinct change —
-    never one per (finding, key). Returns the number of pairs that now have a row."""
+    never one per (finding, key). Returns {"rows": pairs that now stand, "active": rows with
+    weight > 0 after the sync} — `active` is the number the memo row's evidence_count should
+    say RIGHT NOW, even when the drafting budget defers the rebuild to a later cycle (the
+    counter must never sit at 0 under a memo whose ledger already has rows)."""
     existing = _existing_evidence(memo_id)
     new_rows, changed, seen, n_same = [], [], set(), 0
     for finding, key in pairs:
@@ -386,6 +389,7 @@ def _sync_memo_evidence(memo_id, pairs: list) -> int:
         cur = existing.get(pk)
         if cur is None:
             new_rows.append(want)
+            existing[pk] = want  # the standing state after this sync succeeds
             continue
         try:
             same = (abs(float(cur.get("weight") or 0) - want["weight"]) < 1e-9
@@ -396,12 +400,19 @@ def _sync_memo_evidence(memo_id, pairs: list) -> int:
             n_same += 1
         else:
             changed.append((cur, {"weight": want["weight"], "direction": want["direction"], "note": want["note"]}))
+            existing[pk] = {**cur, **changed[-1][1]}
     n = n_same
     if changed:
         n += _apply_evidence_updates(memo_id, changed)
     if new_rows:
         n += _bulk_insert_evidence(new_rows)
-    return n
+    active = 0
+    for row in existing.values():
+        try:
+            active += 1 if float(row.get("weight") or 0) > 0 else 0
+        except Exception:
+            pass
+    return {"rows": n, "active": active}
 
 
 def attach_evidence(project: str, findings: list) -> dict:
@@ -434,7 +445,22 @@ def attach_evidence(project: str, findings: list) -> dict:
             if not memo or not memo.get("id"):
                 continue
             try:
-                n_rows += _sync_memo_evidence(memo["id"], pairs)
+                synced = _sync_memo_evidence(memo["id"], pairs)
+                n_rows += int(synced.get("rows") or 0)
+                # Reconcile the counter only when it moved: the memo row in hand already
+                # carries evidence_count, so a steady-state reattach stays PATCH-free.
+                try:
+                    moved = int(synced.get("active") or 0) != int(memo.get("evidence_count") or 0)
+                except Exception:
+                    moved = True
+                if moved:
+                    try:
+                        db.update(MEMO_TABLE, {"id": memo["id"]},
+                                  {"evidence_count": synced.get("active") or 0, "updated_at": _now_iso()})
+                        memo["evidence_count"] = synced.get("active") or 0
+                    except Exception as e:
+                        print(f"db_memo: evidence_count patch {project}/{memo_kind} failed: "
+                              f"{type(e).__name__}: {str(e)[:120]}")
             except Exception as e:
                 print(f"db_memo: evidence sync {project}/{memo_kind} failed: {type(e).__name__}: {str(e)[:120]}")
             if memo_kind not in touched:

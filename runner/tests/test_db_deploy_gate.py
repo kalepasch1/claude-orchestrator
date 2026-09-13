@@ -8,9 +8,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import db_deploy_gate as G  # noqa: E402
 
 
-def findings(**kw):
-    """Maps select-filters to result rows: {'high_security': n, ...} style fakes below."""
-    return kw
+def _decision_body(decision, target_url=""):
+    import db_deploy_gate as G
+    bullets = "\n".join("- %s" % t for t in (decision.get("top") or []))
+    return ("%s %s: **%s** — %s%s\n\nDatabase Steering posture gate (read-only review).%s"
+            % (G.COMMENT_MARKER, G.CONTEXT, decision["state"], decision["description"],
+               "\n\nOpen high findings:\n" + bullets if bullets else "",
+               " " + target_url if target_url else ""))
 
 
 class EvaluateTest(unittest.TestCase):
@@ -31,10 +35,12 @@ class EvaluateTest(unittest.TestCase):
         return count
 
     def test_high_security_fails_the_gate(self):
-        with patch.object(G.db, "count", self._count(highs=(1,))):
+        with patch.object(G.db, "count", self._count(highs=(1,))), \
+             patch.object(G.db, "select", lambda t, p: [{"title": "anon holds DELETE on public.users"}]):
             d = G.evaluate({"name": "x"})
         self.assertFalse(d["ok"])  and self.assertEqual(d["state"], "failure")
         self.assertIn("1 open high-severity security finding(s)", d["description"])
+        self.assertEqual(d["top"], ["anon holds DELETE on public.users"])
 
     def test_drift_live_ahead_fails_the_gate(self):
         with patch.object(G.db, "count", self._count(drift=(1,))):
@@ -113,21 +119,21 @@ class CommentFallbackTest(unittest.TestCase):
         self.assertIn(G.COMMENT_MARKER, body) and self.assertIn("failure", body)
 
     def test_comment_upsert_noop_when_state_unchanged(self):
-        existing = [{"id": 5, "body": G.COMMENT_MARKER + " db-steering/posture: **success** — posture ok (3 medium/low open)"}]
+        decision = {"state": "success", "description": "posture ok (3 medium/low open)", "top": []}
+        existing = [{"id": 5, "body": _decision_body(decision)}]
 
         def gh(method, path, body=None):
             if "/comments" in path and method == "GET":
                 return list(existing)
             if method in ("POST", "PATCH"):
-                raise AssertionError("must not write when the state line is unchanged")
+                raise AssertionError("must not write when nothing changed")
             return {"_http_error": 403}
 
         with patch.object(G.db_remediate, "_gh", gh):
-            self.assertTrue(G._comment_upsert("me/x", "s" * 40,
-                                              {"state": "success", "description": "posture ok (3 medium/low open)"}))
+            self.assertTrue(G._comment_upsert("me/x", "s" * 40, decision))
 
     def test_comment_upsert_patches_on_state_change(self):
-        existing = [{"id": 5, "body": G.COMMENT_MARKER + " db-steering/posture: **success** — posture ok"}]
+        existing = [{"id": 5, "body": _decision_body({"state": "success", "description": "posture ok"})}]
         patched = []
 
         def gh(method, path, body=None):
@@ -140,9 +146,11 @@ class CommentFallbackTest(unittest.TestCase):
 
         with patch.object(G.db_remediate, "_gh", gh):
             self.assertTrue(G._comment_upsert("me/x", "s" * 40,
-                                              {"state": "failure", "description": "2 high security"}))
+                                              {"state": "failure", "description": "2 high security",
+                                               "top": ["anon holds DELETE on public.users"]}))
         self.assertTrue(patched and patched[0][0].endswith("/comments/5"))
         self.assertIn("failure", patched[0][1]["body"])
+        self.assertIn("anon holds DELETE on public.users", patched[0][1]["body"])
 
 
 class RunCycleTest(unittest.TestCase):

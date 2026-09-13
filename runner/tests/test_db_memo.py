@@ -381,6 +381,21 @@ class TestAttachEvidence(Base):
         self.assertEqual(len(self.db.tables["legal_memo_drafts"]), n_memos)
         self.assertEqual(len(self.db.tables["legal_memo_evidence"]), n_ev)
 
+    def test_attach_reconciles_evidence_count_immediately(self):
+        """The counter must be true NOW even when the drafting budget defers the rebuild —
+        a memo sitting at evidence_count=0 over a populated ledger (observed live on
+        2026-09-13 for apparently-law/records_integrity) misreports everything downstream."""
+        f = _finding(1, "rls_disabled_tables", "security", "critical", ["access_control"])
+        self.seed([f])
+        ac = self.db.memo("proj", AC)
+        expect = sum(1 for e in self.db.evidence(ac["id"]) if float(e.get("weight") or 0) > 0)
+        self.assertGreater(expect, 0)
+        self.assertEqual(ac["evidence_count"], expect)
+        # resolution drops it to 0 without a model or a rebuild pass
+        self.resolve("f1")
+        db_memo.attach_evidence("proj", self.db.tables["db_findings"])
+        self.assertEqual(self.db.memo("proj", AC)["evidence_count"], 0)
+
     def test_resolved_finding_zeroes_weight_but_keeps_row(self):
         f = _finding(1, "missing_audit_columns", "audit", "high", ["audit_trail"], object_name="invoices")
         self.seed([f])
@@ -431,9 +446,11 @@ class TestAttachEvidenceRoundTrips(Base):
         self.assertEqual(self.db.calls("insert", self.EV), [], "no per-row inserts on the happy path")
         self.assertEqual(self.db.calls("update", self.EV), [])
         self.assertEqual(self.db.calls("PATCH", self.EV), [])
-        # The whole attach, memo skeleton included, is a handful of round trips.
+        # The whole attach, memo skeleton included, is a handful of round trips — plus ONE
+        # memo-row counter PATCH now that attach reconciles evidence_count when it moved
+        # (steady state, count unchanged: zero extra round trips).
         total = sum(1 for e in self.db.log if e[0] in ("select", "insert", "update", "POST", "PATCH", "count"))
-        self.assertLessEqual(total, 1 + 1 + 1 + 4)  # memo select, memo insert, evidence select, 4 POSTs
+        self.assertLessEqual(total, 1 + 1 + 1 + 4 + 1)  # memo select/insert, evidence select, 4 POSTs, counter patch
         self.assert_all_internal()
 
     def test_failed_chunk_falls_back_per_row_and_loses_nothing(self):

@@ -63,6 +63,16 @@ def evaluate(project):
         "project": "eq.%s" % name, "status": "eq.open", "probe_id": "eq.schema_drift_live_ahead"})
     counts["medium_open"] = _count({
         "project": "eq.%s" % name, "status": "eq.open", "severity": "in.(medium,low)"})
+    # Name the worst offenders: a count says "blocked", a title says "why".
+    top = []
+    if counts["high_security"]:
+        try:
+            top = [str(r.get("title") or "")[:120] for r in (db.select("db_findings", {
+                "select": "title", "project": "eq.%s" % name, "status": "eq.open",
+                "severity": "eq.high", "category": "in.(%s)" % ",".join(SECURITY_CATEGORIES),
+                "order": "last_seen_at.desc,id.desc", "limit": "3"}) or [])]
+        except Exception:
+            top = []
     if counts["high_security"]:
         reasons.append("%d open high-severity security finding(s)" % counts["high_security"])
     if counts["drift_live_ahead"]:
@@ -71,7 +81,7 @@ def evaluate(project):
     desc = ("posture ok (%d medium/low open)" % counts["medium_open"]) if ok \
         else "; ".join(reasons)[:140]
     return {"project": name, "ok": ok, "state": "success" if ok else "failure",
-            "description": desc, "reasons": reasons, "counts": counts}
+            "description": desc, "reasons": reasons, "counts": counts, "top": top}
 
 
 def _vercel_latest_sha(vercel_project):
@@ -99,13 +109,15 @@ def _comment_upsert(repo, sha, decision, target_url=""):
     comments = db_remediate._gh("GET", "/repos/%s/commits/%s/comments?per_page=100" % (repo, sha))
     mine = [c for c in (comments if isinstance(comments, list) else [])
             if COMMENT_MARKER in str(c.get("body") or "")]
-    body = ("%s %s: **%s** — %s\n\nDatabase Steering posture gate (read-only review).%s"
+    bullets = "\n".join("- %s" % t for t in (decision.get("top") or []))
+    body = ("%s %s: **%s** — %s%s\n\nDatabase Steering posture gate (read-only review).%s"
             % (COMMENT_MARKER, CONTEXT, decision["state"], decision["description"],
+               "\n\nOpen high findings:\n" + bullets if bullets else "",
                " " + target_url if target_url else ""))
     if mine:
         last = mine[-1]
-        if str(last.get("body") or "").splitlines()[0] == body.splitlines()[0]:
-            return True  # state unchanged since the last word on this sha
+        if str(last.get("body") or "") == body:
+            return True  # nothing new to say on this sha
         res = db_remediate._gh("PATCH", "/repos/%s/comments/%s" % (repo, last.get("id")), {"body": body})
     else:
         res = db_remediate._gh("POST", "/repos/%s/commits/%s/comments" % (repo, sha), {"body": body})
