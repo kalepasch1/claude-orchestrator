@@ -999,6 +999,10 @@ _SCAN_REVIEWED = {
     ("route_value_optimizer.py:117", "releases"),
     ("qpd_bandit.py:22", "app_operations"),
     ("model_catalog.py:119", "app_operations"),
+    # db_steering._open_findings: the brief is a DISPLAY digest — severity-tiered windows,
+    # newest-first, nothing downstream acts on the tail (the loop's work path is fingerprint
+    # reconciliation, which is idempotent and complete by construction).
+    ("db_steering.py:528", "db_findings"),
 }
 _scan_warned = set()
 _scan_warn_lock = threading.Lock()
