@@ -113,6 +113,79 @@ class PrLifecycleTest(unittest.TestCase):
         self.assertFalse(res["ok"]) and "repo lookup failed" in res["reason"]
 
 
+class CloseoutTest(unittest.TestCase):
+    FP = "a" * 40
+    PR_OPEN = {"number": 1, "title": "db-steering: cover unindexed foreign keys",
+               "body": "### Findings covered\n\n- [fp:%s]" % FP[:12],
+               "head": {"ref": "fix/db-steer-fk-indexes", "sha": "h" * 40}, "merged_at": None}
+    PR_MERGED = {**PR_OPEN, "number": 2, "merged_at": "2026-09-14T00:00:00Z"}
+
+    def _gh(self, statuses_by_fp, comments=None):
+        comments = comments if comments is not None else []
+
+        def gh(method, path, body=None):
+            if "/comments" in path and method == "GET":
+                return list(comments)
+            if method == "POST" and "/comments" in path:
+                return {"id": 9}
+            if method == "PATCH":
+                return {"id": 9}
+            return {}
+        return gh
+
+    def test_open_pr_reports_pending(self):
+        with patch.object(R, "_gh", self._gh({})):
+            st = R.closeout_pr("me/x", self.PR_OPEN,
+                               [{"fingerprint": self.FP, "status": "open"}])
+        self.assertEqual(st.split(" ")[0], "open-pending")
+
+    def test_merged_all_resolved_is_verified(self):
+        with patch.object(R, "_gh", self._gh({})):
+            st = R.closeout_pr("me/x", self.PR_MERGED,
+                               [{"fingerprint": self.FP, "status": "resolved"}])
+        self.assertTrue(st.startswith("verified-resolved"), st)
+
+    def test_merged_but_still_open_is_not_confirmed(self):
+        with patch.object(R, "_gh", self._gh({})):
+            st = R.closeout_pr("me/x", self.PR_MERGED,
+                               [{"fingerprint": self.FP, "status": "open"}])
+        self.assertTrue(st.startswith("merged-not-confirmed"), st)
+
+    def test_unchanged_comment_is_not_rewrite(self):
+        posted = {}
+
+        def recorder(method, path, body=None):
+            if "/comments" in path and method == "GET":
+                return []
+            if method == "POST" and "/comments" in path:
+                posted["body"] = body["body"]; return {"id": 9}
+            return {}
+
+        with patch.object(R, "_gh", recorder):
+            R.closeout_pr("me/x", self.PR_OPEN, [{"fingerprint": self.FP, "status": "open"}])
+        self.assertIn("body", posted, "first sight of the PR posts a comment")
+
+        def replayer(method, path, body=None):
+            if "/comments" in path and method == "GET":
+                return [{"id": 9, "body": posted["body"]}]
+            if method == "PATCH":
+                raise AssertionError("identical body must not PATCH")
+            if method == "POST":
+                raise AssertionError("an existing identical comment must not duplicate")
+            return {}
+
+        with patch.object(R, "_gh", replayer):
+            st = R.closeout_pr("me/x", self.PR_OPEN, [{"fingerprint": self.FP, "status": "open"}])
+        self.assertIn("unchanged", st)
+
+    def test_foreign_prs_untouched(self):
+        with patch.object(R, "_gh", self._gh({})):
+            st = R.closeout_pr("me/x", {"number": 3, "title": "feat: whatever",
+                                        "body": "", "head": {"ref": "feat/x", "sha": "z"}, "merged_at": None},
+                               [])
+        self.assertEqual(st, "not ours")
+
+
 class FleetWiringTest(unittest.TestCase):
     ROW = {"name": "proj", "repo_path": "/x/proj", "vercel_project": None, "superseded_by": None}
 

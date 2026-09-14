@@ -341,6 +341,96 @@ def push_brief(project_row, brief_text, findings_hash):
     return {"project": name, "ok": True, "repo": repo, "branch": BRIEF_BRANCH, "path": BRIEF_PATH}
 
 
+# ── closeout: did the PR's findings actually resolve on live? ─────────────────
+
+CLOSEOUT_MARKER = "<!-- db-steering-closeout -->"
+#: A merged PR holds no authority until the next live scan confirms its fingerprints
+#: resolved. "Fixed" is a measurement, not a merge event.
+CLOSEOUT_LOOKBACK_DAYS = 14
+_fp12 = re.compile(r"fp:([0-9a-f]{12})")
+
+
+def closeout_pr(repo, pr, live_findings):
+    """Measure one db-steer PR against live findings and leave a single marked comment
+    (PATCHed in place) on its head commit. Commit comments, not issue comments: they ride
+    contents:write which the App provably has. Returns a state string."""
+    title = str(pr.get("title") or "")
+    head_ref = str((pr.get("head") or {}).get("ref") or "")
+    if not (title.startswith("db-steering:") or head_ref.startswith("fix/db-steer-")):
+        return "not ours"
+    body = str(pr.get("body") or "")
+    fps12 = sorted(set(_fp12.findall(body)))
+    if not fps12:
+        return "no fingerprints"
+    merged = bool(pr.get("merged_at"))
+    resolved, open_ = set(), set()
+    for f in live_findings:
+        fp = str(f.get("fingerprint") or "")
+        for p12 in fps12:
+            if fp.startswith(p12):
+                (resolved if str(f.get("status")) == "resolved" else open_).add(p12)
+    n_res, n_open = len(resolved), len(open_)
+    state = ("verified-resolved" if merged and n_open == 0 and n_res > 0
+             else "merged-not-confirmed" if merged and n_open > 0
+             else "open-pending" if not merged else "merged-no-live-match")
+    first = "%s [%s] **%s** — %d/%d listed findings resolved on live%s" % (
+        CLOSEOUT_MARKER, head_ref, state.replace("-", " "), n_res, len(fps12),
+        " (merged %s)" % str(pr.get("merged_at") or "")[:10] if merged else "")
+    details = ""
+    if state == "merged-not-confirmed":
+        details = ("\n\nStill open on live per the latest scan — either the migration has not "
+                   "been applied to production yet, or it did not do what the finding expected. "
+                   "Fingerprints still open: " + ", ".join("fp:%s" % p for p in sorted(open_)[:20]))
+    elif state == "verified-resolved":
+        details = "\n\nThe continuous review (read-only probes) confirms every listed finding is resolved."
+    elif state == "open-pending":
+        details = "\n\n%d of the listed findings are still open on live — expected while this is unmerged." % n_open
+    comment_body = first + details
+    sha = str((pr.get("head") or {}).get("sha") or "")
+    if not sha:
+        return state
+    existing = _gh("GET", "/repos/%s/commits/%s/comments?per_page=100" % (repo, sha))
+    mine = [c for c in (existing if isinstance(existing, list) else [])
+            if str(c.get("body") or "").startswith(CLOSEOUT_MARKER)]
+    if mine:
+        if mine[-1].get("body") == comment_body:
+            return state + " (unchanged)"
+        res = _gh("PATCH", "/repos/%s/comments/%s" % (repo, mine[-1].get("id")), {"body": comment_body})
+    else:
+        res = _gh("POST", "/repos/%s/commits/%s/comments" % (repo, sha), {"body": comment_body})
+    return state + ("" if isinstance(res, dict) and not res.get("_http_error") else " (comment failed)")
+
+
+def closeout_project(project_row):
+    """Close the loop for one project: measure open + recently-closed db-steer PRs against
+    the project's live findings. Fail-soft summary; never raises."""
+    name = str(project_row.get("name") or "")
+    if _is_excluded(project_row):
+        return {"project": name, "ok": True, "skipped": "excluded"}
+    repo = repo_for_project(project_row)
+    if not repo:
+        return {"project": name, "ok": True, "skipped": "no repo"}
+    prs = _gh("GET", "/repos/%s/pulls?state=all&sort=updated&direction=desc&per_page=30" % repo)
+    if not isinstance(prs, list):
+        return {"project": name, "ok": False, "reason": "PR list failed: %s" % (prs or {}).get("_message")}
+    fps_needed = bool(any(str(p.get("title") or "").startswith("db-steering:")
+                          or str((p.get("head") or {}).get("ref") or "").startswith("fix/db-steer-")
+                          for p in prs))
+    if not fps_needed:
+        return {"project": name, "ok": True, "skipped": "no db-steer PRs"}
+    findings = db.select_all("db_findings", {"select": "fingerprint,status",
+                                             "project": "eq.%s" % name}, order="id.asc") or []
+    states = {}
+    for pr in prs:
+        try:
+            st = closeout_pr(repo, pr, findings)
+            if st != "not ours":
+                states[pr.get("number")] = st
+        except Exception as e:
+            states[pr.get("number")] = "error: %s" % str(e)[:100]
+    return {"project": name, "ok": True, "states": states}
+
+
 # ── fleet wiring ──────────────────────────────────────────────────────────────
 
 def remediate_project(project_row, *, budget):
@@ -385,7 +475,7 @@ def run_cycle(projects=None, *, budget=None):
     """One remediation pass over the fleet (or the projects the steering cycle just scanned).
     Returns a summary; never raises."""
     budget = MAX_PRS if budget is None else budget
-    out = {"enabled": ENABLED, "budget": budget, "results": []}
+    out = {"enabled": ENABLED, "budget": budget, "results": [], "closeout": []}
     try:
         if projects is None:
             projects = db.select("projects", {"select": "name,repo_path,vercel_project,superseded_by"}) or []
@@ -400,6 +490,18 @@ def run_cycle(projects=None, *, budget=None):
             out["results"].append(res)
             made = sum(1 for r in (res.get("pr_results") or []) if r.get("ok") and not r.get("skipped"))
             budget -= min(made, budget)
+        # Loop-closer: measure open/merged db-steer PRs against live findings (comments on
+        # the head commit; no PR ever closes a finding by existing — the scan decides).
+        for p in projects[:8]:
+            if p.get("superseded_by"):
+                continue
+            try:
+                co = closeout_project(p)
+                if co.get("states"):
+                    out["closeout"].append(co)
+            except Exception as e:
+                out["closeout"].append({"project": p.get("name"), "ok": False,
+                                        "reason": "%s: %s" % (type(e).__name__, str(e)[:120])})
     except Exception as e:
         out["error"] = "%s: %s" % (type(e).__name__, str(e)[:120])
     return out
