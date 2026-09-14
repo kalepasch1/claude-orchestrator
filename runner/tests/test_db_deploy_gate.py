@@ -88,6 +88,31 @@ class PostingTest(unittest.TestCase):
         self.assertEqual({p[1]["context"] for p in posts}, {G.CONTEXT})
         self.assertEqual(len(posts), 2, "deployment sha + base head")
 
+    def test_open_pr_heads_get_the_status_too(self):
+        """Required checks bind on PR head shas — without propagation every PR is stuck
+        'expected' and unmergeable. A cycle must post to deployment, base head AND each
+        open PR head."""
+        posts = []
+
+        def gh(method, path, body=None):
+            if "/pulls" in path and method == "GET":
+                return [{"head": {"sha": "p1" + "1" * 38}}, {"head": {"sha": "p2" + "2" * 38}}]
+            if method == "GET" and "/git/ref/heads/" in path:
+                return {"object": {"sha": "b" * 40}}
+            if method == "POST" and "/statuses/" in path:
+                posts.append(path.split("/statuses/")[1])
+                return {"state": "ok"}
+            return {}
+
+        with patch.object(G, "ENABLED", True), \
+             patch.object(G.db, "count", lambda t, p: 0), \
+             patch.object(G, "_vercel_latest_sha", lambda vp: ("d" * 40, "READY", "https://v.test")), \
+             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"), \
+             patch.object(G.db_remediate, "_gh", gh):
+            out = G.check_project({"name": "x", "vercel_project": "vp", "prod_branch": "main"})
+        self.assertEqual(len(posts), 4, "deployment sha + base head + 2 PR heads")
+        self.assertEqual(out["prs_covered"], 2) and self.assertTrue(out["posted"])
+
     def test_posting_failure_is_reported_not_raised(self):
         with patch.object(G, "ENABLED", True), \
              patch.object(G.db, "count", lambda t, p: 0), \

@@ -39,6 +39,7 @@ import db_remediate  # noqa: E402 — shared _http/_gh/repo resolution helpers
 
 ENABLED = os.environ.get("ORCH_DB_DEPLOY_GATE", "0") == "1"
 MAX_PROJECTS = int(os.environ.get("ORCH_DB_DEPLOY_GATE_MAX", "10"))
+MAX_PRS = int(os.environ.get("ORCH_DB_DEPLOY_GATE_PRS", "20"))
 CONTEXT = "db-steering/posture"
 SECURITY_CATEGORIES = ("security",)
 DRIFT_BLOCKERS = ("schema_drift_live_ahead",)
@@ -148,6 +149,15 @@ def post_status(repo, sha, decision, target_url=""):
     return False
 
 
+def _open_pr_heads(repo):
+    """Head shas of open PRs — required checks bind on PR HEADS, so the posture status has
+    to be propagated there each cycle or every PR sits 'expected' forever."""
+    res = db_remediate._gh("GET", "/repos/%s/pulls?state=open&per_page=%d" % (repo, MAX_PRS))
+    if not isinstance(res, list):
+        return []
+    return [str((p.get("head") or {}).get("sha") or "") for p in res if (p.get("head") or {}).get("sha")]
+
+
 def check_project(project_row):
     """Evaluate one project and, when enabled, post the status to its latest deployed sha and
     to the head of its base branch. Returns a summary dict; never raises."""
@@ -171,6 +181,14 @@ def check_project(project_row):
             head = str((ref or {}).get("object", {}).get("sha") or "")
             if head:
                 posted.append(("base-head", post_status(repo, head, decision, vurl)))
+        pr_ok = True
+        n_prs = 0
+        for head_sha in _open_pr_heads(repo):
+            n_prs += 1
+            pr_ok = post_status(repo, head_sha, decision, vurl) and pr_ok
+        out["prs_covered"] = n_prs
+        if n_prs:
+            posted.append(("prs", pr_ok))
         out["posted"] = bool(posted) and all(p for _w, p in posted)
         out["vercel_state"] = vstate
     except Exception as e:
