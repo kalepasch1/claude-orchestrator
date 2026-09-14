@@ -153,6 +153,24 @@ class CommentFallbackTest(unittest.TestCase):
         self.assertIn("anon holds DELETE on public.users", patched[0][1]["body"])
 
 
+class VercelShaTest(unittest.TestCase):
+    def test_scheme_less_vercel_url_gets_https(self):
+        """Vercel's url field is scheme-less; GitHub statuses 422 on a bare target_url —
+        this silently failed every live post until 2026-09-13."""
+        import db_remediate as R
+        payload = {"deployments": [{"url": "app-x.vercel.app", "state": "READY",
+                                    "meta": {"githubCommitSha": "s" * 40}}]}
+        with patch.object(R, "_http", lambda *a, **k: dict(payload)), \
+             patch.dict(os.environ, {"VERCEL_TOKEN": "vt"}):
+            sha, state, url = G._vercel_latest_sha("vp")
+        self.assertEqual(url, "https://app-x.vercel.app")
+        self.assertEqual(sha, "s" * 40) and self.assertEqual(state, "READY")
+
+    def test_missing_token_is_empty_not_error(self):
+        with patch.dict(os.environ, {"VERCEL_TOKEN": ""}):
+            self.assertEqual(G._vercel_latest_sha("vp"), ("", "", ""))
+
+
 class RunCycleTest(unittest.TestCase):
     def test_only_vercel_linked_non_superseded_projects(self):
         projects = [{"name": "a", "vercel_project": "vp"}, {"name": "b", "vercel_project": None},

@@ -97,7 +97,12 @@ def _vercel_latest_sha(vercel_project):
     d = deps[0]
     meta = d.get("meta") or {}
     sha = str(meta.get("githubCommitSha") or meta.get("commitSha") or "")
-    return sha, str(d.get("state") or d.get("readyState") or ""), str(d.get("url") or "")
+    url = str(d.get("url") or "")
+    # Vercel's url field is scheme-less ("app-x.vercel.app"); GitHub's statuses API 422s a
+    # target_url without a scheme, which silently failed every post before this fix.
+    if url and not url.startswith("http"):
+        url = "https://" + url
+    return sha, str(d.get("state") or d.get("readyState") or ""), url
 
 
 #: The fallback channel when the GitHub App lacks `Commit statuses: write` (403): one marked
@@ -126,7 +131,8 @@ def _comment_upsert(repo, sha, decision, target_url=""):
 
 def post_status(repo, sha, decision, target_url=""):
     """failure|success on db-steering/posture for `sha`; falls back to a marked commit
-    comment when the App has contents:write but not statuses:write. Fail-soft False."""
+    comment when the App has contents:write but not statuses:write. Fail-soft False.
+    A rejected status post logs WHY — the scheme-less target_url bug only surfaced live."""
     if not (repo and sha):
         return False
     res = db_remediate._gh("POST", "/repos/%s/statuses/%s" % (repo, sha), {
@@ -137,6 +143,8 @@ def post_status(repo, sha, decision, target_url=""):
         return True
     if isinstance(res, dict) and res.get("_http_error") == 403:
         return _comment_upsert(repo, sha, decision, target_url=target_url)
+    print("db_deploy_gate: status post to %s@%s failed: %s %s"
+          % (repo, sha[:8], (res or {}).get("_http_error"), (res or {}).get("_message")))
     return False
 
 

@@ -1003,6 +1003,8 @@ _SCAN_REVIEWED = {
     # newest-first, nothing downstream acts on the tail (the loop's work path is fingerprint
     # reconciliation, which is idempotent and complete by construction).
     ("db_steering.py:528", "db_findings"),
+    # db_deploy_gate.evaluate: a deliberate 3-title sample for the gate comment.
+    ("db_deploy_gate.py:70", "db_findings"),
 }
 _scan_warned = set()
 _scan_warn_lock = threading.Lock()
