@@ -37,6 +37,7 @@ from __future__ import annotations
 import concurrent.futures
 import inspect
 import json
+import math
 import os
 import re
 import sys
@@ -2002,16 +2003,29 @@ def advisors_to_findings(lints, kind, source) -> list:
 
 _SCORE_WEIGHT = {"critical": 25, "high": 10, "medium": 3, "low": 1}
 
+#: The linear scorer's floor problem, observed live 2026-09-14: 100 - 3/medium means any
+#: project past ~34 medium findings reads 0 forever, so fleet posture collapsed to "0-60"
+#: and baselines/quartiles lost all resolution. Two fixes, both explainable:
+#:  1. per (probe, severity) bucket, repeated instances decay logarithmically — the 10th
+#:     table missing created_at is not a NEW failure mode, just more of the same one
+#:     (weight × (1 + ln n): 1×w, 10×≈3.3w, 100×≈5.6w);
+#:  2. D maps onto 0-100 through 100·e^(−D/80), which never hard-floors at 0, keeps strict
+#:     ordering at every depth, and stays interpretable at the top (1 high ≈ 88, 1 crit ≈ 73).
+_SCORE_DECAY_K = float(os.environ.get("ORCH_DB_SCORE_DECAY", "80"))
+
 
 def score(findings) -> float:
-    """0-100 posture score: 100 minus 25/critical, 10/high, 3/medium, 1/low (floor 0);
-    info and supporting findings do not count."""
-    total = 100
+    """0-100 posture score. Per-(probe,severity) demerits saturate logarithmically
+    (repeats of one failure mode accrue weight × (1 + ln n)), then 100·e^(−D/80).
+    Info and supporting findings do not count. Never exactly 0; always monotone in D."""
+    buckets = {}
     for f in findings or []:
         if not isinstance(f, dict) or f.get("direction") == "supports":
             continue
-        total -= _SCORE_WEIGHT.get(f.get("severity"), 0)
-    return float(max(0, total))
+        key = (f.get("probe_id") or "?", str(f.get("severity") or "info"))
+        buckets[key] = buckets.get(key, 0) + 1
+    d = sum(_SCORE_WEIGHT.get(sev, 0) * (1.0 + math.log(n)) for (probe, sev), n in buckets.items())
+    return round(100.0 * math.exp(-d / _SCORE_DECAY_K), 1)
 
 
 def summarize(findings, limit=8) -> str:

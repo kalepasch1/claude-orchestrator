@@ -1146,18 +1146,33 @@ class TestScore(unittest.TestCase):
     def test_arithmetic(self):
         self.assertEqual(db_probes.score([]), 100.0)
         self.assertEqual(db_probes.score(None), 100.0)
-        self.assertEqual(db_probes.score([_f("critical")]), 75.0)
-        self.assertEqual(db_probes.score([_f("high")]), 90.0)
-        self.assertEqual(db_probes.score([_f("medium")]), 97.0)
-        self.assertEqual(db_probes.score([_f("low")]), 99.0)
+        self.assertEqual(db_probes.score([_f("critical")]), 73.2)
+        self.assertEqual(db_probes.score([_f("high")]), 88.2)
+        self.assertEqual(db_probes.score([_f("medium")]), 96.3)
+        self.assertEqual(db_probes.score([_f("low")]), 98.8)
         self.assertEqual(db_probes.score([_f("info")]), 100.0)
-        self.assertEqual(db_probes.score([_f("critical"), _f("high"), _f("medium"), _f("low")]), 61.0)
+        self.assertEqual(db_probes.score([_f("critical"), _f("high"), _f("medium"), _f("low")]), 61.4)
 
     def test_supports_ignored_and_floor(self):
         self.assertEqual(db_probes.score([_f("critical", "supports"), _f("high", "supports")]), 100.0)
-        self.assertEqual(db_probes.score([_f("critical")] * 5), 0.0)
-        self.assertEqual(db_probes.score([_f("critical")] * 4 + [_f("low")]), 0.0)
-        self.assertEqual(db_probes.score([_f("high")] * 3 + ["junk", None, {"severity": "unknown"}]), 70.0)
+
+    def test_repeats_of_one_failure_mode_decay_logarithmically(self):
+        # 10 tables sharing one defect are ~3.3x the demerit of 1, not 10x…
+        same_kind = [_f("medium") for _ in range(10)]  # _f pins no probe_id — one bucket
+        self.assertEqual(db_probes.score(same_kind), 88.4)
+        # …and 10 different failure kinds of one medium each still compound fully
+        many_kinds = [dict(_f("medium"), probe_id=f"p{i}") for i in range(10)]
+        self.assertEqual(db_probes.score(many_kinds), 68.7)
+
+    def test_never_floors_at_zero(self):
+        # live motivation: racefeed had 566 open security findings and read 0/100,
+        # identical to every other saturated project — baselines lost all resolution
+        pile = [dict(_f("high"), probe_id="rls_disabled_tables") for _ in range(500)]
+        self.assertEqual(db_probes.score(pile), 40.6)   # bad, but not indistinguishable
+        self.assertGreater(db_probes.score(pile), 0.0)  # never literally 0
+        # unknown severities carry no demerit; junk entries are skipped, not fatal
+        self.assertEqual(db_probes.score([_f("high")] * 3 + ["junk", None, {"severity": "unknown"}]),
+                         db_probes.score([_f("high")] * 3))
         self.assertIsInstance(db_probes.score([_f("low")]), float)
 
     def test_every_severity_has_a_defined_effect(self):
