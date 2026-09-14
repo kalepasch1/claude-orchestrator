@@ -65,6 +65,7 @@ function truncate(value: any, n = 120) { const s = String(value || ''); return s
 function score(sourceId: string) { const snap = data.value.posture?.[sourceId]; return snap?.score == null ? null : Number(snap.score) }
 function scoreClass(value: number | null) { return value == null ? 'none' : value >= 85 ? 'good' : value >= 60 ? 'warn' : 'bad' }
 function strengths(memo: any) { const args = Array.isArray(memo.arguments) ? memo.arguments : []; if (!args.length) return '—'; const tally: Record<string, number> = {}; for (const a of args) { const k = String(a?.strength || 'unknown'); tally[k] = (tally[k] || 0) + 1 } return Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(', ') }
+function gauntletText(g: any) { if (!g || typeof g !== 'object') return ''; const v = String(g.verdict || g.position || g.opinion || '').trim(); const s = String(g.summary || '').trim(); return truncate([v && `Verdict: ${v}`, s].filter(Boolean).join(' — ') || truncate(JSON.stringify(g), 400), 600) }
 function objectName(f: any) { return [f.object_schema, f.object_name].filter(Boolean).join('.') || '—' }
 
 watch(user, (u) => { if (u) load() })
@@ -198,7 +199,7 @@ onMounted(() => { if (user.value) load() })
                 <tr class="clickable" :class="{ open: openMemoId === m.id }" @click="openMemo(m)">
                   <td><b>{{ m.title }}</b><small class="mono">{{ m.memo_kind }}</small></td>
                   <td>{{ m.project }}</td>
-                  <td><span class="pill" :class="m.status">{{ m.status }}</span></td>
+                  <td><span class="pill" :class="m.status">{{ m.status }}</span><span v-if="m.gauntlet_at" class="pill gauntleted" title="Expert-corps gauntlet reviewed">gauntlet</span></td>
                   <td>{{ m.evidence_count }}</td>
                   <td>{{ strengths(m) }}</td>
                   <td>{{ when(m.updated_at) }}</td>
@@ -207,6 +208,10 @@ onMounted(() => { if (user.value) load() })
                   <details open class="memo-pane">
                     <summary>{{ memoLoading ? 'Loading memo…' : memoError ? memoError : `Memo body · ${memoDetail?.evidence?.length || 0} evidence rows` }}</summary>
                     <template v-if="memoDetail">
+                      <div v-if="memoDetail.memo?.gauntlet_at" class="gauntlet-card">
+                        <b>Expert-corps gauntlet · {{ when(memoDetail.memo.gauntlet_at) }}</b>
+                        <p>{{ gauntletText(memoDetail.memo.gauntlet) || 'Reviewed (verdict payload not displayable).' }}</p>
+                      </div>
                       <p v-if="memoDetail.memo?.thesis" class="thesis">{{ memoDetail.memo.thesis }}</p>
                       <pre>{{ memoDetail.memo?.body || '(no body drafted yet — prose is generated once the evidence set changes)' }}</pre>
                       <div v-if="memoDetail.evidence?.length" class="table-wrap">
@@ -228,6 +233,9 @@ onMounted(() => { if (user.value) load() })
 </template>
 
 <style scoped>
+.pill.gauntleted{background:#2d2450;color:#b79cff;margin-left:6px}
+.gauntlet-card{border:1px solid #3a3352;background:#191624;border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.gauntlet-card p{color:#b9b3d6;margin:6px 0 0;line-height:1.5}
 .ds{max-width:1240px;margin:0 auto;padding:24px;color:#e7e7ea;font-size:13px}
 .ds-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:20px;flex-wrap:wrap}
 .ds-head h1{font-size:22px;font-weight:700;margin:4px 0 6px}
