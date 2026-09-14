@@ -1057,16 +1057,24 @@ def owner_report_line() -> str:
                 if s in strengths:
                     strengths[s] += 1
         latest = {}  # project -> score of the newest snapshot (window is newest-first)
+        week_ago_cutoff = time.time() - 7 * 86400
+        week_old = {}  # project -> score of the newest snapshot at/before the 7d line
         for s in snaps:
             if not isinstance(s, dict) or not s.get("project"):
                 continue
             p = str(s["project"])
             projects.add(p)
-            if p not in latest and s.get("score") is not None:
-                try:
-                    latest[p] = float(s["score"])
-                except (TypeError, ValueError):
-                    continue
+            if s.get("score") is None:
+                continue
+            try:
+                score = float(s["score"])
+            except (TypeError, ValueError):
+                continue
+            if p not in latest:
+                latest[p] = score
+            ts = _parse_ts(s.get("taken_at"))
+            if ts is not None and ts <= week_ago_cutoff and p not in week_old:
+                week_old[p] = score
         if not projects:
             return ""
         posture = (f"{_fmt_score(min(latest.values()))}-{_fmt_score(max(latest.values()))}"
@@ -1074,9 +1082,15 @@ def owner_report_line() -> str:
         gaps = db.count(FINDINGS_TABLE, {"status": "in.(open,acknowledged)",
                                          "severity": "in.(critical,high)", "direction": "eq.undermines"})
         gaps = int(gaps or 0)
+        movers = {p: latest[p] - week_old[p] for p in latest if p in week_old}
+        movers = {p: d for p, d in movers.items() if d}
+        delta_seg = ""
+        if movers:
+            top3 = sorted(movers.items(), key=lambda kv: -abs(kv[1]))[:3]
+            delta_seg = " · Δ7d: " + ", ".join(f"{p} {'+' if d > 0 else ''}{_fmt_score(d)}" for p, d in top3)
         return (f"Data steering: {len(projects)} projects reviewed · posture {posture} · memo arguments "
                 f"supported {strengths['supported']} / contested {strengths['contested']} / "
-                f"undermined {strengths['undermined']} · {gaps} open critical/high gaps")
+                f"undermined {strengths['undermined']} · {gaps} open critical/high gaps{delta_seg}")
     except Exception as e:
         print(f"db_memo: owner_report_line failed: {type(e).__name__}: {str(e)[:120]}")
         return ""

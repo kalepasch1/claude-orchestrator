@@ -171,6 +171,54 @@ class VercelShaTest(unittest.TestCase):
             self.assertEqual(G._vercel_latest_sha("vp"), ("", "", ""))
 
 
+class RequireCheckTest(unittest.TestCase):
+    def test_merges_with_existing_contexts_never_clobbers(self):
+        writes = []
+
+        def gh(method, path, body=None):
+            if method == "GET" and path.endswith("/protection"):
+                return {"required_status_checks": {"strict": True, "contexts": ["ci/tests"]},
+                        "enforce_admins": {"enabled": True}}
+            if method == "GET" and path.count("/") == 2:
+                return {"default_branch": "main"}
+            if method == "PUT":
+                writes.append(body)
+                return {}
+            return {}
+
+        with patch.object(G.db_remediate, "_gh", gh), \
+             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"), \
+             patch.object(G, "REQUIRED_CHECK_ENABLED", True):
+            res = G.require_check({"name": "x", "vercel_project": "vp"})
+        self.assertTrue(res["ok"])
+        put = writes[0]
+        self.assertEqual(set(put["required_status_checks"]["contexts"]), {"ci/tests", G.CONTEXT})
+        self.assertTrue(put["required_status_checks"]["strict"], "existing strict flag is preserved")
+        self.assertTrue(put["enforce_admins"], "existing enforce_admins is preserved")
+
+    def test_already_required_is_a_noop(self):
+        def gh(method, path, body=None):
+            if method == "PUT":
+                raise AssertionError("must not write when already required")
+            if method == "GET" and path.endswith("/protection"):
+                return {"required_status_checks": {"strict": False, "contexts": [G.CONTEXT]}}
+            return {"default_branch": "main"}
+
+        with patch.object(G.db_remediate, "_gh", gh), \
+             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"):
+            res = G.require_check({"name": "x", "vercel_project": "vp"})
+        self.assertTrue(res["ok"]) and res["skipped"] == "already required"
+
+    def test_403_is_a_reason_not_an_exception(self):
+        def gh(method, path, body=None):
+            return {"_http_error": 403, "_message": "Resource not accessible by integration"}
+
+        with patch.object(G.db_remediate, "_gh", gh), \
+             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"):
+            res = G.require_check({"name": "x", "vercel_project": "vp"})
+        self.assertFalse(res["ok"]) and self.assertIn("403", res["reason"])
+
+
 class RunCycleTest(unittest.TestCase):
     def test_only_vercel_linked_non_superseded_projects(self):
         projects = [{"name": "a", "vercel_project": "vp"}, {"name": "b", "vercel_project": None},

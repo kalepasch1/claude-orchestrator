@@ -178,6 +178,71 @@ def check_project(project_row):
     return out
 
 
+# ── required-check enforcement (needs Administration: write on the App) ────────────────
+
+REQUIRED_CHECK_ENABLED = os.environ.get("ORCH_DB_REQUIRED_CHECK", "1") == "1"
+
+
+def require_check(project_row):
+    """Make db-steering/posture a required status check on the project's protected branch.
+    Merges with any existing rule (contexts, reviews, restrictions are preserved); a repo
+    without protection gets a minimal rule for this context only. A 403 (Administration
+    permission not granted yet) is a reason string, not an error."""
+    if not REQUIRED_CHECK_ENABLED:
+        return {"ok": False, "reason": "ORCH_DB_REQUIRED_CHECK=0"}
+    name = str(project_row.get("name") or "")
+    if db_remediate._is_excluded(project_row):
+        return {"ok": False, "reason": "excluded"}
+    repo = db_remediate.repo_for_project(project_row)
+    if not repo:
+        return {"ok": False, "reason": "no repo"}
+    meta = db_remediate._gh("GET", "/repos/%s" % repo)
+    base = str(project_row.get("prod_branch") or project_row.get("default_base")
+               or (meta or {}).get("default_branch") or "main")
+    prot = db_remediate._gh("GET", "/repos/%s/branches/%s/protection" % (repo, base))
+    if isinstance(prot, dict) and prot.get("_http_error") not in (None, 404):
+        return {"ok": False, "reason": "protection read failed: %s" % prot.get("_http_error")}
+    existing = prot if isinstance(prot, dict) and not prot.get("_http_error") else {}
+    checks = (existing.get("required_status_checks") or {})
+    contexts = sorted(set(checks.get("contexts") or []) | {CONTEXT})
+    if CONTEXT in (checks.get("contexts") or []):
+        return {"ok": True, "skipped": "already required"}
+    body = {
+        "required_status_checks": {"strict": bool(checks.get("strict", False)), "contexts": contexts},
+        "enforce_admins": bool((existing.get("enforce_admins") or {}).get("enabled", False)),
+        "required_pull_request_reviews": existing.get("required_pull_request_reviews"),
+        "restrictions": existing.get("restrictions"),
+        "allow_force_pushes": bool((existing.get("allow_force_pushes") or {}).get("enabled", False)),
+        "allow_deletions": bool((existing.get("allow_deletions") or {}).get("enabled", False)),
+    }
+    res = db_remediate._gh("PUT", "/repos/%s/branches/%s/protection" % (repo, base), body)
+    if isinstance(res, dict) and res.get("_http_error"):
+        print("db_deploy_gate: require %s/%s@%s failed: %s %s"
+              % (repo, base, name, res.get("_http_error"), res.get("_message")))
+        return {"ok": False, "reason": "protection write failed: %s %s" % (res.get("_http_error"), res.get("_message"))}
+    return {"ok": True, "repo": repo, "branch": base, "contexts": contexts}
+
+
+def apply_required_checks(projects=None):
+    """One pass over the Vercel-linked fleet. Summary dict; never raises."""
+    out = {"enabled": REQUIRED_CHECK_ENABLED, "results": []}
+    try:
+        if projects is None:
+            projects = db.select("projects", {"select": "name,vercel_project,prod_branch,default_base,"
+                                                        "staging_branch,repo_path,superseded_by"}) or []
+        for p in projects:
+            if not p.get("vercel_project") or p.get("superseded_by"):
+                continue
+            try:
+                out["results"].append({"project": p.get("name"), **require_check(p)})
+            except Exception as e:
+                out["results"].append({"project": p.get("name"), "ok": False,
+                                       "reason": "%s: %s" % (type(e).__name__, str(e)[:120])})
+    except Exception as e:
+        out["error"] = "%s: %s" % (type(e).__name__, str(e)[:120])
+    return out
+
+
 def run_cycle(projects=None):
     """Evaluate the Vercel-linked slice of the fleet. Summary dict; never raises."""
     out = {"enabled": ENABLED, "checked": [], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}

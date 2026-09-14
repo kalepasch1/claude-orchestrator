@@ -84,6 +84,31 @@ class TestOwnerReportLine(Base):
         line = db_memo.owner_report_line()
         self.assertIn("2 projects reviewed · posture n/a ·", line)
 
+    def test_week_delta_segment_names_the_movers(self):
+        self.populate()
+        import datetime as _dt
+        old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=8)).isoformat()
+        new = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        self.db.tables["db_posture_snapshots"] = [
+            {"project": "proj", "score": 55.0, "taken_at": new},
+            {"project": "proj", "score": 40.0, "taken_at": old},
+            {"project": "other", "score": 70.0, "taken_at": new},
+            {"project": "other", "score": 82.0, "taken_at": old},
+        ]
+        line = db_memo.owner_report_line()
+        self.assertIn("Δ7d:", line)
+        self.assertIn("proj +15", line) and self.assertIn("other -12", line)
+
+    def test_no_delta_when_no_week_old_snapshots(self):
+        self.populate()
+        import datetime as _dt
+        new = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        self.db.tables["db_posture_snapshots"] = [
+            {"project": "proj", "score": 61.5, "taken_at": new},
+            {"project": "other", "score": 88, "taken_at": new},
+        ]
+        self.assertNotIn("Δ7d", db_memo.owner_report_line())
+
 
 class TestOwnerReportWiring(Base):
     def _body(self):
