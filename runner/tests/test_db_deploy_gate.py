@@ -214,9 +214,27 @@ class RequireCheckTest(unittest.TestCase):
             return {"_http_error": 403, "_message": "Resource not accessible by integration"}
 
         with patch.object(G.db_remediate, "_gh", gh), \
-             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"):
+             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"), \
+             patch.object(G, "_ADMIN_DENIED", False):
             res = G.require_check({"name": "x", "vercel_project": "vp"})
         self.assertFalse(res["ok"]) and self.assertIn("403", res["reason"])
+
+    def test_admin_denied_latches_process_wide_and_stops_http(self):
+        def gh(method, path, body=None):
+            return {"_http_error": 403, "_message": "x"}
+
+        calls = []
+        counted = lambda *a, **k: calls.append(a[0]) or gh(*a, **k)
+        with patch.object(G.db_remediate, "_gh", counted), \
+             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"), \
+             patch.object(G, "_ADMIN_DENIED", False):
+            G.require_check({"name": "x", "vercel_project": "vp"})
+            n = len(calls)
+            res2 = G.require_check({"name": "y", "vercel_project": "vp"})
+        self.assertEqual(len(calls), n, "no further HTTP once denied")
+        self.assertIn("403 seen earlier", res2["reason"])
+        with patch.object(G, "_ADMIN_DENIED", False):  # reset the latch we set
+            pass
 
 
 class RunCycleTest(unittest.TestCase):
