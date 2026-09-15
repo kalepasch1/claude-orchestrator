@@ -310,3 +310,23 @@ Here are the extracted **CONVENTIONS** and **DO/AVOID rules**:
 * DO use `cProfile` to measure execution time and identify performance bottlenecks.
 * AVOID making changes to production code that are not explicitly documented in the commit message.
 * AVOID making changes that break existing functionality without a clear justification.
+
+
+## Learned from merged work (auto)
+Here are the extracted conventions and do/avoid rules:
+
+**Conventions:**
+
+* The codebase uses a consistent commit message format, which includes the branch name being merged.
+* The merge commits have the same author and date, indicating that they were likely generated automatically.
+* The branch name being merged is consistently specified in the commit message.
+* The commit messages are concise and to the point, following a standard format.
+* The codebase uses a consistent naming convention for branches.
+
+**Do/Avoid:**
+
+* **DO** use a consistent commit message format and follow the standard format used in the codebase.
+* **AVOID** using non-standard or custom commit message formats.
+* **DO** specify the branch name being merged in the commit message.
+* **AVOID** submitting a pull request with non-standard or unmerged code.
+* **DO** respect the existing branch naming conventions used in the codebase.

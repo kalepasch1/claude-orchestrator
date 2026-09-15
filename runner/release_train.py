@@ -1939,6 +1939,29 @@ def _run_for_unlocked(project, repo_override=None, lock_lease=None):
                              ahead=int(ahead), note=decision_note)
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
                 "note": decision_note}
+    # EARLY PUSH-FAMILY COOLDOWN (2026-09-11): when remote pushes are enabled and
+    # this staging SHA recently failed a push-family gate, skip the ENTIRE pass —
+    # including QA, build, manifest creation, and every other expensive gate —
+    # instead of re-running all of them only to discover at push time that the SHA
+    # is cooled.
+    #
+    # This is the fix for the 900s releasetrain TIMEOUTs measured on 2026-09-02:
+    # 38 passes re-ran the full suite and production build for a staging SHA whose
+    # push had already failed, each holding one of two build slots for nothing.
+    # _push_family_cooling was added at the push site (line ~2250) but that is
+    # AFTER the suite and the build, so every pass burned ~25 minutes of gate work
+    # before reaching the skip.  Moving the check HERE, before any gate runs,
+    # turns each redundant pass from minutes into milliseconds.
+    push_on = os.environ.get("ORCH_PUSH_ON_RELEASE", os.environ.get("ORCH_PUSH_ON_MERGE", "false")).lower() == "true"
+    if push_on:
+        cooling = _push_family_cooling(project, staging_sha)
+        if cooling:
+            print(f"release_train {project}: staging {staging_sha[:12]} already failed "
+                  f"gate={cooling} within {int(RED_GATE_COOLDOWN_MIN)}m — skipping all "
+                  f"gates instead of re-running the suite and build to fail the same way")
+            return {"project": project, "prod": prod, "released": 0, "pushed": False,
+                    "push_cooldown_gate": cooling,
+                    "note": f"unchanged staging SHA already failed {cooling} recently"}
     # Freeze the exact candidate, commands, dependency graph, and file set
     # before any expensive gate runs. This manifest is the release identity.
     det_cmd, has_real_tests = _detect_test_cmd(repo)
@@ -2200,7 +2223,7 @@ def _run_for_unlocked(project, repo_override=None, lock_lease=None):
         return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
-    push_on = os.environ.get("ORCH_PUSH_ON_RELEASE", os.environ.get("ORCH_PUSH_ON_MERGE", "false")).lower() == "true"
+    # push_on already computed above (early push-family cooldown check)
     # RELEASE WINDOWS (operator policy 2026-07-31): merging is continuous, prod
     # PROMOTION is batched. A remote prod push (which triggers a Vercel build and
     # can rotate assets under live sessions) happens only (a) inside a scheduled
@@ -2236,11 +2259,12 @@ def _run_for_unlocked(project, repo_override=None, lock_lease=None):
     pushed = None
     push_log = ""
     if push_on:
+        # Secondary cooldown check on to_sha (may differ from staging_sha if STAGING
+        # was re-read after local fast-forward). The primary check above (on
+        # staging_sha, before all gates) catches the common case; this catches the
+        # edge where to_sha diverged.
         cooling = _push_family_cooling(project, to_sha)
         if cooling:
-            # A silent hold is indistinguishable from an idle train (see _hold_for_open_fix);
-            # always say so, and return BEFORE the integrate/suite/build work rather than
-            # after, which is the whole point of the skip.
             print(f"release_train {project}: staging {to_sha[:12]} already failed "
                   f"gate={cooling} within {int(RED_GATE_COOLDOWN_MIN)}m — holding this pass "
                   f"instead of re-running the suite and build to fail the same way")

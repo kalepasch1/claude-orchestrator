@@ -27,6 +27,17 @@ then: clone the repo, scp runner/.env from the Mac, `claude login`, `nohup bash 
   Capacity status still unknown since 2026-07-02. This task cannot succeed unattended until the
   Chrome extension is installed + signed in, or the OCI CLI/API is set up (see below).
 
+- 2026-09-10 (scheduled task): **not attempted — blocked on OCI sign-in, not capacity.** Progress vs.
+  prior runs: the Claude in Chrome extension WAS connected this time and cloud.oracle.com loaded fine.
+  But the console session has expired — it redirects to the Cloud Sign In page (account name "kalepasch"
+  prefilled). Clicking Next redirects to the Oracle identity-domain login host, which (a) is a domain the
+  extension has no permission for, auto-declined with no one present, and (b) is a username/password form
+  I will not fill in regardless. Never reached the instance-creation form, so A1 capacity status is still
+  unknown since 2026-07-02. Also could not check whether the OCI CLI is installed on the Mac — that shell
+  request was auto-declined too.
+  **Fix for next run: either leave a signed-in cloud.oracle.com session in Chrome (Oracle sessions expire,
+  so this will keep recurring), or do option 4 below (OCI CLI). Option 4 is the only durable fix.**
+
 ## Unblock options (pick one)
 1. Automatic: a scheduled Claude task retries the creation daily and notifies on success (set up 2026-07-02).
 2. Instant: upgrade the OCI account to Pay As You Go — capacity constraint largely disappears and
