@@ -60,6 +60,23 @@ AUDIT_TABLE_PATTERN = "(_events|_event|_log|_logs|audit|_history|_ledger|_trail|
 AI_TABLE_PATTERN = ("model_call|llm_|ai_call|completion|token_usage|usage_log|inference|prompt_log|"
                     "agent_run|counsel_job|job_event")
 PRIVILEGED_FUNC_RE = re.compile(r"admin|bypass|service", re.I)
+# Tamper evidence of record tables (record_tables_tamper_evidence). A trigger function whose
+# name says it guards rows, or whose body RAISEs, fired on UPDATE/DELETE makes a table
+# append-only in practice; a moddatetime-style BEFORE UPDATE trigger at least dates changes.
+GUARD_FUNC_PATTERN = ("audit|immutable|no_update|no_delete|prevent|forbid|deny|readonly|read_only|"
+                      "append_only|protect|tamper|freeze")
+STAMP_FUNC_PATTERN = "moddatetime|updated_at|set_updated|touch|timestamp"
+_RECORD_TABLE_RE = re.compile(AUDIT_TABLE_PATTERN)
+# pg_trigger.tgtype bits (src/include/catalog/pg_trigger.h): DELETE = 8, UPDATE = 16.
+_TGTYPE_UPDATE = 16
+_TGTYPE_UPDATE_OR_DELETE = 8 | 16
+# Server settings that leave a record of change outside the row itself; every role may
+# read them. log_statement at these levels records DML; wal_level at these levels can
+# feed PITR / CDC.
+TAMPER_SETTINGS = ("wal_level", "archive_mode", "track_commit_timestamp", "log_statement", "pgaudit.log")
+_TAMPER_SETTINGS_SQL = "(" + ", ".join("'%s'" % s for s in TAMPER_SETTINGS) + ")"
+_LOGGED_DML_LEVELS = ("mod", "all")
+_ARCHIVABLE_WAL_LEVELS = ("replica", "logical")
 # Edge-function slugs that legitimately skip JWT verification (third-party webhooks, cron).
 WEBHOOK_FUNC_RE = re.compile(r"webhook|hook|cron|callback|public", re.I)
 SECURITY_INVOKER_RE = re.compile(r"security_invoker\s*=\s*(true|on|1)\b", re.I)
@@ -762,6 +779,117 @@ def _p_updated_at_no_trigger(rows, source, facts=None):
     return out
 
 
+def _p_tamper_evidence(rows, source, facts=None):
+    """Append-only posture of record tables plus the server's change-log settings.
+
+    One result carries rows of kind 'setting' (name / value) and kind 'table' (per public
+    table: guard and stamp triggers, non-owner rewrite grants). Record-ness is decided here
+    by name (AUDIT_TABLE_PATTERN). Severity follows exposure: high only when a record table
+    is rewritable by a non-owner role that no policy gates, medium when policies or a
+    TRUNCATE grant decide, low when only the owner could rewrite it; the mutable-table
+    tally and the settings posture are one finding each."""
+    facts = facts if facts is not None else {}
+    settings, records, mutable = {}, [], []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if _s(_v(r, "kind")).lower() == "setting" or _v(r, "setting_name") is not None:
+            settings[_s(_v(r, "setting_name")).strip().lower()] = _s(_v(r, "setting_value")).strip().lower()
+        else:
+            (records if _RECORD_TABLE_RE.search(_obj(r)[1]) else mutable).append(r)
+
+    def counts(r):
+        return {k: int(max(0.0, _num(_v(r, k)))) for k in
+                ("guard_triggers", "stamp_triggers", "unconditional_rewriters", "gated_rewriters", "truncate_grantees")}
+
+    out = []
+    unguarded = []
+    for r in records:
+        schema, table = _obj(r)
+        c = counts(r)
+        if c["guard_triggers"] > 0:
+            continue
+        unguarded.append(r)
+        rewriters = [x for x in _list(_v(r, "rewriter_names")) if x]
+        who = ", ".join(rewriters[:8]) or "non-owner roles"
+        rls = _bool(_v(r, "rowsecurity"))
+        if c["unconditional_rewriters"] > 0:
+            sev = "high"
+            title = f"Record table {schema}.{table} is rewritable by non-owner roles with no immutability guard"
+            detail = (f"UPDATE/DELETE is granted to {who} and "
+                      f"{'RLS is OFF' if not rls else 'the grantee bypasses RLS'}, so a rewrite of the record "
+                      "meets no policy and no trigger RAISEs on UPDATE or DELETE.")
+        elif c["gated_rewriters"] > 0:
+            sev = "medium"
+            title = f"Record table {schema}.{table} is rewritable under RLS policy with no immutability guard"
+            detail = (f"UPDATE/DELETE is granted to {who}; RLS is on, so policies decide, and one permissive "
+                      "policy makes the record rewritable. No trigger RAISEs on UPDATE or DELETE.")
+        elif c["truncate_grantees"] > 0:
+            sev = "medium"
+            title = f"Record table {schema}.{table} can be truncated by non-owner roles with no immutability guard"
+            detail = (f"TRUNCATE is granted to {who}; TRUNCATE ignores row-level security and empties the table "
+                      "with no per-row trace.")
+        else:
+            sev = "low"
+            title = f"Record table {schema}.{table} has no immutability guard"
+            detail = ("Only the owner (the migration role) holds UPDATE/DELETE, so the table is append-only by grant "
+                      "discipline alone; nothing in the database makes a rewrite impossible or visible.")
+        out.append(make_finding("record_tables_tamper_evidence", "audit", sev, title, object_schema=schema,
+                                object_name=table, evidence_kinds=("audit_trail",), detail=detail,
+                                metrics={**c, "rowsecurity": rls, "rewriters": rewriters[:30],
+                                         "has_updated_at": _bool(_v(r, "has_updated_at"))}))
+    facts["record_tables"] = len(records)
+    facts["record_tables_unguarded"] = len(unguarded)
+    if records and not unguarded:
+        out.append(make_finding("record_tables_tamper_evidence", "audit", "info",
+                                f"All {len(records)} record tables carry an immutability guard", direction="supports",
+                                evidence_kinds=("audit_trail",), extra="all_guarded", detail=_names(records),
+                                metrics={"tables": len(records),
+                                         "guard_triggers": sum(counts(r)["guard_triggers"] for r in records)}))
+
+    if mutable:
+        untraced = []
+        for r in mutable:
+            c = counts(r)
+            if c["guard_triggers"] == 0 and c["stamp_triggers"] == 0 and \
+                    c["unconditional_rewriters"] + c["gated_rewriters"] > 0:
+                untraced.append(r)
+        metrics = {"tables": len(mutable), "untraced_rewritable": len(untraced),
+                   "with_trigger": sum(1 for r in mutable if counts(r)["guard_triggers"] + counts(r)["stamp_triggers"] > 0)}
+        if untraced:
+            out.append(make_finding("record_tables_tamper_evidence", "audit", "low",
+                                    f"{len(untraced)} of {len(mutable)} mutable public tables are rewritable by "
+                                    "non-owner roles with no audit or timestamp trigger", extra="mutable_tracing",
+                                    evidence_kinds=("audit_trail",), metrics=metrics, detail=_names(untraced)))
+        else:
+            out.append(make_finding("record_tables_tamper_evidence", "audit", "info",
+                                    f"All {len(mutable)} mutable public tables are traced by a trigger or rewritable "
+                                    "by the owner only", direction="supports", extra="mutable_tracing",
+                                    evidence_kinds=("audit_trail",), metrics=metrics))
+
+    if settings:
+        aids = []
+        if settings.get("track_commit_timestamp") == "on":
+            aids.append("track_commit_timestamp")
+        if settings.get("log_statement") in _LOGGED_DML_LEVELS:
+            aids.append("log_statement=" + settings["log_statement"])
+        if settings.get("archive_mode") == "on":
+            aids.append("archive_mode")
+        if settings.get("pgaudit.log", "") not in ("", "none"):
+            aids.append("pgaudit.log=" + settings["pgaudit.log"])
+        posture = ", ".join(f"{k}={settings[k]}" for k in TAMPER_SETTINGS if k in settings)
+        out.append(make_finding("record_tables_tamper_evidence", "audit", "info", f"Change-log posture: {posture}",
+                                direction="supports" if aids else "undermines", extra="change_log_posture",
+                                evidence_kinds=("audit_trail",),
+                                metrics={"settings": settings, "aids": aids,
+                                         "wal_archivable": settings.get("wal_level") in _ARCHIVABLE_WAL_LEVELS},
+                                detail=("Changes leave a record outside the row itself via " + ", ".join(aids) + "."
+                                        if aids else
+                                        "No commit timestamps, no DML statement logging, no WAL archiving and no "
+                                        "pgaudit: a rewrite is visible only through the row it changed.")))
+    return out
+
+
 def _p_idle_in_txn(rows, source, facts=None):
     out = []
     for r in rows:
@@ -1343,6 +1471,50 @@ _SQL = {
                  "and not exists (select 1 from information_schema.triggers tr where tr.event_object_schema = c.table_schema "
                  "and tr.event_object_table = c.table_name and tr.event_manipulation = 'UPDATE') "
                  "order by c.table_name limit 500"},
+    "record_tables_tamper_evidence": {
+        "postgres": "with trg as (select tn.nspname as schemaname, tc.relname as tablename, "
+                    f"count(*) filter (where (tg.tgtype::int & {_TGTYPE_UPDATE_OR_DELETE}) <> 0 "
+                    f"and (p.proname ~* '{GUARD_FUNC_PATTERN}' or p.prosrc ~* '\\mraise\\M')) as guard_triggers, "
+                    "string_agg(distinct tg.tgname::text, ',' order by tg.tgname::text) "
+                    f"filter (where (tg.tgtype::int & {_TGTYPE_UPDATE_OR_DELETE}) <> 0 "
+                    f"and (p.proname ~* '{GUARD_FUNC_PATTERN}' or p.prosrc ~* '\\mraise\\M')) as guard_names, "
+                    f"count(*) filter (where (tg.tgtype::int & {_TGTYPE_UPDATE}) <> 0 "
+                    f"and p.proname ~* '{STAMP_FUNC_PATTERN}') as stamp_triggers "
+                    "from pg_catalog.pg_trigger tg join pg_catalog.pg_class tc on tc.oid = tg.tgrelid "
+                    "join pg_catalog.pg_namespace tn on tn.oid = tc.relnamespace "
+                    "join pg_catalog.pg_proc p on p.oid = tg.tgfoid "
+                    "where tn.nspname = 'public' and not tg.tgisinternal and tg.tgenabled <> 'D' "
+                    "group by tn.nspname, tc.relname), "
+                    "rw as (select g.table_schema as schemaname, g.table_name as tablename, "
+                    "count(distinct g.grantee) filter (where g.privilege_type in ('UPDATE', 'DELETE') "
+                    "and (not t.rowsecurity or coalesce(r.rolbypassrls, false))) as unconditional_rewriters, "
+                    "count(distinct g.grantee) filter (where g.privilege_type in ('UPDATE', 'DELETE') "
+                    "and t.rowsecurity and not coalesce(r.rolbypassrls, false)) as gated_rewriters, "
+                    "count(distinct g.grantee) filter (where g.privilege_type = 'TRUNCATE') as truncate_grantees, "
+                    "string_agg(distinct g.grantee::text, ',' order by g.grantee::text) as rewriter_names "
+                    "from information_schema.role_table_grants g "
+                    "join pg_catalog.pg_tables t on t.schemaname = g.table_schema and t.tablename = g.table_name "
+                    "left join pg_catalog.pg_roles r on r.rolname = g.grantee "
+                    "where g.table_schema = 'public' and g.privilege_type in ('UPDATE', 'DELETE', 'TRUNCATE') "
+                    f"and g.grantee <> t.tableowner and g.grantee not in {_PLATFORM_ROLES_SQL} "
+                    "group by g.table_schema, g.table_name) "
+                    "select 'table' as kind, t.schemaname, t.tablename, t.rowsecurity, "
+                    "coalesce(trg.guard_triggers, 0) as guard_triggers, coalesce(trg.guard_names, '') as guard_names, "
+                    "coalesce(trg.stamp_triggers, 0) as stamp_triggers, "
+                    "exists (select 1 from information_schema.columns c where c.table_schema = t.schemaname "
+                    "and c.table_name = t.tablename and c.column_name = 'updated_at') as has_updated_at, "
+                    "coalesce(rw.unconditional_rewriters, 0) as unconditional_rewriters, "
+                    "coalesce(rw.gated_rewriters, 0) as gated_rewriters, "
+                    "coalesce(rw.truncate_grantees, 0) as truncate_grantees, "
+                    "coalesce(rw.rewriter_names, '') as rewriter_names, "
+                    "null::text as setting_name, null::text as setting_value "
+                    "from pg_catalog.pg_tables t "
+                    "left join trg on trg.schemaname = t.schemaname and trg.tablename = t.tablename "
+                    "left join rw on rw.schemaname = t.schemaname and rw.tablename = t.tablename "
+                    "where t.schemaname = 'public' "
+                    "union all select 'setting', null, null, null, null, null, null, null, null, null, null, null, "
+                    f"s.name, s.setting from pg_catalog.pg_settings s where s.name in {_TAMPER_SETTINGS_SQL} "
+                    "order by kind, schemaname, tablename, setting_name limit 500"},
     "idle_in_transaction_sessions": {
         "postgres": "select pid, usename, application_name, state, extract(epoch from now() - state_change) as idle_s, "
                     "extract(epoch from now() - xact_start) as xact_age_s from pg_catalog.pg_stat_activity "
@@ -1552,6 +1724,13 @@ PROBES = [
            ("audit_trail",), _p_updated_at_no_trigger,
            "`create trigger set_updated_at before update on <t> for each row execute function moddatetime(updated_at)` "
            "(extension moddatetime) in a migration, so the timestamp is set by the database, not by every code path."),
+    _probe("record_tables_tamper_evidence", "Record tables append-only or tamper-evident", "audit", "cheap",
+           ("audit_trail",), _p_tamper_evidence,
+           "Make each record table append-only in the database: `create trigger <t>_immutable before update or delete "
+           "on <t> for each row execute function raise_immutable()` (a plpgsql function that does `raise exception`) "
+           "and `revoke update, delete, truncate on <t> from anon, authenticated, service_role`, in a migration. Give "
+           "mutable tables a moddatetime or audit trigger; enable `track_commit_timestamp` (or pgaudit) where the "
+           "platform allows it."),
     _probe("public_storage_buckets", "Public storage buckets", "security", "cheap",
            ("access_control", "data_minimization"), _p_storage_buckets,
            "Make the bucket private (`update storage.buckets set public = false`, in a migration) and serve files through "
