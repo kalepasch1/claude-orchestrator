@@ -596,7 +596,7 @@ class TestRebuild(Base):
     def test_drafts_changed_memo_with_one_model_call_then_skips(self):
         out = db_memo.rebuild_if_changed("proj", max_memos=1)
         self.assertEqual(out["drafted"], 1)
-        self.assertEqual(self.model.calls, 1)
+        self.assertEqual(self.model.calls, 2)  # draft + opposing-counsel attack (adversarial pass)
         row = self.db.memo("proj", AC)
         self.assertEqual(row["status"], "draft")
         self.assertEqual(row["model_name"], "fake-model")
@@ -625,14 +625,14 @@ class TestRebuild(Base):
         out2 = db_memo.rebuild_if_changed("proj", max_memos=1)
         by_kind = {m["memo_kind"]: m["outcome"] for m in out2["memos"]}
         self.assertEqual(by_kind, {DP: "drafted", AC: "deferred"})
-        self.assertEqual(self.model.calls, 2)
+        self.assertEqual(self.model.calls, 4)
         # everything drafted and unchanged -> all skips, still no model call
         out3 = db_memo.rebuild_if_changed("proj", max_memos=1)
         self.assertEqual([m["outcome"] for m in out3["memos"]], ["skipped", "skipped"])
-        self.assertEqual(self.model.calls, 2)
+        self.assertEqual(self.model.calls, 4)
         # force -> exactly one more call (the cap still holds)
         db_memo.rebuild_if_changed("proj", force=True, max_memos=1)
-        self.assertEqual(self.model.calls, 3)
+        self.assertEqual(self.model.calls, 6)
         self.assert_all_internal()
 
     def test_redrafts_after_resolution(self):
@@ -640,7 +640,7 @@ class TestRebuild(Base):
         self.resolve("f1")
         out = db_memo.rebuild_if_changed("proj", max_memos=1)
         self.assertEqual(out["drafted"], 1)
-        self.assertEqual(self.model.calls, 2)
+        self.assertEqual(self.model.calls, 4)
         self.assertIn("f1", [x["finding_id"] for x in db_memo._load_ledger(self.ac["id"])])
 
     def _prime_body(self):
@@ -721,10 +721,10 @@ class TestRebuild(Base):
         self.seed([_finding(3, "vacuum_stale", "availability", "medium", ["availability"], object_name="o")])
         self.assertEqual(len(self.db.tables["legal_memo_drafts"]), 3)  # AC, DP, OR
         out = db_memo.rebuild_if_changed("proj", max_memos=1)
-        self.assertEqual(self.model.calls, 1)
+        self.assertEqual(self.model.calls, 2)
         self.assertEqual(sorted(m["outcome"] for m in out["memos"]), ["deferred", "deferred", "drafted"])
         out = db_memo.rebuild_if_changed("proj", max_memos=5)
-        self.assertEqual(self.model.calls, 3)
+        self.assertEqual(self.model.calls, 6)
         self.assertEqual(out["skipped"], 1)
         self.assertEqual(out["drafted"], 2)
         self.assert_all_internal()
@@ -746,7 +746,7 @@ class TestRebuild(Base):
     def test_run_covers_projects_with_open_findings(self):
         out = db_memo.run()
         self.assertEqual(list(out), ["proj"])
-        self.assertEqual(self.model.calls, 2)  # AC + DP
+        self.assertEqual(self.model.calls, 4)  # AC + DP, each draft + attack
 
 
 # ── gauntlet ───────────────────────────────────────────────────────────────────────────
@@ -1040,3 +1040,37 @@ def test_ensure_memo_accepts_list_or_dict_insert_echo(monkeypatch):
         memo = db_memo._ensure_memo("proj", "operational_resilience", {})
         assert isinstance(memo, dict) and memo.get("id")
 
+
+
+class TestAdversarial(unittest.TestCase):
+    ARGS = [{"key": "row_level_isolation", "strength": "supported",
+             "claim": "Row-level isolation holds for client data", "supports": ["abcd1234ef56", "00"], "undermines": []},
+            {"key": "audit_gaps", "strength": "unassessed", "claim": "audit gaps exist", "supports": []}]
+
+    def _fake_model(self, text):
+        m = _FakeModel()
+        m.fixed = text
+        return m
+
+    def test_attack_maps_to_argument_keys(self):
+        m = self._fake_model("row_level_isolation: fingerprints are one week stale, the grant was re-measured\n- junk")
+        with mock.patch.object(db_memo, "_call_model", lambda p: (m.complete("x", "y", p)["text"], "p", "fake-model")):
+            args, meta = db_memo.adversarial_pass({"title": "t", "memo_kind": AC}, self.ARGS, [])
+        ra = {a["key"]: a.get("resilience") for a in args}
+        self.assertIn("stale", (ra["row_level_isolation"] or {}).get("attack", ""))
+        self.assertIsNone(ra["audit_gaps"], "unassessed arguments earn no attack")
+        self.assertEqual(meta["arguments_attacked"], 1) and self.assertEqual(meta["model"], "fake-model")
+
+    def test_model_unavailable_skips_without_raise(self):
+        with mock.patch.object(db_memo, "_call_model", side_effect=RuntimeError("off")):
+            args, meta = db_memo.adversarial_pass({"title": "t", "memo_kind": AC}, self.ARGS, [])
+        self.assertTrue(all(a.get("resilience") is None for a in args))
+        self.assertIn("unavailable", meta["skipped"])
+
+    def test_disabled_and_no_targets(self):
+        with mock.patch.object(db_memo, "ADVERSARIAL_ENABLED", False):
+            args, meta = db_memo.adversarial_pass({"title": "t", "memo_kind": AC}, self.ARGS, [])
+        self.assertIn("disabled", meta["skipped"])
+        args, meta = db_memo.adversarial_pass({"title": "t", "memo_kind": AC},
+                                              [{"key": "k", "strength": "unassessed"}], [])
+        self.assertIn("no strengthened", meta["skipped"])

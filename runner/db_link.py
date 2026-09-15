@@ -276,6 +276,33 @@ def cmd_doctor(a):
     return 0
 
 
+def cmd_demand(a):
+    """Probe backlog by demand: memo arguments nobody has measured (unassessed) — the next
+    probe classes worth writing, per project."""
+    import db
+    rows = db.select_all("legal_memo_drafts", {"select": "project,memo_kind,arguments"}) or []
+    out = {}
+    for r in rows:
+        kind = r.get("memo_kind")
+        spec = C.MEMO_KINDS.get(kind, {})
+        args = r.get("arguments") or []
+        by_key = {x.get("key"): x.get("strength") for x in args if isinstance(x, dict)}
+        for key in (spec.get("arguments") or {}):
+            strength = by_key.get(key)
+            if strength in (None, "unassessed"):
+                out.setdefault(r.get("project") or "?", []).append((kind, key))
+    if a.json:
+        print(json.dumps(out, indent=2))
+    else:
+        if not out:
+            print("no unassessed memo arguments — every position has evidence coverage")
+        for proj, items in sorted(out.items()):
+            print("%s" % proj)
+            for kind, key in items:
+                print("  %-24s %s" % (kind, key))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="db_link", description="Database Steering: link, test, scan, read")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -299,6 +326,8 @@ def main(argv=None):
     p = sub.add_parser("memos"); p.add_argument("project"); p.add_argument("--render"); p.set_defaults(fn=cmd_memos)
     p = sub.add_parser("doctor", help="report which optional drivers, CLIs and env keys are present")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("demand", help="probe backlog by demand: memo arguments with no evidence coverage yet")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_demand)
     a = ap.parse_args(argv)
     return a.fn(a)
 

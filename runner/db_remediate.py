@@ -350,19 +350,16 @@ CLOSEOUT_LOOKBACK_DAYS = 14
 _fp12 = re.compile(r"fp:([0-9a-f]{12})")
 
 
-def closeout_pr(repo, pr, live_findings):
-    """Measure one db-steer PR against live findings and leave a single marked comment
-    (PATCHed in place) on its head commit. Commit comments, not issue comments: they ride
-    contents:write which the App provably has. Returns a state string."""
+def _measure_pr(pr, live_findings):
+    """The measurement half of closeout, reused by the persistence layer. {state, total,
+    resolved, open, merged, fps12, group} or {"skip": reason}."""
     title = str(pr.get("title") or "")
     head_ref = str((pr.get("head") or {}).get("ref") or "")
     if not (title.startswith("db-steering:") or head_ref.startswith("fix/db-steer-")):
-        return "not ours"
-    body = str(pr.get("body") or "")
-    fps12 = sorted(set(_fp12.findall(body)))
+        return {"skip": "not ours"}
+    fps12 = sorted(set(_fp12.findall(str(pr.get("body") or ""))))
     if not fps12:
-        return "no fingerprints"
-    merged = bool(pr.get("merged_at"))
+        return {"skip": "no fingerprints"}
     resolved, open_ = set(), set()
     for f in live_findings:
         fp = str(f.get("fingerprint") or "")
@@ -370,23 +367,41 @@ def closeout_pr(repo, pr, live_findings):
             if fp.startswith(p12):
                 (resolved if str(f.get("status")) == "resolved" else open_).add(p12)
     n_res, n_open = len(resolved), len(open_)
+    merged = bool(pr.get("merged_at"))
     state = ("verified-resolved" if merged and n_open == 0 and n_res > 0
              else "merged-not-confirmed" if merged and n_open > 0
-             else "open-pending" if not merged else "merged-no-live-match")
+             else None)
+    # (the rest of the state logic continues in closeout_pr via this shared calc)
+    return {"state0": state, "total": len(fps12), "resolved": n_res, "open": n_open,
+            "open_fps": sorted(open_), "merged": merged, "merged_at": pr.get("merged_at"),
+            "head_sha": str((pr.get("head") or {}).get("sha") or ""),
+            "group": head_ref.replace("fix/db-steer-", "") if head_ref.startswith("fix/db-steer-") else ""}
+
+
+def closeout_pr(repo, pr, live_findings):
+    """Measure one db-steer PR against live findings and leave a single marked comment
+    (PATCHed in place) on its head commit. Commit comments, not issue comments: they ride
+    contents:write which the App provably has. Returns a state string."""
+    m = _measure_pr(pr, live_findings)
+    if m.get("skip"):
+        return m["skip"]
+    state = m["state0"] or ("open-pending" if not m["merged"] else "merged-no-live-match")
+    head_ref = str((pr.get("head") or {}).get("ref") or "")
     first = "%s [%s] **%s** — %d/%d listed findings resolved on live%s" % (
-        CLOSEOUT_MARKER, head_ref, state.replace("-", " "), n_res, len(fps12),
-        " (merged %s)" % str(pr.get("merged_at") or "")[:10] if merged else "")
-    details = ""
+        CLOSEOUT_MARKER, head_ref, state.replace("-", " "), m["resolved"], m["total"],
+        " (merged %s)" % str(m.get("merged_at") or "")[:10] if m["merged"] else "")
     if state == "merged-not-confirmed":
         details = ("\n\nStill open on live per the latest scan — either the migration has not "
                    "been applied to production yet, or it did not do what the finding expected. "
-                   "Fingerprints still open: " + ", ".join("fp:%s" % p for p in sorted(open_)[:20]))
+                   "Fingerprints still open: " + ", ".join("fp:%s" % p for p in m["open_fps"][:20]))
     elif state == "verified-resolved":
         details = "\n\nThe continuous review (read-only probes) confirms every listed finding is resolved."
     elif state == "open-pending":
-        details = "\n\n%d of the listed findings are still open on live — expected while this is unmerged." % n_open
+        details = "\n\n%d of the listed findings are still open on live — expected while this is unmerged." % m["open"]
+    else:
+        details = ""
     comment_body = first + details
-    sha = str((pr.get("head") or {}).get("sha") or "")
+    sha = m["head_sha"]
     if not sha:
         return state
     existing = _gh("GET", "/repos/%s/commits/%s/comments?per_page=100" % (repo, sha))
@@ -426,6 +441,17 @@ def closeout_project(project_row):
             st = closeout_pr(repo, pr, findings)
             if st != "not ours":
                 states[pr.get("number")] = st
+                # Persist the measurement for outcome learning (db_learning.efficacy).
+                try:
+                    m = _measure_pr(pr, findings)
+                    if not m.get("skip"):
+                        mstate = m["state0"] or ("open-pending" if not m["merged"] else "merged-no-live-match")
+                        import db_learning
+                        db_learning.record_closeout(name, repo, pr.get("number"), m.get("group") or None,
+                                                    mstate, m["total"], m["resolved"], m["open"], m["merged"])
+                except Exception as e:
+                    print("db_remediate: closeout persistence for %s#%s failed: %s"
+                          % (repo, pr.get("number"), str(e)[:100]))
         except Exception as e:
             states[pr.get("number")] = "error: %s" % str(e)[:100]
     return {"project": name, "ok": True, "states": states}
@@ -450,6 +476,14 @@ def remediate_project(project_row, *, budget):
     plans = [p for p in plans if p[1] and p[2]]
     if not plans:
         return {"project": name, "ok": True, "reason": "nothing mechanical open"}
+    # Outcome learning: try the fix classes that have actually resolved live findings
+    # first; a class with zero history sits mid-order until it has a track record.
+    try:
+        import db_learning
+        order = {g: i for i, g in enumerate(db_learning.efficacy_order([p[0] for p in plans]))}
+        plans = sorted(plans, key=lambda p: order.get(p[0], 0))
+    except Exception as e:
+        print("db_remediate: efficacy ordering skipped: %s" % str(e)[:100])
     if not ENABLED:
         return {"project": name, "ok": True, "planned": [
             {"group": g, "findings": len(fps), "skipped": skipped} for g, _s, fps, skipped in plans],

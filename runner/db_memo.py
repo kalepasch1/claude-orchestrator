@@ -746,6 +746,63 @@ def _call_model(prompt: str):
     return text, prov, model
 
 
+# ── adversarial resilience (opposing counsel for every strengthened argument) ───────
+
+ADVERSARIAL_ENABLED = os.environ.get("ORCH_DB_MEMO_ADVERSARIAL", "true").lower() not in ("0", "false", "no", "off")
+ADVERSARIAL_CAP = int(os.environ.get("ORCH_DB_MEMO_ADVERSARIAL_CAP", "3000"))
+
+
+def _adversarial_prompt(memo_row, args, ledger):
+    """The attack prompt names only the strengthened arguments and their fingerprint
+    anchors — small by design, so a costless local model can answer it."""
+    rows = []
+    for a in args:
+        if a.get("strength") not in ("supported", "undermined"):
+            continue
+        fps = (a.get("supports") or a.get("undermines") or [])[:4]
+        rows.append("- [%s] %s (fps: %s)" % (a.get("strength"), a.get("claim"), ", ".join("fp:" + f for f in fps)))
+    title = memo_row.get("title") or memo_row.get("memo_kind") or "memo"
+    return (f"INTERNAL memo draft '{title}' asserts these argument strengths from database evidence.\n"
+            f"Play opposing counsel: for each argument give the single strongest attack on the "
+            f"cited evidence (ambiguity, stale data, alternative explanation, missing control), "
+            f"or SAY 'holds' if no material attack exists. One line per argument, keyed by the "
+            f"argument text's prefix. Be specific; never invent findings.\n\n" + "\n".join(rows))[:ADVERSARIAL_CAP + PROMPT_CAP]
+
+
+def adversarial_pass(memo_row, args, ledger):
+    """{arg_key: {"attack": str}} merged onto a copy of args as a['resilience'], plus a
+    per-memo resilience summary. Model-unavailable or unparsable -> args unchanged with a
+    'skipped' note. Never raises; one model call."""
+    args = [dict(a) for a in args or []]
+    if not ADVERSARIAL_ENABLED:
+        return args, {"skipped": "disabled"}
+    targets = [a for a in args if a.get("strength") in ("supported", "undermined")]
+    if not targets:
+        return args, {"skipped": "no strengthened arguments"}
+    try:
+        text, prov, model = _call_model(_adversarial_prompt(memo_row, args, ledger))
+    except Exception as e:
+        return args, {"skipped": "model unavailable: %s: %s" % (type(e).__name__, str(e)[:80])}
+    # map attack lines to argument keys: claim prefix or 'key:' markers; unmatched text is
+    # recorded once, not forced onto an argument
+    out = {}
+    for line in str(text or "").splitlines():
+        ln = line.strip().lstrip("-0123456789. ")
+        if not ln:
+            continue
+        for a in targets:
+            claim = str(a.get("claim") or "")
+            if ln.lower().startswith(str(a.get("key") or "").lower() + ":") or \
+               (claim and ln.lower().startswith(claim[:18].lower())):
+                out[a["key"]] = ln.split(":", 1)[-1].strip()[:300]
+                break
+    for a in args:
+        if a["key"] in out:
+            a["resilience"] = {"attack": out[a["key"]], "model": model}
+    attacked = [k for k, v in out.items() if v and "holds" not in v.lower()]
+    return args, {"model": model, "arguments_attacked": len(attacked), "of": len(targets)}
+
+
 def validate_draft(text: str, ledger: list):
     """HOLLOW-MEMO GUARD. Returns (body, None) when acceptable, (None, reason) otherwise.
     Invalid citations are stripped before judging; the closing line is appended if the
@@ -838,6 +895,13 @@ def _rebuild_one(memo: dict, force: bool) -> dict:
         return {"memo_kind": memo_kind, "outcome": "rejected_fallback_deterministic", "reason": reason,
                 "model_calls": 1}
 
+    adv_calls = 0
+    if body is not None and model and model != "deterministic":
+        # Opposing-counsel pass: only on real model drafts (a deterministic template earns
+        # no attacks), budgeted to one call, and never blocks a draft on failure.
+        args, _adv = adversarial_pass({**memo, "title": memo.get("title"), "memo_kind": memo_kind}, args, ledger)
+        common["arguments"] = args
+        adv_calls = 1 if _adv.get("model") else 0
     deterministic = (model == "deterministic")
     patch = {**common, "body": body, "thesis": _thesis_of(body),
              # A deterministic body does not consume the hash: the next run tries the model
@@ -852,7 +916,8 @@ def _rebuild_one(memo: dict, force: bool) -> dict:
     except Exception as e:
         print(f"db_memo: fleet_rag index of {project}/{memo_kind} failed: {type(e).__name__}: {str(e)[:100]}")
     return {"memo_kind": memo_kind, "outcome": "deterministic" if deterministic else "drafted",
-            "reason": reason, "model_calls": 0 if (deterministic and not ledger) else 1,
+            "reason": reason,
+            "model_calls": (0 if (deterministic and not ledger) else 1) + adv_calls,
             "chars": len(body), "arguments": {a["key"]: a["strength"] for a in args}}
 
 

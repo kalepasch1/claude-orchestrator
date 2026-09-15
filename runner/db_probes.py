@@ -543,6 +543,33 @@ def _p_inventory(rows, source, facts=None):
                                   "db_size_bytes": size})]
 
 
+def _p_fk_graph(rows, source, facts=None):
+    """Facts-only: the FK edge list db_chains computes blast radius from. Emits nothing."""
+    facts = facts if facts is not None else {}
+    edges = []
+    for r in rows:
+        child = _s(_v(r, "child_table"))
+        parent = _s(_v(r, "parent_table"))
+        if not child or not parent:
+            continue
+        edges.append({"child": child, "parent": parent,
+                      "columns": [str(x) for x in _list(_v(r, "fk_columns"))]})
+    facts["fk_edges"] = edges[:1000]
+    return []
+
+
+def _p_columns(rows, source, facts=None):
+    """Facts-only: {table: [columns]} — policy synthesis detects owner/tenant columns here."""
+    facts = facts if facts is not None else {}
+    inv = {}
+    for r in rows:
+        t = _s(_v(r, "tablename"))
+        if t:
+            inv[t] = [str(x) for x in _list(_v(r, "columns"))][:200]
+    facts["columns"] = inv
+    return []
+
+
 def _p_long_txns(rows, source, facts=None):
     out = []
     for r in rows:
@@ -1342,6 +1369,22 @@ _SQL = {
                     "order by retained_bytes desc nulls last, s.slot_name limit 50"},
     "public_storage_buckets": {
         "postgres": "select id, name, public, file_size_limit, created_at from storage.buckets order by name limit 200"},
+    # Facts-only probes: they emit NO findings, they feed snapshot facts that chains and
+    # policy synthesis read (blast radius, candidate RLS owner columns).
+    "fk_graph_edges": {
+        "postgres": "select n.nspname as child_schema, c.relname as child_table, rn.nspname as parent_schema, "
+                    "rc.relname as parent_table, "
+                    "(select array_agg(a.attname order by x.ord) from unnest(k.conkey) with ordinality as x(attnum, ord) "
+                    "join pg_catalog.pg_attribute a on a.attrelid = k.conrelid and a.attnum = x.attnum) as fk_columns "
+                    "from pg_catalog.pg_constraint k join pg_catalog.pg_class c on c.oid = k.conrelid "
+                    "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    "join pg_catalog.pg_class rc on rc.oid = k.confrelid "
+                    "join pg_catalog.pg_namespace rn on rn.oid = rc.relnamespace "
+                    f"where k.contype = 'f' and {_user_schema('n.nspname')} order by c.relname limit 1000"},
+    "column_inventory": {
+        "postgres": "select table_name as tablename, array_agg(column_name order by ordinal_position) as columns "
+                    "from information_schema.columns where table_schema = 'public' "
+                    "group by table_name order by table_name limit 500"},
 }
 
 
@@ -1356,6 +1399,10 @@ def _probe(pid, title, category, tier, evidence_kinds, parse, remediation, **gat
 PROBES = [
     _probe("table_inventory_facts", "Table/view/function counts and database size", "availability", "cheap",
            ("availability",), _p_inventory, "Informational; feeds the posture snapshot. No action."),
+    _probe("fk_graph_edges", "Foreign-key graph edges (facts for blast-radius chains)", "integrity", "cheap",
+           ("integrity",), _p_fk_graph, "Facts-only; no findings by design."),
+    _probe("column_inventory", "Column names per table (facts for policy synthesis)", "privacy", "cheap",
+           ("data_minimization",), _p_columns, "Facts-only; no findings by design."),
     _probe("extensions_in_public", "Extensions installed in schema public", "schema_drift", "cheap",
            ("change_control",), _p_extensions,
            "Move extensions to the `extensions` schema in a new migration (`create extension … with schema extensions` "

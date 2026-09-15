@@ -54,7 +54,7 @@ def only(findings):
 class TestCatalog(unittest.TestCase):
     def test_forty_six_probes_with_unique_ids(self):
         ids = [p["id"] for p in PROBES]
-        self.assertEqual(len(ids), 46)
+        self.assertEqual(len(ids), 48)  # fk_graph_edges + column_inventory joined (facts-only) 2026-09-14
         self.assertEqual(len(set(ids)), len(ids))
         self.assertTrue(all(re.match(r"^[a-z][a-z0-9_]+$", i) for i in ids))
 

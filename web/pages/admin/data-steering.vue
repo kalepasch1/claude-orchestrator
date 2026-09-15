@@ -67,6 +67,24 @@ function scoreClass(value: number | null) { return value == null ? 'none' : valu
 function strengths(memo: any) { const args = Array.isArray(memo.arguments) ? memo.arguments : []; if (!args.length) return '—'; const tally: Record<string, number> = {}; for (const a of args) { const k = String(a?.strength || 'unknown'); tally[k] = (tally[k] || 0) + 1 } return Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(', ') }
 function gauntletText(g: any) { if (!g || typeof g !== 'object') return ''; const v = String(g.verdict || g.position || g.opinion || '').trim(); const s = String(g.summary || '').trim(); return truncate([v && `Verdict: ${v}`, s].filter(Boolean).join(' — ') || truncate(JSON.stringify(g), 400), 600) }
 function objectName(f: any) { return [f.object_schema, f.object_name].filter(Boolean).join('.') || '—' }
+const trackedSources = computed(() => (data.value.sources || []).filter((s: any) => data.value.posture?.[s.id]))
+const healthScore = computed<number | null>(() => { const scores = trackedSources.value.map((s: any) => Number(data.value.posture[s.id]?.score)).filter((v: number) => !isNaN(v)); return scores.length ? Math.min(...scores) : null })
+const healthTrend = computed<number | null>(() => {
+  // trend of the worst source — the one the score card shows
+  let worstId = '', worstScore = Infinity
+  for (const s of trackedSources.value) {
+    const cur = Number(data.value.posture[s.id]?.score)
+    if (!isNaN(cur) && cur < worstScore) { worstScore = cur; worstId = s.id }
+  }
+  if (!worstId) return null
+  const prev = Number(data.value.posturePrev?.[worstId]?.score)
+  return isNaN(prev) ? null : worstScore - prev
+})
+const attentionCount = computed(() => (data.value.findings?.open_by_severity?.critical || 0) + (data.value.findings?.open_by_severity?.high || 0))
+const memoSummary = computed(() => {
+  const ms = data.value.memos || []
+  return { total: ms.filter((m: any) => (m.evidence_count || 0) > 0).length, reviewed: ms.filter((m: any) => m.gauntlet_at).length, stale: ms.filter((m: any) => m.status === 'stale').length }
+})
 
 watch(user, (u) => { if (u) load() })
 onMounted(() => { if (user.value) load() })
@@ -91,6 +109,26 @@ onMounted(() => { if (user.value) load() })
     <div v-else-if="error" class="ds-empty error">{{ error }} <button class="ghost" @click="load">Retry</button></div>
     <template v-else>
       <div v-if="notice" class="ds-notice">{{ notice }}<button class="ghost" @click="notice = ''">Dismiss</button></div>
+
+      <!-- Plain-English health cards: what a human decides from in 5 seconds -->
+      <section class="ds-cards" v-if="data.sources?.length || data.memos?.length">
+        <article class="ds-card" :class="scoreClass(healthScore)">
+          <strong>{{ healthScore == null ? '—' : healthScore.toFixed(0) }}<small v-if="healthTrend != null" class="trend">{{ healthTrend > 0 ? '▲ +' : healthTrend < 0 ? '▼ ' : '' }}{{ Math.abs(healthTrend ?? 0).toFixed(1) }}</small></strong>
+          <span>Posture{{ project ? '' : ' (worst source)' }}<br><small>{{ healthScore == null ? '' : healthScore >= 85 ? 'healthy' : healthScore >= 60 ? 'watch it' : 'act soon' }}</small></span>
+        </article>
+        <article class="ds-card" :class="attentionCount ? 'bad' : 'good'">
+          <strong>{{ attentionCount }}</strong>
+          <span>Need attention now<br><small>open critical/high gaps</small></span>
+        </article>
+        <article class="ds-card" :class="data.closeouts?.not_confirmed ? 'warn' : 'good'">
+          <strong>{{ data.closeouts?.open_prs ?? 0 }}</strong>
+          <span>Fixes in flight<br><small>{{ data.closeouts?.verified ?? 0 }} verified on live{{ data.closeouts?.not_confirmed ? ` · ${data.closeouts.not_confirmed} unproven` : '' }}</small></span>
+        </article>
+        <article class="ds-card good">
+          <strong>{{ memoSummary.total }}</strong>
+          <span>Memos evidence-backed<br><small>{{ memoSummary.reviewed }} gauntlet-reviewed · {{ memoSummary.stale }} stale</small></span>
+        </article>
+      </section>
 
       <!-- Posture strip -->
       <section class="ds-posture" v-if="data.sources?.length">
@@ -236,6 +274,13 @@ onMounted(() => { if (user.value) load() })
 .pill.gauntleted{background:#2d2450;color:#b79cff;margin-left:6px}
 .gauntlet-card{border:1px solid #3a3352;background:#191624;border-radius:8px;padding:10px 12px;margin-bottom:10px}
 .gauntlet-card p{color:#b9b3d6;margin:6px 0 0;line-height:1.5}
+.ds-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px}
+.ds-card{border:1px solid #2c2c34;background:#17171c;border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:14px}
+.ds-card strong{font-size:26px;font-weight:750;white-space:nowrap}
+.ds-card span{color:#9a9aa2;font-size:12px;line-height:1.4}
+.ds-card small{color:#8b8b96}
+.ds-card .trend{font-size:13px;margin-left:8px;color:#7ec98f}
+.ds-card.good strong{color:#7ec98f}.ds-card.warn strong{color:#e5b567}.ds-card.bad strong{color:#ef7f7f}
 .ds{max-width:1240px;margin:0 auto;padding:24px;color:#e7e7ea;font-size:13px}
 .ds-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:20px;flex-wrap:wrap}
 .ds-head h1{font-size:22px;font-weight:700;margin:4px 0 6px}

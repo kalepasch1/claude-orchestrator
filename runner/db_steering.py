@@ -267,6 +267,13 @@ def scan_source(source, tiers=None, dry_run=False, adapters=None, probes=None, f
     findings = list(result.get("findings") or [])
     facts = dict(result.get("facts") or {})
     results = list(result.get("results") or [])
+    content = _import("db_content_probe")
+    if content is not None and content.source_enabled(source):
+        # Opt-in twice (env + per-source config): the loop only counts; it never reads values.
+        try:
+            findings.extend(content.collect(source, adapters.query))
+        except Exception as e:
+            print("db_steering: content probe failed: %s" % str(e)[:120])
     try:
         findings.extend(_repo_migration_drift(source, facts))
     except Exception as e:
@@ -553,6 +560,22 @@ def build_brief(project, findings=None, signals=None):
     lines = ["## Database steering (live findings for %s — apply when your change touches these objects)" % project]
     if counts:
         lines.append("Open gaps: " + ", ".join("%d %s" % (counts[s], s) for s in reversed(C.SEVERITIES) if counts.get(s)))
+    learn = _import("db_learning")
+    if learn is not None:
+        # Trajectory first (is it getting better?), then the regressions a static
+        # severity list would bury, then memo signals and fleet baselines as before.
+        for s in learn.trend_lines(project):
+            lines.append("Trajectory: " + s)
+        for s in learn.recurrence_lines(project)[:2]:
+            lines.append("- " + s)
+    chains = _import("db_chains")
+    if chains is not None:
+        # Findings are rows; arguments are chains: FK-graph reach for the worst gaps,
+        # and the in-fleet peer that already closes this failure class.
+        for s in chains.chain_lines(project)[:2]:
+            lines.append("- " + s)
+        for s in chains.peer_copy_lines(project)[:1]:
+            lines.append("- " + s)
     for s in (signals or [])[:6]:
         lines.append("- " + str(s).strip())
     for s in _baseline_lines(project)[:2]:

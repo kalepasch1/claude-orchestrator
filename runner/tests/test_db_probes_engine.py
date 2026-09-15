@@ -66,7 +66,7 @@ class BatchingTest(_NoNetwork):
         self.assertGreater(len(batched), 5)
         self.assertTrue(all(r["ok"] for r in batched), [r for r in batched if not r["ok"]])
         n_batch_calls = sum(1 for c in q.calls if c.startswith("select json_build_object("))
-        self.assertLessEqual(n_batch_calls, 2)
+        self.assertLessEqual(n_batch_calls, 3)  # 2 facts-only probes joined the cheap batch 2026-09-14
         self.assertLess(out["stats"]["round_trips"], out["stats"]["run"])
         self.assertTrue(any(f["probe_id"] == "rls_disabled_tables" for f in out["findings"]))
 
