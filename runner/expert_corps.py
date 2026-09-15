@@ -83,6 +83,9 @@ VERTICALS = {
                 "IP & training data", "automated decisioning"],
     "corp":    ["securities & capital formation", "M&A and change of control",
                 "professional responsibility", "commercial contracting"],
+    "data":    ["database security & row-level access", "privacy & data-protection engineering",
+                "records integrity & audit trails", "data retention & e-discovery readiness",
+                "performance & reliability engineering"],
 }
 # Analytic METHODS — the real source of disagreement in expert panels. A textualist and a
 # consequentialist reading the same statute reach different places, and that gap is the signal.

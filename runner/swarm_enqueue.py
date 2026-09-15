@@ -54,7 +54,7 @@ def _project(record):
     return proj, pid
 
 
-def enqueue(record):
+def enqueue(record):  # noqa: FAIL_SOFT_ERROR — raises on purpose: the bots surface filed=False (see docstring)
     """File one swarm remediation task. Returns enqueue.EnqueueResult.
 
     Raises on failure ON PURPOSE. The bots already catch and surface `filed=False`; a
@@ -83,6 +83,11 @@ def enqueue(record):
         "note": pipeline_contract.note(str(record.get("note") or ""), source=SWARM_SOURCE),
         "priority": SWARM_PRIORITY,
     }
+    if record.get("bypass_backpressure"):
+        # An explicit, per-record opt-out of release backpressure (db.insert pops the
+        # marker). Used by database steering, whose tasks are the migrations that turn a
+        # red release green; nothing else should set it casually.
+        row["_bypass_backpressure"] = True
 
     def find_open(key):
         return _et._find_open_by_intent(pid, key)

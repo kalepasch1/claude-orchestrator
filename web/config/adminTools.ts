@@ -69,6 +69,8 @@ export const ADMIN_TOOLS: readonly AdminTool[] = Object.freeze([
     blurb: 'Continuous control status, and which evidence is missing.' },
   { label: 'Regulatory', to: '/admin/regulatory', icon: '⚖', group: 'Govern',
     blurb: 'Jurisdictional posture and the authority behind each position.' },
+  { label: 'Data steering', to: '/admin/data-steering', icon: '⛁', group: 'Govern',
+    blurb: 'Every linked database under perpetual read-only review: findings, briefs, memo evidence.' },
   { label: 'Users', to: '/admin/users', icon: '☺', group: 'Govern',
     blurb: 'Who has access, at what level, and how it was granted.' },
   { label: 'Chaos', to: '/admin/chaos', icon: '✷', group: 'Govern',
