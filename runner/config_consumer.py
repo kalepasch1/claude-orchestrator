@@ -279,12 +279,12 @@ class _ConfigConsumer:
             pass
 
 
-_consumer = _ConfigConsumer()
+_config_instance = _ConfigConsumer()
 
 
 def load_all() -> Dict[str, str]:
     """Return all ORCH_* prefixed environment variables as a dict (without prefix)."""
-    return _consumer.load_all()
+    return _config_instance.load_all()
 
 
 def get(key: str, default: str = "") -> str:
@@ -293,22 +293,22 @@ def get(key: str, default: str = "") -> str:
     Returns default if key is None/empty/not found/whitespace-only.
     Never raises — fail-soft by design.
     """
-    return _consumer.get(key, default)
+    return _config_instance.get(key, default)
 
 
 def get_int(key: str, default: int = 0) -> int:
     """Get ORCH_{key} as integer with fallback to default."""
-    return _consumer.get_int(key, default)
+    return _config_instance.get_int(key, default)
 
 
 def get_bool(key: str, default: bool = False) -> bool:
     """Get ORCH_{key} as boolean (true/1/yes/on -> True, else False)."""
-    return _consumer.get_bool(key, default)
+    return _config_instance.get_bool(key, default)
 
 
 def get_float(key: str, default: float = 0.0) -> float:
     """Get ORCH_{key} as float with fallback to default."""
-    return _consumer.get_float(key, default)
+    return _config_instance.get_float(key, default)
 
 
 def load_config(key: str, default: str = "") -> str:
@@ -318,12 +318,12 @@ def load_config(key: str, default: str = "") -> str:
     Returns env value if DB unavailable, then default if not in env.
     Never raises — fail-soft by design.
     """
-    return _consumer.load_config(key, default)
+    return _config_instance.load_config(key, default)
 
 
 def invalidate_cache(key: Optional[str] = None) -> None:
     """Clear cached configuration values — one key when given, otherwise all."""
-    _consumer.invalidate_cache(key)
+    _config_instance.invalidate_cache(key)
 
 
 if __name__ == "__main__":
