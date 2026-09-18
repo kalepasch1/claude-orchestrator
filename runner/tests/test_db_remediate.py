@@ -63,16 +63,17 @@ class SqlGenerationTest(unittest.TestCase):
 
 
 class FakeGh:
-    def __init__(self, prs=None, repo_meta=None):
+    def __init__(self, prs=None, repo_meta=None, closed_prs=None):
         self.calls = []
         self.prs = prs if prs is not None else []
+        self.closed_prs = closed_prs if closed_prs is not None else []
         self.repo_meta = repo_meta or {"default_branch": "main"}
         self.ref_sha = "b" * 40
 
     def __call__(self, method, path, body=None):
         self.calls.append((method, path, body))
         if path.startswith("/repos/") and "/pulls" in path and method == "GET":
-            return list(self.prs)
+            return list(self.closed_prs) if "state=closed" in path else list(self.prs)
         if path.endswith("/git/ref/heads/main"):
             return {"object": {"sha": self.ref_sha}}
         if method == "GET" and path.count("/") == 2:
@@ -100,10 +101,72 @@ class PrLifecycleTest(unittest.TestCase):
             res = R.ensure_draft_pr("proj", "org/repo", "access-grants", "select 1;", ["fp1"])
         self.assertTrue(res["ok"]) and res.get("pr")
         methods = [m for m, _p, _b in gh.calls]
-        self.assertEqual(methods, ["GET", "GET", "GET", "POST", "PUT", "POST"])
+        self.assertEqual(methods, ["GET", "GET", "GET", "GET", "POST", "PUT", "POST"])
         pr_body = gh.calls[-1][2]
         self.assertTrue(pr_body["draft"]) and self.assertEqual(pr_body["base"], "main")
         self.assertIn("fp:fp1", pr_body["body"])
+
+    CLOSED_UNMERGED = {"number": 342, "html_url": "https://example.test/pr/342", "merged_at": None,
+                       "head": {"ref": "fix/db-steer-audit-columns"}}
+    CLOSED_MERGED = {"number": 300, "html_url": "https://example.test/pr/300",
+                     "merged_at": "2026-09-18T10:00:00Z", "head": {"ref": "fix/db-steer-audit-columns"}}
+
+    @staticmethod
+    def _writes(gh):
+        return [(m, p) for m, p, _b in gh.calls if m in ("POST", "PUT")]
+
+    def test_declined_group_is_not_refiled(self):
+        # Two closed-unmerged PRs on the head branch: the reviewer said no twice, so the
+        # group returns a skip and nothing is created (no branch, no file, no PR).
+        gh = FakeGh(closed_prs=[dict(self.CLOSED_UNMERGED), dict(self.CLOSED_UNMERGED, number=406)])
+        with patch.object(R, "_gh", gh), patch.object(R, "_gh_token", lambda: "t"), \
+             patch.dict(os.environ, {"ORCH_DB_REMEDIATE_DECLINE_AFTER": "2"}):
+            res = R.ensure_draft_pr("proj", "org/repo", "audit-columns", "select 1;", ["fp1"])
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["skip"], "declined on the repo: 2 unmerged closures of fix/db-steer-audit-columns")
+        self.assertEqual(res["skipped"], res["skip"])
+        self.assertEqual(self._writes(gh), [])
+        closed_calls = [p for m, p, _b in gh.calls if "state=closed" in p]
+        self.assertEqual(closed_calls,
+                         ["/repos/org/repo/pulls?state=closed&head=org:fix/db-steer-audit-columns&per_page=10"])
+
+    def test_one_unmerged_and_one_merged_closure_still_files(self):
+        # A merged closure is a success, not a decline: only unmerged ones count.
+        gh = FakeGh(closed_prs=[dict(self.CLOSED_UNMERGED), dict(self.CLOSED_MERGED)])
+        with patch.object(R, "_gh", gh), patch.object(R, "_gh_token", lambda: "t"), \
+             patch.dict(os.environ, {"ORCH_DB_REMEDIATE_DECLINE_AFTER": "2"}):
+            res = R.ensure_draft_pr("proj", "org/repo", "audit-columns", "select 1;", ["fp1"])
+        self.assertTrue(res["ok"])
+        self.assertNotIn("skip", res)
+        self.assertEqual(res["pr"], "https://example.test/pr/1")
+        self.assertEqual([m for m, _p in self._writes(gh)], ["POST", "PUT", "POST"])
+
+    def test_decline_check_disabled_with_zero(self):
+        # Knob "0" disables the check: five declines and it still files, and the closed
+        # listing is never even requested.
+        gh = FakeGh(closed_prs=[dict(self.CLOSED_UNMERGED, number=n) for n in (342, 406, 412, 413, 77)])
+        with patch.object(R, "_gh", gh), patch.object(R, "_gh_token", lambda: "t"), \
+             patch.dict(os.environ, {"ORCH_DB_REMEDIATE_DECLINE_AFTER": "0"}):
+            res = R.ensure_draft_pr("proj", "org/repo", "audit-columns", "select 1;", ["fp1"])
+        self.assertTrue(res["ok"])
+        self.assertNotIn("skip", res)
+        self.assertEqual(res["pr"], "https://example.test/pr/1")
+        self.assertFalse(any("state=closed" in p for _m, p, _b in gh.calls))
+
+    def test_closed_listing_failure_fails_open(self):
+        # A GitHub error on the closed listing must not block filing (fail-soft, like the
+        # rest of the module): it counts as zero closures.
+        gh = FakeGh()
+        real = gh.__call__
+
+        def flaky(method, path, body=None):
+            if "state=closed" in path:
+                gh.calls.append((method, path, body))
+                return {"_http_error": 502, "_message": "Bad Gateway"}
+            return real(method, path, body)
+        with patch.object(R, "_gh", flaky), patch.object(R, "_gh_token", lambda: "t"):
+            res = R.ensure_draft_pr("proj", "org/repo", "audit-columns", "select 1;", ["fp1"])
+        self.assertTrue(res["ok"]) and self.assertEqual(res["pr"], "https://example.test/pr/1")
 
     def test_gh_failure_is_a_reason_not_an_exception(self):
         def bad(method, path, body=None):
@@ -205,6 +268,20 @@ class FleetWiringTest(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["planned"][0]["group"], "access-grants")
         self.assertEqual(res["reason"], "plan-only (ORCH_DB_REMEDIATE=0)")
+
+    def test_declined_skip_reason_reaches_project_result(self):
+        fs = [finding("missing_audit_columns", metrics={"missing": ["created_at", "updated_at"]})]
+        declined = "declined on the repo: 2 unmerged closures of fix/db-steer-audit-columns"
+        with patch.object(R.db, "select_all", lambda t, p, **k: fs), \
+             patch.object(R, "ENABLED", True), \
+             patch.object(R, "repo_for_project", lambda row: "org/repo"), \
+             patch.object(R, "ensure_draft_pr",
+                          lambda *a, **k: {"ok": True, "skipped": declined, "skip": declined}):
+            res = R.remediate_project(dict(self.ROW), budget=3)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["skips"], ["audit-columns: " + declined])
+        self.assertEqual(res["reason"], "audit-columns: " + declined)
+        self.assertEqual(res["pr_results"][0]["skipped"], declined)
 
     def test_nothing_mechanical(self):
         with patch.object(R.db, "select_all", lambda t, p, **k: []):
