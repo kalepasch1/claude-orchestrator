@@ -18,11 +18,18 @@ SAFETY.
     is skipped with a reason, never interpolated raw.
   * Dedupe: one open draft PR per (repo, group). A group whose PR is already open is a
     no-op; the PR body carries the fingerprint list so drift is auditable.
+  * Declined groups stay declined: a group whose head branch has been closed WITHOUT merge
+    ORCH_DB_REMEDIATE_DECLINE_AFTER times is not re-filed. Every new table yields fresh
+    findings, and re-opening the same sweep the reviewer already declined (audit-columns
+    was closed unmerged four times on one repo in a day) is noise, not steering.
   * Fail-soft everywhere: network off, no token, repo unresolvable -> reason string, no raise.
 
 KNOBS (env):
   ORCH_DB_REMEDIATE           "1" enables live PR creation (default "0": plan-only, prints SQL)
   ORCH_DB_REMEDIATE_MAX_PRS   per-cycle cap across the fleet (default "3")
+  ORCH_DB_REMEDIATE_DECLINE_AFTER
+                              stop re-filing a group once this many PRs on its head branch
+                              were closed without merge (default "2"; "0" disables the check)
   ORCH_DB_REMEDIATE_REPOS     optional JSON {project: "owner/repo"} override for repo resolution
   VERCEL_TOKEN                used to resolve project -> GitHub repo via the Vercel link
   GITHUB_APP_* / GITHUB_PAT   via gh_auth for GitHub API + pushes
@@ -53,6 +60,19 @@ ENGINES_EXCLUSIONS = ("oosolxvlfyifkhjohdzq", "apparently-engines", "apparently.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def _decline_after():
+    """Unmerged closures of a group's head branch after which the group is not re-filed.
+    Read per call (not at import) so a test or an operator can flip it without a reload;
+    unreadable or negative values fall back to the default of 2; 0 disables the check."""
+    raw = os.environ.get("ORCH_DB_REMEDIATE_DECLINE_AFTER", "2")
+    try:
+        n = int(str(raw).strip() or "2")
+    except ValueError:
+        print("db_remediate: ORCH_DB_REMEDIATE_DECLINE_AFTER=%r unreadable; using 2" % raw)
+        return 2
+    return n if n >= 0 else 2
 
 
 # ── SQL generation (pure) ─────────────────────────────────────────────────────
@@ -245,14 +265,42 @@ def _is_excluded(project_row, source_ids=()):
 
 # ── PR lifecycle ──────────────────────────────────────────────────────────────
 
+def declined_on_repo(repo, group):
+    """Skip reason when the reviewer has already declined this group on this repo, else ''.
+
+    A group is declined once at least ORCH_DB_REMEDIATE_DECLINE_AFTER PRs on its head branch
+    (fix/db-steer-<group>) were closed with merged_at null. Only that head is consulted, so a
+    group the repo merged (or never saw) is unaffected, and a list failure (network, token,
+    404) counts as zero closures — the check fails OPEN to the old behaviour, never blocks."""
+    threshold = _decline_after()
+    if threshold <= 0:
+        return ""
+    branch = "fix/db-steer-%s" % group
+    head = "%s:%s" % (repo.split("/")[0], branch)
+    closed = _gh("GET", "/repos/%s/pulls?state=closed&head=%s&per_page=10" % (repo, head))
+    if not isinstance(closed, list):
+        return ""
+    unmerged = sum(1 for p in closed if isinstance(p, dict) and not p.get("merged_at"))
+    if unmerged < threshold:
+        return ""
+    reason = "declined on the repo: %d unmerged closures of %s" % (unmerged, branch)
+    print("db_remediate: %s: group %s not re-filed (%s; threshold %d)"
+          % (repo, group, reason, threshold))
+    return reason
+
+
 def ensure_draft_pr(project, repo, group, sql, fingerprints, base=""):
-    """Create (or skip, if one exists) a draft PR carrying one migration file. Returns a
-    summary dict; every failure path is a reason string, never an exception."""
+    """Create (or skip, if one exists or the group was declined) a draft PR carrying one
+    migration file. Returns a summary dict; every failure path is a reason string, never an
+    exception."""
     branch = "fix/db-steer-%s" % group
     head = "%s:%s" % (repo.split("/")[0], branch)
     existing = _gh("GET", "/repos/%s/pulls?head=%s&state=open&per_page=5" % (repo, head))
     if isinstance(existing, list) and existing:
         return {"ok": True, "skipped": "open PR exists", "pr": existing[0].get("html_url")}
+    declined = declined_on_repo(repo, group)
+    if declined:
+        return {"ok": True, "skipped": declined, "skip": declined}
     repo_meta = _gh("GET", "/repos/%s" % repo)
     if not isinstance(repo_meta, dict) or repo_meta.get("_http_error"):
         return {"ok": False, "reason": "repo lookup failed: %s" % repo_meta.get("_message", "?")}
@@ -500,9 +548,22 @@ def remediate_project(project_row, *, budget):
         res = ensure_draft_pr(name, repo, group, sql, fps)
         res["group"] = group
         if skipped:
-            res["skipped"] = skipped
+            # A string here is ensure_draft_pr's own skip reason (open PR / declined);
+            # the plan's per-finding skips must not overwrite it.
+            if isinstance(res.get("skipped"), str):
+                res["skipped_findings"] = skipped
+            else:
+                res["skipped"] = skipped
         results.append(res)
-    return {"project": name, "ok": all(r["ok"] for r in results), "pr_results": results}
+    out = {"project": name, "ok": all(r["ok"] for r in results), "pr_results": results}
+    skips = ["%s: %s" % (r["group"], r["skipped"]) for r in results if isinstance(r.get("skipped"), str)]
+    if skips:
+        # Surface the reason at the project level so the loop's one-line JSON log shows
+        # WHY nothing was filed, not just that nothing was.
+        out["skips"] = skips
+        if len(skips) == len(results):
+            out["reason"] = "; ".join(skips)
+    return out
 
 
 def run_cycle(projects=None, *, budget=None):
