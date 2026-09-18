@@ -89,11 +89,8 @@ def suggest_updates():
     suggestions = []
     try:
         # Check if current MAX_PARALLEL matches queue pressure
-        # Was `db.query("SELECT count(*) as cnt FROM tasks WHERE state='QUEUED'")`.
-        # db has no query() — it is a PostgREST client with no raw-SQL channel —
-        # so this raised AttributeError into the `except Exception: pass` below
-        # and suggest_updates() has always returned []. db.count() is the exact
-        # equivalent: an exact server-side count with no rows downloaded.
+        # db has no query() — it is a PostgREST client with no raw-SQL channel.
+        # db.count() is the correct method: server-side count with no rows downloaded.
         queued = int(db.count("tasks", {"state": "eq.QUEUED"}) or 0)
         current_parallel = int(os.environ.get("MAX_PARALLEL", "4"))
 
