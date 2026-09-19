@@ -149,6 +149,29 @@ export function useFleetWebSocket(reconnectOptions: BackoffOptions = {}) {
     channel = null
   }
 
+  async function syncInitialState(since: string | null, attempts: number) {
+    try {
+      const response = await $fetch('/api/tasks/sync', {
+        method: 'POST',
+        body: {
+          type: 'request-initial-state',
+          since,
+          attempts,
+        },
+      })
+      if (response.ok && response.tasks) {
+        emit('sync:initial-state', {
+          tasks: response.tasks,
+          requestedAt: response.requestedAt,
+          since: response.since,
+        })
+      }
+    } catch (err) {
+      console.error('Failed to sync initial state:', err)
+      emit('sync:error', { error: err, stage: 'initial-state' })
+    }
+  }
+
   function onStatus(status: string) {
     if (disposed) return
 
@@ -165,6 +188,7 @@ export function useFleetWebSocket(reconnectOptions: BackoffOptions = {}) {
       // shows a task list missing exactly the updates the user was waiting for.
       if (hadDropped) {
         emit('sync:request', buildRequestInitialState(lastEventAt.value, attempts))
+        syncInitialState(lastEventAt.value, attempts)
       }
       return
     }
