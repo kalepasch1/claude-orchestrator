@@ -109,6 +109,48 @@ def _stale_or_unanswered(limit):
         return []
 
 
+# FRONTIER-ONLY (2026-09-12). When the frontier budget was spent, the docket fell to the 21-call local
+# path: each 27B seat call took ~10 minutes, the job hit its 45-minute cap with no card minted, and
+# the tick's one slot was held the whole time while the commission, drafter and theory lab waited.
+# A question nobody frontier-grade can answer right now stays pending for the next cycle; the local
+# path remains available by setting ORCH_DOCKET_FRONTIER_ONLY=false.
+FRONTIER_ONLY = os.environ.get("ORCH_DOCKET_FRONTIER_ONLY", "true").lower() not in ("0", "false", "no", "off")
+
+
+def _frontier_ready():
+    try:
+        import frontier
+        import consilium_v2
+        return bool(consilium_v2.ENABLED) and frontier.available(min_tokens=consilium_v2.MIN_TOKENS)
+    except Exception:
+        return False
+
+
+def _json_capped(obj, cap):
+    """Serialise within `cap` characters WITHOUT breaking the JSON (2026-09-12: a flat [:8000] slice
+    truncated every v2 card's 20-citation array mid-string, so readers parsed it as empty and the
+    commission scored 'citations array empty' on fully grounded cards). Lists lose trailing items;
+    dicts lose their largest values first and record what was dropped."""
+    txt = json.dumps(obj)
+    if len(txt) <= cap:
+        return txt
+    if isinstance(obj, list):
+        items = list(obj)
+        while items and len(json.dumps(items)) > cap:
+            items.pop()
+        return json.dumps(items)
+    if isinstance(obj, dict):
+        d = dict(obj)
+        dropped = []
+        while d and len(json.dumps(d)) > cap:
+            k = max(d, key=lambda kk: len(json.dumps(d[kk])))
+            dropped.append(k)
+            d.pop(k)
+            d["_truncated"] = dropped
+        return json.dumps(d)
+    return json.dumps(str(obj)[:max(0, cap - 2)])
+
+
 def mint_card(row, agg):
     """Persist a Consilium result as a verdict card with validity conditions."""
     # HOLLOW-CARD GUARD (2026-07-30): the first live cards minted with NULL verdict, empty
@@ -128,18 +170,18 @@ def mint_card(row, agg):
         "position": _s(agg.get("opinion"))[:12000],
         "verdict": agg.get("verdict"),
         "confidence": float(agg.get("conviction", 5) or 5) / 10.0,
-        "citations": json.dumps(citations)[:8000],
-        "assumptions": json.dumps(agg.get("assumptions") or [])[:4000],
+        "citations": _json_capped(citations, 60000),
+        "assumptions": _json_capped(agg.get("assumptions") or [], 8000),
         "dissent": _s(agg.get("dissent"))[:4000],
         # validity: the authority chain. If any of these change, this card goes stale.
-        "authority_chain": json.dumps([c.get("source") for c in citations if isinstance(c, dict)])[:4000],
+        "authority_chain": _json_capped([c.get("source") for c in citations if isinstance(c, dict)], 16000),
         "minted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "status": "fresh",
         # Gauntlet-only fields (absent on the committees fallback — hence the .get defaults).
         "flips_if": _s(agg.get("flips_if"))[:2000] or None,
         "conditions": _s(agg.get("conditions"))[:2000] or None,
         "unsettled": bool(agg.get("unsettled")),
-        "process": json.dumps(agg.get("process") or {})[:8000],
+        "process": _json_capped(agg.get("process") or {}, 24000),
         # A card is INTERNAL until the publication commission scores it and an attorney signs off.
         # Minting is not publishing; nothing reaches a customer on the strength of a model alone.
         "publication_state": "internal",
@@ -153,7 +195,7 @@ def mint_card(row, agg):
         except Exception:
             proc = {}
         proc["citation_floor"] = "below_floor_10"
-        card["process"] = json.dumps(proc)[:8000]
+        card["process"] = _json_capped(proc, 24000)
     try:
         db.insert("verdict_cards", card, upsert=True)
         db.update("legal_docket", {"id": row["id"]}, {"status": "answered"})
@@ -170,23 +212,40 @@ def run(limit=BATCH):
     if not rows:
         print(json.dumps({"seeded": seeded, "convened": 0, "note": "docket empty or fully answered"}))
         return {"seeded": seeded, "convened": 0}
-    minted = 0
+    minted, skipped, convened = 0, 0, 0
     for row in rows:
+        if FRONTIER_ONLY and not _frontier_ready():
+            skipped = len(rows) - convened
+            print(f"legal_docket: frontier budget cannot fund a tournament; {skipped} question(s) stay pending "
+                  f"for the next cycle (ORCH_DOCKET_FRONTIER_ONLY)", flush=True)
+            break
+        convened += 1
         q = row.get("question") or ""
         ctx = (f"VERTICAL: {row.get('vertical')}\nPRIORITY: {row.get('priority')}\n\n"
                f"Answer as a memo a GC will act on this week. Cite the operative authority for "
                f"every material assertion; state explicitly what would change the conclusion.")
         agg = None
-        # GAUNTLET FIRST (2026-07-30): five adversarial rounds against the persistent expert corps —
-        # blind -> steelman -> rebuttal -> red team -> chair. committees.review remains the fallback
-        # so a cold/empty corps degrades to the old path instead of producing nothing.
+        # CONSILIUM V2 FIRST (2026-09-12): one frontier-grade tournament. Then, only when the operator
+        # allows local fallbacks, the legacy GAUNTLET (2026-07-30: five adversarial rounds against the
+        # persistent corps) and committees.review behind it.
         try:
-            import gauntlet
-            agg = gauntlet.run(q, context=ctx, vertical=row.get("vertical"), docket_id=row.get("id"))
-            if agg and agg.get("error"):
-                agg = None
+            import consilium_v2
+            agg = consilium_v2.run(q, context=ctx, vertical=row.get("vertical"), docket_id=row.get("id"),
+                                   priority=row.get("priority"))
         except Exception as e:
-            print(f"legal_docket: gauntlet unavailable on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
+            print(f"legal_docket: consilium_v2 failed on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
+        if not agg and FRONTIER_ONLY:
+            print(f"legal_docket: {row.get('id')} stays pending — no frontier-grade tournament was possible", flush=True)
+            skipped += 1
+            continue
+        if not agg:
+            try:
+                import gauntlet
+                agg = gauntlet.run(q, context=ctx, vertical=row.get("vertical"), docket_id=row.get("id"), v2=False)
+                if agg and agg.get("error"):
+                    agg = None
+            except Exception as e:
+                print(f"legal_docket: gauntlet unavailable on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
         if not agg:
             try:
                 import committees
@@ -195,7 +254,8 @@ def run(limit=BATCH):
                 print(f"legal_docket: panel failed on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
         if agg and mint_card(row, agg):
             minted += 1
-    out = {"seeded": seeded, "convened": len(rows), "cards_minted": minted}
+    out = {"seeded": seeded, "convened": convened, "cards_minted": minted, "left_pending": skipped,
+           "frontier_only": FRONTIER_ONLY}
     print("legal_docket: " + json.dumps(out))
     return out
 

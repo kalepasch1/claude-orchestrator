@@ -267,12 +267,52 @@ def record_probe_failure(provider):
         return
 
 
+#: An "exhaustion-*" demotion (account quota / usage limit) describes a WINDOW, not a fault.
+#: Subscription windows reset (weekly on Claude Max, monthly on API prepay); a demotion that
+#: outlives the window is a bug, and it is exactly the bug that kept `claude` demoted from
+#: 2026-08-17 until 2026-09-11 — the fleet routed every expert seat to an 8B local model for
+#: three weeks while a paid frontier subscription sat idle. Expire them.
+EXHAUSTION_TTL_H = float(os.environ.get("ORCH_PROVIDER_EXHAUSTION_TTL_H", "168"))
+
+
+def promote(provider, reason="manual"):
+    """Explicitly lift a demotion (operator action or TTL expiry). Returns True if it was demoted."""
+    try:
+        state = _load()
+        dem = state.get("demoted") or {}
+        if provider not in dem:
+            return False
+        del dem[provider]
+        state["demoted"] = dem
+        h = state.setdefault("history", [])
+        if isinstance(h, list):
+            h.append({"ts": datetime.datetime.utcnow().isoformat(), "promoted": provider, "reason": reason})
+            state["history"] = h[-200:]
+        _save(state)
+        try:
+            db.upsert("fleet_config", {"key": f"ORCH_PROVIDER_DEMOTED_{provider.upper()}", "value": "false"})
+        except Exception:
+            pass
+        _notify_bandit_promote(provider)
+        return True
+    except Exception:
+        return False
+
+
 def is_demoted(provider):
     state = _load()
     demoted = state.get("demoted") or {}
     record = demoted.get(provider)
     if not record:
         return False
+    if str(record.get("reason") or "").startswith("exhaustion-"):
+        try:
+            since = datetime.datetime.fromisoformat(str(record.get("since")))
+            if (datetime.datetime.utcnow() - since).total_seconds() > EXHAUSTION_TTL_H * 3600:
+                promote(provider, reason=f"exhaustion TTL {EXHAUSTION_TTL_H:.0f}h expired")
+                return False
+        except Exception:
+            pass
     # A replacement credential deserves a fresh bounded canary. The hash only
     # detects change; no key material is persisted or logged.
     if str(record.get("reason") or "").startswith("auth-") and record.get("credential_fp"):

@@ -53,7 +53,7 @@ MODELS = {
         {"model": "claude-haiku-4-5-20251001", "cap": 6, "tier": "sub"},
         {"model": os.environ.get("ORCH_ESCALATION_MODEL", "claude-sonnet-5"), "cap": 9, "tier": "sub"},
         {"model": "claude-opus-4-8", "cap": 10, "tier": "sub"},
-        {"model": os.environ.get("CLAUDE_STRONG_MODEL", "claude-fable-5"), "cap": 10, "tier": "expensive"},
+        {"model": os.environ.get("CLAUDE_STRONG_MODEL", "claude-fable-5-1"), "cap": 10, "tier": "sub"},
     ],
 }
 

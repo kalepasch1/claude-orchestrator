@@ -31,7 +31,7 @@ OPUS   = os.environ.get("ORCH_HARD_MODEL",       "claude-opus-4-8")
 # It now sits at the TOP of the ladder for genuinely superintelligence-grade work: strategy/legal
 # drafting, novel architecture, adversarial review — and is reachable both by explicit hint
 # (SUPER_KEYWORDS below) and by retry escalation past Opus.
-FABLE  = os.environ.get("ORCH_SUPER_MODEL",       "claude-fable-5")
+FABLE  = os.environ.get("ORCH_SUPER_MODEL",       "claude-fable-5-1")
 # Set ORCH_SUPER_TIER_ENABLED=false to drop Fable back out of the ladder (cost control).
 SUPER_ENABLED = os.environ.get("ORCH_SUPER_TIER_ENABLED", "true").lower() != "false"
 
