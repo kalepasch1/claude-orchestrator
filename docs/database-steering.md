@@ -181,7 +181,10 @@ the signature is unchanged), `ORCH_DB_SNAPSHOT_MIN_INTERVAL_S` (3600),
 `ORCH_DB_MEMO_GAUNTLET` (`false` to skip expert review), `ORCH_DB_MEMO_GAUNTLET_MIN_INTERVAL_S`
 (86400). Auto-remediation: `ORCH_DB_REMEDIATE` (default `0` = plan-only; `1` opens draft PRs),
 `ORCH_DB_REMEDIATE_MAX_PRS` (3 per cycle), `ORCH_DB_REMEDIATE_REPOS` (JSON project→owner/repo
-override). Deploy gate: `ORCH_DB_DEPLOY_GATE` (default `0` = evaluate-only; `1` posts commit
+override), `ORCH_DB_REMEDIATE_DECLINE_AFTER` (default `2`; `0` disables — a group whose head
+branch `fix/db-steer-<group>` has been closed without merge this many times on a repo is not
+re-filed there, so a sweep the reviewer declined does not come back with every new table).
+Deploy gate: `ORCH_DB_DEPLOY_GATE` (default `0` = evaluate-only; `1` posts commit
 statuses/comments), `ORCH_DB_DEPLOY_GATE_MAX` (10 projects per cycle), `ORCH_DB_REQUIRED_CHECK`
 (default `1`; applies/maintains the required-check rule once the App has Administration —
 run `python3 -c "import db_deploy_gate,json;print(json.dumps(db_deploy_gate.apply_required_checks()))"`
