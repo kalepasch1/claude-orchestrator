@@ -7,6 +7,7 @@ import socket
 
 import db
 import creative_dispatch
+import config_helpers
 
 CAPABILITY_PROVIDERS = {
     "image": ("bfl", "ideogram"),
@@ -20,10 +21,7 @@ def _now_plus(minutes):
 
 
 def _bounded_int(value, default, minimum, maximum):
-    try:
-        return max(minimum, min(int(value), maximum))
-    except (TypeError, ValueError):
-        return default
+    return config_helpers.clamp_int(value, default, minimum, maximum)
 
 
 def _provider(job, configured):

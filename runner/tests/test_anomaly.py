@@ -112,7 +112,7 @@ class TestCheck(unittest.TestCase):
         fake_db.select = MagicMock(return_value=recent + base)
         fake_db.insert = MagicMock()
         result = anomaly.check()
-        self.assertEqual([a for a in result["alerts"] if "cost_per_task" in a], [])
+        self.assertTrue(result["ok"], result["alerts"])
 
     def test_absolute_metrics_are_not_floor_configurable(self):
         """The exemption is a property of the metric, not of the environment."""

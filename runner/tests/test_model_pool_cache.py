@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for model_pool_cache.py"""
 import sys, os
+import json
+from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import model_pool_cache as mpc
 
@@ -52,13 +54,38 @@ def test_stats():
 
 def test_warm_no_ollama():
     """Warm should fail-soft when Ollama isn't running."""
-    old = mpc.OLLAMA_HOST
-    mpc.OLLAMA_HOST = "http://localhost:99999"
-    try:
+    with patch.object(mpc.urllib.request, "urlopen", side_effect=OSError("offline")):
         result = mpc.warm(force=True)
-        assert result is False  # no crash
-    finally:
-        mpc.OLLAMA_HOST = old
+        assert result is False
+
+def test_residency_probe_never_loads_or_renews_a_model():
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps({"models": [{"name": "small:latest"}]}).encode()
+    with patch.object(mpc, "OLLAMA_MODEL", "small"), \
+         patch.object(mpc.urllib.request, "urlopen", return_value=response) as request:
+        assert mpc.warm(force=True) is True
+    req = request.call_args.args[0]
+    assert req.get_method() == "GET"
+    assert req.full_url.endswith("/api/ps")
+    assert req.data is None
+    assert request.call_args.kwargs["timeout"] == 2
+    response.__enter__.return_value.read.assert_called_once_with(1024 * 1024 + 1)
+
+def test_empty_unknown_or_other_resident_never_autoloads():
+    for data in ({"models": []}, {}, [], {"models": [{"name": "different:latest"}]}):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(data).encode()
+        with patch.object(mpc.urllib.request, "urlopen", return_value=response) as request:
+            assert mpc.warm(force=True) is False
+        assert request.call_count == 1
+        assert request.call_args.args[0].get_method() == "GET"
+
+def test_residency_response_is_bounded_and_malformed_fails_soft():
+    for raw in (b"x" * (1024 * 1024 + 1), b"not json"):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = raw
+        with patch.object(mpc.urllib.request, "urlopen", return_value=response):
+            assert mpc.warm(force=True) is False
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

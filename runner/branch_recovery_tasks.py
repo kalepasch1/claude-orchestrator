@@ -14,6 +14,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
+import worktree_completeness
 _log = _log_mod.get("branch_recovery_tasks")
 
 STAGING_DIR = os.environ.get("ORCH_RECOVERY_STAGING", "_recovery-staging")
@@ -291,6 +292,19 @@ def _create_worktree(repo_path, worktree_name):
                 "success": False,
                 "worktree_path": None,
                 "error": f"worktree creation failed: {err}",
+            }
+
+        # `git worktree add` inherits the parent's sparse-checkout. When it does, the new
+        # worktree has a COMPLETE INDEX and an incomplete disk: patches apply, git status
+        # looks right, and pytest reports "no tests ran" instead of failing. Repair it here,
+        # before any caller can mistake that silence for success. Fail-soft by design --
+        # ensure_complete only reports false when a checkout is provably incomplete.
+        ok, detail = worktree_completeness.ensure_complete(worktree_path)
+        if not ok:
+            return {
+                "success": False,
+                "worktree_path": None,
+                "error": f"worktree is sparse and could not be repaired: {detail}",
             }
 
         return {

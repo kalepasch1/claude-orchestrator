@@ -14,7 +14,8 @@ import db
 def run():
     wk = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
     merges = db.select("outcomes", {"select": "project", "integrated": "eq.true",
-                                    "created_at": f"gte.{wk}", "limit": "2000"}) or []
+                                    "created_at": f"gte.{wk}", "order": "created_at.desc",
+                                    "limit": "2000"}) or []
     by_app = {}
     for m in merges:
         by_app[m["project"]] = by_app.get(m["project"], 0) + 1
@@ -29,12 +30,21 @@ def run():
     except Exception:
         top = []
     top_txt = "; ".join(f"{t['title'][:60]} ({t['app']})" for t in top) or "none"
+    # Database Steering summary (db_memo.owner_report_line): "" when the tables are absent
+    # or empty, so the line is simply omitted rather than printing zeros.
+    data_line = ""
+    try:
+        import db_memo
+        data_line = db_memo.owner_report_line() or ""
+    except Exception as e:
+        print(f"owner_report: data steering line unavailable: {type(e).__name__}: {str(e)[:100]}")
     body = (f"WEEK IN REVIEW\n"
             f"Shipped (merges by app): {shipped}\n"
             f"Portfolio MRR: ${total_mrr:,.0f} across {len(rev)} apps with revenue data\n"
             f"Compute: $0 real API (Max plans) · ${notional:,.0f} notional this week\n"
             f"Top decisions waiting: {top_txt}\n"
-            f"Open the cockpit Portfolio tab to steer next week.")
+            + (f"{data_line}\n" if data_line else "")
+            + f"Open the cockpit Portfolio tab to steer next week.")
     db.insert("notifications", {"channel": "email", "audience": os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com"),
               "kind": "alert", "title": "Weekly owner report", "body": body[:1500], "sent": False})
     print("owner_report: weekly report queued")

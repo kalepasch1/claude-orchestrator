@@ -34,6 +34,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import config_store
 import fleet_config_guard
+import config_helpers
 
 REDACTED = "[REDACTED: credential — read from the host env, not fleet_config]"
 
@@ -82,14 +83,9 @@ def _coerce_bound(raw, name: str, minimum: int, maximum: int):
     Rejects rather than clamps a malformed bound: silently serving page 0 for
     `?limit=abc` hides a broken client until it ships.
     """
-    try:
-        val = int(raw)
-    except (TypeError, ValueError):
-        return None, (400, {"error": f"{name} must be an integer", name: raw})
-    if val < minimum:
-        return None, (400, {"error": f"{name} must be >= {minimum}", name: val})
-    if val > maximum:
-        return None, (400, {"error": f"{name} must be <= {maximum}", name: val})
+    val, reason = config_helpers.parse_bounded_int(raw, minimum, maximum)
+    if reason is not None:
+        return None, (400, {"error": f"{name} {reason}", name: raw})
     return val, None
 
 

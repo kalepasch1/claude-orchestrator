@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+"""db_remediate.py — turn open db_findings into draft remediation PRs on the project's repo.
+
+WHY. A finding that says "anon holds DELETE on public.gdsa_findings" already carries its fix
+in the remediation text, but the fix still waits on a human or a swarm task to type it into a
+migration. For the probe classes whose fix is mechanical (revoke grants, cover a foreign key
+with an index, add audit columns + trigger), the migration can be generated deterministically
+from the finding itself — object_schema/object_name/metrics — so the loop opens a DRAFT PR
+with the SQL, the finding fingerprints, and the evidence links, and lets the merge train /
+the operator decide. The judgment calls (RLS policies, query rewrites, retention) are
+deliberately NOT generated: a wrong policy is worse than an open finding.
+
+SAFETY.
+  * Draft PRs only, never direct commits to a base branch; never auto-merge.
+  * Hard exclusion: the Apparently engines repo and any project whose source id matches
+    the engines Supabase project; swarm steering only ever READS that estate.
+  * Identifiers are validated (^A-Za-z_ then word chars) and double-quoted; anything else
+    is skipped with a reason, never interpolated raw.
+  * Dedupe: one open draft PR per (repo, group). A group whose PR is already open is a
+    no-op; the PR body carries the fingerprint list so drift is auditable.
+  * Declined groups stay declined: a group whose head branch has been closed WITHOUT merge
+    ORCH_DB_REMEDIATE_DECLINE_AFTER times is not re-filed. Every new table yields fresh
+    findings, and re-opening the same sweep the reviewer already declined (audit-columns
+    was closed unmerged four times on one repo in a day) is noise, not steering.
+  * Fail-soft everywhere: network off, no token, repo unresolvable -> reason string, no raise.
+
+KNOBS (env):
+  ORCH_DB_REMEDIATE           "1" enables live PR creation (default "0": plan-only, prints SQL)
+  ORCH_DB_REMEDIATE_MAX_PRS   per-cycle cap across the fleet (default "3")
+  ORCH_DB_REMEDIATE_DECLINE_AFTER
+                              stop re-filing a group once this many PRs on its head branch
+                              were closed without merge (default "2"; "0" disables the check)
+  ORCH_DB_REMEDIATE_REPOS     optional JSON {project: "owner/repo"} override for repo resolution
+  VERCEL_TOKEN                used to resolve project -> GitHub repo via the Vercel link
+  GITHUB_APP_* / GITHUB_PAT   via gh_auth for GitHub API + pushes
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import sys
+import time
+import urllib.request
+import urllib.error
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db  # noqa: E402
+
+ENABLED = os.environ.get("ORCH_DB_REMEDIATE", "0") == "1"
+MAX_PRS = int(os.environ.get("ORCH_DB_REMEDIATE_MAX_PRS", "3"))
+VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN", "")
+GITHUB_API = "https://api.github.com"
+VERCEL_API = "https://api.vercel.com"
+
+#: The Apparently engines estate is hands-off (hard rule): never open PRs there.
+ENGINES_EXCLUSIONS = ("oosolxvlfyifkhjohdzq", "apparently-engines", "apparently.cc", "apparently-ai")
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def _decline_after():
+    """Unmerged closures of a group's head branch after which the group is not re-filed.
+    Read per call (not at import) so a test or an operator can flip it without a reload;
+    unreadable or negative values fall back to the default of 2; 0 disables the check."""
+    raw = os.environ.get("ORCH_DB_REMEDIATE_DECLINE_AFTER", "2")
+    try:
+        n = int(str(raw).strip() or "2")
+    except ValueError:
+        print("db_remediate: ORCH_DB_REMEDIATE_DECLINE_AFTER=%r unreadable; using 2" % raw)
+        return 2
+    return n if n >= 0 else 2
+
+
+# ── SQL generation (pure) ─────────────────────────────────────────────────────
+
+def _qi(name):
+    """Quoted identifier or None when the name fails the whitelist — never interpolate raw."""
+    name = str(name or "")
+    return ('"%s"' % name) if _IDENT_RE.match(name) else None
+
+
+#: Table names that LOOK like deliberate public-write surfaces (public intake/contact forms
+#: legitimately write via the anon key). The revoke is still generated — RLS is the correct
+#: mechanism — but the reviewer gets an explicit caution rather than a silent breakage risk.
+PUBLIC_WRITE_HINT = re.compile(r"intake|contact|signup|subscribe|lead|form|waitlist", re.I)
+
+
+def _sql_revoke_grants(f):
+    """anon_or_public_grants: revoke write-ish privileges from anon and public; SELECT stays
+    (RLS decides row visibility once DML is gone)."""
+    schema, table = _qi(f.get("object_schema")), _qi(f.get("object_name"))
+    if not (schema and table):
+        return ""
+    privs = ", ".join(p for p in ("insert", "update", "delete", "truncate", "references", "trigger"))
+    caveat = ("-- NOTE: %s looks like a deliberate public-write surface (intake/contact form?): "
+              "verify the form path still works after revoking anon INSERT.\n"
+              % f.get("object_name")) if PUBLIC_WRITE_HINT.search(str(f.get("object_name") or "")) else ""
+    return (caveat + f"revoke {privs} on {schema}.{table} from anon;\n"
+            f"revoke {privs} on {schema}.{table} from public;")
+
+
+def _sql_fk_index(f):
+    """unindexed_foreign_keys: one covering index on the constrained columns, in key order."""
+    schema, table = _qi(f.get("object_schema")), _qi(f.get("object_name"))
+    cols = [c for c in ((f.get("metrics") or {}).get("columns") or [])]
+    qcols = [_qi(c) for c in cols]
+    if not (schema and table) or not cols or not all(qcols):
+        return ""  # older findings predate the columns metric — skipped, not guessed
+    idx = _qi("idx_dbsteer_%s_%s" % (f.get("object_name", "")[:40], cols[0][:24]))
+    if not idx:
+        return ""
+    return ("create index concurrently if not exists %s on %s.%s (%s);"
+            % (idx, schema, table, ", ".join(qcols)))
+
+
+def _sql_audit_columns(f):
+    """missing_audit_columns: add the columns the probe says are absent, idempotently."""
+    schema, table = _qi(f.get("object_schema")), _qi(f.get("object_name"))
+    missing = [m for m in ((f.get("metrics") or {}).get("missing") or []) if m in ("created_at", "updated_at")]
+    if not (schema and table):
+        return ""
+    if not missing:
+        # pre-metrics findings: conservatively only add created_at (created_at iff absent
+        # is a no-op when present, and 'if not exists' keeps it idempotent)
+        missing = ["created_at"]
+    parts = []
+    if "created_at" in missing:
+        parts.append("alter table %s.%s add column if not exists created_at timestamptz not null default now();"
+                     % (schema, table))
+    if "updated_at" in missing:
+        parts.append("alter table %s.%s add column if not exists updated_at timestamptz;" % (schema, table))
+        parts.append(_sql_updated_at_trigger(f))
+    return "\n".join(p for p in parts if p)
+
+
+def _sql_updated_at_trigger(f):
+    """updated_at_with(no)trigger: Supabase's moddatetime (extensions schema) maintains it."""
+    schema, table = _qi(f.get("object_schema")), _qi(f.get("object_name"))
+    if not (schema and table):
+        return ""
+    trig = _qi("set_updated_at_dbsteer")
+    return ("drop trigger if exists %s on %s.%s;\n"
+            "create trigger %s before update on %s.%s for each row execute function extensions.moddatetime('updated_at');"
+            % (trig, schema, table, trig, schema, table))
+
+
+#: probe_id -> (group, generator). Groups become one PR each per project.
+GENERATORS = {
+    "anon_or_public_grants": ("access-grants", _sql_revoke_grants),
+    "unindexed_foreign_keys": ("fk-indexes", _sql_fk_index),
+    "missing_audit_columns": ("audit-columns", _sql_audit_columns),
+    "updated_at_without_trigger": ("audit-columns", _sql_updated_at_trigger),
+}
+
+GROUP_TITLES = {
+    "access-grants": "db-steering: revoke anon/public write grants flagged by the read-only review",
+    "fk-indexes": "db-steering: cover unindexed foreign keys",
+    "audit-columns": "db-steering: add missing audit columns and updated_at triggers",
+}
+
+
+def plan_migration(project, findings):
+    """[(group, sql, [fingerprints], [skipped-reasons])] — pure, deterministic ordering by
+    object name so regenerated migrations diff cleanly."""
+    groups = {}
+    for f in findings:
+        gen = GENERATORS.get(f.get("probe_id"))
+        if not gen or f.get("status") != "open":
+            continue
+        group, fn = gen
+        sql = fn(f)
+        if not sql:
+            groups.setdefault(group, {"sql": [], "fps": [], "skipped": []})["skipped"].append(
+                "%s %s.%s (missing metrics to generate safely)" % (
+                    f.get("probe_id"), f.get("object_schema"), f.get("object_name")))
+            continue
+        g = groups.setdefault(group, {"sql": [], "fps": [], "skipped": []})
+        g["sql"].append((str(f.get("object_name") or ""), f.get("fingerprint") or "", sql))
+        g["fps"].append(f.get("fingerprint"))
+    out = []
+    for group in sorted(groups):
+        g = groups[group]
+        if not g["sql"]:
+            if g["skipped"]:
+                out.append((group, "", [], g["skipped"]))
+            continue
+        stmts = sorted(g["sql"], key=lambda t: t[0])
+        body = "\n\n".join("-- [fp:%s] %s\n%s" % (fp[:12], name, sql) for name, fp, sql in stmts)
+        header = ("-- Database Steering auto-remediation (%s) — draft, review before apply.\n"
+                  "-- Project: %s · findings: %d · generated read-only-review driven\n\n"
+                  "begin;\n\n" % (group, project, len(stmts)))
+        out.append((group, header + body + "\n\ncommit;\n", g["fps"], g["skipped"]))
+    return out
+
+
+# ── HTTP (fail-soft, injectable in tests) ─────────────────────────────────────
+
+def _http(method, url, token, body=None, timeout=20):
+    req = urllib.request.Request(url, method=method)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", "claude-orchestrator-db-steering")
+    if token:
+        req.add_header("Authorization", "Bearer %s" % token)
+    data = json.dumps(body).encode() if body is not None else None
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, data=data, timeout=timeout) as r:
+            raw = r.read()
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read() or b"{}")
+        except Exception:
+            detail = {}
+        return {"_http_error": e.code, "_message": str(detail.get("message") or "")[:200]}
+    except Exception as e:
+        return {"_http_error": -1, "_message": "%s: %s" % (type(e).__name__, str(e)[:120])}
+
+
+def _gh_token():
+    try:
+        import gh_auth
+        return gh_auth.gh_token() or ""
+    except Exception as e:
+        print("db_remediate: gh token unavailable: %s" % str(e)[:120])
+        return ""
+
+
+def _gh(method, path, body=None):
+    return _http(method, GITHUB_API + path, _gh_token(), body)
+
+
+def repo_for_project(project_row):
+    """owner/repo for a fleet project: explicit override map, then the Vercel project link.
+    Fail-soft '' when unresolvable."""
+    name = str(project_row.get("name") or "")
+    try:
+        override = json.loads(os.environ.get("ORCH_DB_REMEDIATE_REPOS") or "{}")
+        if override.get(name):
+            return str(override[name])
+    except Exception as e:  # noqa: FAIL_SOFT_ERROR — malformed override map falls through to Vercel-link resolution
+        print("db_remediate: ORCH_DB_REMEDIATE_REPOS unreadable (%s); using Vercel link" % str(e)[:80])
+    vp = str(project_row.get("vercel_project") or "")
+    if vp and VERCEL_TOKEN:
+        res = _http("GET", "%s/v9/projects/%s" % (VERCEL_API, vp), VERCEL_TOKEN)
+        link = (res or {}).get("link") or {}
+        org, repo = str(link.get("org") or ""), str(link.get("repo") or link.get("repoName") or "")
+        if repo:
+            return "%s/%s" % (org, repo) if org else repo
+    return ""
+
+
+def _is_excluded(project_row, source_ids=()):
+    name = str(project_row.get("name") or "").lower()
+    repo_path = str(project_row.get("repo_path") or "").lower()
+    if any(x in name or x in repo_path for x in ("engines", "apparently.cc")):
+        return True
+    return any(str(s) in ENGINES_EXCLUSIONS for s in (source_ids or ()))
+
+
+# ── PR lifecycle ──────────────────────────────────────────────────────────────
+
+def declined_on_repo(repo, group):
+    """Skip reason when the reviewer has already declined this group on this repo, else ''.
+
+    A group is declined once at least ORCH_DB_REMEDIATE_DECLINE_AFTER PRs on its head branch
+    (fix/db-steer-<group>) were closed with merged_at null. Only that head is consulted, so a
+    group the repo merged (or never saw) is unaffected, and a list failure (network, token,
+    404) counts as zero closures — the check fails OPEN to the old behaviour, never blocks."""
+    threshold = _decline_after()
+    if threshold <= 0:
+        return ""
+    branch = "fix/db-steer-%s" % group
+    head = "%s:%s" % (repo.split("/")[0], branch)
+    closed = _gh("GET", "/repos/%s/pulls?state=closed&head=%s&per_page=10" % (repo, head))
+    if not isinstance(closed, list):
+        return ""
+    unmerged = sum(1 for p in closed if isinstance(p, dict) and not p.get("merged_at"))
+    if unmerged < threshold:
+        return ""
+    reason = "declined on the repo: %d unmerged closures of %s" % (unmerged, branch)
+    print("db_remediate: %s: group %s not re-filed (%s; threshold %d)"
+          % (repo, group, reason, threshold))
+    return reason
+
+
+def ensure_draft_pr(project, repo, group, sql, fingerprints, base=""):
+    """Create (or skip, if one exists or the group was declined) a draft PR carrying one
+    migration file. Returns a summary dict; every failure path is a reason string, never an
+    exception."""
+    branch = "fix/db-steer-%s" % group
+    head = "%s:%s" % (repo.split("/")[0], branch)
+    existing = _gh("GET", "/repos/%s/pulls?head=%s&state=open&per_page=5" % (repo, head))
+    if isinstance(existing, list) and existing:
+        return {"ok": True, "skipped": "open PR exists", "pr": existing[0].get("html_url")}
+    declined = declined_on_repo(repo, group)
+    if declined:
+        return {"ok": True, "skipped": declined, "skip": declined}
+    repo_meta = _gh("GET", "/repos/%s" % repo)
+    if not isinstance(repo_meta, dict) or repo_meta.get("_http_error"):
+        return {"ok": False, "reason": "repo lookup failed: %s" % repo_meta.get("_message", "?")}
+    base = base or str(repo_meta.get("default_branch") or "main")
+    base_ref = _gh("GET", "/repos/%s/git/ref/heads/%s" % (repo, base))
+    sha = str((base_ref or {}).get("object", {}).get("sha") or "")
+    if not sha:
+        return {"ok": False, "reason": "base ref unreadable: %s" % (base_ref or {}).get("_message", "?")}
+    made = _gh("POST", "/repos/%s/git/refs" % repo,
+               {"ref": "refs/heads/%s" % branch, "sha": sha})
+    if (made or {}).get("_http_error") and "already exists" not in str(made.get("_message", "")):
+        return {"ok": False, "reason": "branch create failed: %s" % made.get("_message")}
+    path = "supabase/migrations/%s_db_steering_%s.sql" % (time.strftime("%Y%m%d%H%M%S"), group.replace("-", "_"))
+    put = _gh("PUT", "/repos/%s/contents/%s" % (repo, path), {
+        "message": "db-steering: %s remediation (%d findings)" % (group, len(fingerprints)),
+        "content": base64.b64encode(sql.encode()).decode(), "branch": branch,
+        "committer": {"name": "kalepasch1", "email": "kalepasch@gmail.com"}})
+    if (put or {}).get("_http_error"):
+        return {"ok": False, "reason": "file commit failed: %s" % put.get("_message")}
+    body = ("\n".join(["## What this does",
+                       "Generated by the read-only Database Steering review from open findings. "
+                       "Each statement is preceded by its finding fingerprint (`fp:…`), joinable to "
+                       "`db_findings.fingerprint` in the control plane.",
+                       "", "### Findings covered", ""] +
+                      ["- [fp:%s]" % str(fp)[:12] for fp in fingerprints] +
+                      ["", "**Draft on purpose** — review the SQL, run it against a staging branch, "
+                          "then mark ready. The orchestrator never auto-merges remediation."]))
+    pr = _gh("POST", "/repos/%s/pulls" % repo, {
+        "title": GROUP_TITLES.get(group, "db-steering: %s" % group), "head": branch,
+        "base": base, "body": body, "draft": True})
+    if (pr or {}).get("_http_error"):
+        return {"ok": False, "reason": "PR create failed: %s" % pr.get("_message")}
+    return {"ok": True, "pr": pr.get("html_url"), "branch": branch, "path": path}
+
+
+# ── repo-local brief (steering without the fleet) ─────────────────────────────
+
+BRIEF_BRANCH = "steering/briefs"
+BRIEF_PATH = ".claude/db-steering-brief.md"
+BRIEF_RE = re.compile(r"<!--\s*db-steering:([0-9a-f]{8,24})\s*-->")
+
+
+def push_brief(project_row, brief_text, findings_hash):
+    """Commit `.claude/db-steering-brief.md` to the `steering/briefs` branch of the project's
+    own repo when the findings hash changed. A Claude Code session opened DIRECTLY in the
+    project (no fleet prompt assembly, no orchestrator) picks the brief up from the repo
+    itself; the fleet never enters that loop. Fail-soft summary dict."""
+    name = str(project_row.get("name") or "")
+    text = str(brief_text or "").strip()
+    if not text or not findings_hash:
+        return {"project": name, "ok": True, "skipped": "no brief"}
+    if _is_excluded(project_row):
+        return {"project": name, "ok": True, "skipped": "excluded"}
+    repo = repo_for_project(project_row)
+    if not repo:
+        return {"project": name, "ok": True, "skipped": "no repo"}
+    marker = "<!-- db-steering:%s -->" % str(findings_hash)
+    cur = _gh("GET", "/repos/%s/contents/%s?ref=%s" % (repo, BRIEF_PATH, BRIEF_BRANCH))
+    cur_sha = ""
+    if isinstance(cur, dict) and not cur.get("_http_error"):
+        cur_sha = str(cur.get("sha") or "")
+        try:
+            existing = base64.b64decode(str(cur.get("content") or "").replace("\n", "")).decode("utf-8", "replace")
+            if marker in existing:
+                return {"project": name, "ok": True, "skipped": "unchanged"}
+        except Exception as e:  # noqa: FAIL_SOFT_ERROR — an unreadable blob is simply rewritten below
+            print("db_remediate: brief blob for %s unreadable (%s); rewriting" % (name, str(e)[:80]))
+    repo_meta = _gh("GET", "/repos/%s" % repo)
+    base = str(((repo_meta or {}).get("default_branch")) or "main")
+    if _gh("GET", "/repos/%s/git/ref/heads/%s" % (repo, BRIEF_BRANCH)).get("_http_error"):
+        base_sha = str((_gh("GET", "/repos/%s/git/ref/heads/%s" % (repo, base)) or {}).get("object", {}).get("sha") or "")
+        if not base_sha:
+            return {"project": name, "ok": False, "reason": "base ref unreadable"}
+        made = _gh("POST", "/repos/%s/git/refs" % repo, {"ref": "refs/heads/%s" % BRIEF_BRANCH, "sha": base_sha})
+        if (made or {}).get("_http_error") and "already exists" not in str(made.get("_message", "")):
+            return {"project": name, "ok": False, "reason": "branch create failed: %s" % made.get("_message")}
+    body = text + "\n\n%s\n" % marker
+    put_body = {"message": "db-steering: refresh brief (hash %s)" % str(findings_hash)[:12],
+                "content": base64.b64encode(body.encode()).decode(), "branch": BRIEF_BRANCH,
+                "committer": {"name": "kalepasch1", "email": "kalepasch@gmail.com"}}
+    if cur_sha:
+        put_body["sha"] = cur_sha
+    put = _gh("PUT", "/repos/%s/contents/%s" % (repo, BRIEF_PATH), put_body)
+    if (put or {}).get("_http_error"):
+        return {"project": name, "ok": False, "reason": "brief commit failed: %s" % put.get("_message")}
+    return {"project": name, "ok": True, "repo": repo, "branch": BRIEF_BRANCH, "path": BRIEF_PATH}
+
+
+# ── closeout: did the PR's findings actually resolve on live? ─────────────────
+
+CLOSEOUT_MARKER = "<!-- db-steering-closeout -->"
+#: A merged PR holds no authority until the next live scan confirms its fingerprints
+#: resolved. "Fixed" is a measurement, not a merge event.
+CLOSEOUT_LOOKBACK_DAYS = 14
+_fp12 = re.compile(r"fp:([0-9a-f]{12})")
+
+
+def _measure_pr(pr, live_findings):
+    """The measurement half of closeout, reused by the persistence layer. {state, total,
+    resolved, open, merged, fps12, group} or {"skip": reason}."""
+    title = str(pr.get("title") or "")
+    head_ref = str((pr.get("head") or {}).get("ref") or "")
+    if not (title.startswith("db-steering:") or head_ref.startswith("fix/db-steer-")):
+        return {"skip": "not ours"}
+    fps12 = sorted(set(_fp12.findall(str(pr.get("body") or ""))))
+    if not fps12:
+        return {"skip": "no fingerprints"}
+    resolved, open_ = set(), set()
+    for f in live_findings:
+        fp = str(f.get("fingerprint") or "")
+        for p12 in fps12:
+            if fp.startswith(p12):
+                (resolved if str(f.get("status")) == "resolved" else open_).add(p12)
+    n_res, n_open = len(resolved), len(open_)
+    merged = bool(pr.get("merged_at"))
+    state = ("verified-resolved" if merged and n_open == 0 and n_res > 0
+             else "merged-not-confirmed" if merged and n_open > 0
+             else None)
+    # (the rest of the state logic continues in closeout_pr via this shared calc)
+    return {"state0": state, "total": len(fps12), "resolved": n_res, "open": n_open,
+            "open_fps": sorted(open_), "merged": merged, "merged_at": pr.get("merged_at"),
+            "head_sha": str((pr.get("head") or {}).get("sha") or ""),
+            "group": head_ref.replace("fix/db-steer-", "") if head_ref.startswith("fix/db-steer-") else ""}
+
+
+def closeout_pr(repo, pr, live_findings):
+    """Measure one db-steer PR against live findings and leave a single marked comment
+    (PATCHed in place) on its head commit. Commit comments, not issue comments: they ride
+    contents:write which the App provably has. Returns a state string."""
+    m = _measure_pr(pr, live_findings)
+    if m.get("skip"):
+        return m["skip"]
+    state = m["state0"] or ("open-pending" if not m["merged"] else "merged-no-live-match")
+    head_ref = str((pr.get("head") or {}).get("ref") or "")
+    first = "%s [%s] **%s** — %d/%d listed findings resolved on live%s" % (
+        CLOSEOUT_MARKER, head_ref, state.replace("-", " "), m["resolved"], m["total"],
+        " (merged %s)" % str(m.get("merged_at") or "")[:10] if m["merged"] else "")
+    if state == "merged-not-confirmed":
+        details = ("\n\nStill open on live per the latest scan — either the migration has not "
+                   "been applied to production yet, or it did not do what the finding expected. "
+                   "Fingerprints still open: " + ", ".join("fp:%s" % p for p in m["open_fps"][:20]))
+    elif state == "verified-resolved":
+        details = "\n\nThe continuous review (read-only probes) confirms every listed finding is resolved."
+    elif state == "open-pending":
+        details = "\n\n%d of the listed findings are still open on live — expected while this is unmerged." % m["open"]
+    else:
+        details = ""
+    comment_body = first + details
+    sha = m["head_sha"]
+    if not sha:
+        return state
+    existing = _gh("GET", "/repos/%s/commits/%s/comments?per_page=100" % (repo, sha))
+    mine = [c for c in (existing if isinstance(existing, list) else [])
+            if str(c.get("body") or "").startswith(CLOSEOUT_MARKER)]
+    if mine:
+        if mine[-1].get("body") == comment_body:
+            return state + " (unchanged)"
+        res = _gh("PATCH", "/repos/%s/comments/%s" % (repo, mine[-1].get("id")), {"body": comment_body})
+    else:
+        res = _gh("POST", "/repos/%s/commits/%s/comments" % (repo, sha), {"body": comment_body})
+    return state + ("" if isinstance(res, dict) and not res.get("_http_error") else " (comment failed)")
+
+
+def closeout_project(project_row):
+    """Close the loop for one project: measure open + recently-closed db-steer PRs against
+    the project's live findings. Fail-soft summary; never raises."""
+    name = str(project_row.get("name") or "")
+    if _is_excluded(project_row):
+        return {"project": name, "ok": True, "skipped": "excluded"}
+    repo = repo_for_project(project_row)
+    if not repo:
+        return {"project": name, "ok": True, "skipped": "no repo"}
+    prs = _gh("GET", "/repos/%s/pulls?state=all&sort=updated&direction=desc&per_page=30" % repo)
+    if not isinstance(prs, list):
+        return {"project": name, "ok": False, "reason": "PR list failed: %s" % (prs or {}).get("_message")}
+    fps_needed = bool(any(str(p.get("title") or "").startswith("db-steering:")
+                          or str((p.get("head") or {}).get("ref") or "").startswith("fix/db-steer-")
+                          for p in prs))
+    if not fps_needed:
+        return {"project": name, "ok": True, "skipped": "no db-steer PRs"}
+    findings = db.select_all("db_findings", {"select": "fingerprint,status",
+                                             "project": "eq.%s" % name}, order="id.asc") or []
+    states = {}
+    for pr in prs:
+        try:
+            st = closeout_pr(repo, pr, findings)
+            if st != "not ours":
+                states[pr.get("number")] = st
+                # Persist the measurement for outcome learning (db_learning.efficacy).
+                try:
+                    m = _measure_pr(pr, findings)
+                    if not m.get("skip"):
+                        mstate = m["state0"] or ("open-pending" if not m["merged"] else "merged-no-live-match")
+                        import db_learning
+                        db_learning.record_closeout(name, repo, pr.get("number"), m.get("group") or None,
+                                                    mstate, m["total"], m["resolved"], m["open"], m["merged"])
+                except Exception as e:
+                    print("db_remediate: closeout persistence for %s#%s failed: %s"
+                          % (repo, pr.get("number"), str(e)[:100]))
+        except Exception as e:
+            states[pr.get("number")] = "error: %s" % str(e)[:100]
+    return {"project": name, "ok": True, "states": states}
+
+
+# ── fleet wiring ──────────────────────────────────────────────────────────────
+
+def remediate_project(project_row, *, budget):
+    """Plan (and, when enabled, open) draft PRs for one project's mechanical findings."""
+    if budget <= 0:
+        return {"project": project_row.get("name"), "ok": False, "reason": "budget exhausted"}
+    name = str(project_row.get("name") or "")
+    if not name or project_row.get("superseded_by") or _is_excluded(project_row):
+        return {"project": name, "ok": False, "reason": "excluded"}
+    rows = db.select_all("db_findings", {
+        "select": "probe_id,severity,status,fingerprint,object_schema,object_name,metrics,title",
+        "project": "eq.%s" % name, "status": "eq.open",
+        "probe_id": "in.(%s)" % ",".join(sorted(GENERATORS))}, order="id.asc") or []
+    findings = sorted(rows, key=lambda r: (-SEV_RANK.get(r.get("severity"), 0),
+                                           str(r.get("object_name") or "")))
+    plans = plan_migration(name, findings)
+    plans = [p for p in plans if p[1] and p[2]]
+    if not plans:
+        return {"project": name, "ok": True, "reason": "nothing mechanical open"}
+    # Outcome learning: try the fix classes that have actually resolved live findings
+    # first; a class with zero history sits mid-order until it has a track record.
+    try:
+        import db_learning
+        order = {g: i for i, g in enumerate(db_learning.efficacy_order([p[0] for p in plans]))}
+        plans = sorted(plans, key=lambda p: order.get(p[0], 0))
+    except Exception as e:
+        print("db_remediate: efficacy ordering skipped: %s" % str(e)[:100])
+    if not ENABLED:
+        return {"project": name, "ok": True, "planned": [
+            {"group": g, "findings": len(fps), "skipped": skipped} for g, _s, fps, skipped in plans],
+            "reason": "plan-only (ORCH_DB_REMEDIATE=0)"}
+    repo = repo_for_project(project_row)
+    if not repo:
+        return {"project": name, "ok": False, "reason": "no GitHub repo resolvable (vercel link / override)"}
+    results, spent = [], 0
+    for group, sql, fps, skipped in plans:
+        if spent >= budget:
+            results.append({"group": group, "ok": False, "reason": "budget exhausted"})
+            continue
+        spent += 1
+        res = ensure_draft_pr(name, repo, group, sql, fps)
+        res["group"] = group
+        if skipped:
+            # A string here is ensure_draft_pr's own skip reason (open PR / declined);
+            # the plan's per-finding skips must not overwrite it.
+            if isinstance(res.get("skipped"), str):
+                res["skipped_findings"] = skipped
+            else:
+                res["skipped"] = skipped
+        results.append(res)
+    out = {"project": name, "ok": all(r["ok"] for r in results), "pr_results": results}
+    skips = ["%s: %s" % (r["group"], r["skipped"]) for r in results if isinstance(r.get("skipped"), str)]
+    if skips:
+        # Surface the reason at the project level so the loop's one-line JSON log shows
+        # WHY nothing was filed, not just that nothing was.
+        out["skips"] = skips
+        if len(skips) == len(results):
+            out["reason"] = "; ".join(skips)
+    return out
+
+
+def run_cycle(projects=None, *, budget=None):
+    """One remediation pass over the fleet (or the projects the steering cycle just scanned).
+    Returns a summary; never raises."""
+    budget = MAX_PRS if budget is None else budget
+    out = {"enabled": ENABLED, "budget": budget, "results": [], "closeout": []}
+    try:
+        if projects is None:
+            projects = db.select("projects", {"select": "name,repo_path,vercel_project,superseded_by"}) or []
+        for p in projects:
+            if budget <= 0:
+                break
+            try:
+                res = remediate_project(p, budget=budget)
+            except Exception as e:
+                res = {"project": p.get("name"), "ok": False,
+                       "reason": "%s: %s" % (type(e).__name__, str(e)[:120])}
+            out["results"].append(res)
+            made = sum(1 for r in (res.get("pr_results") or []) if r.get("ok") and not r.get("skipped"))
+            budget -= min(made, budget)
+        # Loop-closer: measure open/merged db-steer PRs against live findings (comments on
+        # the head commit; no PR ever closes a finding by existing — the scan decides).
+        for p in projects[:8]:
+            if p.get("superseded_by"):
+                continue
+            try:
+                co = closeout_project(p)
+                if co.get("states"):
+                    out["closeout"].append(co)
+            except Exception as e:
+                out["closeout"].append({"project": p.get("name"), "ok": False,
+                                        "reason": "%s: %s" % (type(e).__name__, str(e)[:120])})
+    except Exception as e:
+        out["error"] = "%s: %s" % (type(e).__name__, str(e)[:120])
+    return out
+
+
+if __name__ == "__main__":
+    print(json.dumps(run_cycle(), indent=2, default=str))

@@ -76,9 +76,9 @@ def _ollama_embed(text):
                 or "http://127.0.0.1:11434")
         if not base.startswith("http"):
             base = "http://" + base
-        d = _http_json(base.rstrip("/") + "/api/embeddings",
-                       {"model": OLLAMA_EMBED_MODEL, "prompt": text[:8000]}, {})
-        v = d.get("embedding")
+        import local_embeddings
+        rows = local_embeddings.embed([text], OLLAMA_EMBED_MODEL, base, timeout=30)
+        v = rows[0] if rows else None
         if v:
             return (list(v) + [0.0] * DIM)[:DIM]
     except Exception:
