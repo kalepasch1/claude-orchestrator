@@ -7,6 +7,8 @@ import json
 import logging
 from typing import Dict, Any, Optional, List
 
+import config_helpers
+
 log = logging.getLogger(__name__)
 
 class ConfigValidationError(Exception):

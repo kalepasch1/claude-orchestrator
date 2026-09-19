@@ -22,6 +22,7 @@ import shadow_mode
 import db
 import agentic_repair
 import worktree_isolation
+import config_helpers
 from staging_branch import staging_branch_for
 
 MARK = "merge-handler"          # decided_by sentinel => already processed
@@ -40,14 +41,7 @@ _MAX_REDO_CAP = 5
 
 def _bounded_int(env_key, default, floor=0, ceiling=None):
     """Read an integer from env with floor/ceiling guards."""
-    try:
-        v = int(os.environ.get(env_key, str(default)))
-    except (ValueError, TypeError):
-        v = default
-    v = max(floor, v)
-    if ceiling is not None:
-        v = min(ceiling, v)
-    return v
+    return config_helpers.parse_env_int_bounded(env_key, default, floor, ceiling)
 
 # Deny-list of sensitive path globs that should NOT be auto-approved
 SENSITIVE_PATHS = [
