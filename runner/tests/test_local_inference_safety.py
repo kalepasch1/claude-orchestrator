@@ -260,6 +260,26 @@ class GatewaySafetyTests(IsolatedTest):
     def complete(self, prompt="short test input", model="llama3.2:3b"):
         return gateway.complete("local", model, prompt)
 
+    def test_thinking_disabled_in_generate_payload(self):
+        # 2026-09-20: thinking models (qwen3.5 family) returned empty `response`
+        # with done_reason=length on /api/generate — db_memo fell back to
+        # deterministic templates for six days. The request must opt out.
+        gateway._local("qwen3.5:27b-mlx", "test input")
+        args, _ = self.post.call_args
+        self.assertIs(args[2]["think"], False)
+
+    def test_thinking_opt_in_via_env(self):
+        os.environ["ORCH_OLLAMA_THINK"] = "1"
+        gateway._local("qwen3.5:27b-mlx", "test input")
+        args, _ = self.post.call_args
+        self.assertIs(args[2]["think"], True)
+
+    def test_empty_response_with_length_reads_as_generation_limit(self):
+        # the exact observed failure signature: empty answer, budget spent
+        self.post.return_value = {"response": "", "done": True, "done_reason": "length"}
+        result = self.complete()
+        self.assertEqual(result["reason"], "generation_limit")
+
     def test_success_exact_model_bounded_payload_and_timeout(self):
         text, cost = gateway._local("llama3.2:3b", "test input", timeout=600)
         self.assertEqual((text, cost), ("complete", 0))
