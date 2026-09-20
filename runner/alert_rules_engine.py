@@ -51,6 +51,22 @@ DEFAULT_RULES = [
         "severity": "critical",
     },
     {
+        "id": "memo_template_standing_in",
+        "name": "Memo templates standing in for the model",
+        "metric": "template_memos_stale",
+        "operator": "gt",
+        "threshold": 0,
+        "severity": "warning",
+    },
+    {
+        "id": "strong_tier_silent",
+        "name": "Configured strong local tier answered nothing in 24h",
+        "metric": "strong_local_ops_24h_ok",
+        "operator": "lt",
+        "threshold": 1,
+        "severity": "warning",
+    },
+    {
         "id": "approval_backlog",
         "name": "Approval backlog growing",
         "metric": "pending_approvals",
@@ -180,6 +196,37 @@ def _collect_metrics():
         # metric previously read a task state that has never existed, so it was
         # reporting 0 pending approvals no matter how many were waiting.
         metrics["pending_approvals"] = db.count("approvals", {"status": "eq.pending"}) or 0
+
+        # Capability silence — the six-day deterministic-memo incident of 2026-09-20
+        # (a thinking model ate the whole token budget; every memo persisted its
+        # template instead of prose, and nothing noticed because every dashboard
+        # looked calm). Two metrics: templates STANDING IN for judgement while their
+        # evidence moves, and whether the configured strong local tier answered at all.
+        try:
+            memos = db.select("legal_memo_drafts", {"select": "id,drafted_at,updated_at",
+                                                    "model_name": "eq.deterministic"}) or []
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            cutoff = now_utc - datetime.timedelta(hours=24)
+            stale = 0
+            for m in memos:
+                try:
+                    draft = datetime.datetime.fromisoformat(str(m.get("drafted_at") or ""))
+                    upd = datetime.datetime.fromisoformat(str(m.get("updated_at") or ""))
+                    if draft < cutoff and upd > draft:
+                        stale += 1
+                except ValueError:
+                    continue
+            metrics["template_memos_stale"] = stale
+        except Exception:
+            metrics["template_memos_stale"] = None  # unmeasured is not "0"
+        strong = os.environ.get("OLLAMA_STRONG_MODEL", "").strip()
+        if strong:
+            strong_ok = db.select("app_operations", {"select": "id", "provider": "eq.local",
+                                                     "model": f"eq.{strong}", "ok": "eq.true",
+                                                     "created_at": f"gte.{cutoff_24h}"}) or []
+            metrics["strong_local_ops_24h_ok"] = len(strong_ok)
+        # Unconfigured strong tier: metric absent, rule cannot fire — an absent
+        # capability is a config fact, not a silence.
     except Exception as e:
         # Was `pass`. Silence here is the worst possible failure of a monitor: with no
         # metrics every `lt` rule evaluates against None, `_compare` returns False, and

@@ -90,6 +90,30 @@ _brief_cache = {}
 def _now_iso():
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
+def _template_memo_count(project):
+    """Memos of this project whose body is the deterministic template while their
+    evidence has moved since the draft, aged past 24h. Measured incident class
+    2026-09-20: six days of template memos with a calm board (thinking model ate
+    the whole budget; every draft failed validation silently). Fail-soft to 0:
+    a missing control plane never invents a capability warning."""
+    try:
+        rows = db.select("legal_memo_drafts", {"select": "id,drafted_at,updated_at",
+                                               "project": "eq.%s" % project,
+                                               "model_name": "eq.deterministic"}) or []
+    except Exception:
+        return 0
+    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)
+    stale = 0
+    for r in rows:
+        try:
+            draft = _dt.datetime.fromisoformat(str(r.get("drafted_at") or ""))
+            upd = _dt.datetime.fromisoformat(str(r.get("updated_at") or ""))
+            if draft < cutoff and upd > draft:
+                stale += 1
+        except ValueError:
+            continue
+    return stale
+
 
 def _ts(value):
     """ISO/epoch -> epoch seconds; 0 on anything unparseable."""
@@ -568,6 +592,11 @@ def build_brief(project, findings=None, signals=None):
             lines.append("Trajectory: " + s)
         for s in learn.recurrence_lines(project)[:2]:
             lines.append("- " + s)
+    det = _template_memo_count(project)
+    if det:
+        lines.append("- CAPABILITY: %d memo draft(s) here are the deterministic template with evidence "
+                     "already moved — the model tier assigned to them has not answered in >24h; treat the "
+                     "lines belowing as template posture, not judgement, until it does." % det)
     chains = _import("db_chains")
     if chains is not None:
         # Findings are rows; arguments are chains: FK-graph reach for the worst gaps,
