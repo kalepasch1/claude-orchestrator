@@ -38,7 +38,9 @@ pretending the registry agreed.
 """
 from __future__ import annotations
 
+import logging
 import os
+import subprocess
 
 FLEET_DEFAULT = "orchestrator/dev"
 ENV_VAR = "ORCH_STAGING_BRANCH"
@@ -46,6 +48,8 @@ ENV_VAR = "ORCH_STAGING_BRANCH"
 SOURCE_REGISTRY = "project registry"
 SOURCE_ENV = ENV_VAR
 SOURCE_DEFAULT = "fleet default"
+
+logger = logging.getLogger(__name__)
 
 
 def fleet_staging_branch():
