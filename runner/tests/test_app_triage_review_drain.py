@@ -72,16 +72,19 @@ class DrainIsFifo(unittest.TestCase):
         atr.db = self.real_db
 
     def test_the_query_asks_for_oldest_first(self):
+        # Model-free mode (this suite) drains at SAMPLE_MODEL_FREE; the judged
+        # mode keeps SAMPLE. Either way the ORDER is the contract.
         atr._rate_unscored()
         sel = [p for t, p in self.fake.calls
-               if t == "app_operations" and p.get("limit") == str(atr.SAMPLE)]
+               if t == "app_operations" and p.get("limit") == str(atr.SAMPLE_MODEL_FREE)]
         self.assertTrue(sel, "expected the batch select")
         self.assertEqual(sel[0].get("order"), "created_at.asc",
                          "newest-first makes the tail of the queue unreachable")
 
     def test_the_oldest_rows_are_the_ones_scored(self):
         atr._rate_unscored()
-        self.assertEqual(sorted(self.fake.updated), list(range(atr.SAMPLE)),
+        take = min(atr.SAMPLE_MODEL_FREE, 200)
+        self.assertEqual(sorted(self.fake.updated), list(range(take)),
                          "a drain must take from the front of the queue")
 
     def test_repeated_runs_reach_the_far_end(self):
@@ -93,20 +96,25 @@ class DrainIsFifo(unittest.TestCase):
                          "with newest-first ordering these rows could never be reached")
 
     def test_newly_arrived_rows_do_not_displace_the_backlog(self):
-        atr._rate_unscored()
-        # A burst of new operations arrives after the first pass.
-        newer = ops(100, start=1000)
-        for i, r in enumerate(newer):
-            r["created_at"] = f"2026-09-01T00:00:{i:04d}"
-        self.fake.rows.extend(newer)
+        saved = atr.SAMPLE_MODEL_FREE
+        atr.SAMPLE_MODEL_FREE = 40  # exercise displacement with a small drain window
+        try:
+            atr._rate_unscored()
+            # A burst of new operations arrives after the first pass.
+            newer = ops(100, start=1000)
+            for i, r in enumerate(newer):
+                r["created_at"] = f"2026-09-01T00:00:{i:04d}"
+            self.fake.rows.extend(newer)
 
-        before = {r["id"] for r in self.fake.rows
-                  if r.get("quality_score") is None and r["id"] < 1000}
-        atr._rate_unscored()
-        after = {r["id"] for r in self.fake.rows
-                 if r.get("quality_score") is None and r["id"] < 1000}
-        self.assertLess(len(after), len(before),
-                        "new arrivals must not push the existing backlog further out of reach")
+            before = {r["id"] for r in self.fake.rows
+                      if r.get("quality_score") is None and r["id"] < 1000}
+            atr._rate_unscored()
+            after = {r["id"] for r in self.fake.rows
+                     if r.get("quality_score") is None and r["id"] < 1000}
+            self.assertLess(len(after), len(before),
+                            "new arrivals must not push the existing backlog further out of reach")
+        finally:
+            atr.SAMPLE_MODEL_FREE = saved
 
 
 class PoisonRowsAreVisible(unittest.TestCase):
