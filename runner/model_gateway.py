@@ -283,7 +283,18 @@ def _local(model, prompt, timeout=90):
             requested_timeout = policy["timeout_s"]
     except (TypeError, ValueError):
         requested_timeout = policy["timeout_s"]
+    # WHAT WAS WRONG, MEASURED (2026-09-20): with a thinking model serving (fleet
+    # strong tier qwen3.5:27b-mlx), /api/generate returned {"response": "",
+    # done_reason": "length"} — the entire num_predict budget went to the reasoning
+    # channel and the answer field stayed empty. Reproduced live from the sandbox:
+    # 120-token memo-flavored prompt -> empty response; the same prompt with
+    # think=false -> clean answer. Downstream this read as response_incomplete /
+    # generation_limit capacity errors, and db_memo quietly shipped deterministic
+    # templates for six days. The fleet's consumers parse `response` as THE answer;
+    # deliberation text is not part of any contract here. ORCH_OLLAMA_THINK=1 opts
+    # back in for a caller that wants the whole thinking trace.
     body = {"model": model, "prompt": prompt, "stream": False,
+            "think": os.environ.get("ORCH_OLLAMA_THINK", "").strip().lower() in ("1", "true", "yes", "on"),
             "keep_alive": policy["keep_alive"],
             "options": {"num_ctx": policy["num_ctx"], "num_predict": policy["num_predict"]}}
     # Never retry or generate outside the guard, even if an older guard returns
