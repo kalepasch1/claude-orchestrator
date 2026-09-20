@@ -2752,29 +2752,39 @@ def run_task(t):
                 # a failed push. test_source_does_fetch_before_pushing pins that too, by
                 # scanning this block for the forcing flag.
                 _shared = False
-                _share_branch = f"agent/{slug}"
-                for _attempt in range(3):
+                # Fetch first to ensure we have fresh remote-tracking refs, so we can detect
+                # when a ref was already pushed by another writer and avoid retry loops.
+                try:
+                    subprocess.run(["git", "fetch", "origin", f"agent/{slug}"],
+                                   cwd=repo, capture_output=True, text=True, timeout=180)
+                except Exception:
+                    pass
+                def _already_on_origin():
                     try:
-                        subprocess.run(["git", "fetch", "origin",
-                                        f"+refs/heads/{_share_branch}:refs/remotes/origin/{_share_branch}"],
-                                       cwd=repo, capture_output=True, text=True, timeout=120)
-                        if _already_on_origin(repo, _share_branch):
-                            _shared = True
-                            break
-                        _pr = subprocess.run(["git", "push", "-u", "origin", _share_branch],
-                                             cwd=repo, capture_output=True, text=True, timeout=180)
-                        if _pr.returncode == 0:
-                            _shared = True
-                            break
-                        # non-ff (branch already on origin ahead) counts as shared
-                        if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
-                            _shared = True
-                            break
-                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} failed: "
-                              f"{stderr_digest.digest(_pr.stderr, 160)}")
-                    except Exception as _pe:
-                        print(f"[branch-share] push {_share_branch} attempt {_attempt+1} error: {_pe}")
-                    time.sleep(2 * (_attempt + 1))
+                        _check = subprocess.run(["git", "merge-base", "--is-ancestor",
+                                                 f"agent/{slug}", f"origin/agent/{slug}"],
+                                                cwd=repo, capture_output=True, text=True, timeout=60)
+                        return _check.returncode == 0
+                    except Exception:
+                        return False
+                if _already_on_origin():
+                    _shared = True
+                else:
+                    for _attempt in range(3):
+                        try:
+                            _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
+                                                 cwd=repo, capture_output=True, text=True, timeout=180)
+                            if _pr.returncode == 0:
+                                _shared = True
+                                break
+                            # non-ff (branch already on origin ahead) counts as shared
+                            if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
+                                _shared = True
+                                break
+                            print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {(_pr.stderr or '')[-160:]}")
+                        except Exception as _pe:
+                            print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
+                        time.sleep(2 * (_attempt + 1))
                 if not _shared:
                     print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
                           f"branch kept local (governor will not GC unshared branches)")
