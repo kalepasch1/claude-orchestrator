@@ -21,12 +21,13 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
+import env_parsing
 
 _log = _log_mod.get("adaptive_test_prioritizer")
 
-ENABLED = os.environ.get("ORCH_TEST_PRIORITY_ENABLED", "true").lower() in ("1", "true", "yes")
-ANOMALY_THRESHOLD = float(os.environ.get("ORCH_TEST_ANOMALY_THRESHOLD", "2.0"))
-HISTORY_WINDOW = int(os.environ.get("ORCH_TEST_HISTORY_WINDOW", "50"))
+ENABLED = env_parsing.parse_bool("ORCH_TEST_PRIORITY_ENABLED", default=True)
+ANOMALY_THRESHOLD = env_parsing.parse_float("ORCH_TEST_ANOMALY_THRESHOLD", default=2.0, minimum=0.1, maximum=100.0)
+HISTORY_WINDOW = env_parsing.parse_int("ORCH_TEST_HISTORY_WINDOW", default=50, minimum=1, maximum=10000)
 
 
 @dataclass
