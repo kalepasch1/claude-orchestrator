@@ -1,5 +1,9 @@
 """Tests for recovery/train-approved/build-fix queue prioritization."""
+import os
+import sys
 import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class TestRecoveryPriority(unittest.TestCase):
@@ -10,16 +14,16 @@ class TestRecoveryPriority(unittest.TestCase):
                 "confidence": 0.5}
 
     def test_recovery_task_detected(self):
-        from runner.db import _is_recovery_task
+        from db import _is_recovery_task
         self.assertTrue(_is_recovery_task(self._make_task("recover-missing-branch-foo")))
         self.assertFalse(_is_recovery_task(self._make_task("add-feature-bar")))
 
     def test_release_fix_includes_buildfix(self):
-        from runner.db import _is_release_fix_task
+        from db import _is_release_fix_task
         self.assertTrue(_is_release_fix_task(self._make_task("buildfix-tomorrow-abc123")))
 
     def test_release_fix_includes_qafix(self):
-        from runner.db import _is_release_fix_task
+        from db import _is_release_fix_task
         self.assertTrue(_is_release_fix_task(self._make_task("qafix-beethoven-def456")))
 
     def test_train_approved_note_detected(self):
