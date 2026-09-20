@@ -17,6 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db, judge, model_gateway as mg
 
 SAMPLE = int(os.environ.get("APP_REVIEW_SAMPLE", "40"))
+#: In the default model-free mode each "score" costs one row write — no model
+#: call, no token. The batch is then a DRAIN SIZE, not a sample size: measured
+#: 2026-09-20, 930,056 unscored operations against 125,675 scored, FIFO at
+#: 40/30min loses ground every single run and the learned router starves on
+#: null quality_scores. The judged path keeps the small batch — it spends a
+#: model call per row.
+SAMPLE_MODEL_FREE = int(os.environ.get("APP_REVIEW_SAMPLE_MODEL_FREE", "5000"))
 # Cap on the backlog probe. Counting ~875k rows every 30 minutes to print one number is not
 # worth it; probing up to this many answers the only question that matters — is the queue
 # still deep — and reports the answer as ">= N" rather than pretending to be exact.
@@ -75,9 +82,11 @@ def _rate_unscored():
     starved indefinitely. `_unscored_backlog` reports what remains, because a queue that
     cannot keep up should say so rather than look busy.
     """
+    model_mode = os.environ.get("ORCH_APP_REVIEW_USE_MODEL", "false").lower() in ("1", "true", "yes", "on")
+    limit = SAMPLE if model_mode else SAMPLE_MODEL_FREE
     rows = db.select("app_operations",
                      {"select": "*", "quality_score": "is.null",
-                      "order": "created_at.asc", "limit": str(SAMPLE)}) or []
+                      "order": "created_at.asc", "limit": str(limit)}) or []
     scored, failed = 0, []
     for op in rows:
         if os.environ.get("ORCH_APP_REVIEW_USE_MODEL", "false").lower() not in ("1", "true", "yes", "on"):
@@ -213,7 +222,8 @@ def run():
         tail = f", {'>=' if backlog.get('at_least') else ''}{left} unscored remaining"
         if scored and left >= BACKLOG_PROBE:
             # Draining at SAMPLE per run against a backlog this size is not draining.
-            tail += (f" (batch is {SAMPLE}/run — raise APP_REVIEW_SAMPLE or the queue keeps "
+            cap = SAMPLE if os.environ.get("ORCH_APP_REVIEW_USE_MODEL", "false").lower() in ("1", "true", "yes", "on") else SAMPLE_MODEL_FREE
+            tail += (f" (batch is {cap}/run — raise APP_REVIEW_SAMPLE_MODEL_FREE or the queue keeps "
                      f"growing)")
     print(f"app_triage_review: scored {scored} ops, updated {routes} app/operation routes{tail}")
     return {"scored": scored, "routes": routes, "backlog": left}
