@@ -11,6 +11,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 
+def _expert_insight_block():
+    """Innovation pathways first, then regulatory gaps along the risk spectrum; '' when the
+    insight table is absent or quiet. Never raises."""
+    try:
+        import steering_insights
+        lines = steering_insights.owner_lines() or []
+        return ("\n".join(lines) + "\n") if lines else ""
+    except Exception:
+        return ""
+
+
 def run():
     wk = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
     merges = db.select("outcomes", {"select": "project", "integrated": "eq.true",
@@ -44,9 +55,10 @@ def run():
             f"Compute: $0 real API (Max plans) · ${notional:,.0f} notional this week\n"
             f"Top decisions waiting: {top_txt}\n"
             + (f"{data_line}\n" if data_line else "")
+            + _expert_insight_block()
             + f"Open the cockpit Portfolio tab to steer next week.")
     db.insert("notifications", {"channel": "email", "audience": os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com"),
-              "kind": "alert", "title": "Weekly owner report", "body": body[:1500], "sent": False})
+              "kind": "alert", "title": "Weekly owner report", "body": body[:2400], "sent": False})
     print("owner_report: weekly report queued")
     return 1
 

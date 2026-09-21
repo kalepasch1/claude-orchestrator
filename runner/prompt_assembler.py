@@ -124,6 +124,15 @@ def _db_steering_brief(project, context=""):
         return ""
 
 
+def _expert_insights_brief(project, context=""):
+    """Relevant expert-panel insights for this task; '' when none or on any failure."""
+    try:
+        import steering_insights
+        return steering_insights.brief(project, context or "") or ""
+    except Exception:
+        return ""
+
+
 def _distilled_body(task_body, task, project):
     try:
         import prompt_distillation
@@ -185,6 +194,13 @@ def assemble(task_body, *, project="", repo="", kind="build", source="unknown", 
     # review steers the agents editing the schema without paging anyone: the next task in
     # the project simply sees it. Bounded (<=2KB), cached 5 min, and never load-bearing —
     # a missing table or a DB hiccup contributes nothing.
+    # 4c. expert insights — what the standing expert panels have already concluded about the
+    # very thing this task touches (steering_insights, distilled from verdict cards). Gated
+    # on content overlap with the task text, so an unrelated task sees nothing.
+    expert_brief = _expert_insights_brief(project, body)
+    if expert_brief:
+        layers.append("expert_insights")
+
     db_brief = _db_steering_brief(project, body)
     if db_brief:
         layers.append("db_steering")
@@ -250,7 +266,7 @@ def assemble(task_body, *, project="", repo="", kind="build", source="unknown", 
     except Exception:
         pass
 
-    prompt = design["text"] + prefix + brief + db_brief + focus + blast + reuse + injected + tail + REUSE_FIRST
+    prompt = design["text"] + prefix + brief + db_brief + expert_brief + focus + blast + reuse + injected + tail + REUSE_FIRST
     prompt = _cap(prompt)
     token_estimate = len(prompt) // 4
     _log_assembly(project, slug, token_estimate, layers)
