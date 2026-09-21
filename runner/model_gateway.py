@@ -526,13 +526,44 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
     return {"text": text, "cost_usd": cost, "provider": provider, "model": model}
 
 
+def _free_tier_order():
+    """The two free providers, strongest placed model first.
+
+    WHY THIS IS NOT A STATIC ORDER. FALLBACK_ORDER leads with "exo" because a
+    healthy ring holds a model no single box here can fit. But the ring degrades:
+    when its inter-node link drops, EXO falls back to whatever fits on ONE node,
+    and this fleet watched it come back holding Qwen3.5-9B-4bit while Ollama had
+    qwen3.5:27b-mlx on disk. A static preference then sends every free call to
+    the weaker model precisely when the ring is unhealthy -- the opposite of what
+    leading with it was for.
+
+    Both names are scored by the same size-aware ollama_catalog.infer_cap, so a
+    9B ring loses to a 27B local and an 80B ring wins. Ties keep exo first,
+    because the ring's spare RAM is not this box's.
+    """
+    order = [p for p in ("exo", "local") if p in available()]
+    if len(order) < 2:
+        return order
+    try:
+        from ollama_catalog import infer_cap
+        exo_cap = infer_cap(DEFAULT_MODELS["exo"]() or "")
+        local_cap = infer_cap(DEFAULT_MODELS["local"]() or "")
+    except Exception:
+        return order                      # undeterminable -> documented order
+    return ["exo", "local"] if exo_cap >= local_cap else ["local", "exo"]
+
+
 def _fallbacks(first_provider):
     seen = {first_provider}
+    free_order = _free_tier_order()
     for prov in FALLBACK_ORDER:
-        if prov in seen or prov not in available():
-            continue
-        seen.add(prov)
-        yield prov, DEFAULT_MODELS[prov]()
+        # The free tier is emitted in capability order at the position where the
+        # first of the two appears, so a degraded ring cannot outrank Ollama.
+        for candidate in (free_order if prov in ("exo", "local") else [prov]):
+            if candidate in seen or candidate not in available():
+                continue
+            seen.add(candidate)
+            yield candidate, DEFAULT_MODELS[candidate]()
 
 
 def _confidential_mode():
