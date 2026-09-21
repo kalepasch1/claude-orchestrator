@@ -120,6 +120,12 @@ class QueueDepthGate(unittest.TestCase):
     def test_release_fix_prefixes_still_exempt(self):
         self.assertFalse(db._queue_depth_block({"slug": "relfix-tomorrow-build"}))
 
+    def test_fingerprint_bound_recovery_bypasses_depth_without_becoming_operator(self):
+        row = {"slug": "chatgpt-local-reconcile-x-deadbeef1234",
+               "_operator_directed_recovery": True}
+        self.assertFalse(db._is_operator_origin(row))
+        self.assertFalse(db._queue_depth_block(row))
+
 
 class RefusalIsRecorded(unittest.TestCase):
     """A refusal must always produce a record — silence is what hid this for 120 days."""

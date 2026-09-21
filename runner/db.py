@@ -1428,6 +1428,8 @@ def _queue_depth_block(row):
         return False
     if _is_operator_origin(row):
         return False        # the operator's own directives are never throughput-capped
+    if row.get("_operator_directed_recovery"):
+        return False        # fingerprint-bound canonical recovery intake
     if row.get("_bypass_depth_cap"):
         return False
 
@@ -1692,7 +1694,10 @@ def insert(table, row, upsert=False):
         # Operator directives are exempt: a red release is the FLEET's failure to ship, and
         # refusing the owner's next instruction because the machine broke its own release is
         # exactly backwards — it makes a fleet outage look like operator silence.
-        if not row.pop("_bypass_backpressure", False) and not _is_operator_origin(row):
+        _operator_recovery = bool(row.pop("_operator_directed_recovery", False))
+        _bypass_backpressure = bool(row.pop("_bypass_backpressure", False))
+        if (not _operator_recovery and not _bypass_backpressure
+                and not _is_operator_origin(row)):
             try:
                 import deployment_terminal
                 _proj = _project_name_cached(row.get("project_id"))
@@ -3510,4 +3515,3 @@ def breaker_open():
             return time.monotonic() < _BREAKER["open_until"]
     except Exception:
         return False
-
