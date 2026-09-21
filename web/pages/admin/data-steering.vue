@@ -118,6 +118,24 @@ const views = computed<SteeringView[]>(() => [
   { key: 'm', id: 'memos', label: 'Memo drafts', rows: (data.value.memos || []).length },
   { key: 'l', id: 'link', label: 'Link a database', rows: 0 },
 ])
+// Just-in-time guidance: what deserves attention right now, most consequential first. Each
+// item names one action and runs it; nothing is listed merely because it exists.
+interface Guide { id: string; tone: 'bad' | 'warn' | 'good'; title: string; detail: string; cta: string; run: () => void }
+const guidance = computed<Guide[]>(() => {
+  const out: Guide[] = []
+  const failing = (data.value.sources || []).filter((s: any) => s.enabled && (s.consecutive_failures || 0) >= 3)
+  if (failing.length) out.push({ id: 'failing', tone: 'bad', title: `${failing.length} source${failing.length === 1 ? ' is' : 's are'} failing to scan`, detail: failing.slice(0, 3).map((s: any) => s.label).join(', '), cta: 'Open sources', run: () => go('sources') })
+  if (attentionCount.value) out.push({ id: 'gaps', tone: 'bad', title: `${attentionCount.value} critical or high gap${attentionCount.value === 1 ? ' is' : 's are'} open`, detail: 'Most severe first; each names its remediation.', cta: 'Review findings', run: () => go('findings') })
+  const worst = (insightData.value.quality?.callers || []).find((c: any) => c.flagged > 0)
+  if (worst) out.push({ id: 'quality', tone: 'warn', title: `${worst.caller} keeps producing ${String(worst.worst).replace(/_/g, ' ')} output`, detail: `${worst.flagged} of ${worst.calls} recent local-model calls flagged.`, cta: 'See quality', run: () => go('quality') })
+  const m = insightData.value.matrix
+  if (m?.empty) out.push({ id: 'matrix', tone: 'warn', title: `${m.empty} lens × risk cells have never been asked`, detail: `Innovation share ${pct(m.innovationShare)}. Generation fills the emptiest cells first.`, cta: 'Open matrix', run: () => go('matrix') })
+  if (memoSummary.value.stale) out.push({ id: 'memos', tone: 'warn', title: `${memoSummary.value.stale} memo${memoSummary.value.stale === 1 ? ' is' : 's are'} behind the evidence`, detail: 'Drafting catches up one memo per cycle.', cta: 'Open memos', run: () => go('memos') })
+  const pathways = insightData.value.insights?.pathways?.length || 0
+  if (pathways) out.push({ id: 'pathways', tone: 'good', title: `${pathways} innovation pathway${pathways === 1 ? '' : 's'} ready to read`, detail: String(insightData.value.insights.pathways[0]?.insight || '').slice(0, 120), cta: 'Read insights', run: () => go('insights') })
+  return out.slice(0, 5)
+})
+
 const keys = ref<KeyState>({ active: 'overview', row: 0, pendingG: false, focus: 'rail' })
 function focusRow(id: string, row: number) {
   const el = document.querySelector<HTMLElement>(`#sec-${id} [data-row="${row}"]`)
@@ -125,7 +143,7 @@ function focusRow(id: string, row: number) {
 }
 function go(id: string, focusRail = true) {
   keys.value = { ...keys.value, active: id, row: 0, focus: 'rail' }; railOpen.value = false
-  document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: 'auto', block: 'start' })   // a jump is a jump: no travel time
+  window.scrollTo({ top: 0, behavior: 'auto' })   // one view at a time: a jump replaces the view, it does not travel
   if (focusRail) nextTick(() => document.querySelector<HTMLElement>(`[data-rail="${id}"]`)?.focus({ preventScroll: true }))
 }
 function openRow(id: string, row: number) {
@@ -141,6 +159,11 @@ function onKey(e: KeyboardEvent) {
   const rowEl = target?.closest?.('[data-row]') as HTMLElement | null
   const section = rowEl?.closest('section')?.id?.replace('sec-', '')
   if (rowEl && section) keys.value = { ...keys.value, active: section, row: Number(rowEl.getAttribute('data-row')) || 0, focus: 'rows' }
+  // On Overview the number keys run the guidance items, Superhuman-style.
+  if (keys.value.active === 'overview' && !isTypingTarget(target?.tagName, target?.isContentEditable) && /^[1-5]$/.test(e.key)) {
+    const item = guidance.value[Number(e.key) - 1]
+    if (item) { e.preventDefault(); item.run(); return }
+  }
   const { state, effect } = reduceKey(keys.value, e.key, views.value, isTypingTarget(target?.tagName, target?.isContentEditable))
   keys.value = state
   if (effect.type === 'none') return
@@ -173,7 +196,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <button class="rail-toggle" aria-label="Open navigation" @click="railOpen = true"><span></span><span></span><span></span></button>
         <span class="kicker">Steering</span>
         <h1 class="serif">Data and expert steering</h1>
-        <p>Every linked database is reviewed continuously and read-only, and every expert verdict is distilled into steering. Findings and insights reach coder agents, the internal memo ledger and the weekly report. Credentials never live here — only references.</p>
+        <p>Read-only review and expert verdicts, turned into steering.</p>
       </div>
       <div class="ds-filters">
         <label>Project<select v-model="project" @change="load"><option value="">All projects</option><option v-for="p in projects" :key="p" :value="p">{{ p }}</option></select></label>
@@ -187,8 +210,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <template v-else>
       <div v-if="notice" class="ds-notice">{{ notice }}<button class="ghost" @click="notice = ''">Dismiss</button></div>
 
+      <!-- Next best action: computed just in time, never more than five, each runnable by number -->
+      <section class="guide" v-show="keys.active === 'overview'" aria-label="Next best actions">
+        <p v-if="!guidance.length" class="guide-calm serif">Nothing needs you. The loop is steering.</p>
+        <button v-for="(g, n) in guidance" :key="g.id" class="guide-item" :class="g.tone" @click="g.run()">
+          <kbd>{{ n + 1 }}</kbd>
+          <span class="guide-text"><b>{{ g.title }}</b><small>{{ g.detail }}</small></span>
+          <span class="guide-cta">{{ g.cta }} →</span>
+        </button>
+      </section>
+
       <!-- Plain-English health cards: what a human decides from in 5 seconds -->
-      <section class="ds-cards" v-if="data.sources?.length || data.memos?.length">
+      <section class="ds-cards" v-if="data.sources?.length || data.memos?.length" v-show="keys.active === 'overview'">
         <article class="ds-card" :class="scoreClass(healthScore)">
           <strong>{{ healthScore == null ? '—' : healthScore.toFixed(0) }}<small v-if="healthTrend != null" class="trend">{{ healthTrend > 0 ? '▲ +' : healthTrend < 0 ? '▼ ' : '' }}{{ Math.abs(healthTrend ?? 0).toFixed(1) }}</small></strong>
           <span>Posture{{ project ? '' : ' (worst source)' }}<br><small>{{ healthScore == null ? '' : healthScore >= 85 ? 'healthy' : healthScore >= 60 ? 'watch it' : 'act soon' }}</small></span>
@@ -208,8 +241,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Posture strip -->
-      <section class="ds-posture" v-if="data.sources?.length">
-        <article v-for="s in data.sources" :key="s.id" class="posture-card" :class="scoreClass(score(s.id))">
+      <section class="ds-posture" v-if="data.sources?.length" v-show="keys.active === 'overview'">
+        <!-- only sources with a reading: a wall of dashes for inactive projects says nothing -->
+        <article v-for="s in trackedSources" :key="s.id" class="posture-card" :class="scoreClass(score(s.id))">
           <strong>{{ score(s.id) == null ? '—' : score(s.id)!.toFixed(0) }}</strong>
           <span class="posture-label">{{ s.label }}</span>
           <small>{{ s.provider }}<template v-if="data.posture?.[s.id]"> · {{ when(data.posture[s.id].taken_at) }}</template><template v-else> · no snapshot yet</template></small>
@@ -218,7 +252,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 
       <!-- Expert insights -->
-      <section class="ds-card" id="sec-insights">
+      <section class="ds-card" id="sec-insights" v-show="keys.active === 'insights'">
         <header>
           <h2>Expert insights</h2>
           <span>{{ insightData.insights?.total || 0 }} active · internal, under attorney review — not legal advice</span>
@@ -249,7 +283,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Docket matrix -->
-      <section class="ds-card" id="sec-matrix">
+      <section class="ds-card" id="sec-matrix" v-show="keys.active === 'matrix'">
         <header>
           <h2>Docket matrix</h2>
           <span v-if="insightData.matrix">{{ insightData.matrix.total }} questions · {{ insightData.matrix.empty }} of {{ insightData.matrix.cells.length }} cells empty · innovation share {{ pct(insightData.matrix.innovationShare) }} · marked high {{ pct(insightData.matrix.highPriorityShare) }}</span>
@@ -276,7 +310,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Local output quality -->
-      <section class="ds-card" id="sec-quality">
+      <section class="ds-card" id="sec-quality" v-show="keys.active === 'quality'">
         <header>
           <h2>Local output quality</h2>
           <span v-if="insightData.quality">last {{ insightData.quality.rows }} local calls · {{ insightData.quality.graded }} graded · {{ insightData.quality.replays }} cache replays · mean quality {{ insightData.quality.meanQuality ?? '—' }}</span>
@@ -297,7 +331,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Sources -->
-      <section class="ds-card" id="sec-sources">
+      <section class="ds-card" id="sec-sources" v-show="keys.active === 'sources'">
         <header><h2>Sources</h2><span>{{ data.sources?.length || 0 }} linked · {{ (data.sources || []).filter((s: any) => s.enabled).length }} active</span></header>
         <div v-if="!data.sources?.length" class="ds-empty inline">No databases are linked yet. Link one below.</div>
         <div v-else class="table-wrap">
@@ -323,7 +357,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Link a database -->
-      <section class="ds-card ds-link" id="sec-link">
+      <section class="ds-card ds-link" id="sec-link" v-show="keys.active === 'link'">
         <header><h2>Link a database</h2><span>Two ways. Both store a reference, never a secret.</span></header>
         <div class="link-grid">
           <div class="link-way">
@@ -349,7 +383,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Open findings -->
-      <section class="ds-card" id="sec-findings">
+      <section class="ds-card" id="sec-findings" v-show="keys.active === 'findings'">
         <header>
           <h2>Open findings</h2>
           <span class="sev-tally"><i v-for="sev in severityOrder" :key="sev" class="pill" :class="sev">{{ sev }} {{ data.findings?.open_by_severity?.[sev] || 0 }}</i></span>
@@ -374,7 +408,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Briefs -->
-      <section class="ds-card" id="sec-briefs" v-if="data.briefs?.length">
+      <section class="ds-card" id="sec-briefs" v-show="keys.active === 'briefs'">
         <header><h2>Steering briefs</h2><span>Injected into every coder prompt for the project</span></header>
         <details v-for="(b, n) in data.briefs" :key="b.project" class="brief">
           <summary :data-row="n"><b>{{ b.project }}</b><small>updated {{ when(b.updated_at) }} · {{ Object.entries(b.open_counts || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'no open counts' }}</small></summary>
@@ -383,7 +417,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </section>
 
       <!-- Memos -->
-      <section class="ds-card" id="sec-memos">
+      <section class="ds-card" id="sec-memos" v-show="keys.active === 'memos'">
         <header><h2>Legal-memo drafts</h2><span>Internal work product · not legal advice</span></header>
         <div v-if="!data.memos?.length" class="ds-empty inline">No memo drafts yet. They appear once findings carry evidence kinds.</div>
         <div v-else class="table-wrap">
@@ -472,6 +506,17 @@ button.ghost.danger{color:var(--bad);border-color:var(--accent-line)}
 .ds-empty.error{color:var(--bad);background:var(--bad-soft);border-color:var(--accent-line)}
 .ds-notice{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--good);background:var(--good-soft);color:var(--good);border-radius:10px}
 
+.guide{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+.guide-calm{margin:0;padding:22px 20px;font-size:20px;color:var(--ink-soft)}
+.guide-item{display:flex;align-items:center;gap:14px;width:100%;padding:13px 16px;border:0;border-top:1px solid var(--line-soft);border-radius:0;background:#fff;color:var(--ink);text-align:left;font-weight:400}
+.guide-item:first-child{border-top:0}
+.guide-item:hover,.guide-item:focus-visible{background:var(--accent-soft);outline:none;box-shadow:inset 2px 0 0 var(--accent)}
+.guide-item.bad kbd{color:var(--bad);border-color:var(--accent-line);background:var(--bad-soft)}
+.guide-item.good kbd{color:var(--good);border-color:#cfe0d3;background:var(--good-soft)}
+.guide-text{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+.guide-text b{font-weight:600}
+.guide-text small{color:var(--ink-faint);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.guide-cta{flex:0 0 auto;color:var(--accent);font-weight:600;font-size:12.5px;white-space:nowrap}
 .ds-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
 .ds-cards .ds-card{display:flex;align-items:center;gap:14px;padding:16px 18px}
 .ds-cards strong{font-family:'Libre Caslon Display',Georgia,serif;font-weight:400;font-size:38px;line-height:1}
@@ -554,6 +599,7 @@ table.evidence{margin-top:12px}
   h1{font-size:27px}
 }
 @media (max-width:480px){
+  .guide-cta{display:none}
   .ds-cards{grid-template-columns:1fr 1fr} .ds-cards strong{font-size:30px}
   .ds-card{padding:14px} .pathway p,.insight p{font-size:15px}
   td.actions{flex-direction:column}
