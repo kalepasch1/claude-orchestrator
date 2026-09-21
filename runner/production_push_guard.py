@@ -25,6 +25,7 @@ RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, RUNNER_DIR)
 
 import build_gate
+import branch_error_handler
 import proof_graph
 import staging_branch as staging
 
@@ -934,11 +935,22 @@ def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main", sta
         branch, source = staging.staging_branch_for(repo)
     named = staging.describe(branch, source)
     tracking = f"refs/remotes/{remote}/{branch}"
+
+    fetch_ok = True
     try:
         _git(repo, "fetch", "--quiet", remote,
              f"+refs/heads/{branch}:{tracking}")
-    except subprocess.CalledProcessError:
-        pass  # offline, or no such branch upstream — both resolved by the rev-parse below
+    except subprocess.CalledProcessError as err:
+        fetch_ok = False
+        branch_error_handler.log_error_context(
+            branch_error_handler.BranchError(
+                branch_error_handler.BranchErrorKind.FETCH_FAILED,
+                f"fetch from {remote} failed",
+                {"error": str(err), "branch": branch}
+            ),
+            repo
+        )
+
     try:
         staging_sha = _git(repo, "rev-parse", "--verify", f"{tracking}^{{commit}}")
     except subprocess.CalledProcessError:
@@ -957,6 +969,15 @@ def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main", sta
         ahead = _git(repo, "rev-list", "--count", f"{staging_sha}..{commit}")
     except subprocess.CalledProcessError:
         ahead = "?"
+
+    if not fetch_ok:
+        recovery_msg = (
+            f"Fetch from {remote} failed, so we cannot verify if {commit[:12]} is on {named}.\n"
+            "Check your network connection and retry. If the staging branch has diverged:\n"
+        )
+        recovery_msg += branch_error_handler.format_guard_rejection_recovery(branch, remote)
+        return False, recovery_msg
+
     return False, (
         f"{commit[:12]} is not contained in {remote}/{branch} — {ahead} commit(s) "
         f"would reach production without ever being integrated on staging.\n"
@@ -974,7 +995,11 @@ def verify_promoted_from_staging(repo, commit, remote_ref="refs/heads/main", sta
 
 
 def main(stdin=None):
-    repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
+    try:
+        repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
+    except subprocess.CalledProcessError:
+        print("production_push_guard: FATAL — cannot determine repository root", file=sys.stderr)
+        return 1
     updates = guarded_updates(stdin if stdin is not None else sys.stdin)
     for local_ref, commit, remote_ref, remote_commit in updates:
         # ORDER IS DELIBERATE, AND THESE TWO COME FIRST.
