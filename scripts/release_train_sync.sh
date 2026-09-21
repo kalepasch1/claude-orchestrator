@@ -112,12 +112,15 @@ cmd_promote() {
     err "$PROD. Until $PROD is merged back into $STAGING, every promote does nothing."
     err "Run: scripts/release_train_sync.sh reabsorb"
     err "Commits on $PROD but not on $STAGING:"
-    git --no-pager log --oneline "$staging_sha".."$prod_sha" | head -20 >&2
+    # Bound the producer rather than piping into `head`. With `set -o pipefail`,
+    # a long history makes `head` close the pipe while git is still writing;
+    # git then exits on SIGPIPE (141) and masks the intended train result.
+    git --no-pager log --oneline --max-count=20 "$staging_sha".."$prod_sha" >&2
     return 1
   fi
 
   say "promoting $STAGING -> $PROD ($(git rev-parse --short "$prod_sha") .. $(git rev-parse --short "$staging_sha"))"
-  git --no-pager log --oneline "$prod_sha".."$staging_sha" | head -20
+  git --no-pager log --oneline --max-count=20 "$prod_sha".."$staging_sha"
   push "$staging_sha:refs/heads/$PROD"
   say "promoted"
 }
@@ -135,7 +138,7 @@ cmd_reabsorb() {
   fi
 
   say "$PROD has commits $STAGING does not:"
-  git --no-pager log --oneline "$staging_sha".."$prod_sha" | head -20
+  git --no-pager log --oneline --max-count=20 "$staging_sha".."$prod_sha"
 
   if is_ancestor "$staging_sha" "$prod_sha"; then
     # Staging is strictly behind. A fast-forward keeps history linear, which is what the
