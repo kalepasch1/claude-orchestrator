@@ -89,6 +89,24 @@ database. The ChatGPT/Codex sessions working on `apparently` and the worktrees u
    rejected and the deterministic rendering stands. Memos are `publication_state =
    'internal'`, end with a not-legal-advice line, and never leave the control plane.
 
+   **Drafting and expert review, as of 2026-09-21.** For its first week 86 of 90 memos sat
+   on the deterministic template: the memo prompt takes 70-90 s on the costless local model,
+   `model_gateway.complete` defaults to a 90 s timeout, and under production load the call
+   came back empty (399 of the last 400 `db_memo` log lines were `empty draft`). The memo
+   call now carries its own timeout (`ORCH_DB_MEMO_MODEL_TIMEOUT_S`, 240). A failed attempt
+   is remembered in `evidence_hash` as `rejected:<hash>:<epoch>` or `empty:<hash>:<epoch>`
+   (never equal to a real hash, so the memo still reads as not-current) and is not retried
+   against the same evidence for `ORCH_DB_MEMO_REJECT_RETRY_S` (3600) / `ORCH_DB_MEMO_EMPTY_RETRY_S`
+   (600); new evidence retries at once. A rejection consumes the cycle's memo slot, and
+   projects take the slot in rotation (`db_steering._rotated`) instead of alphabetically.
+   The expert-corps gauntlet existed but had no call site; it now runs OUT of the loop:
+   each cycle `db_steering.spawn_gauntlet()` starts `db_memo.py gauntlet-next` detached and
+   single-instance (throttled by `ORCH_DB_MEMO_GAUNTLET_SPAWN_S`, 600). The child reviews
+   the oldest real model draft that carries material evidence and has not been reviewed
+   since it was drafted; a panel that returns nothing records `attempted_at` and is left
+   alone for `ORCH_DB_MEMO_GAUNTLET_RETRY_S` (21600). Its output goes to
+   `.runtime/logs/db_memo_gauntlet.log`.
+
 ## Linking a database
 
 Supabase needs nothing: `python3 runner/db_link.py discover` (the loop also does this
@@ -183,6 +201,9 @@ the signature is unchanged), `ORCH_DB_SNAPSHOT_MIN_INTERVAL_S` (3600),
 `ORCH_DB_STEERING_REMEDIATION` (`false` to stop filing tasks), `ORCH_DB_STEERING_BRIEF_CHARS`
 (2000), `ORCH_DB_PROBE_TIMEOUT_S` (20), `ORCH_DB_PROBE_MAX_ROWS` (500),
 `ORCH_DB_DISCOVERY_INTERVAL_S` (3600), `ORCH_DB_MEMO_MAX_PER_RUN` (3),
+`ORCH_DB_MEMO_MODEL_TIMEOUT_S` (240), `ORCH_DB_MEMO_REJECT_RETRY_S` (3600),
+`ORCH_DB_MEMO_EMPTY_RETRY_S` (600), `ORCH_DB_MEMO_GAUNTLET_SPAWN_S` (600),
+`ORCH_DB_MEMO_GAUNTLET_RETRY_S` (21600),
 `ORCH_DB_MEMO_GAUNTLET` (`false` to skip expert review), `ORCH_DB_MEMO_GAUNTLET_MIN_INTERVAL_S`
 (86400). Auto-remediation: `ORCH_DB_REMEDIATE` (default `0` = plan-only; `1` opens draft PRs),
 `ORCH_DB_REMEDIATE_MAX_PRS` (3 per cycle), `ORCH_DB_REMEDIATE_REPOS` (JSON project→owner/repo

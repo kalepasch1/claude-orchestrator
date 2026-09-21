@@ -694,6 +694,60 @@ class TestRebuild(Base):
         self.assertNotEqual(row["evidence_hash"], db_memo.evidence_hash(row["id"]),
                             "a rejected draft must leave the hash unmatched so the next run retries")
 
+    def test_rejected_draft_backs_off_until_window_or_evidence_change(self):
+        """The first live week: one ~90 s model call per cycle on the same rejected memos,
+        starving every other project. A rejection now holds for REJECT_RETRY_S."""
+        self._prime_body()
+        self.resolve("f2")  # evidence moved
+        self.model.fixed = "too short"
+        db_memo.rebuild_if_changed("proj", max_memos=1)
+        row = self.db.memo("proj", AC)
+        self.assertTrue(str(row["evidence_hash"]).startswith("rejected:"))
+        self.assertEqual(row["status"], "stale")
+        out = db_memo.rebuild_if_changed("proj", max_memos=5)  # other moved memos get their own try
+        ac = next(m for m in out["memos"] if m["memo_kind"] == AC)
+        self.assertEqual(ac["outcome"], "skipped")
+        self.assertIn("backing off", ac["reason"])
+        calls = self.model.calls
+        db_memo.rebuild_if_changed("proj", max_memos=5)
+        self.assertEqual(self.model.calls, calls, "every rejected memo is backing off: zero model calls")
+        # the window elapses -> retried
+        with mock.patch.object(db_memo, "REJECT_RETRY_S", 0):
+            db_memo.rebuild_if_changed("proj", max_memos=1)
+        self.assertGreater(self.model.calls, calls)
+        # evidence changes -> retried immediately, window or not
+        calls = self.model.calls
+        self.resolve("f1")
+        db_memo.rebuild_if_changed("proj", max_memos=1)
+        self.assertGreater(self.model.calls, calls)
+
+    def test_empty_completion_is_an_outage_with_a_short_backoff(self):
+        self._prime_body()
+        self.resolve("f2")
+        self.model.fixed = ""
+        db_memo.rebuild_if_changed("proj", max_memos=1)
+        row = self.db.memo("proj", AC)
+        self.assertTrue(str(row["evidence_hash"]).startswith("empty:"), row["evidence_hash"])
+        h = row["evidence_hash"].split(":")[1]
+        now = float(row["evidence_hash"].split(":")[2])
+        self.assertTrue(db_memo._rejected_recently(row["evidence_hash"], h, now=now + db_memo.EMPTY_RETRY_S - 1))
+        self.assertFalse(db_memo._rejected_recently(row["evidence_hash"], h, now=now + db_memo.EMPTY_RETRY_S + 1))
+        self.assertFalse(db_memo._rejected_recently(row["evidence_hash"], "otherhash", now=now))
+        self.assertFalse(db_memo._rejected_recently("rejected:abc:notanumber", "abc"))
+        self.assertFalse(db_memo._rejected_recently(None, "abc"))
+
+    def test_memo_call_carries_its_own_timeout(self):
+        seen = {}
+        real = self.model.complete
+
+        def complete(prov, model, prompt, **kw):
+            seen.update(kw)
+            return real(prov, model, prompt, **kw)
+        with mock.patch.object(sys.modules["model_gateway"], "complete", complete):
+            db_memo.rebuild_if_changed("proj", max_memos=1)
+        self.assertEqual(seen.get("timeout"), db_memo.MODEL_TIMEOUT_S)
+        self.assertGreaterEqual(db_memo.MODEL_TIMEOUT_S, 180, "the 90 s gateway default starved every memo")
+
     def test_model_error_persists_deterministic_rendering(self):
         self.model.raise_exc = RuntimeError("no provider")
         out = db_memo.rebuild_if_changed("proj", max_memos=1)
@@ -1074,3 +1128,56 @@ class TestAdversarial(unittest.TestCase):
         args, meta = db_memo.adversarial_pass({"title": "t", "memo_kind": AC},
                                               [{"key": "k", "strength": "unassessed"}], [])
         self.assertIn("no strengthened", meta["skipped"])
+
+
+class TestGauntletScheduling(Base):
+    def setUp(self):
+        super().setUp()
+        self.seed([_finding(1, "rls_disabled_tables", "security", "critical", ["access_control"])])
+        db_memo.rebuild_if_changed("proj", max_memos=5)
+
+    def test_candidates_need_a_model_draft_not_yet_reviewed(self):
+        ids = [m["memo_kind"] for m in db_memo.gauntlet_candidates()]
+        self.assertIn(AC, ids)
+        row = self.db.memo("proj", AC)
+        row_ref = next(r for r in self.db.tables["legal_memo_drafts"] if r["id"] == row["id"])
+        row_ref["model_name"] = "deterministic"
+        self.assertNotIn(AC, [m["memo_kind"] for m in db_memo.gauntlet_candidates()], "templates earn no review")
+        row_ref["model_name"] = "fake-model"
+        row_ref["gauntlet_at"] = (NOW + timedelta(days=400)).isoformat()
+        self.assertNotIn(AC, [m["memo_kind"] for m in db_memo.gauntlet_candidates()], "reviewed since drafted")
+        row_ref["gauntlet_at"] = None
+        row_ref["gauntlet"] = {"error": "no panel result", "attempted_at": db_memo._now_iso()}
+        self.assertNotIn(AC, [m["memo_kind"] for m in db_memo.gauntlet_candidates()], "failed attempt backs off")
+        with mock.patch.object(db_memo, "GAUNTLET_RETRY_S", 0):
+            self.assertIn(AC, [m["memo_kind"] for m in db_memo.gauntlet_candidates()])
+
+    def test_gauntlet_next_reviews_one_memo_with_material_evidence(self):
+        fake = types.ModuleType("gauntlet")
+        fake.run = lambda q, context="", vertical=None: {"verdict": "overstated", "summary": "needs policy evidence"}
+        with mock.patch.dict(sys.modules, {"gauntlet": fake}):
+            out = db_memo.gauntlet_next()
+        self.assertEqual(out["reviewed"], ["proj/%s" % AC])
+        row = self.db.memo("proj", AC)
+        self.assertEqual(row["status"], "reviewed")
+        self.assertTrue(row["gauntlet_at"])
+        self.assertEqual(row["publication_state"], "internal")
+
+    def test_no_panel_result_records_the_attempt_and_nothing_else(self):
+        fake = types.ModuleType("gauntlet")
+        fake.run = lambda q, context="", vertical=None: None
+        committees = types.ModuleType("committees")
+        committees.review = lambda *a, **k: None
+        with mock.patch.dict(sys.modules, {"gauntlet": fake, "committees": committees}):
+            out = db_memo.gauntlet_next()
+        self.assertEqual(out["reviewed"], [])
+        row = self.db.memo("proj", AC)
+        self.assertIsNone(row.get("gauntlet_at"))
+        self.assertIn("attempted_at", row["gauntlet"])
+        self.assertEqual(db_memo.gauntlet_candidates(), [] if len(self.db.tables["legal_memo_drafts"]) == 1 else
+                         [m for m in db_memo.gauntlet_candidates() if m["memo_kind"] != AC])
+
+    def test_kill_switch(self):
+        with mock.patch.dict(os.environ, {"ORCH_DB_MEMO_GAUNTLET": "false"}):
+            self.assertEqual(db_memo.gauntlet_next()["skipped"], ["disabled"])
+
