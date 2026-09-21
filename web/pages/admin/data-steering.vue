@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { isTypingTarget, reduceKey, type KeyState, type SteeringView } from '~/utils/steeringKeys'
+
 definePageMeta({ layout: 'default' })
 
 const supabase = useSupabaseClient<any>()
@@ -19,6 +21,8 @@ const data = ref<any>({ sources: [], posture: {}, findings: { open_by_severity: 
 const busy = ref<Record<string, boolean>>({})
 const form = reactive({ provider: 'postgres', label: '', project: '', ref: '', region: '', credential_ref: '' })
 const saving = ref(false), formError = ref('')
+const insightData = ref<any>({ insights: { total: 0, byKind: {}, byRisk: {}, top: [], pathways: [], gaps: [] }, matrix: null, quality: null, missing: [] })
+const insightError = ref(''), insightKind = ref(''), openInsightId = ref(''), railOpen = ref(false)
 const openMemoId = ref(''), memoDetail = ref<any>(null), memoLoading = ref(false), memoError = ref('')
 
 const projects = computed(() => [...new Set([...(data.value.sources || []).map((s: any) => s.project), ...(data.value.memos || []).map((m: any) => m.project)].filter(Boolean))].sort() as string[])
@@ -30,6 +34,11 @@ async function load() {
   try { data.value = await authedFetch('/api/db-steering', { params: { days: days.value, ...(project.value ? { project: project.value } : {}) } }) }
   catch (e: any) { error.value = e?.data?.message || e?.message || 'Database steering data is unavailable.' }
   finally { loading.value = false }
+}
+async function loadInsights() {
+  insightError.value = ''
+  try { insightData.value = await authedFetch('/api/db-steering/insights') }
+  catch (e: any) { insightError.value = e?.data?.message || e?.message || 'Expert insights are unavailable.' }
 }
 async function act(source: any, action: 'pause' | 'resume' | 'remove') {
   if (action === 'remove' && !confirm(`Remove ${source.label}? Its findings and posture history are deleted with it. The encrypted credential, if any, stays in Connectors until revoked there.`)) return
@@ -86,17 +95,85 @@ const memoSummary = computed(() => {
   return { total: ms.filter((m: any) => (m.evidence_count || 0) > 0).length, reviewed: ms.filter((m: any) => m.gauntlet_at).length, stale: ms.filter((m: any) => m.status === 'stale').length }
 })
 
-watch(user, (u) => { if (u) load() })
-onMounted(() => { if (user.value) load() })
+
+// ── expert insights, the docket matrix and local-output quality ─────────────────────────
+const LENS_LABEL: Record<string, string> = { regulatory_gap: 'Regulatory gap', enforcement_trend: 'Enforcement trend', cross_industry_analog: 'Cross-industry analog', innovation_pathway: 'Innovation pathway', red_team: 'Red team', opportunity: 'Opportunity' }
+const LENS_ORDER = Object.keys(LENS_LABEL)
+const RISK_ORDER = ['existential', 'high', 'medium', 'low', 'upside']
+const KIND_ORDER = ['action', 'gap', 'tripwire', 'innovation', 'opportunity', 'assumption']
+const shownInsights = computed(() => (insightData.value.insights?.top || []).filter((i: any) => !insightKind.value || i.kind === insightKind.value))
+function cell(lens: string, band: string) { return (insightData.value.matrix?.cells || []).find((c: any) => c.lens === lens && c.risk_band === band) || { total: 0, pending: 0, answered: 0 } }
+function heat(total: number) { const max = insightData.value.matrix?.max || 1; return total ? 0.1 + 0.75 * (total / max) : 0 }
+function pct(value: any) { return value == null ? '—' : `${Math.round(Number(value) * 100)}%` }
+
+// ── rail + keyboard: g <key> jumps, j / k walk rows, Enter opens, Escape closes ─────────
+const views = computed<SteeringView[]>(() => [
+  { key: 'o', id: 'overview', label: 'Overview', rows: 0 },
+  { key: 'i', id: 'insights', label: 'Expert insights', rows: shownInsights.value.length },
+  { key: 'x', id: 'matrix', label: 'Docket matrix', rows: 0 },
+  { key: 'q', id: 'quality', label: 'Local output quality', rows: (insightData.value.quality?.callers || []).length },
+  { key: 's', id: 'sources', label: 'Sources', rows: (data.value.sources || []).length },
+  { key: 'f', id: 'findings', label: 'Open findings', rows: (data.value.findings?.top || []).length },
+  { key: 'b', id: 'briefs', label: 'Steering briefs', rows: (data.value.briefs || []).length },
+  { key: 'm', id: 'memos', label: 'Memo drafts', rows: (data.value.memos || []).length },
+  { key: 'l', id: 'link', label: 'Link a database', rows: 0 },
+])
+const keys = ref<KeyState>({ active: 'overview', row: 0, pendingG: false, focus: 'rail' })
+function focusRow(id: string, row: number) {
+  const el = document.querySelector<HTMLElement>(`#sec-${id} [data-row="${row}"]`)
+  if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: 'nearest' }) }
+}
+function go(id: string, focusRail = true) {
+  keys.value = { ...keys.value, active: id, row: 0, focus: 'rail' }; railOpen.value = false
+  document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: 'auto', block: 'start' })   // a jump is a jump: no travel time
+  if (focusRail) nextTick(() => document.querySelector<HTMLElement>(`[data-rail="${id}"]`)?.focus({ preventScroll: true }))
+}
+function openRow(id: string, row: number) {
+  if (id === 'memos') { const m = (data.value.memos || [])[row]; if (m) openMemo(m) }
+  else if (id === 'insights') { const i = shownInsights.value[row]; if (i) openInsightId.value = openInsightId.value === i.id ? '' : i.id }
+  else document.querySelector<HTMLElement>(`#sec-${id} [data-row="${row}"]`)?.click()
+}
+function onKey(e: KeyboardEvent) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return
+  const target = e.target as HTMLElement | null
+  // A row reached with Tab or a click is the current row too: one owner for Enter, so a
+  // focused row is never toggled twice (once here, once by its own handler).
+  const rowEl = target?.closest?.('[data-row]') as HTMLElement | null
+  const section = rowEl?.closest('section')?.id?.replace('sec-', '')
+  if (rowEl && section) keys.value = { ...keys.value, active: section, row: Number(rowEl.getAttribute('data-row')) || 0, focus: 'rows' }
+  const { state, effect } = reduceKey(keys.value, e.key, views.value, isTypingTarget(target?.tagName, target?.isContentEditable))
+  keys.value = state
+  if (effect.type === 'none') return
+  e.preventDefault()
+  if (effect.type === 'go') go(effect.id)
+  else if (effect.type === 'row') focusRow(state.active, effect.row)
+  else if (effect.type === 'open') openRow(state.active, effect.row)
+  else if (effect.type === 'close') { openInsightId.value = ''; openMemoId.value = ''; railOpen.value = false }
+}
+
+watch(user, (u) => { if (u) { load(); loadInsights() } })
+onMounted(() => { if (user.value) { load(); loadInsights() } window.addEventListener('keydown', onKey) })
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <template>
+  <div class="ds-shell" :class="{ 'rail-open': railOpen }">
+    <button v-if="railOpen" class="rail-scrim" aria-label="Close navigation" @click="railOpen = false"></button>
+    <nav class="ds-rail" aria-label="Steering sections">
+      <div class="rail-brand"><span class="rail-mark">⛁</span><b>Steering</b></div>
+      <button v-for="v in views" :key="v.id" class="rail-item" :class="{ active: keys.active === v.id }" :data-rail="v.id"
+              :aria-current="keys.active === v.id ? 'true' : undefined" @click="go(v.id, false)">
+        <span>{{ v.label }}</span><kbd>g {{ v.key }}</kbd>
+      </button>
+      <p class="rail-help"><kbd>j</kbd> <kbd>k</kbd> move · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p>
+    </nav>
   <main class="ds">
-    <header class="ds-head">
+    <header class="ds-head" id="sec-overview">
       <div>
-        <span class="kicker">Database steering</span>
-        <h1>Database steering</h1>
-        <p>Every linked database is reviewed continuously and read-only. Findings steer coder agents and feed the internal legal-memo evidence ledger. Credentials never live here — only references.</p>
+        <button class="rail-toggle" aria-label="Open navigation" @click="railOpen = true"><span></span><span></span><span></span></button>
+        <span class="kicker">Steering</span>
+        <h1 class="serif">Data and expert steering</h1>
+        <p>Every linked database is reviewed continuously and read-only, and every expert verdict is distilled into steering. Findings and insights reach coder agents, the internal memo ledger and the weekly report. Credentials never live here — only references.</p>
       </div>
       <div class="ds-filters">
         <label>Project<select v-model="project" @change="load"><option value="">All projects</option><option v-for="p in projects" :key="p" :value="p">{{ p }}</option></select></label>
@@ -139,15 +216,95 @@ onMounted(() => { if (user.value) load() })
         </article>
       </section>
 
+
+      <!-- Expert insights -->
+      <section class="ds-card" id="sec-insights">
+        <header>
+          <h2>Expert insights</h2>
+          <span>{{ insightData.insights?.total || 0 }} active · internal, under attorney review — not legal advice</span>
+        </header>
+        <div v-if="insightError" class="ds-empty inline error">{{ insightError }} <button class="ghost" @click="loadInsights">Retry</button></div>
+        <template v-else>
+          <div v-if="insightData.insights?.pathways?.length" class="pathways">
+            <h3>Innovation pathways</h3>
+            <article v-for="p in insightData.insights.pathways.slice(0, 4)" :key="p.id" class="pathway">
+              <span class="pill upside">{{ p.vertical }}</span>
+              <p class="serif">{{ p.insight }}</p>
+            </article>
+          </div>
+          <div class="chip-row" role="group" aria-label="Filter insights by kind">
+            <button class="chip" :class="{ on: !insightKind }" @click="insightKind = ''">All {{ insightData.insights?.total || 0 }}</button>
+            <button v-for="k in KIND_ORDER" :key="k" class="chip" :class="{ on: insightKind === k }" @click="insightKind = insightKind === k ? '' : k">{{ k }} {{ insightData.insights?.byKind?.[k] || 0 }}</button>
+          </div>
+          <div v-if="!shownInsights.length" class="ds-empty inline">No insights yet. They appear as soon as the expert panels mint verdict cards; run <span class="mono">python3 runner/steering_insights.py sync</span> to distil existing ones.</div>
+          <ul v-else class="insight-list">
+            <li v-for="(i, n) in shownInsights" :key="i.id" class="insight" :class="{ open: openInsightId === i.id }" tabindex="0" :data-row="n"
+                @click="openInsightId = openInsightId === i.id ? '' : i.id">
+              <div class="insight-meta"><span class="pill" :class="i.risk_band">{{ i.risk_band }}</span><span class="pill kind">{{ i.kind }}</span><small>{{ i.vertical }} · {{ LENS_LABEL[i.lens] || i.lens }} · confidence {{ i.confidence ?? '—' }} · card {{ String(i.card_id || '').slice(0, 8) }}</small></div>
+              <p class="serif">{{ i.insight }}</p>
+              <p v-if="openInsightId === i.id && i.rationale" class="rationale">{{ i.rationale }}</p>
+            </li>
+          </ul>
+        </template>
+      </section>
+
+      <!-- Docket matrix -->
+      <section class="ds-card" id="sec-matrix">
+        <header>
+          <h2>Docket matrix</h2>
+          <span v-if="insightData.matrix">{{ insightData.matrix.total }} questions · {{ insightData.matrix.empty }} of {{ insightData.matrix.cells.length }} cells empty · innovation share {{ pct(insightData.matrix.innovationShare) }} · marked high {{ pct(insightData.matrix.highPriorityShare) }}</span>
+        </header>
+        <div v-if="!insightData.matrix?.total" class="ds-empty inline">The docket is empty or not readable yet.</div>
+        <template v-else>
+          <div class="table-wrap">
+            <table class="matrix">
+              <thead><tr><th>Lens</th><th v-for="b in RISK_ORDER" :key="b">{{ b }}</th></tr></thead>
+              <tbody>
+                <tr v-for="l in LENS_ORDER" :key="l">
+                  <th scope="row">{{ LENS_LABEL[l] }}</th>
+                  <td v-for="b in RISK_ORDER" :key="b" :class="{ empty: !cell(l, b).total }" :style="{ '--heat': heat(cell(l, b).total) }"
+                      :title="`${LENS_LABEL[l]} × ${b}: ${cell(l, b).total} questions, ${cell(l, b).answered} answered`">
+                    <b>{{ cell(l, b).total || '·' }}</b><small v-if="cell(l, b).total">{{ cell(l, b).answered }} answered</small>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="matrix-note">Empty cells are what the panels have never been asked. Generation fills the emptiest cells first and reserves a share for the three innovation lenses.<template v-if="insightData.matrix.untagged"> {{ insightData.matrix.untagged }} legacy questions carry no stored tags yet (<span class="mono">docket_matrix.py backfill</span>).</template></p>
+          <div class="vertical-row"><span v-for="(v, name) in insightData.matrix.byVertical" :key="name" class="pill kind">{{ name }} {{ v.answered }}/{{ v.total }} answered</span></div>
+        </template>
+      </section>
+
+      <!-- Local output quality -->
+      <section class="ds-card" id="sec-quality">
+        <header>
+          <h2>Local output quality</h2>
+          <span v-if="insightData.quality">last {{ insightData.quality.rows }} local calls · {{ insightData.quality.graded }} graded · {{ insightData.quality.replays }} cache replays · mean quality {{ insightData.quality.meanQuality ?? '—' }}</span>
+        </header>
+        <div v-if="!insightData.quality?.callers?.length" class="ds-empty inline">No local-model calls recorded yet.</div>
+        <div v-else class="table-wrap">
+          <table>
+            <thead><tr><th>Caller</th><th>Calls</th><th>Fresh work</th><th>Graded</th><th>Mean quality</th><th>Flagged</th><th>Most common defect</th></tr></thead>
+            <tbody>
+              <tr v-for="(c, n) in insightData.quality.callers.slice(0, 25)" :key="c.caller" tabindex="0" :data-row="n">
+                <td class="mono">{{ c.caller }}</td><td>{{ c.calls }}</td><td>{{ c.fresh }}</td><td>{{ c.graded }}</td>
+                <td><span class="pill" :class="c.meanQuality == null ? 'none' : c.meanQuality >= 0.85 ? 'good' : c.meanQuality >= 0.6 ? 'warn' : 'bad'">{{ c.meanQuality ?? 'ungraded' }}</span></td>
+                <td>{{ c.flagged }}</td><td>{{ c.worst === 'ok' ? '—' : c.worst.replace(/_/g, ' ') }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- Sources -->
-      <section class="ds-card">
+      <section class="ds-card" id="sec-sources">
         <header><h2>Sources</h2><span>{{ data.sources?.length || 0 }} linked · {{ (data.sources || []).filter((s: any) => s.enabled).length }} active</span></header>
         <div v-if="!data.sources?.length" class="ds-empty inline">No databases are linked yet. Link one below.</div>
         <div v-else class="table-wrap">
           <table>
             <thead><tr><th>Label</th><th>Provider</th><th>Project</th><th>Status</th><th>Last scan</th><th>Credential</th><th></th></tr></thead>
             <tbody>
-              <tr v-for="s in data.sources" :key="s.id">
+              <tr v-for="(s, n) in data.sources" :key="s.id" tabindex="0" :data-row="n">
                 <td><b>{{ s.label }}</b><small class="mono">{{ s.ref }}</small></td>
                 <td><span class="mono">{{ s.provider }}</span><small>{{ s.dialect }}<template v-if="s.region"> · {{ s.region }}</template></small></td>
                 <td>{{ s.project || '—' }}</td>
@@ -166,7 +323,7 @@ onMounted(() => { if (user.value) load() })
       </section>
 
       <!-- Link a database -->
-      <section class="ds-card ds-link">
+      <section class="ds-card ds-link" id="sec-link">
         <header><h2>Link a database</h2><span>Two ways. Both store a reference, never a secret.</span></header>
         <div class="link-grid">
           <div class="link-way">
@@ -192,7 +349,7 @@ onMounted(() => { if (user.value) load() })
       </section>
 
       <!-- Open findings -->
-      <section class="ds-card">
+      <section class="ds-card" id="sec-findings">
         <header>
           <h2>Open findings</h2>
           <span class="sev-tally"><i v-for="sev in severityOrder" :key="sev" class="pill" :class="sev">{{ sev }} {{ data.findings?.open_by_severity?.[sev] || 0 }}</i></span>
@@ -202,7 +359,7 @@ onMounted(() => { if (user.value) load() })
           <table>
             <thead><tr><th>Severity</th><th>Project</th><th>Title</th><th>Object</th><th>First seen</th><th>Last seen</th><th>Remediation</th></tr></thead>
             <tbody>
-              <tr v-for="f in data.findings.top" :key="f.id">
+              <tr v-for="(f, n) in data.findings.top" :key="f.id" tabindex="0" :data-row="n">
                 <td><span class="pill" :class="f.severity">{{ f.severity }}</span></td>
                 <td>{{ f.project || sourceById[f.source_id]?.project || '—' }}<small>{{ sourceById[f.source_id]?.label || '' }}</small></td>
                 <td><b>{{ f.title }}</b><small>{{ f.category }} · {{ f.probe_id }}<template v-if="f.task_slug"> · task {{ f.task_slug }}</template></small></td>
@@ -217,24 +374,24 @@ onMounted(() => { if (user.value) load() })
       </section>
 
       <!-- Briefs -->
-      <section class="ds-card" v-if="data.briefs?.length">
+      <section class="ds-card" id="sec-briefs" v-if="data.briefs?.length">
         <header><h2>Steering briefs</h2><span>Injected into every coder prompt for the project</span></header>
-        <details v-for="b in data.briefs" :key="b.project" class="brief">
-          <summary><b>{{ b.project }}</b><small>updated {{ when(b.updated_at) }} · {{ Object.entries(b.open_counts || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'no open counts' }}</small></summary>
-          <pre>{{ b.brief }}</pre>
+        <details v-for="(b, n) in data.briefs" :key="b.project" class="brief">
+          <summary :data-row="n"><b>{{ b.project }}</b><small>updated {{ when(b.updated_at) }} · {{ Object.entries(b.open_counts || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'no open counts' }}</small></summary>
+          <pre class="reading">{{ b.brief }}</pre>
         </details>
       </section>
 
       <!-- Memos -->
-      <section class="ds-card">
+      <section class="ds-card" id="sec-memos">
         <header><h2>Legal-memo drafts</h2><span>Internal work product · not legal advice</span></header>
         <div v-if="!data.memos?.length" class="ds-empty inline">No memo drafts yet. They appear once findings carry evidence kinds.</div>
         <div v-else class="table-wrap">
           <table>
             <thead><tr><th>Title</th><th>Project</th><th>Status</th><th>Evidence</th><th>Strengths</th><th>Updated</th></tr></thead>
             <tbody>
-              <template v-for="m in data.memos" :key="m.id">
-                <tr class="clickable" :class="{ open: openMemoId === m.id }" @click="openMemo(m)">
+              <template v-for="(m, n) in data.memos" :key="m.id">
+                <tr class="clickable" :class="{ open: openMemoId === m.id }" tabindex="0" :data-row="n" @click="openMemo(m)">
                   <td><b>{{ m.title }}</b><small class="mono">{{ m.memo_kind }}</small></td>
                   <td>{{ m.project }}</td>
                   <td><span class="pill" :class="m.status">{{ m.status }}</span><span v-if="m.gauntlet_at" class="pill gauntleted" title="Expert-corps gauntlet reviewed">gauntlet</span></td>
@@ -251,7 +408,7 @@ onMounted(() => { if (user.value) load() })
                         <p>{{ gauntletText(memoDetail.memo.gauntlet) || 'Reviewed (verdict payload not displayable).' }}</p>
                       </div>
                       <p v-if="memoDetail.memo?.thesis" class="thesis">{{ memoDetail.memo.thesis }}</p>
-                      <pre>{{ memoDetail.memo?.body || '(no body drafted yet — prose is generated once the evidence set changes)' }}</pre>
+                      <pre class="serif reading">{{ memoDetail.memo?.body || '(no body drafted yet — prose is generated once the evidence set changes)' }}</pre>
                       <div v-if="memoDetail.evidence?.length" class="table-wrap">
                         <table class="evidence">
                           <thead><tr><th>Argument</th><th>Direction</th><th>Weight</th><th>Finding</th><th>Severity</th><th>Status</th></tr></thead>
@@ -268,97 +425,138 @@ onMounted(() => { if (user.value) load() })
       </section>
     </template>
   </main>
+  </div>
 </template>
 
 <style scoped>
-.pill.gauntleted{background:#2d2450;color:#b79cff;margin-left:6px}
-.gauntlet-card{border:1px solid #3a3352;background:#191624;border-radius:8px;padding:10px 12px;margin-bottom:10px}
-.gauntlet-card p{color:#b9b3d6;margin:6px 0 0;line-height:1.5}
-.ds-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px}
-.ds-card{border:1px solid #2c2c34;background:#17171c;border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:14px}
-.ds-card strong{font-size:26px;font-weight:750;white-space:nowrap}
-.ds-card span{color:#9a9aa2;font-size:12px;line-height:1.4}
-.ds-card small{color:#8b8b96}
-.ds-card .trend{font-size:13px;margin-left:8px;color:#7ec98f}
-.ds-card.good strong{color:#7ec98f}.ds-card.warn strong{color:#e5b567}.ds-card.bad strong{color:#ef7f7f}
-.ds{max-width:1240px;margin:0 auto;padding:24px;color:#e7e7ea;font-size:13px}
-.ds-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:20px;flex-wrap:wrap}
-.ds-head h1{font-size:22px;font-weight:700;margin:4px 0 6px}
-.ds-head p{color:#9a9aa2;max-width:720px;margin:0;line-height:1.5}
-.kicker{font-size:10px;font-weight:750;letter-spacing:.14em;text-transform:uppercase;color:#b79cff}
-.ds-filters{display:flex;gap:10px;align-items:flex-end}
-.ds-filters label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#7a7a82}
-select,input{background:#0f0f12;color:#e7e7ea;border:1px solid #2a2a30;border-radius:6px;padding:7px 9px;font-size:13px;font-family:inherit}
-select:focus,input:focus{outline:none;border-color:#b79cff}
-button{background:#6557d8;color:#fff;border:0;border-radius:6px;padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+/* The Apparently Steer workspace language: a white, light workspace; warm hairlines; the
+   Apparently red for focus and selection only; serif on reading surfaces; navigation owned
+   by the rail. Tokens mirror _layers/steer/standalone/console/app/app.css. */
+.ds-shell{--bg:#ffffff;--sunk:#f3f3f0;--ink:#181817;--ink-soft:#686762;--ink-faint:#8c8b85;--line:#e4e3de;--line-soft:#eeede8;
+  --accent:#b42318;--accent-soft:#fff2f0;--accent-line:#f6d2cc;--good:#3f6b4a;--good-soft:#eff5f0;--warn:#8a5a12;--warn-soft:#fbf3e6;--bad:#b42318;--bad-soft:#fff2f0;
+  display:flex;align-items:flex-start;min-height:100vh;background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-size:13.5px;line-height:1.5}
+.serif{font-family:'Libre Caslon Display','Iowan Old Style',Georgia,serif;font-weight:400}
+.mono{font-family:'JetBrains Mono','SF Mono',ui-monospace,monospace;font-size:12px}
+.ds-shell :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+
+.ds-rail{position:sticky;top:0;flex:0 0 230px;width:230px;height:100vh;overflow-y:auto;overscroll-behavior:contain;padding:20px 14px;border-right:1px solid var(--line);background:#fff;display:flex;flex-direction:column;gap:2px;z-index:40}
+.rail-brand{display:flex;align-items:center;gap:9px;padding:0 8px 16px;font-size:15px;letter-spacing:-.01em}
+.rail-mark{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;background:var(--accent-soft);border:1px solid var(--accent-line);color:var(--accent);font-size:13px}
+.rail-item{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:9px 10px;border:0;border-radius:8px;background:none;color:var(--ink-soft);font:inherit;font-weight:600;text-align:left;cursor:pointer}
+.rail-item:hover{background:var(--sunk);color:var(--ink)}
+.rail-item.active{background:var(--accent-soft);color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
+kbd{font-family:'JetBrains Mono','SF Mono',ui-monospace,monospace;font-size:10.5px;color:var(--ink-faint);background:var(--sunk);border:1px solid var(--line);border-radius:4px;padding:1px 5px;white-space:nowrap}
+.rail-item.active kbd{color:var(--accent);background:#fff;border-color:var(--accent-line)}
+.rail-help{margin:auto 8px 0;padding-top:16px;color:var(--ink-faint);font-size:11.5px}
+.rail-toggle{display:none;width:34px;height:34px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;margin-bottom:10px;cursor:pointer}
+.rail-toggle span{display:block;height:1.5px;background:var(--ink);margin:3px 0;border-radius:2px}
+.rail-scrim{display:none;position:fixed;inset:0;border:0;background:rgba(24,24,23,.28);z-index:35}
+
+.ds{flex:1 1 auto;min-width:0;max-width:1180px;padding:28px 32px 80px;display:flex;flex-direction:column;gap:18px}
+.ds-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;scroll-margin-top:16px}
+.kicker{display:block;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+h1{margin:4px 0 6px;font-size:34px;line-height:1.1;letter-spacing:-.01em}
+.ds-head p{margin:0;max-width:66ch;color:var(--ink-soft)}
+.ds-filters{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+label{display:flex;flex-direction:column;gap:4px;font-size:11.5px;font-weight:600;color:var(--ink-soft)}
+select,input{font:inherit;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-width:0}
+select:focus,input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent-line)}
+button{font:inherit;font-weight:600;cursor:pointer;border-radius:8px;border:1px solid var(--ink);background:var(--ink);color:#fff;padding:8px 14px}
 button:disabled{opacity:.5;cursor:default}
-button.ghost{background:#26262c;color:#b5b5bd;border:1px solid #2a2a30;padding:5px 10px}
-button.ghost:hover:not(:disabled){background:#2b2b31;color:#e7e7ea}
-button.ghost.danger{color:#ff8a8a}
-.ds-empty{padding:40px;text-align:center;color:#7a7a82;background:#17171b;border:1px solid #2a2a30;border-radius:10px}
-.ds-empty.inline{padding:22px;border:0;background:transparent}
-.ds-empty.error{color:#ff8a8a}
-.ds-notice{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin-bottom:14px;background:#123227;color:#5fe0a0;border:1px solid #1f4a39;border-radius:8px}
-.ds-posture{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:16px}
-.posture-card{background:#17171b;border:1px solid #2a2a30;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:2px;border-left-width:3px}
-.posture-card strong{font-size:22px;font-weight:700;line-height:1.1}
-.posture-card .posture-label{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.posture-card small{color:#7a7a82;font-size:11px}
-.posture-card.good{border-left-color:#5fe0a0}.posture-card.good strong{color:#5fe0a0}
-.posture-card.warn{border-left-color:#f0b060}.posture-card.warn strong{color:#f0b060}
-.posture-card.bad{border-left-color:#ff6b6b}.posture-card.bad strong{color:#ff6b6b}
-.posture-card.none{border-left-color:#3a3a42}.posture-card.none strong{color:#7a7a82}
-.ds-card{background:#17171b;border:1px solid #2a2a30;border-radius:10px;margin-bottom:16px;overflow:hidden}
-.ds-card>header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid #2a2a30;flex-wrap:wrap}
-.ds-card>header h2{font-size:14px;font-weight:700;margin:0}
-.ds-card>header>span{color:#7a7a82;font-size:11px}
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse}
-th{text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7a7a82;padding:8px 12px;border-bottom:1px solid #2a2a30;white-space:nowrap}
-td{padding:9px 12px;border-bottom:1px solid #202026;vertical-align:top}
-tr:last-child td{border-bottom:0}
-td b{font-weight:600;display:block}
-td small{display:block;color:#7a7a82;font-size:11px;margin-top:2px}
-td small.err{color:#ff8a8a}
-td.actions{white-space:nowrap;text-align:right}
-td.actions button{margin-left:6px}
-td.rem{max-width:320px;color:#b5b5bd}
-tr.clickable{cursor:pointer}
-tr.clickable:hover td{background:#1c1c21}
-tr.clickable.open td{background:#1c1c21}
-tr.memo-row td{background:#121216;padding:0 12px 12px}
-.mono{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;background:#26262c;color:#b5b5bd;border:1px solid #2a2a30}
-.pill.critical{background:#3a1a1e;color:#ff6b6b;border-color:#5a2a30}
-.pill.high{background:#3a2418;color:#ff9a5c;border-color:#5a3a24}
-.pill.medium{background:#33291a;color:#f0b060;border-color:#4d3d22}
-.pill.low{background:#26313f;color:#7fb0ff;border-color:#2f4560}
-.pill.info{background:#26262c;color:#9a9aa2}
-.pill.active,.pill.supports,.pill.reviewed{background:#123227;color:#5fe0a0;border-color:#1f4a39}
-.pill.paused,.pill.stale,.pill.draft{background:#33291a;color:#f0b060;border-color:#4d3d22}
-.pill.unreachable,.pill.inactive,.pill.undermines{background:#3a1a1e;color:#ff6b6b;border-color:#5a2a30}
-.pill.kind{background:#2b2340;color:#b79cff;border-color:#3d3160;text-transform:none;letter-spacing:0;font-family:'JetBrains Mono',ui-monospace,monospace}
+button.ghost{background:#fff;color:var(--ink);border-color:var(--line)}
+button.ghost:hover{background:var(--sunk)}
+button.ghost.danger{color:var(--bad);border-color:var(--accent-line)}
+
+.ds-empty{padding:22px;border:1px dashed var(--line);border-radius:12px;color:var(--ink-soft);background:var(--sunk)}
+.ds-empty.inline{padding:14px 16px;border-radius:10px}
+.ds-empty.error{color:var(--bad);background:var(--bad-soft);border-color:var(--accent-line)}
+.ds-notice{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--good);background:var(--good-soft);color:var(--good);border-radius:10px}
+
+.ds-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.ds-cards .ds-card{display:flex;align-items:center;gap:14px;padding:16px 18px}
+.ds-cards strong{font-family:'Libre Caslon Display',Georgia,serif;font-weight:400;font-size:38px;line-height:1}
+.ds-cards small{color:var(--ink-faint)}
+.trend{font-family:'Inter',system-ui,sans-serif;font-size:12px;margin-left:6px}
+.ds-card{border:1px solid var(--line);border-radius:12px;background:#fff;padding:18px 20px;scroll-margin-top:16px;min-width:0}
+.ds-card.good{border-left:3px solid var(--good)} .ds-card.warn{border-left:3px solid var(--warn)} .ds-card.bad{border-left:3px solid var(--bad)}
+.ds-card>header{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:14px}
+h2{margin:0;font-size:15px;font-weight:700;letter-spacing:-.005em}
+h3{margin:0 0 8px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint)}
+.ds-card>header span{color:var(--ink-faint);font-size:12px}
+
+.ds-posture{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.posture-card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:2px;min-width:0;background:#fff}
+.posture-card strong{font-family:'Libre Caslon Display',Georgia,serif;font-weight:400;font-size:28px;line-height:1}
+.posture-card.good strong{color:var(--good)} .posture-card.warn strong{color:var(--warn)} .posture-card.bad strong{color:var(--bad)} .posture-card.none strong{color:var(--ink-faint)}
+.posture-label{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.posture-card small{color:var(--ink-faint);font-size:11.5px}
+
+.table-wrap{overflow-x:auto;border:1px solid var(--line-soft);border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);background:var(--sunk);padding:9px 12px;white-space:nowrap}
+td{padding:10px 12px;border-top:1px solid var(--line-soft);vertical-align:top}
+td small,td b+small{display:block;color:var(--ink-faint);font-size:11.5px;margin-top:2px}
+td small.err{color:var(--bad)}
+tbody tr:focus-visible,tbody tr.open,.insight:focus-visible{background:var(--accent-soft);outline:none;box-shadow:inset 2px 0 0 var(--accent)}
+tr.clickable{cursor:pointer} tr.clickable:hover{background:var(--sunk)}
+td.actions{white-space:nowrap;display:flex;gap:6px} td.rem{max-width:320px;color:var(--ink-soft)}
+
+.pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:var(--sunk);color:var(--ink-soft);font-style:normal;white-space:nowrap}
+.pill.critical,.pill.existential,.pill.bad,.pill.unreachable,.pill.undermines{background:var(--bad-soft);color:var(--bad);border-color:var(--accent-line)}
+.pill.high,.pill.warn,.pill.stale,.pill.paused{background:var(--warn-soft);color:var(--warn);border-color:#ecd9b4}
+.pill.good,.pill.active,.pill.supports,.pill.reviewed,.pill.upside{background:var(--good-soft);color:var(--good);border-color:#cfe0d3}
+.pill.gauntleted{background:#fff;color:var(--accent);border-color:var(--accent-line);margin-left:6px}
 .sev-tally{display:flex;gap:6px;flex-wrap:wrap}
-.link-grid{display:grid;grid-template-columns:1fr 1.6fr;gap:0}
-.link-way{padding:16px;position:relative}
-.link-way+.link-way{border-left:1px solid #2a2a30}
-.link-way h3{font-size:13px;font-weight:700;margin:0 0 6px}
-.link-way p{color:#9a9aa2;line-height:1.55;margin:0}
-.link-way a{color:#b79cff;text-decoration:underline}
-.step{display:inline-flex;width:20px;height:20px;align-items:center;justify-content:center;border-radius:999px;background:#2b2340;color:#b79cff;font-size:11px;font-weight:700;margin-bottom:8px}
-.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:8px 0 12px}
-.form-grid label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#7a7a82}
-.form-grid label.wide{grid-column:1/-1}
-.form-grid small{color:#7a7a82;font-size:10.5px;line-height:1.4}
-.form-error{color:#ff8a8a;margin-bottom:10px;font-size:12px}
-.brief{border-bottom:1px solid #202026}
-.brief:last-child{border-bottom:0}
-.brief summary{padding:10px 16px;cursor:pointer;display:flex;gap:12px;align-items:baseline}
-.brief summary small{color:#7a7a82}
-pre{white-space:pre-wrap;word-break:break-word;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.55;color:#d0d0d6;background:#0f0f12;border:1px solid #2a2a30;border-radius:8px;padding:12px 14px;margin:0 16px 12px}
-.memo-pane summary{padding:10px 0;cursor:pointer;color:#b5b5bd;font-size:12px}
-.memo-pane .thesis{color:#e7e7ea;font-style:italic;margin:0 0 10px;line-height:1.5}
-.memo-pane pre{margin:0 0 12px}
-.memo-pane .evidence th,.memo-pane .evidence td{font-size:12px}
-@media (max-width:900px){.link-grid{grid-template-columns:1fr}.link-way+.link-way{border-left:0;border-top:1px solid #2a2a30}.ds-head{align-items:flex-start}}
+
+.pathways{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-bottom:16px}
+.pathways h3{grid-column:1/-1;margin:0}
+.pathway{border:1px solid #cfe0d3;background:var(--good-soft);border-radius:10px;padding:12px 14px;min-width:0}
+.pathway p,.insight p{margin:6px 0 0;font-size:16px;line-height:1.45;color:var(--ink)}
+.chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.chip{padding:4px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);font-size:12px}
+.chip.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+.insight-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;border:1px solid var(--line-soft);border-radius:10px;max-height:560px;overflow-y:auto}
+.insight{padding:12px 14px;border-top:1px solid var(--line-soft);cursor:pointer} .insight:first-child{border-top:0}
+.insight:hover{background:var(--sunk)}
+.insight-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap} .insight-meta small{color:var(--ink-faint);font-size:11.5px}
+.rationale{font-family:'Inter',system-ui,sans-serif!important;font-size:12.5px!important;color:var(--ink-soft)!important;border-left:2px solid var(--line);padding-left:10px}
+
+table.matrix th[scope=row]{text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--ink);background:#fff;border-top:1px solid var(--line-soft)}
+table.matrix td{text-align:center;min-width:92px;background:color-mix(in srgb,var(--accent) calc(var(--heat,0)*100%),#fff)}
+table.matrix td b{display:block;font-family:'Libre Caslon Display',Georgia,serif;font-weight:400;font-size:20px}
+table.matrix td.empty{background:repeating-linear-gradient(135deg,#fff,#fff 6px,var(--sunk) 6px,var(--sunk) 12px);color:var(--ink-faint)}
+.matrix-note{margin:12px 0 8px;color:var(--ink-soft);max-width:80ch}
+.vertical-row{display:flex;gap:6px;flex-wrap:wrap}
+
+.ds-link .link-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.link-way{border:1px solid var(--line-soft);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.link-way p{margin:0;color:var(--ink-soft)} .link-way a{color:var(--accent)}
+.step{display:inline-flex;width:22px;height:22px;align-items:center;justify-content:center;border-radius:50%;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line);font-size:11px;font-weight:700}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px} .form-grid .wide{grid-column:1/-1}
+.form-grid small{font-weight:400;color:var(--ink-faint)}
+.form-error{color:var(--bad);background:var(--bad-soft);border:1px solid var(--accent-line);border-radius:8px;padding:8px 10px}
+
+.brief{border-top:1px solid var(--line-soft);padding:10px 0} .brief:first-of-type{border-top:0}
+.brief summary{cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap} .brief summary small{color:var(--ink-faint)}
+pre{margin:10px 0 0;white-space:pre-wrap;word-break:break-word;background:var(--sunk);border:1px solid var(--line-soft);border-radius:10px;padding:14px 16px;font-family:'JetBrains Mono','SF Mono',ui-monospace,monospace;font-size:12px;line-height:1.55;color:var(--ink)}
+pre.serif.reading{font-family:'Libre Caslon Display','Iowan Old Style',Georgia,serif;font-size:16px;line-height:1.6;background:#fff;max-width:74ch}
+.memo-row td{background:var(--sunk)} .memo-pane summary{cursor:pointer;font-weight:600;color:var(--ink-soft)}
+.thesis{font-family:'Libre Caslon Display',Georgia,serif;font-size:18px;line-height:1.4;margin:12px 0 4px;max-width:70ch}
+.gauntlet-card{border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:10px;padding:12px 14px;margin:10px 0}
+.gauntlet-card p{margin:6px 0 0;color:var(--ink)}
+table.evidence{margin-top:12px}
+
+@media (max-width:900px){
+  .ds-rail{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform .18s ease;box-shadow:0 0 0 1px var(--line)}
+  .rail-open .ds-rail{transform:none} .rail-open .rail-scrim{display:block}
+  .rail-toggle{display:block}
+  .ds{padding:18px 16px 64px}
+  h1{font-size:27px}
+}
+@media (max-width:480px){
+  .ds-cards{grid-template-columns:1fr 1fr} .ds-cards strong{font-size:30px}
+  .ds-card{padding:14px} .pathway p,.insight p{font-size:15px}
+  td.actions{flex-direction:column}
+}
+@media (prefers-reduced-motion:reduce){.ds-rail{transition:none}}
 </style>

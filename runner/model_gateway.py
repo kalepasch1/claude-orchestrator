@@ -365,11 +365,27 @@ def provider_for_model(model):
     return "claude"
 
 
-def _record_operation(project, operation, task_class, provider, model, prompt, cost, latency_ms, ok=True, error=""):
-    """Best-effort telemetry so routing decisions are visible and reviewable."""
+def _caller_name():
+    try:
+        import output_grader
+        return output_grader.caller()
+    except Exception:
+        return None
+
+
+def _record_operation(project, operation, task_class, provider, model, prompt, cost, latency_ms, ok=True, error="",
+                      text=None, cached=False, caller_name=None):
+    """Best-effort telemetry so routing decisions are visible and reviewable.
+
+    GRADED AND NAMED (2026-09-21). quality_score and verdict had been NULL on every row and
+    97% of local calls were operation 'completion' / task_class 'unknown', so nobody could
+    say which caller produced value. Every row now carries output_grader's deterministic
+    grade of the text, and an anonymous 'completion' is filed under the module that asked.
+    A cache replay is marked 'cached:<verdict>' so an audit can tell fresh work from echo.
+    """
     try:
         import db
-        db.insert("app_operations", {
+        row = {
             "app": project or "orchestrator",
             "operation": operation or "completion",
             "task_class": task_class or "unknown",
@@ -379,7 +395,22 @@ def _record_operation(project, operation, task_class, provider, model, prompt, c
             "cost_usd": float(cost or 0),
             "latency_ms": int(latency_ms or 0),
             "ok": bool(ok),
-        })
+        }
+        try:
+            import output_grader
+            if row["operation"] == "completion" and caller_name:
+                row["operation"] = ("completion:%s" % caller_name)[:64]
+            if not ok:
+                row["verdict"] = "error"
+                row["quality_score"] = 0
+            elif text is not None:
+                g = output_grader.grade(text, operation=row["operation"], task_class=row["task_class"], prompt=prompt)
+                if g.get("score") is not None:
+                    row["quality_score"] = g["score"]
+                row["verdict"] = ("cached:" if cached else "") + str(g.get("verdict") or "ungraded")
+        except Exception:
+            pass    # grading is measurement; it must never cost a telemetry row
+        db.insert("app_operations", row)
     except Exception:
         pass
 
@@ -559,7 +590,8 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
             if learned_reason:
                 cached = {**cached, "learned_route": learned_reason}
             if record_op:
-                _record_operation(project, operation, task_class, provider, model, prompt, 0.0, 0, ok=True)
+                _record_operation(project, operation, task_class, provider, model, prompt, 0.0, 0, ok=True,
+                                  text=cached.get("text"), cached=True, caller_name=_caller_name())
             try:
                 import savings_meter
                 savings_meter.record("prompt_result_cache", prompt=prompt, result_text=cached.get("text"))
@@ -586,7 +618,8 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
             latency = int((time.time() - t0) * 1000)
             if record_op:
                 _record_operation(project, operation, task_class, res["provider"], res["model"],
-                                  prompt, res.get("cost_usd", 0), latency, ok=True)
+                                  prompt, res.get("cost_usd", 0), latency, ok=True,
+                                  text=res.get("text"), caller_name=_caller_name())
             try:
                 import prompt_result_cache
                 prompt_result_cache.store(res["provider"], res["model"], task_class, operation,
@@ -639,7 +672,7 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
                     pass
             if record_op:
                 _record_operation(project, operation, task_class, prov, mdl, prompt, 0, latency,
-                                  ok=False, error=str(e))
+                                  ok=False, error=str(e), caller_name=_caller_name())
             continue
     return {"text": "", "cost_usd": 0, "provider": provider, "model": model,
             "error": (last or {}).get("error", "no provider attempted")}

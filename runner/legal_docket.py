@@ -97,8 +97,26 @@ def _ensure_seeded():
     return n
 
 
+VALUE_RANK = os.environ.get("ORCH_DOCKET_VALUE_RANK", "true").lower() not in ("0", "false", "no", "off")
+MATRIX_TOPUP = int(os.environ.get("ORCH_DOCKET_MATRIX_TOPUP", "4"))
+
+
 def _stale_or_unanswered(limit):
-    """Questions needing a panel: never answered, or whose card has been invalidated."""
+    """Questions needing a panel: never answered, or whose card has been invalidated.
+
+    VALUE-RANKED, FAIR-SHARE (2026-09-21). The old sort was `priority.asc,created_at.asc` on a
+    TEXT column: alphabetical (high, low, medium), oldest first. With 1,022 questions stamped
+    "high" by their generators, the panel answered the oldest gaming questions forever; the
+    `data` vertical was never reached. docket_matrix.pick ranks by risk x lens x starvation
+    and rotates verticals. The legacy sort remains as the fallback."""
+    if VALUE_RANK:
+        try:
+            import docket_matrix
+            rows = docket_matrix.pick(limit)
+            if rows:
+                return rows
+        except Exception as e:
+            print(f"legal_docket: value-ranked pick failed, using legacy order: {type(e).__name__}: {str(e)[:100]}")
     try:
         return db.select("legal_docket", {
             "select": "id,vertical,question,priority,status",
@@ -208,6 +226,15 @@ def mint_card(row, agg):
 def run(limit=BATCH):
     """Convene the Consilium on the next batch of docket questions."""
     seeded = _ensure_seeded()
+    if MATRIX_TOPUP > 0:
+        # Fill the emptiest lens x risk x vertical cells before choosing what to answer, so
+        # innovation pathways and cross-industry analogs are on the docket at all.
+        try:
+            import docket_matrix
+            topped = docket_matrix.generate(MATRIX_TOPUP)
+            print("legal_docket: matrix top-up " + json.dumps({k: topped[k] for k in ("proposed", "admitted", "rejected")}))
+        except Exception as e:
+            print(f"legal_docket: matrix top-up skipped: {type(e).__name__}: {str(e)[:100]}")
     rows = _stale_or_unanswered(limit)
     if not rows:
         print(json.dumps({"seeded": seeded, "convened": 0, "note": "docket empty or fully answered"}))
@@ -254,8 +281,15 @@ def run(limit=BATCH):
                 print(f"legal_docket: panel failed on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
         if agg and mint_card(row, agg):
             minted += 1
+    insights = None
+    try:
+        # A card that steers nothing is a document. Distil every new card into insights.
+        import steering_insights
+        insights = steering_insights.sync()
+    except Exception as e:
+        print(f"legal_docket: insight sync skipped: {type(e).__name__}: {str(e)[:100]}")
     out = {"seeded": seeded, "convened": convened, "cards_minted": minted, "left_pending": skipped,
-           "frontier_only": FRONTIER_ONLY}
+           "frontier_only": FRONTIER_ONLY, "insights": insights}
     print("legal_docket: " + json.dumps(out))
     return out
 

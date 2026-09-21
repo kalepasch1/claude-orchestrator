@@ -114,9 +114,12 @@ def _insert_docket(vertical, question):
     if len(q) < 40:
         return False
     try:
-        db.insert("legal_docket", {"vertical": vertical, "question": q[:2000], "priority": "high",
-                                   "status": "pending"}, upsert=True)
-        return True
+        # Priority is EARNED from where the question sits on the risk spectrum (docket_matrix),
+        # not asserted: this generator used to stamp every question "high", which is how more
+        # than half the docket came to outrank everything and order nothing.
+        import docket_matrix
+        lens, band = docket_matrix.classify(q)
+        return docket_matrix.insert_question(vertical, q, lens, band, "reg_opportunity_scan") is not None
     except Exception:
         return False
 

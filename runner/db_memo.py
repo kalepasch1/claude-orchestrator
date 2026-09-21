@@ -692,6 +692,17 @@ def _baseline_lines(project) -> list:
         return []
 
 
+def _expert_authority(memo_row, args) -> list:
+    """Up to three data-vertical expert insights bearing on this memo; [] when the module or
+    the table is absent. Never raises."""
+    try:
+        import steering_insights
+        subject = " ".join([str(memo_row.get("title") or "")] + [str(a.get("claim") or "") for a in (args or [])])
+        return list(steering_insights.authority_lines(subject, vertical="data", limit=3) or [])
+    except Exception:
+        return []
+
+
 def _build_prompt(memo_row: dict, ledger: list, args: list) -> str:
     memo_kind = memo_row.get("memo_kind") or ""
     spec = MEMO_KINDS.get(memo_kind, {})
@@ -712,6 +723,11 @@ def _build_prompt(memo_row: dict, ledger: list, args: list) -> str:
         # Context only: the rules below still forbid asserting anything without a ledger
         # citation, so the baseline can shape emphasis but never becomes a cited fact.
         head += ["", "Fleet baseline (comparative context):"] + [f"- {line}" for line in baseline]
+    authority = _expert_authority(memo_row, args)
+    if authority:
+        # Same standing as the baseline: it may shape emphasis, never replace a ledger cite.
+        head += ["", "Positions the expert panels have already taken (context, not evidence):"] + [
+            f"- {line}" for line in authority]
     head += [
         "",
         "RULES — a memo that breaks any of these is a failing answer:",
