@@ -92,6 +92,28 @@ def test_promote_fast_forwards_prod(train):
     assert remote_sha(train, PROD) == sha
 
 
+def test_promote_handles_a_large_batch_without_sigpipe(train):
+    """A long release must not fail when its human-readable preview is truncated.
+
+    The previous ``git log | head -20`` ran under ``set -o pipefail``. On the
+    191-commit 2026-09-21 train, git received SIGPIPE and the workflow exited 141
+    before it could push master. Generate enough history to pin that failure mode.
+    """
+    git(train, "checkout", "-q", "-B", "_large", f"origin/{STAGING}")
+    for index in range(250):
+        git(train, "commit", "--allow-empty", "-qm", f"large batch {index:03d}")
+    sha = git(train, "rev-parse", "HEAD").stdout.strip()
+    git(train, "push", "-q", "origin", f"_large:refs/heads/{STAGING}")
+    git(train, "fetch", "-q", "origin")
+
+    result = run_train(train, "promote")
+
+    assert result.returncode == 0, result.stderr
+    assert remote_sha(train, PROD) == sha
+    preview = [line for line in result.stdout.splitlines() if "large batch" in line]
+    assert len(preview) == 20
+
+
 def test_promote_is_a_noop_when_already_in_sync(train):
     before = remote_sha(train, PROD)
     result = run_train(train, "promote")
