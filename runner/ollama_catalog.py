@@ -193,6 +193,19 @@ def infer_cap(model):
         return 8
     if "gemma3:12b" in name:
         return 7
+    # Parameter count, when the tag states it, outranks the family name.
+    # WHY (2026-09-21): the family rules below match "qwen" for both
+    # "qwen3:4b" and "qwen3.5:27b-mlx", so a 4B tied a 27B at cap=7 and the
+    # optimizer's tie-break picked the 4B. Nothing downstream could express
+    # "the strongest model this box actually holds". Sizes are read generically
+    # so a new tag does not need a rule of its own.
+    size = re.search(r"\b(\d{1,3})b\b", name)
+    if size:
+        billions = int(size.group(1))
+        if billions >= 22:
+            return 8                 # 22B-69B: below the 70b+ rule above
+        if billions <= 9:
+            return 6                 # a 4B is not a peer of a 27B
     if any(x in name for x in ("qwen", "coder", "deepseek", "mixtral", "32b", "34b")):
         return 7
     if any(x in name for x in ("llama3.1", "llama3", "mistral", "14b", "13b")):
@@ -249,11 +262,35 @@ def _is_canary_only(candidate):
     return _is_heavy_for_hot_lane(candidate.get("model"))
 
 
+def is_cloud_tag(model):
+    """Does this Ollama tag run on Ollama's servers rather than this machine?
+
+    WHY THIS EXISTS (2026-09-21). `candidates()` stamped every tag `ollama list`
+    reports as {"provider": "local", "tier": "free"}. Ollama's cloud tier uses
+    ordinary-looking tags that end in ":cloud" -- "kimi-k2.7-code:cloud" -- and
+    `ollama list` shows them with SIZE "-" because no weights are on disk. They
+    are not local and they are not unmetered: the prompt leaves the machine and
+    is billed against an ollama.com account.
+
+    That mislabel picked the fleet's default free/local model. Legal and
+    regulatory prompts -- the work `model_gateway._sensitivity` exists to keep
+    on-box -- were being sent to a third party while the routing log said
+    "local (free)". A genuinely local model of the same class
+    (qwen3.5:27b-mlx, on disk, ~10 tok/s here) was never chosen.
+
+    Excluding these from the local tier does not make them unreachable; it only
+    stops them being counted as local and free.
+    """
+    return str(model or '').strip().lower().endswith(':cloud')
+
+
 def candidates(include_canary_only=False):
     out = []
     for m in models():
         if not is_generative(m):
             continue                 # embedding models are not coders
+        if is_cloud_tag(m):
+            continue                 # ":cloud" runs on Ollama's servers, not here
         prov = provenance(m)
         c = {"provider": "local", "model": m, "cap": infer_cap(m), "tier": "free",
              "trust": prov["trust"], "status": prov["status"], "note": prov["note"]}
