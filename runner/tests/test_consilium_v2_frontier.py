@@ -231,7 +231,7 @@ def test_two_phase_debates_on_the_dossier_and_enforces_verification(monkeypatch,
         if kw.get("tag") == "consilium.research":
             assert "PREVIOUSLY OPENED" in prompt
             return {"error": "", "model": "claude-opus-5", "json": dossier, "tokens_in": 50000, "tokens_out": 4000, "turns": 9}
-        assert kw.get("tools") is None and kw.get("max_turns") == 1
+        assert kw.get("tools") is None
         assert "AUTHORITY DOSSIER" in prompt and "[1] https://law.example/641" in prompt
         assert "NO TOOLS IN THIS CALL" in kw.get("system") and "LENGTH DISCIPLINE" in kw.get("system")
         cites = [{"source": "BL 641", "url": "https://law.example/641/", "verified": True, "quote": "No person", "confidence": 0.9},
@@ -378,7 +378,7 @@ def test_turn_cap_death_is_salvaged_by_resuming_the_session(monkeypatch, tmp_pat
     first, second = calls
     assert "--no-session-persistence" not in first["extra_args"]          # session kept for salvage
     assert second["extra_args"][second["extra_args"].index("--resume") + 1] == "sid-1"
-    assert second["max_turns"] == 1 and "--tools" in second["extra_args"]
+    assert second["max_turns"] == 3 and "--tools" in second["extra_args"]   # structured output needs a round trip
     assert second["extra_args"][second["extra_args"].index("--tools") + 1] == ""
     assert second["prompt"].startswith("STOP.")
     assert out["json"] == {"sources": [1]} and out["error"] == "" and out["salvaged"] is True

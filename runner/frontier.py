@@ -352,6 +352,12 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
     if json_schema:
         extra += ["--json-schema", json_schema if isinstance(json_schema, str) else json.dumps(json_schema)]
     turns = max_turns or (12 if tools else 1)
+    # STRUCTURED OUTPUT NEEDS A ROUND TRIP (2026-09-21). --json-schema delivers the object as a tool
+    # call; with --max-turns 1 a model whose first attempt needs a schema retry (measured: Fable on
+    # 20K-token tournaments, 5 of 5 on 09-21; 20 of 35 over five days) dies with
+    # stop_reason=tool_use after writing the entire answer. Three turns lets it land.
+    if json_schema and turns < 3:
+        turns = 3
     t0 = time.time()
     try:
         import claude_cli
@@ -405,7 +411,7 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
                session_id=raw.get("session_id"))
     if (err and keep_session and not resume and json_schema and parsed is None
             and max_turns_hit(raw) and raw.get("session_id") and available()):
-        s2 = complete(SALVAGE_PROMPT, system=system, model=model, tools=None, max_turns=1,
+        s2 = complete(SALVAGE_PROMPT, system=system, model=model, tools=None, max_turns=3,
                       json_schema=json_schema, timeout=min(timeout, 600), project=project,
                       tag=f"{tag}.salvage", salvage=False, resume=raw["session_id"])
         out["salvage"] = {"error": s2.get("error") or "", "tokens_in": s2.get("tokens_in"),

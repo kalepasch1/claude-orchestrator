@@ -755,3 +755,173 @@ if __name__ == "__main__":
     v = sys.argv[2] if len(sys.argv) > 2 else "gaming"
     out = run(q, context="PRIORITY: high", vertical=v)
     print(json.dumps(out, indent=2, default=str)[:6000] if out else "consilium_v2: no result (frontier unavailable?)")
+
+
+# ── steering for code (docs/consilium-v2.md §7.6) ───────────────────────────────────────────────
+# The same tribunal, pointed at a diff. committees.review() and illuminati_cothink's pre-merge pass
+# route material coding decisions here: five fixed engineering seats argue the change in one
+# no-tool frontier call, every finding must quote the diff verbatim (the code analogue of the
+# opened-URL rule — a finding that cannot point at a line is demoted to unverified), and the result
+# comes back in the committees.review() aggregate shape so callers need no new contract.
+CODE_SEATS = [
+    ("Correctness & Regression", "Does the change do what its title claims on every path the diff touches? "
+     "Find the input, state or ordering where it breaks, and the behaviour that silently changed."),
+    ("Security & Abuse", "Trust boundaries, injection, secrets, authz, unsafe defaults, new attack surface; "
+     "what a hostile caller or hostile data does to this code."),
+    ("Operability & Rollback", "Failure modes in production: partial deploys, retries, timeouts, migrations, "
+     "observability; can it be rolled back without data loss?"),
+    ("Intent Fidelity & Scope", "Does the diff do exactly the task — no quiet narrowing, widening or unrelated "
+     "edits? Are tests real tests of the change?"),
+    ("Compatibility & Data", "Schema, API and contract compatibility with every other caller in the fleet; "
+     "double-encoded fields, truncations, type drift."),
+]
+
+CODE_FINDING = {"type": "object", "properties": {
+    "severity": {"type": "string"}, "file": {"type": "string"}, "where": {"type": "string"},
+    "claim": {"type": "string"}, "evidence": {"type": "string"}, "fix": {"type": "string"},
+    "seat": {"type": "string"}},
+    "required": ["severity", "file", "where", "claim", "evidence", "fix", "seat"]}
+
+CODE_SCHEMA = {"type": "object", "properties": {
+    "seats": {"type": "array", "items": {"type": "object", "properties": {
+        "seat": {"type": "string"}, "r1_position": {"type": "string"}, "r1_analysis": {"type": "string"},
+        "steelman": {"type": "string"}, "moved": {"type": "boolean"},
+        "r3_outcome": {"type": "string"}, "r3_position": {"type": "string"}, "r3_probability": {"type": "number"}},
+        "required": ["seat", "r1_position", "r1_analysis", "steelman", "moved", "r3_outcome", "r3_position", "r3_probability"]}},
+    "findings": {"type": "array", "items": CODE_FINDING},
+    "red_team": {"type": "object", "properties": {
+        "attack": {"type": "string"}, "severity": {"type": "string"}, "failing_scenario": {"type": "string"}},
+        "required": ["attack", "severity", "failing_scenario"]},
+    "memo": {"type": "object", "properties": {
+        "verdict": {"type": "string"}, "summary": {"type": "string"}, "risk": {"type": "number"},
+        "conditions": {"type": "string"}, "dissent": {"type": "string"}, "rollout": {"type": "string"}},
+        "required": ["verdict", "summary", "risk", "conditions", "dissent", "rollout"]}},
+    "required": ["seats", "findings", "red_team", "memo"]}
+
+CODE_SYSTEM = """You are the CONSILIUM convened as an ENGINEERING TRIBUNAL on one code change. Run the five-round
+gauntlet among the seats below, in full, inside this single response, and return ONLY the JSON object.
+
+ R1 BLIND     each seat's independent verdict on the diff (approve / revise / block) with its strongest
+              concrete reason, reasoning only from the diff and the task. No seat references another.
+ R2 STEELMAN  each seat argues the most opposed seat's position at its strongest; say if it moved you.
+ R3 SETTLE    hold / concede / partial, with the probability (0-1) that this change ships without a
+              production incident or a revert in 30 days.
+ R4 RED TEAM  the single most plausible failing scenario for the leading position.
+ R5 CHAIR     memo: verdict approve|revise|block; risk 0-1; conditions to ship; rollout full|canary|hold;
+              the strongest surviving objection verbatim as dissent.
+
+GROUNDING RULES: every finding quotes the diff VERBATIM in `evidence` (a line or fragment, <= 200
+characters, exactly as it appears after the +/- marker). A finding without a verbatim quote is an
+opinion, not a finding — do not emit it. severity is blocker|major|minor|nit. `where` is the hunk
+or function. Do not invent files or lines not in the diff. Be specific and short: r1_analysis <= 80
+words, steelman <= 60 words, memo.summary <= 150 words."""
+
+CODE_USER = """TASK: {title}
+CONTEXT: {body}
+PROJECT: {project}   BLAST RADIUS: {blast}
+
+SEATS:
+{seats}
+
+DIFF (the record; quote it verbatim in findings):
+{diff}
+
+Run the gauntlet now and return the JSON object."""
+
+CODE_MAX_DIFF = int(os.environ.get("ORCH_CONSILIUM_CODE_MAX_DIFF", "60000"))
+
+
+def has_diff(text):
+    t = str(text or "")
+    return ("diff --git" in t) or ("\n@@ " in t) or ("\n+++ " in t and "\n--- " in t)
+
+
+def _squash(t):
+    return re.sub(r"\s+", " ", str(t or "")).strip()
+
+
+def verify_findings(findings, diff):
+    """Findings whose evidence is not a verbatim fragment of the diff are demoted to 'unverified'."""
+    flat = _squash(diff)
+    out = []
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        ev = _squash(f.get("evidence"))
+        f = dict(f)
+        f["verified"] = bool(ev) and len(ev) >= 8 and ev in flat
+        sev = str(f.get("severity") or "minor").lower()
+        f["severity"] = sev if sev in ("blocker", "major", "minor", "nit") else "minor"
+        if not f["verified"]:
+            f["severity_claimed"] = f["severity"]
+            f["severity"] = "unverified"
+        out.append(f)
+    return out
+
+
+def run_code(title, body="", diff="", *, project=None, blast_radius=0.0, need=None, tag="consilium.code"):
+    """Tribunal over a diff. Returns a committees.review()-shaped aggregate, or None when no frontier
+    call was possible (callers fall back to their existing panels)."""
+    if not ENABLED or not has_diff(diff or body):
+        return None
+    diff = diff or body
+    need = need or (9 if float(blast_radius or 0) >= 0.7 else 8)
+    if not frontier.available(min_tokens=int(os.environ.get("ORCH_CONSILIUM_CODE_MIN_TOKENS", "40000"))):
+        return None
+    t0 = time.time()
+    seats_txt = "\n".join(f"- SEAT \"{n}\": {d}" for n, d in CODE_SEATS)
+    user = CODE_USER.format(title=(title or "")[:500], body=(body if body is not diff else "")[:4000],
+                            project=project or "n/a", blast=blast_radius, seats=seats_txt,
+                            diff=diff[:CODE_MAX_DIFF])
+    r = frontier.complete(user, system=CODE_SYSTEM + (LENGTH_RULES if COMPACT else ""), need=need, tools=None,
+                          max_turns=1, json_schema=CODE_SCHEMA, timeout=900, tag=tag)
+    j = r.get("json")
+    if r.get("error") or not isinstance(j, dict) or not isinstance(j.get("memo"), dict):
+        print(f"consilium_v2.code: unusable ({r.get('error') or 'malformed output'})", flush=True)
+        return None
+    memo = j["memo"]
+    findings = verify_findings(j.get("findings"), diff)
+    verdict = str(memo.get("verdict") or "revise").strip().lower()
+    verdict = verdict if verdict in ("approve", "revise", "block") else "revise"
+    blockers = [f for f in findings if f["severity"] == "blocker"]
+    majors = [f for f in findings if f["severity"] == "major"]
+    if blockers and verdict == "approve":
+        verdict = "revise"
+    try:
+        risk = max(0.0, min(1.0, float(memo.get("risk") or 0.5)))
+    except Exception:
+        risk = 0.5
+    seats = [s for s in (j.get("seats") or []) if isinstance(s, dict)]
+    opposed = [s.get("seat") for s in seats if str(s.get("r3_position") or s.get("r1_position") or "").lower().startswith("block")]
+    probs = [float(s.get("r3_probability")) for s in seats if isinstance(s.get("r3_probability"), (int, float))]
+    score = round(10 * (sum(probs) / len(probs) if probs else (1 - risk)), 1)
+    rec = {"approve": "GO", "revise": "REVISE", "block": "HOLD"}[verdict]
+    if verdict == "approve" and str(memo.get("rollout") or "").lower() == "canary":
+        rec = "GO (canary)"
+    process = {"engine": "consilium_v2.code", "model": r.get("model"), "seats": [n for n, _ in CODE_SEATS],
+               "findings": len(findings), "verified_findings": sum(1 for f in findings if f["verified"]),
+               "blockers": len(blockers), "majors": len(majors),
+               "positions_flipped_by_steelman": sum(1 for s in seats if s.get("moved")),
+               "red_team_severity": (j.get("red_team") or {}).get("severity"),
+               "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
+               "latency_s": round(time.time() - t0, 1)}
+    agg = {"aggregate": score, "recommendation": rec, "verdict": verdict, "risk": risk,
+           "opposed_by": [o for o in opposed if o], "dissents": [memo.get("dissent")] if _s(memo.get("dissent")) else [],
+           "conditions": _s(memo.get("conditions")), "summary": _s(memo.get("summary")),
+           "rollout": _s(memo.get("rollout")) or ("full" if verdict == "approve" else "hold"),
+           "critical": verdict == "block" or bool(blockers),
+           "auto_ok": verdict == "approve" and not blockers and not majors and risk < 0.3,
+           "escalate": verdict == "block", "findings": findings,
+           "red_team": j.get("red_team") or {}, "title": title, "body": body,
+           "panel": [{"committee": s.get("seat"), "verdict": ("oppose" if str(s.get("r3_position") or "").lower().startswith("block")
+                                                               else "support" if str(s.get("r3_position") or "").lower().startswith("approve")
+                                                               else "needs-info"),
+                      "conviction": round(float(s.get("r3_probability") or 0.5) * 10, 1),
+                      "opinion": _s(s.get("r3_position") or s.get("r1_position"))[:400]} for s in seats],
+           "process": process}
+    _append_transcript({"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "kind": "code",
+                        "title": title, "project": project, "tournament": j, "process": process})
+    print(f"consilium_v2.code: {r.get('model')} on '{(title or '')[:60]}' -> {verdict} risk={risk} "
+          f"findings={len(findings)} ({process['verified_findings']} verified), tokens={r.get('tokens_in')}+{r.get('tokens_out')}",
+          flush=True)
+    return agg
