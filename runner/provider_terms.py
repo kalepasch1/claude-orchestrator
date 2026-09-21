@@ -12,6 +12,12 @@ import os
 DEFAULTS = {
     "local": {"trust": "local", "training": "none", "confidential_ok": True, "crown_jewel_ok": True},
     "ollama": {"trust": "local", "training": "none", "confidential_ok": True, "crown_jewel_ok": True},
+    # The EXO ring is the owner's own three Macs on the LAN; nothing leaves the
+    # premises and no weights are vendor-hosted, so it carries the same trust as
+    # Ollama. Without this row `allowed()` fell to the unknown-provider default
+    # and the ring would have been refused exactly the confidential legal and
+    # regulatory work it is the best available model for.
+    "exo": {"trust": "local", "training": "none", "confidential_ok": True, "crown_jewel_ok": True},
     "claude": {"trust": "subscription", "training": "vendor_terms", "confidential_ok": False, "crown_jewel_ok": False},
     "codex": {"trust": "subscription", "training": "vendor_terms", "confidential_ok": False, "crown_jewel_ok": False},
     "openai": {"trust": "api", "training": "configure_account", "confidential_ok": False, "crown_jewel_ok": False},

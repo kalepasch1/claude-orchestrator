@@ -154,6 +154,10 @@ def configured():
         if present:
             prov.append(name)
     if _ollama_up() and not _local_disabled(): prov.append("local")
+    # EXO is "configured" only while it is actually holding a loaded model. Unlike a
+    # hosted provider there is no credential to test, and unlike Ollama there is no
+    # on-demand load, so readiness IS the configuration. See exo_placed_model.
+    if not _local_disabled() and exo_placed_model(): prov.append("exo")
     return prov
 
 
@@ -189,6 +193,59 @@ def _post(url, headers, payload, timeout=90):
                                  headers={**headers, "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def _exo_base():
+    """Base URL of the EXO cluster head node."""
+    raw = os.environ.get("EXO_URL", "http://127.0.0.1:52415").strip()
+    return (raw.split()[0] if raw else "http://127.0.0.1:52415").rstrip("/")
+
+
+def exo_placed_model():
+    """The model EXO can actually serve right now, or None.
+
+    WHY THIS IS NOT A CONFIGURED NAME. EXO does not load on demand: until an
+    instance has been placed, /v1/chat/completions answers 404 "No instance
+    found for model X" for every id in /v1/models, because that list is the
+    downloadable catalog and not what is resident. The only servable model is
+    whichever one a placed instance is holding, so the single source of truth
+    is /state, and asking it is also the availability probe.
+
+    Returns None while runners are still connecting. A model that is loading is
+    not a model that can answer, and routing to it would spend the caller's
+    timeout on a request that cannot be served.
+    """
+    try:
+        with urllib.request.urlopen(_exo_base() + "/state", timeout=3) as r:
+            state = json.loads(r.read().decode())
+    except Exception:
+        return None
+    instances = state.get("instances") or {}
+    runners = state.get("runners") or {}
+    if not instances or not runners:
+        return None
+    # Every runner holding a shard has to be up; a pipeline missing one layer
+    # range cannot generate at all.
+    if not all("RunnerReady" in str(v) or "Ready" in str(v) for v in runners.values()):
+        return None
+    for inst in instances.values():
+        try:
+            return next(iter(inst.values()))["shardAssignments"]["modelId"]
+        except Exception:
+            continue
+    return None
+
+
+def _exo(model, prompt, timeout=90):
+    """One completion from the EXO ring. Local hardware, so cost is zero."""
+    d = _post(_exo_base() + "/v1/chat/completions", {},
+              {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "stream": False},
+              timeout=timeout)
+    choices = d.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"exo returned no choices: {str(d)[:200]}")
+    return (choices[0].get("message") or {}).get("content") or "", 0.0
 
 
 def _openai(model, prompt):
@@ -325,6 +382,8 @@ def _local(model, prompt, timeout=90):
 
 
 DEFAULT_MODELS = {
+    # Whatever the ring is holding; there is never a choice to make (exo_placed_model).
+    "exo": lambda: exo_placed_model(),
     "local": lambda: __import__("ollama_catalog").best("fallback", need=5).get("model"),
     "groq": lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     "deepseek": lambda: _configured("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash",
@@ -336,11 +395,21 @@ DEFAULT_MODELS = {
     "claude": lambda: "claude-haiku-4-5-20251001",
 }
 
-FALLBACK_ORDER = ("local", "groq", "deepseek", "google", "xai", "openai", "claude")
+# "exo" leads: on this fleet it is a 3-node ring holding Qwen3.5-122B-A10B-4bit,
+# which is a stronger model than anything Ollama can fit on one 48GB box, at the
+# same zero marginal cost. It is only ever in `available()` while a placed
+# instance is ready, so leading with it costs nothing when the ring is down.
+FALLBACK_ORDER = ("exo", "local", "groq", "deepseek", "google", "xai", "openai", "claude")
 
 
 def provider_for_model(model):
     m = (model or "").lower()
+    # An EXO id is a HuggingFace repo path ("mlx-community/Qwen3.5-122B-A10B-4bit").
+    # It has to be claimed before the open-weights rules below, which match on
+    # "qwen"/"llama" and would hand a 122B ring model to Groq or to Ollama — where
+    # it is not installed and never will be.
+    if "/" in m and (m.startswith("mlx-community/") or m == str(exo_placed_model() or "").lower()):
+        return "exo"
     if "claude" in m:
         return "claude"
     if "gemini" in m:
@@ -443,6 +512,8 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
         return _carry_diagnostics(r, out)
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
+    elif provider == "exo":
+        text, cost = _exo(model, prompt, timeout=timeout)
     else:
         fn = {"openai": _openai, "google": _google, "deepseek": _deepseek,
               "groq": _groq, "xai": _xai}[provider]
