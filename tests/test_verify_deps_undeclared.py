@@ -75,7 +75,7 @@ def test_stdlib_modules_are_recognised(module):
     assert module in vd._stdlib_modules(), f"{module} misclassified as third-party"
 
 
-@pytest.mark.parametrize("module", ["db", "canary", "runner", "convention_lint"])
+@pytest.mark.parametrize("module", ["db", "canary", "runner", "convention_lint", "src"])
 def test_repo_modules_are_recognised_as_local(module):
     """Includes modules nested one level down (runner/tests, tools/)."""
     assert module in vd.local_module_names()

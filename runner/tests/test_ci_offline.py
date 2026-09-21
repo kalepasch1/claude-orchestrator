@@ -731,17 +731,21 @@ class TestNoWorkIsLeftOnlyInAStash(unittest.TestCase):
 
     def test_a_drift_stash_is_mirrored_to_origin(self):
         src = self._src()
-        stash_at = src.index('git("stash", "push", "-m", _label)')
-        tail = src[stash_at:stash_at + 2000]
-        self.assertIn("refs/archive/sentinel-drift/", tail)
-        self.assertIn('git("push", "origin"', tail)
+        helper = src[src.index("def _archive_latest_stash"):src.index("def checkout_guard")]
+        self.assertIn("refs/archive/sentinel-drift/", helper)
+        self.assertIn('git("push", "origin"', helper)
+        self.assertGreaterEqual(src.count("_archive_latest_stash(_label)"), 2)
 
     def test_the_archive_happens_before_the_branch_switch(self):
-        # Checking out BASE_BRANCH is the point of no return for the working tree.
+        # Both the protected handoff and ordinary drift stash are mirrored before
+        # their first branch switch can strand the only local copy.
         src = self._src()
-        tail = src[src.index('git("stash", "push", "-m", _label)'):]
-        self.assertLess(tail.index("refs/archive/sentinel-drift/"),
-                        tail.index('git("checkout", BASE_BRANCH)'))
+        protected = src[src.index('git("stash", "push", "-m", _label)'):]
+        self.assertLess(protected.index("_archive_latest_stash(_label)"),
+                        protected.index('git("checkout", "-b", hb)'))
+        ordinary = src[src.index('_label = f"sentinel-drift-'):]
+        self.assertLess(ordinary.index("_archive_latest_stash(_label)"),
+                        ordinary.index('git("checkout", BASE_BRANCH)'))
 
     def test_a_failed_archive_says_so_instead_of_going_quiet(self):
         # "local-only" has to be visible; a silent failure recreates the original bug.
@@ -749,10 +753,9 @@ class TestNoWorkIsLeftOnlyInAStash(unittest.TestCase):
 
     def test_preservation_never_breaks_the_recovery_it_runs_inside(self):
         src = self._src()
-        tail = src[src.index('git("stash", "push", "-m", _label)'):]
-        block = tail[:tail.index('git("checkout", BASE_BRANCH)')]
-        self.assertIn("try:", block)
-        self.assertIn("except Exception", block)
+        helper = src[src.index("def _archive_latest_stash"):src.index("def checkout_guard")]
+        self.assertIn("try:", helper)
+        self.assertIn("except Exception", helper)
 
 
 

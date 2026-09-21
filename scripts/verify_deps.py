@@ -95,7 +95,7 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".runtime"
               ".pytest_cache", "dist", "build", ".next", ".output", ".vercel"}
 
 
-def local_module_names(package_dirs=("runner", "scripts", "tests", "tools")) -> set[str]:
+def local_module_names(package_dirs=("runner", "scripts", "tests", "tools", "src")) -> set[str]:
     """Names that resolve to files IN THIS REPO rather than to installed packages.
 
     Scanned recursively. A shallow scan of each directory's top level was not enough:
