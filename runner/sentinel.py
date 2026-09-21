@@ -220,6 +220,29 @@ def _worktree_holding(branch):
     return None
 
 
+def _archive_latest_stash(label):
+    """Mirror the newest stash to a durable remote ref without blocking recovery."""
+    try:
+        sha = (git("rev-parse", "stash@{0}").stdout or "").strip()
+        if not sha:
+            log("drift-stash-archived", f"{label} is LOCAL-ONLY — stash oid unavailable")
+            return False
+        ref = f"refs/archive/sentinel-drift/{int(time.time())}-{sha[:12]}"
+        updated = git("update-ref", ref, sha)
+        if updated.returncode != 0:
+            log("drift-stash-archived", f"{label} is LOCAL-ONLY — archive ref failed")
+            return False
+        pushed = git("push", "origin", f"{ref}:{ref}")
+        log("drift-stash-archived",
+            f"{label} mirrored to {ref} on origin"
+            if pushed.returncode == 0 else
+            f"{label} is LOCAL-ONLY — archive push failed")
+        return pushed.returncode == 0
+    except Exception as exc:
+        log("drift-stash-archived", f"{label} is LOCAL-ONLY ({exc})")
+        return False
+
+
 def checkout_guard(st=None):
     """Return the primary checkout to BASE_BRANCH after drift.
 
@@ -299,6 +322,10 @@ def checkout_guard(st=None):
                         f"work is still dirty in the working tree, NOT lost; leaving the checkout "
                         f"on '{branch}' rather than risking it")
                     return
+                # Even this temporary handoff can survive a failed branch/pop step.
+                # Mirror it before switching branches so no failure can strand the
+                # only copy inside this machine's stash reflog.
+                _archive_latest_stash(_label)
                 _cb = git("checkout", "-b", hb)
                 if _cb.returncode != 0:
                     git("stash", "pop")   # put the operator's work back where it was
@@ -384,18 +411,7 @@ def checkout_guard(st=None):
                 # Mirror it to origin immediately. Best-effort and silent on failure: this runs
                 # on the recovery path, and a preservation attempt must never be the reason the
                 # recovery itself fails.
-                try:
-                    _sha = (git("rev-parse", "stash@{0}").stdout or "").strip()
-                    if _sha:
-                        _ref = f"refs/archive/sentinel-drift/{int(time.time())}"
-                        git("update-ref", _ref, _sha)
-                        _pr = git("push", "origin", f"{_ref}:{_ref}")
-                        log("drift-stash-archived",
-                            f"{_label} mirrored to {_ref} on origin"
-                            if _pr.returncode == 0 else
-                            f"{_label} is LOCAL-ONLY — archive push failed")
-                except Exception as _exc:
-                    log("drift-stash-archived", f"{_label} is LOCAL-ONLY ({_exc})")
+                _archive_latest_stash(_label)
                 r = git("checkout", BASE_BRANCH)
 
     if r.returncode != 0:

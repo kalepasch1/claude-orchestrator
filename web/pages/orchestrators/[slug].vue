@@ -165,6 +165,7 @@ const successCriteria = computed({ get: () => persistentContext.successCriteria,
 const outcomeConstraints = computed({ get: () => persistentContext.constraints, set: value => { persistentContext.constraints = value } })
 const projects = ref<any[]>([])
 const recentTasks = ref<any[]>([])
+const selectedProjectName = computed(() => projects.value.find(project => project.id === selectedProject.value)?.name || selectedApp.value)
 const sliders = ref<Record<string, number>>({})
 const showOverride = ref(false)
 const routeInfo = ref('')
@@ -295,9 +296,20 @@ const INSIGHT_PLAYBOOK: Record<string, { recommendation: string; outcome: string
 // Deploy state — inline in workspace
 const showDeployPanel = ref(false)
 const deployLoading = ref(false)
-const deployStatus = ref<'idle' | 'preflight' | 'deploying' | 'success' | 'failed'>('idle')
+const deployStatus = ref<'idle' | 'preflight' | 'requesting' | 'requested' | 'failed'>('idle')
 const deployLog = ref<string[]>([])
 const recentDeploys = ref<any[]>([])
+const LIVE_RELEASE_STATES = new Set(['success', 'deployed', 'ready', 'deployed_and_verified'])
+const liveDeploys = computed(() => recentDeploys.value.filter(row => LIVE_RELEASE_STATES.has(String(row.deploy_status || '').toLowerCase())))
+const rollbackCount = computed(() => recentDeploys.value.filter(row => String(row.deploy_status || '').toLowerCase() === 'rolled_back').length)
+const latestRelease = computed(() => recentDeploys.value[0] || null)
+const deploymentHealth = computed(() => {
+  if (!latestRelease.value) return { label: 'No release evidence', tone: 'text-gray-500' }
+  if (LIVE_RELEASE_STATES.has(String(latestRelease.value.deploy_status || '').toLowerCase())) return { label: 'Latest release verified live', tone: 'text-emerald-600' }
+  if (['failed', 'error', 'verification_blocked', 'journey_failed'].includes(String(latestRelease.value.deploy_status || '').toLowerCase())) return { label: 'Latest release needs attention', tone: 'text-red-600' }
+  return { label: `Latest release ${latestRelease.value.deploy_status || 'pending'}`, tone: 'text-amber-600' }
+})
+function releaseIsLive(row: any) { return LIVE_RELEASE_STATES.has(String(row?.deploy_status || '').toLowerCase()) }
 
 // Auto-save state
 const autoSaveStatus = ref<'saved' | 'saving' | 'unsaved' | 'error'>('saved')
@@ -364,7 +376,8 @@ watch(workspaceState, () => {
 // --- Deploy engine (inline in workspace) ---
 async function loadDeploys() {
   try {
-    const { data } = await supabase.from('releases').select('*').order('created_at', { ascending: false }).limit(10)
+    const project = selectedProjectName.value
+    const { data } = await supabase.from('releases').select('*').eq('project', project).order('created_at', { ascending: false }).limit(10)
     recentDeploys.value = data || []
   } catch {}
 }
@@ -377,31 +390,18 @@ async function deployToProd() {
     const embedContract = embedAudit.checks?.find((check: any) => check.app === selectedApp.value)
     if (!embedContract?.gatewayReady) throw new Error('The live-app preview contract is unhealthy. Release stopped before merge.')
     deployLog.value.push(`✓ Live-app contract passing (${embedContract.nativeEmbed ? 'native embed' : 'secure gateway'})`)
-    await new Promise(r => setTimeout(r, 800))
-    deployLog.value.push('✓ Branch ' + selectedBranch.value + ' is clean')
-    deployLog.value.push('✓ All tests passing')
-    deployLog.value.push('✓ No merge conflicts detected')
-    deployStatus.value = 'deploying'
-    deployLog.value.push('Merging ' + selectedBranch.value + ' → main (prod)...')
-    await supabase.from('releases').insert({
-      project: selectedApp.value, version: 'v' + Date.now().toString(36),
-      deploy_status: 'deployed',
-      note: 'Deploy from ' + cap.value.name + ' (' + selectedApp.value + ') branch: ' + selectedBranch.value,
-      created_at: new Date().toISOString(),
-    })
-    const taskSlug = 'deploy-' + selectedApp.value + '-' + Date.now().toString(36)
-    const pid = selectedProject.value || projects.value[0]?.id
-    await supabase.from('tasks').insert({
-      project_id: pid, slug: taskSlug,
-      prompt: 'Deploy ' + selectedApp.value + ' from branch ' + selectedBranch.value + ' to production via ' + cap.value.name,
-      kind: 'deploy', model: 'claude-sonnet-4-6', mode: 'build', state: 'QUEUED',
-      note: 'source:' + slug.value + ';app:' + selectedApp.value + ';branch:' + selectedBranch.value,
-    })
-    await new Promise(r => setTimeout(r, 600))
-    deployLog.value.push('✓ Release: ' + taskSlug)
-    deployLog.value.push('✓ Deploy task queued')
-    deployLog.value.push('✓ Release train accepted the verified deployment request')
-    deployStatus.value = 'success'
+    deployStatus.value = 'requesting'
+    deployLog.value.push('Submitting a governed release request. No deployment claim will be written until the release train verifies it.')
+    const intent = [
+      `Release ${selectedProjectName.value} from ${selectedBranch.value} through the canonical release train.`,
+      `Requested from ${cap.value.name} for workspace ${selectedApp.value}.`,
+      'Run repository preflight, tests, integration, deployment, and the task-defined production journey.',
+      'Record the exact artifact and release SHAs. Mark DEPLOYED_AND_VERIFIED only after the live release and production journey receipts both pass.',
+    ].join('\n')
+    const result: any = await authedFetch('/api/tasks/intake', { method: 'POST', body: { intent, project_id: selectedProject.value || undefined } })
+    deployLog.value.push(`✓ Release request queued: ${result.task.slug}`)
+    deployLog.value.push('Awaiting runner, build, and production evidence. The release ledger has not been pre-marked successful.')
+    deployStatus.value = 'requested'
     loadDeploys(); loadData(); refreshInsights()
   } catch (e: any) {
     deployLog.value.push('✗ Error: ' + (e.message || String(e)))
@@ -646,6 +646,7 @@ watch(contextHydrated, ready => {
 })
 watch(user, u => { if (u) { loadData(); loadDraft(); loadDeploys(); loadConnectors(); resolvePreview() } })
 watch(selectedApp, () => { loadDraft(); loadDeploys(); refreshInsights(); resolvePreview() })
+watch(selectedProject, () => { loadDeploys() })
 watch(selectedApp, value => { if (contextHydrated.value) persistentContext.appId = value })
 watch(selectedProject, value => { if (contextHydrated.value) persistentContext.projectId = value })
 watch(cap, value => { if (contextHydrated.value) persistentContext.capability = value.name })
@@ -840,7 +841,7 @@ watch(slug, () => { refreshInsights() })
                 @use-prompt="useCadePrompt"
               />
               <OutcomeIntelligenceLive :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :project-id="selectedProject" />
-              <ProofTimeline :tasks="recentTasks" :deployments="recentDeploys" :capability="cap.name" />
+              <ProofTimeline :tasks="recentTasks" :deployments="recentDeploys" :capability="cap.name" :project-id="selectedProject" :project-name="selectedProjectName" />
               <div class="flex items-end justify-between gap-4">
                 <div>
                   <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">Capability workspace</div>
@@ -989,15 +990,15 @@ watch(slug, () => { refreshInsights() })
               <div v-else-if="cap.domain === 'devops'" class="space-y-4">
                 <h4 class="text-sm font-semibold text-gray-700">Deployment Health — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
                 <div class="grid grid-cols-4 gap-3">
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-emerald-600">●</div><div class="text-[10px] text-gray-500 mt-1">Healthy</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">{{ recentDeploys.length }}</div><div class="text-[10px] text-gray-500 mt-1">Deploys</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">0</div><div class="text-[10px] text-gray-500 mt-1">Rollbacks</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">99.9%</div><div class="text-[10px] text-gray-500 mt-1">Uptime</div></div>
+                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold" :class="deploymentHealth.tone">●</div><div class="text-[10px] text-gray-500 mt-1">{{ deploymentHealth.label }}</div></div>
+                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">{{ liveDeploys.length }}</div><div class="text-[10px] text-gray-500 mt-1">Verified live releases</div></div>
+                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">{{ rollbackCount }}</div><div class="text-[10px] text-gray-500 mt-1">Recorded rollbacks</div></div>
+                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">{{ latestRelease?.to_sha ? String(latestRelease.to_sha).slice(0, 8) : '—' }}</div><div class="text-[10px] text-gray-500 mt-1">Latest release SHA</div></div>
                 </div>
                 <div v-if="recentDeploys.length" class="space-y-1">
                   <div class="text-[10px] text-gray-400 uppercase tracking-wider">Recent deploys</div>
                   <div v-for="d in recentDeploys.slice(0, 5)" :key="d.id" class="bg-white border border-gray-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
-                    <span class="w-2 h-2 rounded-full" :class="d.deploy_status === 'deployed' ? 'bg-emerald-500' : 'bg-red-500'"></span>
+                    <span class="w-2 h-2 rounded-full" :class="releaseIsLive(d) ? 'bg-emerald-500' : ['failed', 'error', 'verification_blocked', 'journey_failed'].includes(String(d.deploy_status || '').toLowerCase()) ? 'bg-red-500' : 'bg-amber-500'"></span>
                     <span class="font-mono text-gray-600">{{ d.version }}</span>
                     <span class="flex-1 truncate text-gray-400">{{ d.note }}</span>
                     <span class="text-gray-400">{{ timeAgo(d.created_at) }}</span>

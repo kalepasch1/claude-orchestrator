@@ -6,19 +6,23 @@ import Anthropic from '@anthropic-ai/sdk'
 
 function buildSystemPrompt(serverless: boolean): string {
   const envNote = serverless
-    ? `\nENVIRONMENT: Production (Vercel serverless)
-- File system is READ-ONLY — write_file and edit_file are disabled.
-- Shell commands are limited to safe read-only operations (git log/status/diff, ls, cat, echo, node -e).
-- For full dev capabilities (npm install, file edits, builds), the user should use dev mode locally.
-- You can still: read files, search code, query Supabase, and check deployment status.`
+    ? `\nENVIRONMENT: Production control-plane console (Vercel serverless)
+- This runtime is not a repository checkout and is not a development runner.
+- The only available tool reads the shared release ledger.
+- Never claim that files, tests, merges, builds, deployments, or production journeys were inspected unless the tool output contains that exact evidence.
+- Direct the operator to submit implementation work through the Madeus objective intake or use the local development terminal.`
     : `\nENVIRONMENT: Development (local)
 - Full filesystem read/write access available.
 - All shell commands available (with safety blocks for destructive operations).
 - Node.js 24.x, Python 3.x available.`
 
-  return `You are a development terminal inside the Madeus orchestrator control plane. You execute code, run commands, manage files, and help implement features — exactly like an interactive development terminal.
-
-BEHAVIOR:
+  const behavior = serverless
+    ? `BEHAVIOR:
+- Use deploy_check for release-status questions.
+- State UNKNOWN when the shared ledger cannot be read or lacks the relevant evidence.
+- Do not invent repository, runner, merge, test, or production access.
+- For implementation requests, explain that this control-plane runtime cannot execute them and point to the Madeus objective intake or local terminal.`
+    : `BEHAVIOR:
 - When the user types a shell command (e.g., ls, git status, npm install), execute it directly using the run_command tool.
 - When the user asks to write/edit code, use the write_file or edit_file tools.
 - When the user asks to read a file, use the read_file tool.
@@ -27,7 +31,11 @@ BEHAVIOR:
 - Show output faithfully including errors. Format code with syntax highlighting markers.
 - Be concise: show the output, not explanations of what you're doing.
 - For git operations, use run_command with the appropriate git commands.
-- You have full access to the orchestrator repository.
+- You have full access to the orchestrator repository.`
+
+  return `You are the Madeus terminal inside the orchestrator control plane.
+
+${behavior}
 ${envNote}
 
 CONTEXT:
@@ -158,6 +166,7 @@ import {
 } from '../../utils/terminalGuards'
 import { promisify } from 'node:util'
 import { createClient } from '@supabase/supabase-js'
+import { formatReleaseLedger } from '../../utils/terminalReleaseStatus'
 
 const execAsync = promisify(exec)
 /**
@@ -352,28 +361,26 @@ async function execTool(name: string, input: any): Promise<string> {
 
     case 'deploy_check': {
       if (isServerless()) {
-        const env = process.env.VERCEL_ENV || 'unknown'
-        const region = process.env.VERCEL_REGION || 'unknown'
-        const gitSha = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) || 'unknown'
-        const gitMsg = process.env.VERCEL_GIT_COMMIT_MESSAGE || 'unknown'
-        const branch = process.env.VERCEL_GIT_COMMIT_REF || 'unknown'
-        return [
-          `Vercel Deployment Status`,
-          `  Environment: ${env}`,
-          `  Region:      ${region}`,
-          `  Branch:      ${branch}`,
-          `  Commit:      ${gitSha} — ${gitMsg}`,
-          `  Runtime:     Node ${process.version}`,
-          ``,
-          `This is a live production deployment. Vercel deploys on push to master.`,
-        ].join('\n')
+        const url = process.env.SUPABASE_URL || process.env.NUXT_SUPABASE_URL || ''
+        const key = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NUXT_SUPABASE_SERVICE_KEY || ''
+        if (!url || !key) return formatReleaseLedger(null, 'Supabase is not configured')
+        try {
+          const sb = createClient(url, key, { auth: { persistSession: false } })
+          const { data, error } = await sb.from('releases')
+            .select('id,project,version,to_sha,deploy_status,vercel_url,created_at,deployed_at')
+            .order('created_at', { ascending: false })
+            .limit(10)
+          return formatReleaseLedger(data, error?.message)
+        } catch (error: any) {
+          return formatReleaseLedger(null, error?.message || String(error))
+        }
       }
       try {
         const { stdout } = await execAsync('git log --oneline -5 && echo "---" && git status --short', {
           cwd: root,
           timeout: 10_000,
         })
-        return `Latest commits & status:\n${stdout.trim()}\n\nNote: Vercel deploys on push to master. Use git push to trigger deployment.`
+        return `Local repository commits & worktree status:\n${stdout.trim()}\n\nThis is source-control evidence only; it does not prove a deployment.`
       } catch (e: any) {
         return `Deploy check error: ${e.message}`
       }
@@ -420,6 +427,7 @@ export default defineEventHandler(async (event) => {
 
   const client = new Anthropic({ apiKey })
   const serverless = isServerless()
+  const activeTools = serverless ? TOOLS.filter(tool => tool.name === 'deploy_check') : TOOLS
 
   // Build conversation from history
   const messages: Anthropic.MessageParam[] = []
@@ -445,7 +453,7 @@ export default defineEventHandler(async (event) => {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 8192,
         system: buildSystemPrompt(serverless),
-        tools: TOOLS,
+        tools: activeTools,
         messages: currentMessages,
       })
 

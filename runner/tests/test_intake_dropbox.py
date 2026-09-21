@@ -162,8 +162,9 @@ class QueueDropboxTasksTest(unittest.TestCase):
 
 class CanonicalIntakeReceiptTest(unittest.TestCase):
     def setUp(self):
-        handle, self.path = tempfile.mkstemp(suffix=".md")
-        os.close(handle)
+        self.root = tempfile.mkdtemp()
+        self.path = os.path.join(
+            self.root, "chatgpt-local-audit-apparently-deadbeef1234.md")
         with open(self.path, "w") as fh:
             fh.write(
                 "PROJECT: apparently\n\n"
@@ -176,7 +177,7 @@ class CanonicalIntakeReceiptTest(unittest.TestCase):
         self.projects = {"apparently": {"id": "p1", "default_base": "main"}}
 
     def tearDown(self):
-        os.unlink(self.path)
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def test_chatgpt_reconciliation_is_attributed_as_operator_work(self):
         inserted = []
@@ -186,13 +187,30 @@ class CanonicalIntakeReceiptTest(unittest.TestCase):
         )
         with patch.object(iw, "db", db_mock), \
              patch.object(iw.pipeline_contract, "wrap_prompt", side_effect=lambda p, **kw: p), \
-             patch.object(iw.intake_gate, "should_queue", return_value=(True, "material")):
+             patch.object(iw.intake_gate, "should_queue",
+                          side_effect=AssertionError("canonical audit bypasses the EV gate")):
             created, skipped = iw.ingest_file(self.path, self.projects, existing=set())
         self.assertEqual((created, skipped), (1, 0))
         self.assertEqual(
             inserted[0][1]["submitted_by_label"],
             "ChatGPT local-build audit (operator-directed)",
         )
+        self.assertTrue(inserted[0][1]["_operator_directed_recovery"])
+
+    def test_filename_and_slug_fingerprints_must_match_for_recovery_bypass(self):
+        with open(self.path, "w") as fh:
+            fh.write(
+                "PROJECT: apparently\n\n"
+                "- id: chatgpt-local-reconcile-apparently-feedface5678\n"
+                "  material: yes\n"
+                "  prompt: |\n"
+                "    This merely imitates an audit slug without the matching receipt.\n"
+            )
+        db_mock = types.SimpleNamespace(select=lambda *a, **kw: [], insert=lambda *a, **kw: [1])
+        with patch.object(iw, "db", db_mock), \
+             patch.object(iw.intake_gate, "should_queue", return_value=(False, "untrusted")):
+            created, skipped = iw.ingest_file(self.path, self.projects, existing=set())
+        self.assertEqual((created, skipped), (0, 1))
 
     def test_refused_insert_raises_so_manifest_is_not_claimed(self):
         db_mock = types.SimpleNamespace(select=lambda *a, **kw: [], insert=lambda *a, **kw: None)

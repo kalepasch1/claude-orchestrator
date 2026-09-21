@@ -14,14 +14,18 @@ LABEL="com.claudeorchestrator.chatgptbridge"
 # EX_CONFIG (exit 78) without ever running the job. Keep them under ~/Library.
 LAUNCHD_LOG_DIR="$HOME/Library/Logs/claude-orchestrator"
 
-chmod +x "$HERE/apply-patch.sh" "$HERE/watch-dropbox.sh"
+chmod +x "$HERE/apply-patch.sh" "$HERE/watch-dropbox.sh" "$HERE/audit-local-builds.sh"
 
 mkdir -p "$DROPBOX/_applied" "$DROPBOX/_failed" "$DROPBOX/_logs"
 mkdir -p "$LAUNCHD_LOG_DIR"
 
 # convenience CLI on PATH
-mkdir -p "$HOME/bin"
-ln -sf "$HERE/apply-patch.sh" "$HOME/bin/chatgpt-patch"
+if mkdir -p "$HOME/bin" && ln -sf "$HERE/apply-patch.sh" "$HOME/bin/chatgpt-patch"; then
+  CLI_STATUS="installed"
+else
+  CLI_STATUS="unavailable (permission denied; the launchd bridge is unaffected)"
+  echo "WARNING: could not install ~/bin/chatgpt-patch; continuing with launchd setup" >&2
+fi
 
 # launchd cannot execute or read anything under ~/Documents (macOS TCC), so the
 # agent goes through ClaudeRunner.app — the bundle that already holds the
@@ -32,7 +36,30 @@ APP="/Applications/ClaudeRunner.app/Contents/MacOS/ClaudeRunner"
 grep -q '\*\.sh ]]' "$(dirname "$(dirname "$APP")")/Resources/launcher.sh" \
   || echo "WARNING: ClaudeRunner launcher lacks .sh support — re-run scripts/setup-scheduler.sh"
 
-cat > "$PLIST" <<PLISTEOF
+LAUNCH_DOMAIN="gui/$(id -u)"
+BRIDGE_LOADED=0
+launchctl print "$LAUNCH_DOMAIN/$LABEL" >/dev/null 2>&1 && BRIDGE_LOADED=1
+
+AUDIT_LABEL="com.claudeorchestrator.chatgptbridge.audit"
+AUDIT_PLIST="$HOME/Library/LaunchAgents/$AUDIT_LABEL.plist"
+AUDIT_LOADED=0
+launchctl print "$LAUNCH_DOMAIN/$AUDIT_LABEL" >/dev/null 2>&1 && AUDIT_LOADED=1
+
+# Validate a complete replacement before atomically publishing it. Re-running
+# setup must never boot out a healthy bridge: launchd will pick up the refreshed
+# plist on the next login/reboot, while the currently loaded service stays live.
+mkdir -p "$(dirname "$PLIST")"
+PLIST_TMP="$(mktemp "${PLIST}.tmp.XXXXXX")"
+WD_PLIST_TMP=""
+AUDIT_PLIST_TMP=""
+cleanup() {
+  [ -z "${PLIST_TMP:-}" ] || rm -f "$PLIST_TMP"
+  [ -z "${WD_PLIST_TMP:-}" ] || rm -f "$WD_PLIST_TMP"
+  [ -z "${AUDIT_PLIST_TMP:-}" ] || rm -f "$AUDIT_PLIST_TMP"
+}
+trap cleanup EXIT
+
+cat > "$PLIST_TMP" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -56,9 +83,59 @@ cat > "$PLIST" <<PLISTEOF
 </plist>
 PLISTEOF
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
-launchctl enable "gui/$(id -u)/$LABEL" 2>/dev/null || true
+plutil -lint "$PLIST_TMP" >/dev/null
+mv "$PLIST_TMP" "$PLIST"
+PLIST_TMP=""
+
+if [ "$BRIDGE_LOADED" -eq 1 ]; then
+  echo "Bridge already loaded; preserving the live service."
+else
+  if ! launchctl bootstrap "$LAUNCH_DOMAIN" "$PLIST"; then
+    echo "ERROR: launchd could not register $LABEL." >&2
+    echo "Run this once in your logged-in Terminal, then re-run setup:" >&2
+    echo "  launchctl bootstrap $LAUNCH_DOMAIN '$PLIST'" >&2
+    exit 1
+  fi
+fi
+launchctl enable "$LAUNCH_DOMAIN/$LABEL" 2>/dev/null || true
+
+# Keep the deep repository/worktree sweep out of the 30-second intake path. A
+# separate agent may take minutes without suppressing patch receipts or bridge
+# heartbeats. Its Python worker provides an additional single-writer lock.
+AUDIT_PLIST_TMP="$(mktemp "${AUDIT_PLIST}.tmp.XXXXXX")"
+cat > "$AUDIT_PLIST_TMP" <<AUDITEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$AUDIT_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$APP</string>
+    <string>tools/chatgpt-bridge/audit-local-builds.sh</string>
+  </array>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>StandardOutPath</key><string>$LAUNCHD_LOG_DIR/chatgpt-bridge-audit.out.log</string>
+  <key>StandardErrorPath</key><string>$LAUNCHD_LOG_DIR/chatgpt-bridge-audit.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>$HOME</string>
+  </dict>
+</dict>
+</plist>
+AUDITEOF
+plutil -lint "$AUDIT_PLIST_TMP" >/dev/null
+mv "$AUDIT_PLIST_TMP" "$AUDIT_PLIST"
+AUDIT_PLIST_TMP=""
+if [ "$AUDIT_LOADED" -eq 1 ]; then
+  echo "Deep audit already loaded; preserving the live service."
+elif ! launchctl bootstrap "$LAUNCH_DOMAIN" "$AUDIT_PLIST"; then
+  echo "ERROR: bridge is loaded, but launchd could not register $AUDIT_LABEL." >&2
+  echo "Re-run this installer once from your logged-in Terminal." >&2
+  exit 1
+fi
+launchctl enable "$LAUNCH_DOMAIN/$AUDIT_LABEL" 2>/dev/null || true
 
 # ---- watchdog -------------------------------------------------------------
 # Lives outside ~/Documents on purpose: when the FDA grant is lost, everything
@@ -71,7 +148,8 @@ mkdir -p "$WD_DIR" "$HOME/Library/Logs/claude-orchestrator"
 cp "$HERE/watchdog.sh" "$WD_DIR/watchdog.sh"
 chmod +x "$WD_DIR/watchdog.sh"
 
-cat > "$WD_PLIST" <<WDEOF
+WD_PLIST_TMP="$(mktemp "${WD_PLIST}.tmp.XXXXXX")"
+cat > "$WD_PLIST_TMP" <<WDEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -90,11 +168,15 @@ cat > "$WD_PLIST" <<WDEOF
 </dict>
 </plist>
 WDEOF
+plutil -lint "$WD_PLIST_TMP" >/dev/null
+mv "$WD_PLIST_TMP" "$WD_PLIST"
+WD_PLIST_TMP=""
 
 # NB: the watchdog is bootstrapped further down, only AFTER the first heartbeat
 # exists — RunAtLoad would otherwise fire a false "bridge is broken" alert during
 # the install itself.
-launchctl bootout "gui/$(id -u)/$WD_LABEL" 2>/dev/null || true
+WATCHDOG_LOADED=0
+launchctl print "$LAUNCH_DOMAIN/$WD_LABEL" >/dev/null 2>&1 && WATCHDOG_LOADED=1
 
 cat > "$DROPBOX/README.txt" <<'EOF'
 ChatGPT → GitHub drop-box
@@ -127,8 +209,9 @@ EOF
 
 echo "Installed."
 echo "  drop-box : $DROPBOX"
-echo "  CLI      : ~/bin/chatgpt-patch"
+echo "  CLI      : $CLI_STATUS"
 echo "  launchd  : $LABEL (every 30s)"
+echo "  audit    : $AUDIT_LABEL (every 30 min, isolated from intake)"
 
 # ---- prove the agent can actually reach ~/Documents -------------------------
 # A silently-denied agent is the failure mode worth catching here: patches would
@@ -136,20 +219,37 @@ echo "  launchd  : $LABEL (every 30s)"
 # writes a heartbeat on every successful sweep, so wait for one.
 echo -n "Verifying the launchd agent can read ~/Documents "
 HB="$HOME/Library/Logs/claude-orchestrator/chatgpt-bridge.heartbeat"
-rm -f "$HB"
-launchctl kickstart "gui/$(id -u)/$LABEL" 2>/dev/null || true
-for _ in $(seq 1 20); do
-  [ -f "$HB" ] && break
+heartbeat_is_fresh() {
+  [ -f "$HB" ] || return 1
+  heartbeat_mtime="$(stat -f %m "$HB" 2>/dev/null || echo 0)"
+  heartbeat_now="$(date +%s)"
+  heartbeat_age=$((heartbeat_now - heartbeat_mtime))
+  [ "$heartbeat_age" -ge 0 ] && [ "$heartbeat_age" -le 90 ]
+}
+
+if ! heartbeat_is_fresh; then
+  launchctl kickstart "$LAUNCH_DOMAIN/$LABEL" 2>/dev/null || true
+fi
+for _ in $(seq 1 45); do
+  heartbeat_is_fresh && break
   echo -n "."
   sleep 1
 done
 echo
-if [ -f "$HB" ]; then
+if heartbeat_is_fresh; then
   echo "  ✓ agent healthy — drop a patch in $DROPBOX and it will ship"
   rm -f "$WD_DIR/.last-alert"
-  launchctl bootstrap "gui/$(id -u)" "$WD_PLIST"
-  launchctl enable "gui/$(id -u)/$WD_LABEL" 2>/dev/null || true
-  echo "  ✓ watchdog armed ($WD_LABEL, every 5 min)"
+  if [ "$WATCHDOG_LOADED" -eq 1 ]; then
+    echo "  ✓ watchdog already armed ($WD_LABEL, every 5 min)"
+  elif launchctl bootstrap "$LAUNCH_DOMAIN" "$WD_PLIST"; then
+    launchctl enable "$LAUNCH_DOMAIN/$WD_LABEL" 2>/dev/null || true
+    echo "  ✓ watchdog armed ($WD_LABEL, every 5 min)"
+  else
+    echo "  ✗ bridge is healthy, but launchd could not register its watchdog." >&2
+    echo "    Run this once in your logged-in Terminal, then re-run setup:" >&2
+    echo "      launchctl bootstrap $LAUNCH_DOMAIN '$WD_PLIST'" >&2
+    exit 1
+  fi
 else
   echo "  ✗ agent could NOT read ~/Documents."
   echo "    Grant Full Disk Access to ClaudeRunner.app, then re-run this script:"

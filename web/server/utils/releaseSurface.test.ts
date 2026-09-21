@@ -30,7 +30,19 @@ describe('operator-visible release surfaces', () => {
     const dashboard = await readFile(resolve(root, 'pages/index.vue'), 'utf8')
 
     expect(app).toContain('<NuxtPage')
-    expect(dashboard).toContain('<FleetHealthBadge :db-up="dbUp" />')
+    expect(dashboard).toContain('<FleetHealthBadge :health="health" />')
     expect(dashboard).toContain('refreshFleetHealth()')
+    expect(dashboard).toContain("MERGED: 'Merged'")
+    expect(dashboard).toContain("DEPLOYED_AND_VERIFIED: 'Deployed & verified'")
+    expect(dashboard).not.toContain("MERGED: 'Shipped'")
+  })
+
+  it('never fabricates a deployed release row from the browser workspace', async () => {
+    const workspace = await readFile(resolve(root, 'pages/orchestrators/[slug].vue'), 'utf8')
+
+    expect(workspace).toContain("authedFetch('/api/tasks/intake'")
+    expect(workspace).toContain('The release ledger has not been pre-marked successful.')
+    expect(workspace).not.toContain("supabase.from('releases').insert")
+    expect(workspace).not.toContain("deploy_status: 'deployed'")
   })
 })
