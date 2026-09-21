@@ -526,6 +526,11 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
     return {"text": text, "cost_usd": cost, "provider": provider, "model": model}
 
 
+#: Providers that cost nothing per token because the hardware is the owner's.
+#: Used to decide what a local-capacity deferral may fall through to.
+_FREE_PROVIDERS = ("exo", "local")
+
+
 def _free_tier_order():
     """The two free providers, strongest placed model first.
 
@@ -700,9 +705,34 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
                 res["learned_route"] = learned_reason
             return res
         except LocalCapacityError as e:
-            # No error payloads, prompts, alternate models, or retry fan-out on
-            # temporary host denial. Callers can schedule a later attempt.
-            return _local_deferred_result(prov, mdl, e)
+            # No error payloads, prompts, or retry fan-out to PAID vendors on
+            # temporary host denial: a loaded box must not become a reason to
+            # start spending. Callers can schedule a later attempt.
+            #
+            # A free provider on OTHER hardware is a different matter (2026-09-21).
+            # LocalCapacityError is Ollama backpressure measured on THIS box --
+            # free RAM, swap, load per core -- and the EXO ring is two other
+            # machines whose capacity that number says nothing about. Returning
+            # here sent an empty string back whenever this host was busy, with a
+            # ready ring sitting idle; on this fleet the box sat above the load
+            # ceiling for hours at a stretch, so that was most of the time.
+            # Deferral still wins if no free provider is left, so the cost
+            # guarantee is unchanged.
+            deferred = _local_deferred_result(prov, mdl, e)
+            remaining = [(p, m) for p, m in attempts[attempts.index((prov, mdl)) + 1:]
+                         if p in _FREE_PROVIDERS and p != prov]
+            if not remaining:
+                return deferred
+            for alt_prov, alt_mdl in remaining:
+                try:
+                    res = _call_provider(alt_prov, alt_mdl, prompt, project=project, timeout=timeout)
+                except Exception:
+                    continue
+                if record_op:
+                    _record_operation(project, operation, task_class, res["provider"], res["model"],
+                                      prompt, res.get("cost_usd", 0), int((time.time() - t0) * 1000), ok=True)
+                return res
+            return deferred
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last = {"provider": prov, "model": mdl, "error": str(e)}
