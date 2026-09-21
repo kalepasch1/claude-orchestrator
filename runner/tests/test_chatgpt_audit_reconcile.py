@@ -70,6 +70,21 @@ class TestOrphanedEvidenceReopens(_RegistryCase):
                          "evidence orphaned by manifest cleanup must re-queue")
         self.assertTrue(Path(second[0]["intake"]).exists())
 
+    def test_processed_manifest_is_a_durable_queue_receipt(self):
+        """Canonical watcher archival must not look like evidence loss."""
+        groups = self._group()
+        first, _ = audit.queue_groups(groups, self.intake, self.state)
+        source = Path(first[0]["intake"])
+        processed = self.intake / "processed"
+        processed.mkdir()
+        source.rename(processed / f"20260921-141500-{source.name}")
+
+        second, dupes = audit.queue_groups(groups, self.intake, self.state)
+
+        self.assertEqual(second, [], "processed evidence must not be re-queued")
+        self.assertEqual(len(dupes), 1)
+        self.assertEqual(audit.registry_orphans(self.state), [])
+
     def test_deleted_manifest_with_disposition_stays_settled(self):
         """A recorded disposition is the thing that closes an entry."""
         groups = self._group()

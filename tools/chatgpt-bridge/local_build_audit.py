@@ -28,6 +28,7 @@ import re
 import subprocess
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -622,13 +623,27 @@ def _is_settled(entry: Any) -> bool:
     return str(entry.get("disposition", "")).lower() in SETTLED_DISPOSITIONS
 
 
-def _manifest_exists(entry: Any) -> bool:
-    """True when the entry's intake manifest is still on disk.
+@lru_cache(maxsize=64)
+def _processed_manifest_names(processed_dir: str) -> frozenset[str]:
+    """Original manifest names represented by the canonical processed archive."""
+    try:
+        return frozenset(
+            re.sub(r"^\d{8}-\d{6}-", "", child.name)
+            for child in Path(processed_dir).iterdir()
+            if child.is_file()
+        )
+    except OSError:
+        return frozenset()
 
-    A manifest on disk means the queue can still see the work, so the evidence
-    it covers must stay suppressed. Fail-soft: an entry with no recorded
-    manifest path is treated as still present, since re-queueing on a bad path
-    guess is noisier than the (already-detected) orphan case.
+
+def _manifest_exists(entry: Any) -> bool:
+    """True when the entry is still in intake or has a processed receipt.
+
+    A live manifest means the queue can still see the work. A matching file in
+    ``intake/processed`` means the canonical watcher already accepted it. Both
+    suppress replay. Only a manifest absent from both locations is an orphan.
+    Fail-soft: an entry with no recorded path is treated as still present, since
+    re-queueing on a bad path guess is noisier than the detected orphan case.
     """
     if not isinstance(entry, dict):
         return True
@@ -636,7 +651,10 @@ def _manifest_exists(entry: Any) -> bool:
     if not intake:
         return True
     try:
-        return Path(intake).exists()
+        path = Path(intake)
+        if path.exists():
+            return True
+        return path.name in _processed_manifest_names(str(path.parent / "processed"))
     except (OSError, TypeError, ValueError):
         return True
 

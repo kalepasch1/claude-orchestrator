@@ -1,26 +1,35 @@
 <script setup lang="ts">
-const props = defineProps<{ dbUp: boolean | null }>()
+import type { FleetHealth } from '~/types/fleet-health'
 
-const label = computed(() => props.dbUp === null
+const props = defineProps<{ health: FleetHealth | null }>()
+
+const status = computed(() => props.health?.status ?? null)
+const label = computed(() => status.value === null
   ? '…'
-  : props.dbUp ? 'Fleet healthy' : 'Fleet down')
+  : status.value === 'healthy'
+    ? `Fleet healthy · ${props.health?.machines_live ?? 0} Mac${props.health?.machines_live === 1 ? '' : 's'}`
+    : status.value === 'degraded'
+      ? 'Fleet degraded · runner mismatch'
+      : status.value === 'unknown' ? 'Fleet unknown' : 'Fleet down')
 </script>
 
 <template>
   <span
     class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium"
-    :class="dbUp === null
+    :class="status === null
       ? 'border-slate-700 bg-slate-800/70 text-slate-400'
-      : dbUp
+      : status === 'healthy'
         ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-        : 'border-red-500/30 bg-red-500/10 text-red-300'"
+        : status === 'degraded' || status === 'unknown'
+          ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+          : 'border-red-500/30 bg-red-500/10 text-red-300'"
     role="status"
     aria-live="polite"
   >
     <span
       aria-hidden="true"
       class="h-1.5 w-1.5 rounded-full"
-      :class="dbUp === null ? 'bg-slate-500' : dbUp ? 'bg-emerald-400' : 'bg-red-400'"
+      :class="status === null ? 'bg-slate-500' : status === 'healthy' ? 'bg-emerald-400' : status === 'degraded' || status === 'unknown' ? 'bg-amber-400' : 'bg-red-400'"
     />
     {{ label }}
   </span>

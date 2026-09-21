@@ -25,8 +25,15 @@ register_artifact() {
   audit_out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$AUDIT" \
     --artifact "$artifact" --artifact-status "$status" --result-file "$result_file" 2>&1)"
   audit_rc=$?
-  if [ "$audit_rc" -eq 0 ]; then
+  audit_status="$(printf '%s' "$audit_out" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin).get("status", ""))' 2>/dev/null || true)"
+  if [ "$audit_rc" -eq 0 ] && [ "$audit_status" = "ok" ]; then
     say "QUEUE-REGISTERED $status $(basename "$artifact") $audit_out"
+  elif [ "$audit_status" = "already_running" ]; then
+    # The independent deep audit owns the registry lock. The artifact is safe in
+    # _applied/_failed and its next scheduled sweep will register it. Never emit
+    # a false receipt merely because the helper returned exit 0.
+    say "QUEUE-REGISTRATION-DEFERRED $status $(basename "$artifact") $audit_out"
   else
     # The artifact remains preserved in _applied/_failed and the periodic full
     # audit retries it. Queue registration failure must never erase source code.
@@ -100,16 +107,5 @@ for f in "$DROPBOX"/*.patch "$DROPBOX"/*.diff "$DROPBOX"/*.zip "$DROPBOX"/*.tar.
     osascript -e "display notification \"${err:-see _failed/}\" with title \"ChatGPT bridge: FAILED $base\"" 2>/dev/null
   fi
 done
-
-# Every 30 minutes this self-rate-limits into a full legacy sweep of registered
-# repos, Codex workspaces, local-only refs, stashes, rescue refs, and output
-# bundles. Fresh work is ignored for six hours so active sessions are not stolen.
-if [ -f "$AUDIT" ]; then
-  audit_out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$AUDIT" 2>&1)"
-  audit_rc=$?
-  [ "$audit_rc" -eq 0 ] \
-    && say "LOCAL-BUILD-AUDIT $audit_out" \
-    || say "LOCAL-BUILD-AUDIT-FAILED $audit_out"
-fi
 
 exit 0
