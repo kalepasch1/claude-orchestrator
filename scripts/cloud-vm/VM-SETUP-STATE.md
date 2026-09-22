@@ -34,6 +34,13 @@ then: clone the repo, scp runner/.env from the Mac, `claude login`, `nohup bash 
   Capacity status still unknown since 2026-07-02. Three consecutive no-ops: option 4 below is now the
   only thing that will make this task work. Consider disabling the daily retry until then.
 
+- 2026-09-22 (scheduled task, 4th run): **not attempted, same blocker.** `list_connected_browsers`
+  returned empty and `tabs_context_mcp` reported "Claude in Chrome is not connected"; the in-app browser
+  pane's access request for cloud.oracle.com was declined with no one present. Sandbox still has no `oci`
+  binary and no `~/.oci` config (checked), and no API key material exists anywhere under the mounted
+  folder. Capacity status still unknown since 2026-07-02. **Four consecutive no-ops** — recommend
+  disabling the daily retry until option 4 (OCI CLI) is set up; the current schedule only burns runs.
+
 ## Unblock options (pick one)
 1. Automatic: a scheduled Claude task retries the creation daily and notifies on success (set up 2026-07-02).
 2. Instant: upgrade the OCI account to Pay As You Go — capacity constraint largely disappears and
