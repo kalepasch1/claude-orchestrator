@@ -400,26 +400,110 @@ Return ONE JSON object:
   "open_question":"the single question whose answer would most change your view"}}"""
 
 
-def _known(expert_id, k=8):
+def _norm_claim(text):
+    """The comparison key for 'has this expert already said this'.
+
+    Lowercased, whitespace-collapsed, and truncated before the quote suffix that
+    research() appends, so the same proposition with a different pulled quote is
+    still recognised as the same proposition.
+    """
+    core = re.split(r'\s+—\s+"', str(text or ""), maxsplit=1)[0]
+    return re.sub(r"\s+", " ", core).strip().lower()[:300]
+
+
+#: A bounded, deterministically ordered SAMPLE for the prompt only — never for the
+#: duplicate decision. db.py classifies that read as a LOOKUP and requires it to be
+#: filtered server-side; see _held() below.
+_MEMORY_WINDOW = 120
+
+
+def _memory(expert_id, limit=_MEMORY_WINDOW):
     try:
-        rows = db.select("expert_memory", {"select": "claim", "expert_id": f"eq.{expert_id}",
-                                           "order": "salience.desc", "limit": str(k)}) or []
+        return db.select("expert_memory", {"select": "claim,created_at", "expert_id": f"eq.{expert_id}",
+                                           "order": "created_at.desc", "limit": str(limit)}) or []
     except Exception:
-        rows = []
-    return "; ".join((r.get("claim") or "")[:120] for r in rows) or "(nothing yet)"
+        return []
+
+
+def _like_pattern(text):
+    """Build the value for a PostgREST `ilike` prefix filter.
+
+    Sent UNQUOTED and left intact. db._req URL-encodes the parameter, which is what
+    makes commas and parentheses safe; wrapping the value in double quotes instead
+    makes the trailing `*` a literal asterisk and the filter matches nothing.
+
+    `%` and `_` are left in place deliberately. They are LIKE wildcards, so a claim
+    containing them matches slightly more than itself — harmless for a duplicate
+    check. Stripping them instead corrupts the prefix: "power >=0.80 for >=15% RRR"
+    became "...>=15 RRR", which matched no stored row at all.
+    """
+    return str(text or "")
+
+
+def _held(expert_id, claim):
+    """Does this expert already hold this claim? Server-side prefix match.
+
+    A client-side window cannot answer this: an expert with thousands of rows would
+    have its older claims fall outside any page, and db.py's scan-window doctrine
+    ("LOOKUP -> filter server-side on the key") exists because that pattern has
+    already caused four outage-class failures on this fleet. One indexed filter per
+    candidate claim, at most six per research cycle, is the cheap correct form.
+    """
+    prefix = _like_pattern(_norm_claim(claim))[:120]
+    if len(prefix) < 20:
+        return False          # too short to match on safely; let it through
+    try:
+        rows = db.select("expert_memory", {"select": "id", "expert_id": f"eq.{expert_id}",
+                                           "claim": f"ilike.{prefix}*", "limit": "1"}) or []
+    except Exception:
+        return False          # a lookup failure must not silently drop a real claim
+    return bool(rows)
+
+
+def _known(expert_id, k=8, rows=None):
+    """What the expert is told it already believes.
+
+    Ordered by recency, not salience. Ordering by salience.desc froze this string:
+    the same high-salience claims came back every cycle, the model was prompted with
+    them and dutifully restated them, and restating them pushed them further up the
+    same ordering. Between 2026-09-15 and 2026-09-22 that loop wrote ~44k rows
+    carrying ~900 distinct claims. Recency keeps the prompt moving.
+    """
+    rows = _memory(expert_id) if rows is None else rows
+    seen, out = set(), []
+    for r in rows:
+        n = _norm_claim(r.get("claim"))
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        out.append((r.get("claim") or "")[:120])
+        if len(out) >= k:
+            break
+    return "; ".join(out) or "(nothing yet)"
 
 
 def research(expert):
     """One research cycle for one expert. Writes sourced memory and may revise doctrine."""
+    memory = _memory(expert["id"])
+    # In-batch duplicates only; cross-cycle duplicates are settled by _held().
+    seen_this_batch = set()
     out = _json(RESEARCH_PROMPT.format(
         label=expert.get("public_label"), method=expert.get("method"),
         domain=expert.get("domain"), doctrine=(expert.get("doctrine") or "(none yet)")[:1500],
-        known=_known(expert["id"])), kind="review", need="research")
+        known=_known(expert["id"], rows=memory)), kind="review", need="research")
     claims = out.get("claims") or []
     wrote = 0
     for c in claims[:6]:
         if not isinstance(c, dict) or not c.get("claim"):
             continue
+        # A claim this expert already holds is not new knowledge; re-inserting it
+        # inflates the table and, through _known, crowds out anything else. Skip it
+        # here rather than after the write — `held` also covers duplicates arriving
+        # within this same batch.
+        norm = _norm_claim(c.get("claim"))
+        if not norm or norm in seen_this_batch or _held(expert["id"], c.get("claim")):
+            continue
+        seen_this_batch.add(norm)
         try:
             _url = str(c.get("source_url") or "").strip()
             if not _url.lower().startswith(("http://", "https://")):
@@ -457,14 +541,27 @@ def record_bout(question, a, b, winner_id, margin=0.5, grounds="", docket_id=Non
                                    "a_id": a["id"], "b_id": b["id"], "winner_id": winner_id,
                                    "margin": float(margin or 0.5), "grounds": (grounds or "")[:2000],
                                    "judge_model": judge_model})
+        # A bout with no winner is a draw, not a loss for both sides. The Elo above
+        # already scores it that way (sa = 0.5); the memory used to call it
+        # "bout_loss" for each expert AND file it at the loss salience of 0.8, so a
+        # docket of draws wrote two top-salience rows per bout and dominated recall.
+        draw = winner_id not in (a["id"], b["id"])
         for e, new, won in ((a, na, winner_id == a["id"]), (b, nb, winner_id == b["id"])):
             db.update("experts", {"id": e["id"]}, {
                 "elo": round(new, 2), "bouts": int(e.get("bouts") or 0) + 1,
                 "wins": int(e.get("wins") or 0) + (1 if won else 0)})
+            claim = f"On '{(question or '')[:120]}': {grounds[:400]}"
+            # Grounds are what make a bout memory worth recalling; without them the row
+            # is just the question text echoed back, which teaches nothing.
+            if not (grounds or "").strip():
+                continue
+            if _held(e["id"], claim):
+                continue
             db.insert("expert_memory", {
-                "expert_id": e["id"], "kind": "bout_win" if won else "bout_loss",
-                "claim": f"On '{(question or '')[:120]}': {grounds[:400]}",
-                "salience": 0.8 if not won else 0.6,     # losses teach more than wins
+                "expert_id": e["id"], "kind": "bout_draw" if draw else ("bout_win" if won else "bout_loss"),
+                "claim": claim,
+                # losses teach more than wins; a draw sits between them
+                "salience": 0.5 if draw else (0.6 if won else 0.8),
                 "generation": int(e.get("generation") or 1)})
     except Exception as ex:
         print(f"expert_corps: bout persist failed: {type(ex).__name__}: {str(ex)[:120]}")
