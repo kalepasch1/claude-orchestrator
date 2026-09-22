@@ -294,7 +294,7 @@ Write the returned content to the appropriate file, then commit.
 ### 3f. Commit
 ```bash
 cd {repo_path} && git add -A && git diff --cached --stat
-git -c user.name="Kale Pasch" -c user.email="kalepasch@gmail.com" commit --no-verify -m "agent: {slug} — {one-line summary}" 2>&1
+git -c user.name="kalepasch1" -c user.email="kalepasch@gmail.com" commit --no-verify -m "agent: {slug} — {one-line summary}" 2>&1
 ```
 If `nothing to commit`: do NOT fabricate a stub commit. Mark the task BLOCKED with a note naming exactly what is missing (e.g. 'no code target found for {slug}'), and move to the next task.
 

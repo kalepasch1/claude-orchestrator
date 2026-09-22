@@ -154,6 +154,10 @@ def configured():
         if present:
             prov.append(name)
     if _ollama_up() and not _local_disabled(): prov.append("local")
+    # EXO is "configured" only while it is actually holding a loaded model. Unlike a
+    # hosted provider there is no credential to test, and unlike Ollama there is no
+    # on-demand load, so readiness IS the configuration. See exo_placed_model.
+    if not _local_disabled() and exo_placed_model(): prov.append("exo")
     return prov
 
 
@@ -189,6 +193,75 @@ def _post(url, headers, payload, timeout=90):
                                  headers={**headers, "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def _exo_base():
+    """Base URL of the EXO cluster head node."""
+    raw = os.environ.get("EXO_URL", "http://127.0.0.1:52415").strip()
+    return (raw.split()[0] if raw else "http://127.0.0.1:52415").rstrip("/")
+
+
+def exo_placed_model():
+    """The model EXO can actually serve right now, or None.
+
+    WHY THIS IS NOT A CONFIGURED NAME. EXO does not load on demand: until an
+    instance has been placed, /v1/chat/completions answers 404 "No instance
+    found for model X" for every id in /v1/models, because that list is the
+    downloadable catalog and not what is resident. The only servable model is
+    whichever one a placed instance is holding, so the single source of truth
+    is /state, and asking it is also the availability probe.
+
+    Returns None while runners are still connecting. A model that is loading is
+    not a model that can answer, and routing to it would spend the caller's
+    timeout on a request that cannot be served.
+    """
+    try:
+        with urllib.request.urlopen(_exo_base() + "/state", timeout=3) as r:
+            state = json.loads(r.read().decode())
+    except Exception:
+        return None
+    instances = state.get("instances") or {}
+    runners = state.get("runners") or {}
+    if not instances or not runners:
+        return None
+
+    # READINESS IS PER INSTANCE, NOT PER CLUSTER (fixed 2026-09-21).
+    #
+    # This first asked whether EVERY runner in /state was ready. On a cluster with
+    # any churn that is almost never true: measured here with one instance fully
+    # ready, /state also held three RunnerLoading and one RunnerIdle left over
+    # from instances that had been torn down, and nine RunnerShuttingDown. So the
+    # ring was serving and this function said None, which made the whole exo
+    # route dead in exactly the conditions it was written for.
+    #
+    # The question that matters is narrower: for ONE instance, is every runner
+    # holding one of ITS shards ready? A pipeline missing a layer range cannot
+    # generate, so all of that instance's runners must be up -- but a stranger's
+    # loading runner says nothing about it. runnerToShard names them.
+    def _ready(runner_id):
+        return "Ready" in str(runners.get(runner_id, ""))
+
+    for inst in instances.values():
+        try:
+            assignments = next(iter(inst.values()))["shardAssignments"]
+            shard_runners = list((assignments.get("runnerToShard") or {}).keys())
+            if shard_runners and all(_ready(r) for r in shard_runners):
+                return assignments["modelId"]
+        except Exception:
+            continue
+    return None
+
+
+def _exo(model, prompt, timeout=90):
+    """One completion from the EXO ring. Local hardware, so cost is zero."""
+    d = _post(_exo_base() + "/v1/chat/completions", {},
+              {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "stream": False},
+              timeout=timeout)
+    choices = d.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"exo returned no choices: {str(d)[:200]}")
+    return (choices[0].get("message") or {}).get("content") or "", 0.0
 
 
 def _openai(model, prompt):
@@ -325,6 +398,8 @@ def _local(model, prompt, timeout=90):
 
 
 DEFAULT_MODELS = {
+    # Whatever the ring is holding; there is never a choice to make (exo_placed_model).
+    "exo": lambda: exo_placed_model(),
     "local": lambda: __import__("ollama_catalog").best("fallback", need=5).get("model"),
     "groq": lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     "deepseek": lambda: _configured("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash",
@@ -336,11 +411,21 @@ DEFAULT_MODELS = {
     "claude": lambda: "claude-haiku-4-5-20251001",
 }
 
-FALLBACK_ORDER = ("local", "groq", "deepseek", "google", "xai", "openai", "claude")
+# "exo" leads: on this fleet it is a 3-node ring holding Qwen3.5-122B-A10B-4bit,
+# which is a stronger model than anything Ollama can fit on one 48GB box, at the
+# same zero marginal cost. It is only ever in `available()` while a placed
+# instance is ready, so leading with it costs nothing when the ring is down.
+FALLBACK_ORDER = ("exo", "local", "groq", "deepseek", "google", "xai", "openai", "claude")
 
 
 def provider_for_model(model):
     m = (model or "").lower()
+    # An EXO id is a HuggingFace repo path ("mlx-community/Qwen3.5-122B-A10B-4bit").
+    # It has to be claimed before the open-weights rules below, which match on
+    # "qwen"/"llama" and would hand a 122B ring model to Groq or to Ollama — where
+    # it is not installed and never will be.
+    if "/" in m and (m.startswith("mlx-community/") or m == str(exo_placed_model() or "").lower()):
+        return "exo"
     if "claude" in m:
         return "claude"
     if "gemini" in m:
@@ -443,6 +528,8 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
         return _carry_diagnostics(r, out)
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
+    elif provider == "exo":
+        text, cost = _exo(model, prompt, timeout=timeout)
     else:
         fn = {"openai": _openai, "google": _google, "deepseek": _deepseek,
               "groq": _groq, "xai": _xai}[provider]
@@ -455,13 +542,49 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
     return {"text": text, "cost_usd": cost, "provider": provider, "model": model}
 
 
+#: Providers that cost nothing per token because the hardware is the owner's.
+#: Used to decide what a local-capacity deferral may fall through to.
+_FREE_PROVIDERS = ("exo", "local")
+
+
+def _free_tier_order():
+    """The two free providers, strongest placed model first.
+
+    WHY THIS IS NOT A STATIC ORDER. FALLBACK_ORDER leads with "exo" because a
+    healthy ring holds a model no single box here can fit. But the ring degrades:
+    when its inter-node link drops, EXO falls back to whatever fits on ONE node,
+    and this fleet watched it come back holding Qwen3.5-9B-4bit while Ollama had
+    qwen3.5:27b-mlx on disk. A static preference then sends every free call to
+    the weaker model precisely when the ring is unhealthy -- the opposite of what
+    leading with it was for.
+
+    Both names are scored by the same size-aware ollama_catalog.infer_cap, so a
+    9B ring loses to a 27B local and an 80B ring wins. Ties keep exo first,
+    because the ring's spare RAM is not this box's.
+    """
+    order = [p for p in ("exo", "local") if p in available()]
+    if len(order) < 2:
+        return order
+    try:
+        from ollama_catalog import infer_cap
+        exo_cap = infer_cap(DEFAULT_MODELS["exo"]() or "")
+        local_cap = infer_cap(DEFAULT_MODELS["local"]() or "")
+    except Exception:
+        return order                      # undeterminable -> documented order
+    return ["exo", "local"] if exo_cap >= local_cap else ["local", "exo"]
+
+
 def _fallbacks(first_provider):
     seen = {first_provider}
+    free_order = _free_tier_order()
     for prov in FALLBACK_ORDER:
-        if prov in seen or prov not in available():
-            continue
-        seen.add(prov)
-        yield prov, DEFAULT_MODELS[prov]()
+        # The free tier is emitted in capability order at the position where the
+        # first of the two appears, so a degraded ring cannot outrank Ollama.
+        for candidate in (free_order if prov in ("exo", "local") else [prov]):
+            if candidate in seen or candidate not in available():
+                continue
+            seen.add(candidate)
+            yield candidate, DEFAULT_MODELS[candidate]()
 
 
 def _confidential_mode():
@@ -598,9 +721,34 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
                 res["learned_route"] = learned_reason
             return res
         except LocalCapacityError as e:
-            # No error payloads, prompts, alternate models, or retry fan-out on
-            # temporary host denial. Callers can schedule a later attempt.
-            return _local_deferred_result(prov, mdl, e)
+            # No error payloads, prompts, or retry fan-out to PAID vendors on
+            # temporary host denial: a loaded box must not become a reason to
+            # start spending. Callers can schedule a later attempt.
+            #
+            # A free provider on OTHER hardware is a different matter (2026-09-21).
+            # LocalCapacityError is Ollama backpressure measured on THIS box --
+            # free RAM, swap, load per core -- and the EXO ring is two other
+            # machines whose capacity that number says nothing about. Returning
+            # here sent an empty string back whenever this host was busy, with a
+            # ready ring sitting idle; on this fleet the box sat above the load
+            # ceiling for hours at a stretch, so that was most of the time.
+            # Deferral still wins if no free provider is left, so the cost
+            # guarantee is unchanged.
+            deferred = _local_deferred_result(prov, mdl, e)
+            remaining = [(p, m) for p, m in attempts[attempts.index((prov, mdl)) + 1:]
+                         if p in _FREE_PROVIDERS and p != prov]
+            if not remaining:
+                return deferred
+            for alt_prov, alt_mdl in remaining:
+                try:
+                    res = _call_provider(alt_prov, alt_mdl, prompt, project=project, timeout=timeout)
+                except Exception:
+                    continue
+                if record_op:
+                    _record_operation(project, operation, task_class, res["provider"], res["model"],
+                                      prompt, res.get("cost_usd", 0), int((time.time() - t0) * 1000), ok=True)
+                return res
+            return deferred
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last = {"provider": prov, "model": mdl, "error": str(e)}

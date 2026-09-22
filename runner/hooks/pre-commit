@@ -58,6 +58,52 @@ MSG
   exit 1
 fi
 
+# ── 0.5 Agents commit in worktrees, never in the primary checkout ────────────────
+#
+# Two revert incidents in one session (2026-09-09) came from two agents writing the
+# same working tree: each committed over the other's uncommitted work, and the
+# primary checkout of `smarter` was left on an agent branch with 27 untracked files.
+# The orchestrator already gives every agent its own linked worktree; the human's
+# terminal is the one place a commit in the primary checkout is legitimate.
+#
+# So: in the PRIMARY checkout (git-dir == git-common-dir; a linked worktree has a
+# separate git-dir), a commit from a Claude Code session or from any process with
+# no terminal on stdin is refused, with the worktree command in the message. A
+# human at a shell has a tty and passes. The fleet's own runner commits in linked
+# worktrees or with --no-verify (auto_commit, patch_recovery, repair_committer),
+# neither of which reaches this.
+#
+# ESCAPE HATCH: ORCH_ALLOW_PRIMARY_COMMIT=1 git commit …  — for the deliberate case.
+if [ -z "${ORCH_ALLOW_PRIMARY_COMMIT:-}" ]; then
+  _git_dir="$(git rev-parse --git-dir 2>/dev/null || echo)"
+  _common="$(git rev-parse --git-common-dir 2>/dev/null || echo)"
+  _primary=0
+  if [ -n "$_git_dir" ] && [ "$_git_dir" = "$_common" ]; then _primary=1; fi
+  if [ "$_primary" = 1 ]; then
+    _agent=""
+    if [ -n "${CLAUDECODE:-}${CLAUDE_CODE_SESSION_ID:-}" ]; then _agent="a Claude Code session"
+    elif [ ! -t 0 ]; then _agent="a process with no terminal"; fi
+    if [ -n "$_agent" ]; then
+      _top="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+      _slug="$(git branch --show-current 2>/dev/null | tr '/' '-')"
+      cat >&2 <<MSG
+[pre-commit] ✗ refusing a commit in the PRIMARY checkout from $_agent.
+
+Agents commit in their own worktree, never in $_top: two agents on one working
+tree is how committed fixes got reverted twice on 2026-09-09. Make a worktree
+for this branch and commit there:
+
+  git worktree add "${_top}-wt/${_slug:-work}" ${_slug:+-B "$(git branch --show-current)"}
+  cd "${_top}-wt/${_slug:-work}"
+
+A person at a terminal is not affected. If this commit in the primary checkout
+is deliberate: ORCH_ALLOW_PRIMARY_COMMIT=1 git commit …
+MSG
+      exit 1
+    fi
+  fi
+fi
+
 # ── 1. The repo's own sanctioned hook set (masked by core.hooksPath otherwise) ────
 if [ -x scripts/git-hooks/pre-commit ]; then
   self="$0"
@@ -218,6 +264,27 @@ MSG
       exit 1
     fi
   fi
+fi
+
+# ── 5. Compiled .js shadowing its .ts source ─────────────────────────────────────
+#
+# WHY (2026-09-09): Node/Nuxt resolution prefers .js over .ts, so a committed build
+# artifact silently becomes the file that actually runs while its .ts keeps being
+# edited. web/types/log.ts is types-only, so its emit was a two-line stub and every
+# import resolving to it got nothing; web/utils/cookie-compat.js had drifted from
+# its source and was still the loaded copy. fbd49cff8 swept ten of these, two
+# survived, and .gitignore cannot catch them because they were already TRACKED.
+#
+# It also fed a self-perpetuating token burn: the integration build deletes these
+# artifacts every run, leaving all 40 worktrees under .runtime/integration-worktrees
+# permanently dirty on the same two paths, which the evidence scanner kept
+# harvesting into fresh chatgpt-local-reconcile-beethoven-* tasks with no real work
+# in them. Refusing the artifact at commit time is what ends that loop.
+#
+# Escape hatch: SKIP_JS_DUPLICATE_GATE=1 git commit …
+# Safe by design: skipped entirely when the script is absent.
+if [ -x scripts/check-compiled-js-duplicates.sh ]; then
+  scripts/check-compiled-js-duplicates.sh --staged || exit 1
 fi
 
 exit 0

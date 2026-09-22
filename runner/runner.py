@@ -2607,11 +2607,12 @@ def run_task(t):
                             "Verification failed. Fix the specific verifier objection in the current diff, rerun checks, and commit the corrected implementation.",
                         ):
                             continue
-                        set_state(t["id"], state="BLOCKED", note="verify: " + v["notes"])
+                        _vnotes = v.get("notes") or ""
+                        set_state(t["id"], state="BLOCKED", note="verify: " + _vnotes)
                         approval(name, "verify", f"Verification flagged {slug}",
-                                 why=v["notes"], risk="cheap-model review wants a human look",
+                                 why=_vnotes, risk="cheap-model review wants a human look",
                                  detail=out[-3000:])
-                        regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
+                        regression.record(name, slug, kind, t["prompt"][:500], "verify: " + _vnotes, _vnotes)
                         record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
                 # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
@@ -2778,11 +2779,18 @@ def run_task(t):
                     print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
                           f"branch kept local (governor will not GC unshared branches)")
 
-            result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed", project=name)
+            # `.get`, not `[...]`: this is the success path, reached only after the agent
+            # has built, tested and committed the branch. A bare {"verdict": "pass"} from
+            # the review model used to raise KeyError: 'notes' right here and throw all of
+            # that away — the task went orphaned-running and came back as a repair task.
+            # verify.review_diff now defaults the key; this keeps the crash from returning
+            # if some other producer of `v` ever omits it.
+            _verify_notes = v.get("notes") or ""
+            result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, _verify_notes, "passed", project=name)
             POOL.mark_ok(acct)
             integrated = result == "MERGED"
             if integrated and sig:
-                result_cache.store(sig, name, slug, f"agent/{slug}", v["notes"])
+                result_cache.store(sig, name, slug, f"agent/{slug}", _verify_notes)
             if integrated:
                 try:
                     import merged_diff_library
@@ -3242,12 +3250,20 @@ _SCHEDULE = [
     ("rtconfig-300",  "rtconfig",           "interval", 300),   # canonical fleet_config real-time sync (realtime_config_sync.run()). This is
                                                                   # the runner half of "integrate real-time sync into the Mac runner"; the
                                                                   # Vercel half lives in a different repo and is not reachable from here.
-    # NOTE: "remotegc" (workflow_guardrails.gc_remote_branches, deletes origin/agent/* branches
-    # >7d old) has the same never-scheduled gap but is intentionally left OUT here: with
-    # ORCH_REMOTE_BRANCH_GC_DRY_RUN=false in .env it does real, irreversible `git push --delete`
-    # on the remote, and unlike branch_gc.py's local equivalent it doesn't check the branch's
-    # task is in a terminal state first — it could delete a branch for a task that's still
-    # QUEUED/RUNNING/BLOCKED just because the branch itself is old. Left for a human decision.
+    ("remotegc-3600", "remotegc",           "interval", 3600),  # delete origin/agent/* once its task is TERMINAL and its
+                                                                # commits are reachable from another origin ref. WIRED
+                                                                # 2026-09-09. This note used to say gc_remote_branches
+                                                                # "doesn't check the branch's task is in a terminal state
+                                                                # first"; it has checked since 2026-08-04 — terminal-slug
+                                                                # gate mirroring branch_gc.py, a refusal to delete when that
+                                                                # set is unavailable, a commits_reachable_elsewhere check,
+                                                                # and an archive before every delete. The gate landed and
+                                                                # this comment did not, so the job stayed off five weeks for
+                                                                # a danger already fixed, while apparently-law reached 547
+                                                                # remote refs of which 517 carried nothing. Same
+                                                                # never-scheduled defect as rtmon and priorityscore above,
+                                                                # in its most expensive form: the fix existed and only the
+                                                                # sentence about it was stale.
     ("sweep-90",      "integration_sweeper.py","interval",90),  # passed-tests-but-not-integrated -> canonical train
     ("sentinel-300",  "sentinel.py",        "interval", 300),   # self-healing: DB-outage offline sweeps, checkout drift, runner singleton, RAM clamp, stale code
     ("medic-90",      "resource_medic.py",  "interval", 90),    # autonomous resource bots: predictive OOM guard, thrash-hunter (durable model exclusion / lane lowering), process hygiene, loop breaker

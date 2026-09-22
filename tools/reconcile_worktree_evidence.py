@@ -158,9 +158,131 @@ def newest_touch(base: str, path: str, cwd: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
+# The single-character escapes git's quote_c_style() emits, besides \ooo.
+_C_ESCAPES = {
+    "a": 0x07, "b": 0x08, "f": 0x0C, "n": 0x0A,
+    "r": 0x0D, "t": 0x09, "v": 0x0B, "\\": 0x5C, '"': 0x22,
+}
+
+
+def unquote_porcelain_path(field: str) -> str:
+    """Decode one path field from `git status --porcelain` v1.
+
+    Git C-quotes any path containing non-ASCII bytes, spaces-with-specials,
+    quotes or control characters, and escapes the bytes in octal:
+
+        ?? "caf\\303\\251 men\\303\\274.py"
+
+    The previous parser did `.strip('"')`, which removed the quotes and left
+    the literal backslash-octal text. The result was a string naming no file on
+    disk, so every downstream probe -- base_blob, worktree_blob, newest_touch,
+    is_generated -- answered "not there" and the path flowed into item.files
+    looking handled.
+
+    Decoding is done by hand rather than via codecs' "unicode_escape", which
+    warns (and will eventually raise) on sequences git legitimately emits and
+    would also honour \\u escapes that git never writes.
+
+    Fail-soft: an undecodable field is returned with the quotes stripped, which
+    is no worse than the old behaviour.
+    """
+    field = field.strip()
+    if not (len(field) >= 2 and field.startswith('"') and field.endswith('"')):
+        return field
+    body = field[1:-1]
+
+    out = bytearray()
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\":
+            out.extend(ch.encode("utf-8"))
+            i += 1
+            continue
+        i += 1
+        if i >= n:                      # trailing backslash: keep it literally
+            out.extend(b"\\")
+            break
+        esc = body[i]
+        if esc in _C_ESCAPES:
+            out.append(_C_ESCAPES[esc])
+            i += 1
+        elif esc in "01234567":
+            octal = body[i : i + 3]
+            try:
+                out.append(int(octal, 8) & 0xFF)
+            except ValueError:          # short/invalid run: keep it literally
+                out.extend(("\\" + octal).encode("utf-8"))
+            i += len(octal)
+        else:                           # unknown escape: keep both characters
+            out.extend(("\\" + esc).encode("utf-8"))
+            i += 1
+
+    return out.decode("utf-8", "replace")
+
+
+def parse_status_porcelain(status: str) -> "tuple[list[str], list[str]]":
+    """(tracked, untracked) paths from `git status --porcelain` v1 output.
+
+    Two shapes the old inline parser got wrong, both reproduced on a throwaway
+    repo:
+
+      R  old_name.py -> new_name.py     parsed as the single path
+                                        "old_name.py -> new_name.py"
+      ?? "caf\\303\\251 men\\303\\274.py"   parsed with the escapes left literal
+
+    Neither names a file that exists, so the dirty path became a phantom that
+    no probe could resolve while still counting as classified. Renames report
+    the DESTINATION -- that is where the content lives now and what a recovery
+    has to write.
+    """
+    tracked: "list[str]" = []
+    untracked: "list[str]" = []
+    for line in status.splitlines():
+        if len(line) < 4:
+            continue
+        code, rest = line[:2], line[3:]
+        # Rename/copy entries carry "src -> dst". Split before unquoting,
+        # because either side may be quoted independently.
+        if code[0] in ("R", "C") and " -> " in rest:
+            rest = rest.split(" -> ", 1)[1]
+        path = unquote_porcelain_path(rest)
+        if not path:
+            continue
+        (untracked if code == "??" else tracked).append(path)
+    return tracked, untracked
+
+
 def is_generated(path: str) -> bool:
     p = "/" + path.replace(os.sep, "/")
     return any(h in p for h in GENERATED_HINTS)
+
+
+def is_own_task_scratch(path: str, worktree_root: str) -> bool:
+    """True when `path` is this worktree's own task named it into existence.
+
+    Agent worktrees are created as {repo}-wt/{slug}, and a task that writes a
+    report about itself names the file after its own slug -- e.g. the worktree
+    `chatgpt-local-reconcile-beethoven-2829958769f3` holding an untracked
+    `docs/chatgpt-local-reconcile-beethoven-2829958769f3.md`.
+
+    Left unrecognised, that closes a loop with a real cost. The reconciler sees
+    a dirty worktree carrying a non-generated file the base does not have,
+    classifies it RECOVERABLE_VALUE, and files a recovery task. That task opens
+    a worktree, writes its own report, leaves it untracked, and the next sweep
+    finds THAT. Three worktrees in this checkout were dirty with nothing but
+    their own report, and the evidence snapshot for the task that prompted this
+    fix is one of them -- a reconcile task about the leftovers of a reconcile
+    task, costing an executor claim each round.
+
+    Keyed on the worktree's own directory name, so it can only ever match a
+    task's own output. A file named after some OTHER task is somebody's
+    recovered work and stays classifiable.
+    """
+    slug = os.path.basename(os.path.normpath(worktree_root or ""))
+    if not slug or len(slug) < 8:
+        return False
+    return slug in os.path.basename(path.replace(os.sep, "/"))
 
 
 def base_blob(base: str, path: str, cwd: str) -> str:
@@ -237,12 +359,7 @@ def classify_worktree(item: Item, path: str, head: str, branch: str,
         item.evidence = "git status --porcelain empty"
         return
 
-    tracked, untracked = [], []
-    for line in status.splitlines():
-        if len(line) < 4:
-            continue
-        code, p = line[:2], line[3:].strip().strip('"')
-        (untracked if code == "??" else tracked).append(p)
+    tracked, untracked = parse_status_porcelain(status)
     item.files = sorted(tracked + untracked)
 
     real = [f for f in item.files if not is_generated(f)]
@@ -253,6 +370,22 @@ def classify_worktree(item: Item, path: str, head: str, branch: str,
             "(caches/build output); nothing to recover"
         )
         item.evidence = "generated-only working tree"
+        return
+
+    # A worktree dirty with nothing but its own task's report is not recovered
+    # work; it is the previous pass's exhaust. Classifying it RECOVERABLE_VALUE
+    # files a recovery task whose own leftovers the next sweep then finds.
+    # Treated like generated noise: enumerated and classified, never dropped
+    # silently, and the source is left exactly as found.
+    own_scratch = [f for f in real if is_own_task_scratch(f, path)]
+    if own_scratch and len(own_scratch) == len(real):
+        item.classification = "ALREADY_PRESENT"
+        item.disposition = (
+            f"{len(own_scratch)} dirty path(s), all named after this "
+            "worktree's own task; the reconciler's own report, not recovered "
+            "work: " + ", ".join(own_scratch[:6])
+        )
+        item.evidence = "self-referential task scratch"
         return
 
     # Uncommitted tracked edits are the only part git can diff directly.

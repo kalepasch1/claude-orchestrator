@@ -275,9 +275,74 @@ def checkout_guard(st=None):
                                or ln[3:].endswith((".py", ".sh"))]
             if protected_dirty:
                 hb = f"hotfix/sentinel-rescue-{int(time.time())}"
-                git("stash", "push", "-m", f"pre-rescue-{int(time.time())}")   # atomic handoff
-                git("checkout", "-b", hb)
-                git("stash", "pop")
+                # THE HANDOFF IS CHECKED AT EVERY STEP (2026-09-09).
+                #
+                # This sequence used to run unconditionally: push a stash, branch, pop it,
+                # `add -u`, commit, emit "hotfix-rescued". Every one of those can fail, and
+                # none of the return codes were read. The dangerous shape is a failed `pop`
+                # (a conflict, or a `checkout -b` that failed because the branch name already
+                # existed): the commit then captures NOTHING, the emit still fires, and the
+                # operator is told their work was preserved on a branch that is empty while
+                # the real content sits in the stash pile this function exists to avoid.
+                # A false success is worse than a loud failure — it stops anyone looking.
+                _label = f"pre-rescue-{int(time.time())}"
+                _before = len([l for l in (git("stash", "list").stdout or "").splitlines()
+                               if l.strip()])
+                git("stash", "push", "-m", _label)   # atomic handoff
+                _after = len([l for l in (git("stash", "list").stdout or "").splitlines()
+                              if l.strip()])
+                if _after <= _before:
+                    emit("hotfix-rescue-failed", branch=hb, stage="stash-push",
+                         files=len(protected_dirty))
+                    log("hotfix-rescue-failed",
+                        f"could not capture {len(protected_dirty)} protected file(s) for rescue — "
+                        f"work is still dirty in the working tree, NOT lost; leaving the checkout "
+                        f"on '{branch}' rather than risking it")
+                    return
+                # MIRROR BEFORE THE BRANCH SWITCH (2026-09-21), for the same reason the
+                # drift path below does it: `checkout -b` is the point of no return for
+                # this working tree, and until the stash is a ref on origin the only copy
+                # of the operator's work is a reflog entry that `git stash clear`, a reset
+                # or a fresh clone destroys without warning or trace.
+                #
+                # This rescue path was added after TestNoWorkIsLeftOnlyInAStash and
+                # reintroduced the shape that test class was written against. It pops
+                # immediately and reports loudly, which is why it looked safe — but
+                # between the push and the pop the work existed in exactly one place, and
+                # that place is the reflog. Best-effort: a failed archive is logged as
+                # LOCAL-ONLY and never blocks the rescue it runs inside.
+                try:
+                    _sha = (git("rev-parse", "stash@{0}").stdout or "").strip()
+                    if _sha:
+                        _ref = f"refs/archive/sentinel-drift/{int(time.time())}"
+                        git("update-ref", _ref, _sha)
+                        _pr = git("push", "origin", f"{_ref}:{_ref}")
+                        log("rescue-stash-archived",
+                            f"{_label} mirrored to {_ref} on origin"
+                            if _pr.returncode == 0 else
+                            f"{_label} is LOCAL-ONLY — archive push failed")
+                except Exception as _exc:
+                    log("rescue-stash-archived", f"{_label} is LOCAL-ONLY ({_exc})")
+                _cb = git("checkout", "-b", hb)
+                if _cb.returncode != 0:
+                    git("stash", "pop")   # put the operator's work back where it was
+                    emit("hotfix-rescue-failed", branch=hb, stage="branch",
+                         stderr=(_cb.stderr or "")[-200:])
+                    log("hotfix-rescue-failed",
+                        f"could not create {hb} ({(_cb.stderr or '').strip()[-120:]}) — "
+                        f"work restored to the working tree, checkout left on '{branch}'")
+                    return
+                _pop = git("stash", "pop")
+                if _pop.returncode != 0:
+                    # The content is still in the stash (pop is atomic on failure). Say so
+                    # loudly and by name, and do NOT commit an empty rescue on top of it.
+                    emit("hotfix-rescue-failed", branch=hb, stage="stash-pop",
+                         stash=_label, stderr=(_pop.stderr or "")[-200:])
+                    log("hotfix-rescue-failed",
+                        f"stash '{_label}' would not re-apply on {hb} — the work is INTACT in "
+                        f"that stash entry (git stash list) and needs a human; refusing to "
+                        f"commit an empty rescue that would look like success")
+                    return
                 # `add -u` (tracked modifications ONLY), never `add -A`. -A swept UNTRACKED
                 # files onto the rescue branch, and the subsequent `checkout BASE_BRANCH` then
                 # removed them from the working tree — so an intake drop that landed during a
@@ -286,13 +351,41 @@ def checkout_guard(st=None):
                 # same 2026-07-08..16 loss shape the `-u` ban already exists to prevent.
                 # Untracked files are not what blocks a branch switch, so they need no staging.
                 git("add", "-u")
-                git("-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
-                    "commit", "-m",
-                    f"rescue: operator/agent changes preserved by sentinel ({len(protected_dirty)} file(s))")
-                emit("hotfix-rescued", branch=hb, files=len(protected_dirty))
+                _ci = git("-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
+                          "commit", "-m",
+                          f"rescue: operator/agent changes preserved by sentinel ({len(protected_dirty)} file(s))")
+                if _ci.returncode != 0:
+                    # Nothing was actually committed (empty index, hook refusal, ...). The work
+                    # is back in the working tree from the pop above, so it is not lost — but
+                    # claiming a rescue that did not happen is exactly the failure mode this
+                    # guard exists to prevent.
+                    emit("hotfix-rescue-failed", branch=hb, stage="commit",
+                         stderr=(_ci.stderr or _ci.stdout or "")[-200:])
+                    log("hotfix-rescue-failed",
+                        f"no commit was created on {hb} — {len(protected_dirty)} protected file(s) "
+                        f"are still dirty in the working tree on that branch, needs a human")
+                    return
+                # A LOCAL BRANCH IS STILL ONLY ONE `rm -rf` FROM GONE (2026-09-09).
+                #
+                # The whole point of committing instead of stashing is durability, and a branch
+                # that exists in exactly one clone on one laptop is only durable relative to a
+                # stash. The drift-stash path directly below already mirrors its rescue to
+                # origin for precisely this reason; the protected-path rescue — which by
+                # definition holds the MORE valuable work, the fleet's own critical path — did
+                # not. Same convention, same best-effort posture: a preservation attempt must
+                # never be the reason the recovery it is protecting fails, so this is wrapped
+                # and its failure is reported rather than raised.
+                try:
+                    _pr = git("push", "origin", f"{hb}:refs/heads/{hb}")
+                    _mirrored = _pr.returncode == 0
+                except Exception:
+                    _mirrored = False
+                emit("hotfix-rescued", branch=hb, files=len(protected_dirty), mirrored=_mirrored)
                 log("hotfix-rescued",
                     f"preserved {len(protected_dirty)} protected file(s) on {hb} instead of stashing — "
-                    f"review and merge (git log {hb})")
+                    + (f"mirrored to origin/{hb}; review and merge (git log {hb})" if _mirrored else
+                       f"branch is LOCAL-ONLY (push to origin failed) — review and merge "
+                       f"promptly (git log {hb})"))
                 r = git("checkout", BASE_BRANCH)
             else:
                 _label = f"sentinel-drift-{branch}-{int(time.time())}"
@@ -346,6 +439,125 @@ def checkout_guard(st=None):
     st.pop("drift_branch", None)
     git("pull", "--ff-only", "origin", BASE_BRANCH, timeout=180)
     log("checkout-restored", BASE_BRANCH)
+
+
+# ── 2a1. self-modification guard (proactive, stash-free) ─────────────────────
+#
+# checkout_guard has a rescue path for protected dirty files, but it only fires
+# when drift recovery needs a clean tree. This guard runs EVERY sentinel cycle
+# (rate-limited) to catch in-flight modifications to the fleet's own critical
+# path before a restart, drift, or crash can lose them.
+#
+# Stash-free: creates an isolated worktree from HEAD, copies the dirty files in,
+# commits, and optionally pushes. The main checkout is untouched — dirty files
+# stay dirty in the working tree AND exist on a durable hotfix branch.
+
+SELF_MOD_PROTECTED = ("runner/", "scripts/", "web/server/")
+SELF_MOD_INTERVAL_S = int(os.environ.get("SENTINEL_SELF_MOD_INTERVAL_S", "600"))
+
+
+def self_modification_guard(st=None):
+    """Proactively preserve uncommitted changes to protected runner/** paths.
+
+    Creates a hotfix/<ts> branch with the dirty files committed, WITHOUT stashing
+    or discarding changes from the working tree. The main checkout stays exactly
+    as it was — this is pure preservation plus a loud notification.
+
+    Rate-limited to SELF_MOD_INTERVAL_S (default 10 min) to avoid thrashing on
+    a long editing session. Idempotent: if the same set of files was already
+    rescued (same content hash in state), it does not re-rescue.
+    """
+    import hashlib
+    import shutil
+
+    st = {} if st is None else st
+    last = float(st.get("self_mod_last_check", 0))
+    if time.time() - last < SELF_MOD_INTERVAL_S:
+        return
+    st["self_mod_last_check"] = time.time()
+
+    # Detect dirty protected files (tracked modifications only — never untracked)
+    r = git("status", "--porcelain", "--untracked-files=no")
+    if r.returncode != 0 or not r.stdout.strip():
+        return
+
+    protected = []
+    for ln in r.stdout.strip().splitlines():
+        path = ln[3:]
+        if any(path.startswith(pfx) for pfx in SELF_MOD_PROTECTED):
+            protected.append(path)
+
+    if not protected:
+        return
+
+    # Idempotency: hash the dirty content so we don't re-rescue identical changes
+    content_hash = hashlib.sha256(r.stdout.encode()).hexdigest()[:16]
+    if st.get("self_mod_last_hash") == content_hash:
+        return
+    st["self_mod_last_hash"] = content_hash
+
+    ts = int(time.time())
+    hb = f"hotfix/self-mod-{ts}"
+    wt_dir = os.path.join(RUNTIME, f"self-mod-rescue-{ts}")
+
+    try:
+        os.makedirs(RUNTIME, exist_ok=True)
+        wr = git("worktree", "add", wt_dir, "-b", hb, "HEAD")
+        if wr.returncode != 0:
+            log("self-mod-rescue-failed", f"worktree create: {wr.stderr[:160]}")
+            return
+
+        # Copy dirty files into the worktree (main checkout untouched)
+        copied = 0
+        for path in protected:
+            src = os.path.join(REPO, path)
+            dst = os.path.join(wt_dir, path)
+            if os.path.isfile(src):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                copied += 1
+
+        if copied == 0:
+            log("self-mod-no-files", "protected paths dirty in status but no files to copy")
+            return
+
+        # Commit in the worktree — no stash, no index mutation in the main checkout
+        subprocess.run(["git", "add", "-A"], cwd=wt_dir,
+                        capture_output=True, timeout=30)
+        cr = subprocess.run(
+            ["git", "-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
+             "commit", "--no-verify", "-m",
+             f"rescue: {copied} protected file(s) auto-preserved by sentinel self-mod guard\n\n"
+             f"Files: {', '.join(protected[:10])}"],
+            cwd=wt_dir, capture_output=True, text=True, timeout=30
+        )
+        if cr.returncode != 0:
+            log("self-mod-commit-failed", cr.stderr[:160])
+            return
+
+        # Push best-effort — the branch is durable locally even if push fails
+        pr = subprocess.run(
+            ["git", "push", "origin", f"HEAD:refs/heads/{hb}"],
+            cwd=wt_dir, capture_output=True, text=True, timeout=120
+        )
+        pushed = pr.returncode == 0
+
+        emit("self-mod-rescued", branch=hb, files=copied, pushed=pushed,
+             paths=protected[:5])
+        log("self-mod-rescued",
+            f"preserved {copied} protected file(s) on {hb} "
+            f"({'pushed' if pushed else 'LOCAL-ONLY'}) — "
+            f"working tree untouched (no stash, no discard)")
+        st["self_mod_rescued_total"] = int(st.get("self_mod_rescued_total", 0)) + 1
+
+    except Exception as e:
+        log("self-mod-rescue-error", str(e)[:160])
+    finally:
+        # Always clean up the worktree; the branch survives
+        try:
+            git("worktree", "remove", "--force", wt_dir)
+        except Exception:
+            pass
 
 
 # ── 2a2. stash drift alarm (never touches stashes — see checkout_guard's stash comment) ─
@@ -1361,6 +1573,10 @@ def main():
         checkout_guard(st)
     except Exception as e:
         log("checkout-guard-error", e)
+    try:
+        self_modification_guard(st)
+    except Exception as e:
+        log("self-mod-guard-error", e)
     try:
         stash_drift_guard(st)
     except Exception as e:

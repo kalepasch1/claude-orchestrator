@@ -1,0 +1,37 @@
+{
+  "audit_fingerprint": "d676f81501587e3a7e65e4c9b103678e482f4caf02e1192844db8878535fbd51",
+  "task_slug": "chatgpt-local-reconcile-illuminati-d676f8150158",
+  "generated_at": "2026-09-08T17:16:30Z",
+  "routing_note": "Planner emitted unregistered project 'illuminati'; routed to beethoven as fallback. Illuminati was absorbed into apparently per operator directive 2026-08-07.",
+  "evidence": [
+    {
+      "source": "/Users/kpasch/Documents/Codex/2026-07-22/impl/work/Trojun-incomplete-20260723",
+      "kind": "broken_codex_git_worktree",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "Git metadata no longer resolves. Codex session from 2026-07-22, pre-absorption. illuminati project absorbed into apparently 2026-08-07."
+    },
+    {
+      "source": "/Users/kpasch/Documents/Trojun",
+      "kind": "dirty_worktree",
+      "branch": "codex/trojun-canonical-rename",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "3 meta files (.convention-rules.json, .npmrc, DO-NOT-WORK-HERE.md) on the canonical-rename branch. Project absorbed; rename is moot."
+    },
+    {
+      "source": "/Users/kpasch/Documents/_Trojun_archived",
+      "kind": "dirty_worktree",
+      "branch": "agent/v15-fractal-runtime",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "228 changes from v15-fractal-runtime (mtime 2026-07-25). Project absorbed into apparently per operator directive 2026-08-07. Directory name confirms archived status."
+    }
+  ],
+  "summary": {
+    "total_items": 3,
+    "SUPERSEDED_BY_NEWER": 3,
+    "ALREADY_PRESENT": 0,
+    "ACTIVE_IN_ANOTHER_TASK": 0,
+    "RECOVERABLE_VALUE": 0,
+    "CONFLICTED_NEEDS_FOCUSED_TASK": 0
+  },
+  "conclusion": "All 3 evidence items classified as SUPERSEDED_BY_NEWER. The illuminati/trojun project was absorbed into apparently per operator directive 2026-08-07. All evidence predates that directive. Zero UNKNOWN items."
+}

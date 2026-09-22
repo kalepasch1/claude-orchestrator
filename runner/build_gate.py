@@ -127,10 +127,22 @@ def build_cmd_for(project_row, repo):
 def _matches_ignore(rel, pattern):
     pattern = pattern.strip().replace("\\", "/")
     rel = rel.replace("\\", "/")
-    if pattern.startswith("/"):
+    # A leading slash anchors the pattern to the ignore file's own directory;
+    # that has to be captured BEFORE the slash is stripped, or an anchored
+    # single-segment pattern like `/vitest.config.ts` loses its "/" and falls
+    # into the unanchored per-basename branch below, matching the same
+    # filename at any depth -- confirmed live 2026-09-18 stripping a nested
+    # ht-ui/vitest.config.ts from a build overlay when only the repo-root
+    # file should have matched (same fix already landed in smarter's vendored
+    # copy at services/orchestrator-runner/runner/build_gate.py, commit
+    # 8a5e923e).
+    anchored = pattern.startswith("/")
+    if anchored:
         pattern = pattern[1:]
     if pattern.endswith("/"):
         return rel == pattern[:-1] or rel.startswith(pattern)
+    if anchored:
+        return fnmatch.fnmatch(rel, pattern)
     if "/" not in pattern:
         return any(fnmatch.fnmatch(part, pattern) for part in rel.split("/"))
     return fnmatch.fnmatch(rel, pattern)

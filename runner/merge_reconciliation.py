@@ -43,6 +43,7 @@ import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
+from staging_branch import staging_branch_for
 
 WINDOW_HOURS = float(os.environ.get("RECON_WINDOW_HOURS", "24"))
 MIN_MERGES = int(os.environ.get("RECON_MIN_MERGES", "3"))
@@ -73,7 +74,8 @@ def _integration_refs(repo):
     alerts, and a detector that cries wolf is how the real signal got ignored for six weeks.
     """
     refs = []
-    for name in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
+    for name in (staging_branch_for(repo)[0],
+                 os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
                  os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"), "main", "master"):
         for ref in (f"origin/{name}", name):
             if ref in refs:

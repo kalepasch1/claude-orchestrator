@@ -269,7 +269,31 @@ def detect_policy_change(old_output, new_output):
 def has_policy_change(old_decision, replay_result):
     """Check if a replay result shows policy change."""
     try:
+        # An absent/empty/non-dict side carries no route to compare, so it is
+        # not evidence of divergence. Without these guards `{}` falls through
+        # to detect_policy_change with old_route=None and new_route set, which
+        # reports changed=True — the same false-positive the comment below
+        # describes, reached by a different path.
+        if not old_decision or not isinstance(old_decision, dict):
+            return False
+        if not replay_result or not isinstance(replay_result, dict):
+            return False
         old_output = old_decision.get("output", {})
+        # No stored route means there is no baseline to diverge FROM, so this is
+        # not a policy change. Without this, detect_policy_change compares
+        # None != "opus", reports changed=True, and line 374 below counts a
+        # divergence for every decision whose stored output was empty or lacked
+        # a route — inflating the divergence rate the fleet routes on.
+        #
+        # This is the mirror image of the field-name bug described just below:
+        # that one made new_route always None, this one makes old_route always
+        # None, and both surface as "every replay looks like a divergence".
+        # test_counterfactual_replay_spec.py already states the principle —
+        # "a decision that cannot be read claims no divergence" — but only
+        # covers old_decision=None, which raises AttributeError and is caught.
+        # An empty dict has .get, so it slipped straight through.
+        if not (isinstance(old_output, dict) and old_output.get("route")):
+            return False
         # A replay result names its choice "decision"; a stored output names it
         # "route" (analyze_replay_impact already compares exactly those two
         # fields). Normalise before handing it to detect_policy_change, which

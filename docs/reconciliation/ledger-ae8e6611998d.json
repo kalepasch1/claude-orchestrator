@@ -1,0 +1,107 @@
+{
+  "audit_fingerprint": "ae8e6611998d9673b1b6cdfe35fecb844847fad3b031c7eeef0fcf6f0a8596c8",
+  "task_slug": "chatgpt-local-reconcile-beethoven-ae8e6611998d",
+  "evidence_kind": "stashes",
+  "repo": "/Users/kpasch/Documents/beethoven/claude-orchestrator",
+  "reconciled_at": "2026-09-08T22:46:01.183471+00:00",
+  "summary": {
+    "total_items": 13,
+    "classifications": {
+      "SUPERSEDED_BY_NEWER": 13
+    },
+    "unknown_items": 0
+  },
+  "items": [
+    {
+      "ref": "stash@{0}",
+      "sha": "793e4b527273",
+      "subject": "WIP on master: c95d78b6 stop thirteen unit tests from walking the operator's home directory",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash on master; base work has since been merged/superseded; 17 stat lines vs current master"
+    },
+    {
+      "ref": "stash@{1}",
+      "sha": "67d82ea9d929",
+      "subject": "On master: other agent's work, set aside for 65a2caba promotion",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "stash content superseded by later work; 35 stat lines vs master"
+    },
+    {
+      "ref": "stash@{2}",
+      "sha": "f5d33f4a1334",
+      "subject": "On master: foreign: test_diagnostic_missing_branch.py (set aside for e1e0d174 promotion)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "stash content superseded by later work; 26 stat lines vs master"
+    },
+    {
+      "ref": "stash@{3}",
+      "sha": "12f9e378c343",
+      "subject": "On master: other agent's work, set aside for f9ffdc45 promotion",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "stash content superseded by later work; 41 stat lines vs master"
+    },
+    {
+      "ref": "stash@{4}",
+      "sha": "2ba3d61789e5",
+      "subject": "WIP on master: 9ab9814c Merge branch 'agent/chatgpt-local-reconcile-beethoven-feb91eed3b7c' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash on master; base work has since been merged/superseded; 131 stat lines vs current master"
+    },
+    {
+      "ref": "stash@{5}",
+      "sha": "97156da4105c",
+      "subject": "WIP on agent/canary-deepseek-1-conftest-restore: 6cec1792 Merge branch 'agent/improve-implement-automated-branch-managem",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash from agent branch agent/canary-deepseek-1-conftest-restore; branch work completed or superseded"
+    },
+    {
+      "ref": "stash@{6}",
+      "sha": "d9cf03a32ca3",
+      "subject": "WIP on master: e2045d98 Merge branch 'agent/human-decision-git-lock-mac247-20260904-x9wq' (auto-resolved)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash on master; base work has since been merged/superseded; 214 stat lines vs current master"
+    },
+    {
+      "ref": "stash@{7}",
+      "sha": "fabf9fe23d45",
+      "subject": "WIP on agent/canary-deepseek-1: a9fa358e Merge branch 'agent/dropbox-prompt-merged-diff-memory-system-task-spec-group-12",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash from agent branch agent/canary-deepseek-1; branch work completed or superseded"
+    },
+    {
+      "ref": "stash@{8}",
+      "sha": "baedc106cce6",
+      "subject": "On master: strays-2159",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "sentinel/rescue stash; content preserved as safety snapshot, superseded by later merges"
+    },
+    {
+      "ref": "stash@{9}",
+      "sha": "738179e46f91",
+      "subject": "On master: strays-20260901-2140",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "sentinel/rescue stash; content preserved as safety snapshot, superseded by later merges"
+    },
+    {
+      "ref": "stash@{10}",
+      "sha": "80740fe5fd5f",
+      "subject": "WIP on master: 527f1ef0 Fix: resource_governor \u2014 convert frozen module constants to live env-var reads so fleet_control ",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash on master; base work has since been merged/superseded; 2269 stat lines vs current master"
+    },
+    {
+      "ref": "stash@{11}",
+      "sha": "a9f38fd798b8",
+      "subject": "WIP on master: 2acd4139 Add comprehensive tests for opportunity_scout.py RICE scoring and proposal filing",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash on master; base work has since been merged/superseded; 2213 stat lines vs current master"
+    },
+    {
+      "ref": "stash@{12}",
+      "sha": "6ca51b977b01",
+      "subject": "WIP on master: e5c6c5bf docs: top 3 highest-leverage opportunities from runner codebase scan (RICE-scored)",
+      "classification": "SUPERSEDED_BY_NEWER",
+      "disposition": "WIP stash on master; base work has since been merged/superseded; 2376 stat lines vs current master"
+    }
+  ]
+}
