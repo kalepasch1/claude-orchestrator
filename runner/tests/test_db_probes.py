@@ -54,7 +54,7 @@ def only(findings):
 class TestCatalog(unittest.TestCase):
     def test_forty_six_probes_with_unique_ids(self):
         ids = [p["id"] for p in PROBES]
-        self.assertEqual(len(ids), 48)  # fk_graph_edges + column_inventory joined (facts-only) 2026-09-14
+        self.assertEqual(len(ids), 49)  # + forge_records_tamper_evidence (first forged probe) 2026-09-21
         self.assertEqual(len(set(ids)), len(ids))
         self.assertTrue(all(re.match(r"^[a-z][a-z0-9_]+$", i) for i in ids))
 
@@ -421,6 +421,63 @@ class TestParseAudit(unittest.TestCase):
         self.assertEqual(g["title"], "No audit/event/log tables found in public")
         self.assertEqual(facts["audit_tables"], [])
         self.assertEqual(f["fingerprint"], g["fingerprint"], "presence and absence are the same fact, so one flips the other")
+
+    def test_tamper_evidence_guard_beats_grants(self):
+        facts = {}
+        f = run_parse("forge_records_tamper_evidence",
+                      [{"schemaname": "public", "tablename": "matter_events", "guard_triggers": 1,
+                        "moddatetime_triggers": 0, "update_grantees": ["authenticated"],
+                        "delete_grantees": []}], facts=facts)[0]
+        self.assertEqual((f["direction"], f["severity"], f["category"]), ("supports", "info", "audit"))
+        self.assertEqual(f["title"], "public.matter_events is append-only: 1 guard trigger(s)")
+        self.assertEqual(f["evidence_kinds"], ["audit_trail", "integrity"])
+        self.assertEqual(f["metrics"]["rewrite_grantees"], ["authenticated"])
+        self.assertEqual((facts["tamper_guarded_tables"], facts["tamper_rewritable_tables"]), (1, 0))
+
+    def test_tamper_evidence_delete_grant_outranks_update_grant(self):
+        facts = {}
+        out = run_parse("forge_records_tamper_evidence",
+                        [{"schemaname": "public", "tablename": "invoices", "guard_triggers": 0,
+                          "moddatetime_triggers": 1, "update_grantees": ["authenticated"], "delete_grantees": []},
+                         {"schemaname": "public", "tablename": "ledger", "guard_triggers": 0,
+                          "moddatetime_triggers": 0, "update_grantees": [], "delete_grantees": ["anon"]}],
+                        facts=facts)
+        by = {f["object_name"]: f for f in out}
+        self.assertEqual(by["invoices"]["severity"], "medium")
+        self.assertEqual(by["ledger"]["severity"], "high", "a DELETE grant loses the record entirely")
+        self.assertEqual([f["fingerprint"] for f in out],
+                         [fingerprint("forge_records_tamper_evidence", object_schema="public",
+                                      object_name=t, extra="rewritable") for t in ("invoices", "ledger")])
+        self.assertEqual(facts["tamper_rewritable_tables"], 2)
+        self.assertEqual(len(out), 2, "every row is already rewritable, so there is no clean-sweep row")
+
+    def test_tamper_evidence_timestamp_alone_is_weak_not_absent(self):
+        f = run_parse("forge_records_tamper_evidence",
+                      [{"schemaname": "public", "tablename": "profiles", "guard_triggers": 0,
+                        "moddatetime_triggers": 1, "update_grantees": [], "delete_grantees": []}])[0]
+        self.assertEqual(f["severity"], "low")
+        self.assertEqual(f["fingerprint"], fingerprint("forge_records_tamper_evidence", object_schema="public",
+                                                       object_name="profiles", extra="timestamp_only"))
+        self.assertEqual(f["evidence_kinds"], ["audit_trail"])
+        self.assertIn("not what it said before", f["detail"])
+
+    def test_tamper_evidence_clean_database_supports_the_argument(self):
+        facts = {}
+        out = run_parse("forge_records_tamper_evidence",
+                        [{"schemaname": "public", "tablename": "matter_events", "guard_triggers": 2,
+                          "moddatetime_triggers": 0, "update_grantees": [], "delete_grantees": []}], facts=facts)
+        self.assertEqual(len(out), 2)
+        summary = out[-1]
+        self.assertEqual(summary["direction"], "supports")
+        self.assertEqual(summary["fingerprint"],
+                         fingerprint("forge_records_tamper_evidence", extra="none_rewritable"))
+        self.assertEqual(summary["metrics"], {"tables": 1, "guarded": 1})
+        self.assertEqual(run_parse("forge_records_tamper_evidence", []), [])
+
+    def test_tamper_evidence_routes_to_its_memo_argument(self):
+        import db_memo
+        self.assertEqual(db_memo.ROUTES["forge_records_tamper_evidence"],
+                         {"records_integrity_and_audit_trail": ["tamper_evidence"]})
 
     def test_ai_logging_presence(self):
         f = only(run_parse("ai_call_logging_presence", [{"schemaname": "public", "tablename": "model_calls"}]))

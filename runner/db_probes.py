@@ -390,6 +390,68 @@ def _p_audit_trail(rows, source, facts=None):
                          detail="No table name matches *_events, *_log(s), *audit*, *_history, *_ledger, *_trail.")]
 
 
+def _p_tamper_evidence(rows, source, facts=None):
+    """Append-only / tamper-evidence posture per record table.
+
+    Demand-generated: db_probe_forge filed this as the scaffold for memo argument
+    `tamper_evidence` of `records_integrity_and_audit_trail`, which had zero evidence
+    coverage fleet-wide. A row is one public base table carrying its trigger guards and
+    the non-owner roles that hold UPDATE/DELETE on it. The question the memo asks is not
+    "did anything change" but "could a past record be rewritten without leaving a trace",
+    so a guard trigger outranks a timestamp and a DELETE grant outranks an UPDATE grant.
+    """
+    facts = facts if facts is not None else {}
+    out = []
+    guarded = rewritable = 0
+    for r in rows:
+        schema, table = _obj(r)
+        guards = int(_num(_v(r, "guard_triggers")))
+        stamps = int(_num(_v(r, "moddatetime_triggers")))
+        updaters = [g for g in _list(_v(r, "update_grantees")) if g]
+        deleters = [g for g in _list(_v(r, "delete_grantees")) if g]
+        writers = sorted(set(updaters) | set(deleters))
+        if guards:
+            guarded += 1
+            out.append(make_finding("forge_records_tamper_evidence", "audit", "info",
+                                    f"{schema}.{table} is append-only: {guards} guard trigger(s)",
+                                    direction="supports", object_schema=schema, object_name=table,
+                                    evidence_kinds=("audit_trail", "integrity"), extra="guarded",
+                                    metrics={"guard_triggers": guards, "moddatetime_triggers": stamps,
+                                             "rewrite_grantees": writers},
+                                    detail="A trigger refuses or journals UPDATE/DELETE on this table, so a "
+                                           "rewrite of a past record leaves evidence behind."))
+        elif writers:
+            rewritable += 1
+            out.append(make_finding("forge_records_tamper_evidence", "audit",
+                                    "high" if deleters else "medium",
+                                    f"{schema}.{table} is rewritable by {', '.join(writers[:6])} "
+                                    "with no append-only guard",
+                                    object_schema=schema, object_name=table,
+                                    evidence_kinds=("audit_trail", "integrity"), extra="rewritable",
+                                    metrics={"update_grantees": updaters, "delete_grantees": deleters,
+                                             "guard_triggers": 0, "moddatetime_triggers": stamps},
+                                    detail="A non-owner role holds UPDATE/DELETE and no trigger blocks or "
+                                           "records the change: a past record can be altered, or removed "
+                                           "outright, without the table showing it."))
+        elif stamps:
+            out.append(make_finding("forge_records_tamper_evidence", "audit", "low",
+                                    f"{schema}.{table} maintains updated_at but has no append-only guard",
+                                    object_schema=schema, object_name=table,
+                                    evidence_kinds=("audit_trail",), extra="timestamp_only",
+                                    metrics={"guard_triggers": 0, "moddatetime_triggers": stamps},
+                                    detail="The timestamp shows that a row changed, not what it said before: "
+                                           "it dates an edit but does not preserve the superseded value."))
+    facts["tamper_guarded_tables"] = guarded
+    facts["tamper_rewritable_tables"] = rewritable
+    if rows and rewritable == 0:
+        out.append(make_finding("forge_records_tamper_evidence", "audit", "info",
+                                f"No public table is rewritable by a non-owner role without a guard "
+                                f"({len(rows)} checked)", direction="supports",
+                                evidence_kinds=("audit_trail", "integrity"), extra="none_rewritable",
+                                metrics={"tables": len(rows), "guarded": guarded}))
+    return out
+
+
 def _p_pii_inventory(rows, source, facts=None):
     facts = facts if facts is not None else {}
     out = []
@@ -1143,6 +1205,30 @@ _SQL = {
         "mysql": "select table_schema as schemaname, table_name as tablename from information_schema.tables "
                  f"where table_schema = database() and table_type = 'BASE TABLE' and table_name regexp '{AUDIT_TABLE_PATTERN}' "
                  "order by table_name limit 100"},
+    "forge_records_tamper_evidence": {
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, "
+                    "coalesce(t.guard_triggers, 0) as guard_triggers, "
+                    "coalesce(t.moddatetime_triggers, 0) as moddatetime_triggers, "
+                    "coalesce(g.update_grantees, array[]::text[]) as update_grantees, "
+                    "coalesce(g.delete_grantees, array[]::text[]) as delete_grantees "
+                    "from pg_catalog.pg_class c "
+                    "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    "left join lateral (select count(*) filter (where p.proname ~ "
+                    "'(immutable|append_only|appendonly|no_update|no_delete|prevent|block|forbid|read_?only|tamper|audit|history|journal)'"
+                    ") as guard_triggers, count(*) filter (where p.proname ~ "
+                    "'(moddatetime|updated_at|set_timestamp|set_updated)') as moddatetime_triggers "
+                    "from pg_catalog.pg_trigger tg join pg_catalog.pg_proc p on p.oid = tg.tgfoid "
+                    "where tg.tgrelid = c.oid and not tg.tgisinternal and tg.tgenabled <> 'D' "
+                    "and (tg.tgtype & 24) <> 0) t on true "
+                    "left join lateral (select array_agg(distinct rtg.grantee order by rtg.grantee) "
+                    "filter (where rtg.privilege_type = 'UPDATE') as update_grantees, "
+                    "array_agg(distinct rtg.grantee order by rtg.grantee) "
+                    "filter (where rtg.privilege_type = 'DELETE') as delete_grantees "
+                    "from information_schema.role_table_grants rtg "
+                    "where rtg.table_schema = n.nspname and rtg.table_name = c.relname "
+                    "and rtg.grantee <> pg_catalog.pg_get_userbyid(c.relowner)) g on true "
+                    f"where c.relkind = 'r' and {_user_schema('n.nspname')} "
+                    "order by n.nspname, c.relname limit 500"},
     "pii_columns_inventory": {
         "postgres": "select c.table_schema as schemaname, c.table_name as tablename, "
                     "array_agg(c.column_name order by c.column_name) as columns from information_schema.columns c "
@@ -1451,6 +1537,12 @@ PROBES = [
            ("audit_trail",), _p_audit_trail,
            "Add an append-only `<domain>_events` table (actor, action, subject, at, payload) written by every material "
            "workflow; revoke update/delete on it from all app roles."),
+    _probe("forge_records_tamper_evidence", "Append-only / tamper-evidence posture of record tables",
+           "audit", "cheap", ("audit_trail", "integrity"), _p_tamper_evidence,
+           "For each table the business relies on as a record: revoke update/delete from non-owner roles and keep "
+           "the history in an append-only `<domain>_events` table, or add a BEFORE UPDATE OR DELETE trigger that "
+           "raises (`prevent_record_rewrite`) or journals the prior row. An `updated_at` trigger alone dates an "
+           "edit without preserving what was overwritten, so it does not make a record tamper-evident."),
     _probe("ai_call_logging_presence", "Model-call / token-usage log tables present", "ai_governance", "cheap",
            ("ai_logging", "audit_trail"), _p_ai_logging,
            "If the project calls models, add a `model_calls` (or `token_usage`) table recording provider, model, route, "

@@ -173,6 +173,7 @@ ROUTES = {
     "security_definer_functions": {_AC: ["privileged_paths_bounded"]},
     "missing_audit_columns": {_RI: ["contemporaneous_records"]},  # _AI only when the table is an AI log
     "audit_trail_presence": {_RI: ["regular_practice"], _AI: ["provenance_traceable"]},
+    "forge_records_tamper_evidence": {_RI: ["tamper_evidence"]},
     "unvalidated_constraints": {_RI: ["referential_integrity"]},
     "tables_without_primary_key": {_RI: ["referential_integrity"]},
     "unindexed_foreign_keys": {_RI: ["referential_integrity"], _OR: ["performance_headroom"]},
