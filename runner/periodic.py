@@ -1297,6 +1297,12 @@ def run_rtmon():
     realtime_approval_monitor.run()
 
 
+def run_slice4_sync():
+    """Slice-4 backend sync event processor (every 10 sec)."""
+    import realtime_slice4_sync
+    realtime_slice4_sync.poll_once()
+
+
 def run_quarantine_gc():
     """GC non-recoverable quarantined tasks (PATCH TEMPLATE, dedup) to reduce scan noise."""
     import quarantine_gc
@@ -1468,6 +1474,7 @@ JOBS = {
     # realtime_config_sync (config) are wired", and neither was. A job function
     # with no JOBS entry and no interval row is dead code that reads as live.
     "rtmon": run_rtmon,
+    "slice4sync": run_slice4_sync,
     "deployterminal": run_deployterminal,
     "shipped": run_shipped,
     "spec": run_spec,

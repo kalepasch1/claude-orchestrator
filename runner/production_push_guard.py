@@ -45,9 +45,37 @@ def _clean_git_env():
     return {k: v for k, v in os.environ.items() if k not in _GIT_REDIRECT_VARS}
 
 
-def _git(repo, *args):
-    return subprocess.run(["git", *args], cwd=repo, env=_clean_git_env(),
-                          capture_output=True, text=True, check=True).stdout.strip()
+def _is_transient_git_error(stderr):
+    """Detect if a git error is transient (network, timeout) vs permanent."""
+    if not stderr:
+        return False
+    stderr_lower = stderr.lower()
+    transient_indicators = (
+        "timed out", "timeout", "no address associated",
+        "temporary failure", "connection reset", "connection refused",
+        "broken pipe", "resource temporarily unavailable",
+        "retry", "dns", "network"
+    )
+    return any(indicator in stderr_lower for indicator in transient_indicators)
+
+
+def _git(repo, *args, max_retries=2, backoff_secs=1):
+    """Run git command with retry logic for transient errors."""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return subprocess.run(["git", *args], cwd=repo, env=_clean_git_env(),
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        except subprocess.CalledProcessError as e:
+            last_error = e
+            if not _is_transient_git_error(e.stderr):
+                raise
+            if attempt < max_retries - 1:
+                time.sleep(backoff_secs * (2 ** attempt))
+                continue
+            raise
+    if last_error:
+        raise last_error
 
 
 def guarded_updates(lines):
