@@ -651,3 +651,66 @@ def test_local_tournament_gives_up_rather_than_emit_a_hollow_memo(monkeypatch):
     monkeypatch.setattr(c, "_lchat", lambda prompt, schema, **kw: {"json": None})
     j, calls = c.local_tournament("Q?", "", "gaming", "low", panel, _local_dossier())
     assert j is None and calls["r1"] == 2 and calls["failed"] == 2 and calls["chair"] == 0
+
+
+def test_local_tier_never_spends_cloud_capacity_and_uses_a_second_local_model(monkeypatch, tmp_path):
+    """Operator direction 2026-09-21: tournaments use the smartest LOCAL models, not paid cloud ones."""
+    import consilium_v2 as c
+    import frontier
+    import local_llm
+    assert c.ESCALATE == "never"                       # the shipped default
+    monkeypatch.setattr(c, "ENABLED", True)
+    monkeypatch.setattr(c, "ENGINE", "local")
+    monkeypatch.setattr(c, "CROSS_VENDOR", True)
+    monkeypatch.setattr(c, "DOSSIER_DIR", str(tmp_path / "d"))
+    monkeypatch.setattr(c, "AUTHORITY_CACHE", str(tmp_path / "a.jsonl"))
+    monkeypatch.setattr(c, "FAILURES", str(tmp_path / "f.json"))
+    monkeypatch.setattr(c, "_seat_pool", lambda v, n: _fake_panel())
+    monkeypatch.setattr(c, "_append_transcript", lambda rec: None)
+    monkeypatch.setattr(c.corps, "publication_view", lambda e: {"label": e["public_label"]})
+    monkeypatch.setattr(c.corps, "record_bout", lambda *a, **k: None)
+    monkeypatch.setattr(c.db, "insert", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_local_research", lambda q, ctx, v, d: (_local_dossier(), {"engine": "local_research", "tokens_in": 0, "tokens_out": 0}))
+    monkeypatch.setattr(local_llm, "available", lambda: True)
+    monkeypatch.setattr(local_llm, "MODELS", ["exo:big-chair", "exo:other-model"])
+    monkeypatch.setattr(local_llm, "fits", lambda p, m, free=None: (True, "ok"))
+
+    def no_cloud(*a, **k):
+        raise AssertionError("the local tier must not call a paid cloud model")
+    monkeypatch.setattr(frontier, "complete", no_cloud)
+    monkeypatch.setattr(frontier, "codex_complete", no_cloud)
+    monkeypatch.setattr(frontier, "codex_available", lambda *a, **k: True)   # available, and still unused
+    tags = []
+
+    def fake_lchat(prompt, schema, *, system=None, max_tokens=1200, tag="x"):
+        tags.append(tag)
+        if tag.endswith("r1"):
+            return {"json": {"position": "No.", "analysis": "a", "probability": 0.6}}
+        if tag.endswith("r2"):
+            return {"json": {"steelman": "s", "moved": False, "outcome": "hold", "final_position": "No.",
+                             "grounds": "g", "probability": 0.6}}
+        if tag.endswith("bout"):
+            return {"json": {"winner": "A", "margin": 0.2, "grounds": "g"}}
+        if tag.endswith("red"):
+            return {"json": {"breaks": False, "attack": "a", "failing_fact_pattern": "f", "missed_authority": "m",
+                             "severity": "marginal", "durable_because": "d"}}
+        if tag.endswith("chair"):
+            return {"json": {"verdict": "No.", "memo": "m" * 600, "confidence": 0.7, "dissent": "d", "flips_if": "f",
+                             "conditions": "c", "unsettled": False, "assumptions": []}}
+        if tag.endswith("adversary"):
+            assert "AUTHORITY DOSSIER" in prompt
+            return {"json": {"breaks": True, "attack": "you missed the agent rule", "missed_authority": "1022.380(a)(3)",
+                             "failing_fact_pattern": "f", "severity": "material", "what_would_fix_it": "x"}}
+        if tag.endswith("revise"):
+            return {"json": {"verdict": "No, narrowed.", "memo": "revised " * 100, "citations": [], "assumptions": [],
+                             "confidence": 0.6, "dissent": "d", "flips_if": "f", "conditions": "c", "unsettled": False}}
+        return {"json": {"citations": []}}
+    monkeypatch.setattr(c, "_lchat", fake_lchat)
+
+    agg = c.run("Q?", context="PRIORITY: high", vertical="finserv", docket_id="dX")
+    cv = agg["process"]["cross_vendor"]
+    assert cv["ran"] is True and cv["local"] is True and cv["severity"] == "material"
+    assert cv["revised"] is True and agg["verdict"] == "No, narrowed."
+    assert "consilium.local.adversary" in tags and "consilium.local.revise" in tags
+    # the adversary picks a model the chair did not use
+    assert c._local_adversary("q", {"verdict": "v", "memo": "m"}, _local_dossier(), exclude="big-chair")["model"] == "exo:other-model"

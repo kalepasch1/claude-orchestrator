@@ -70,7 +70,10 @@ MAX_TURNS = int(os.environ.get("ORCH_CONSILIUM_MAX_TURNS", "18"))
 # structured call on that dossier. The subscription models become an ESCALATION: only when the local
 # tournament cannot produce a usable, grounded result and ORCH_CONSILIUM_ESCALATE allows it.
 ENGINE = os.environ.get("ORCH_CONSILIUM_ENGINE", "local").strip().lower()          # local | frontier
-ESCALATE = os.environ.get("ORCH_CONSILIUM_ESCALATE", "high").strip().lower()       # never | high | always
+# NEVER by default (operator direction 2026-09-21): the tribunal runs on the smartest LOCAL model the
+# cluster can hold, and no tournament spends paid cloud capacity. Set ORCH_CONSILIUM_ESCALATE=high
+# to let high-priority questions fall back to the subscription tier when the local tier cannot finish.
+ESCALATE = os.environ.get("ORCH_CONSILIUM_ESCALATE", "never").strip().lower()      # never | high | always
 LOCAL_MIN_VERIFIED = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MIN_VERIFIED", "3"))
 LOCAL_MAX_TOKENS = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MAX_TOKENS", "9000"))
 MODE = os.environ.get("ORCH_CONSILIUM_MODE", "two_phase").strip().lower()
@@ -627,15 +630,6 @@ def _enforce_pages(cites, dossier):
     return demoted
 
 
-def _local_debate(user):
-    import local_llm
-    r = local_llm.chat(user, system=_system(None), json_schema=SCHEMA, max_tokens=LOCAL_MAX_TOKENS,
-                       temperature=0.3, timeout=int(os.environ.get("ORCH_CONSILIUM_LOCAL_TIMEOUT_S", "2700")),
-                       tag="consilium.local.tournament")
-    r["turns"] = 1
-    return r
-
-
 # ── the LOCAL tournament: many small calls instead of one large one ─────────────────────────────
 # The frontier tier is rate-limited, so there the whole gauntlet is ONE call. The local tier has the
 # opposite economics: calls are free but a mid-size model cannot emit the full tournament object in
@@ -782,6 +776,24 @@ def local_tournament(question, context, vertical, priority, panel, dossier):
         x.pop("_expert", None)
     return {"seats": seats, "bouts": bouts, "red_team": red, "memo": memo,
             "research": {"queries": [], "sources_opened": [s.get("url") for s in (dossier.get("sources") or [])]}}, calls
+
+
+def _local_adversary(question, memo, dossier, exclude=None):
+    """Attack the memo with a DIFFERENT local model than the one that chaired it. Returns the
+    codex_complete shape. Falls back to the same model only if the cluster holds just one."""
+    import local_llm
+    usable = [m for m in local_llm.MODELS if local_llm.fits(*m.partition(":")[::2])[0]]
+    others = [m for m in usable if not exclude or exclude not in m]
+    pick = (others or usable)[:1]
+    if not pick:
+        return {"error": "no local model available for the adversary", "json": None, "model": None}
+    r = _lchat(ATTACK.format(question=(question or "")[:1500], verdict=_s(memo.get("verdict"))[:600],
+                             memo=_s(memo.get("memo"))[:6000],
+                             citations=json.dumps(memo.get("citations") or [])[:3000])
+               + "\n\nAUTHORITY DOSSIER (the only citable record):\n" + _render_dossier(dossier),
+               ATTACK_SCHEMA, max_tokens=1200, tag="consilium.local.adversary")
+    r.setdefault("model", pick[0])
+    return r
 
 
 # ── the tournament ───────────────────────────────────────────────────────────────────────────────
@@ -943,9 +955,26 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
         except Exception:
             pass
 
-    # Cross-vendor adversary for the questions that matter most.
+    # Independent adversary. A local tournament keeps its adversary local too: a DIFFERENT model from
+    # the one that chaired the debate, so the second opinion is genuinely independent without paying
+    # a cloud provider. Only a frontier-tier tournament uses the cross-vendor (GPT-5.5) adversary.
     cross = {"ran": False}
-    if CROSS_VENDOR and priority == "high" and frontier.codex_available():
+    if CROSS_VENDOR and tier == "local":
+        att = _local_adversary(question, memo, dossier, exclude=(phases.get("local_debate") or {}).get("model"))
+        aj = att.get("json") if isinstance(att.get("json"), dict) else None
+        cross = {"ran": not att.get("error"), "model": att.get("model"), "error": att.get("error") or "",
+                 "severity": (aj or {}).get("severity"), "breaks": (aj or {}).get("breaks"),
+                 "attack": _s((aj or {}).get("attack"))[:1500], "local": True}
+        if aj and str(aj.get("severity", "")).lower() in ("fatal", "material"):
+            rev = _lchat(REVISE.format(question=(question or "")[:1500], memo=json.dumps(memo)[:9000],
+                                       attack=json.dumps(aj)[:3000])
+                         + "\n\nAUTHORITY DOSSIER (the only citable record):\n" + _render_dossier(dossier),
+                         MEMO, max_tokens=3500, tag="consilium.local.revise")
+            rj = rev.get("json")
+            if isinstance(rj, dict) and rj.get("memo") and not rev.get("error"):
+                memo = rj
+                cross["revised"] = True
+    elif CROSS_VENDOR and priority == "high" and frontier.codex_available():
         att = frontier.codex_complete(ATTACK.format(
             question=(question or "")[:1500], verdict=_s(memo.get("verdict"))[:600],
             memo=_s(memo.get("memo"))[:9000],
@@ -957,13 +986,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                  "attack": _s((aj or {}).get("attack"))[:1500]}
         material = aj and str(aj.get("severity", "")).lower() in ("fatal", "material")
         rev = {}
-        if material and tier == "local":
-            import local_llm
-            rev = local_llm.chat(REVISE.format(question=(question or "")[:1500], memo=json.dumps(memo)[:14000],
-                                               attack=json.dumps(aj)[:4000])
-                                 + "\n\nAUTHORITY DOSSIER (the only citable record):\n" + _render_dossier(dossier),
-                                 system=_system(None), json_schema=MEMO, max_tokens=5000, tag="consilium.local.revise")
-        elif material and frontier.available(min_tokens=15000):
+        if material and frontier.available(min_tokens=15000):
             rev = frontier.complete(REVISE.format(question=(question or "")[:1500],
                                                   memo=json.dumps(memo)[:14000],
                                                   attack=json.dumps(aj)[:4000]),
