@@ -112,12 +112,12 @@ cmd_promote() {
     err "$PROD. Until $PROD is merged back into $STAGING, every promote does nothing."
     err "Run: scripts/release_train_sync.sh reabsorb"
     err "Commits on $PROD but not on $STAGING:"
-    git --no-pager log --oneline "$staging_sha".."$prod_sha" | head -20 >&2
+    git --no-pager log --oneline -n 20 "$staging_sha".."$prod_sha" >&2
     return 1
   fi
 
   say "promoting $STAGING -> $PROD ($(git rev-parse --short "$prod_sha") .. $(git rev-parse --short "$staging_sha"))"
-  git --no-pager log --oneline "$prod_sha".."$staging_sha" | head -20
+  git --no-pager log --oneline -n 20 "$prod_sha".."$staging_sha"
   push "$staging_sha:refs/heads/$PROD"
   say "promoted"
 }
@@ -135,7 +135,7 @@ cmd_reabsorb() {
   fi
 
   say "$PROD has commits $STAGING does not:"
-  git --no-pager log --oneline "$staging_sha".."$prod_sha" | head -20
+  git --no-pager log --oneline -n 20 "$staging_sha".."$prod_sha"
 
   if is_ancestor "$staging_sha" "$prod_sha"; then
     # Staging is strictly behind. A fast-forward keeps history linear, which is what the
