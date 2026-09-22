@@ -495,6 +495,35 @@ def _git_dir(repo):
         return ""
 
 
+def _lock_blocks_object_archive(lock_path, current, stale_seconds):
+    """True when this lockfile means "don't touch objects/ this cycle".
+
+    A live holder blocks, and so does a lock young enough to belong to a writer
+    that is merely slow. Both are the documented contract of the caller.
+
+    The third case is why this is a function. A git lockfile is transient by
+    design, so it can vanish between the glob that listed it and the stat that
+    measures it -- and a bare os.path.getmtime() then raises FileNotFoundError
+    straight out of a genexpr, killing the whole janitor run. Observed 9 times
+    in .runtime/logs/queue-janitor.err (90% of that job's tracebacks), on
+    .git/index.lock in this repo and in smarter/prediction-markets-institute:
+    the run died before archive_stale_git_objects_across_projects() reached the
+    remaining repos, so every project after the raising one was skipped
+    silently, and run() never got to its later phases at all.
+
+    A lock that disappeared mid-check is proof a writer was active moments ago,
+    so this fails closed and blocks, exactly as _lock_has_live_holder() does
+    when lsof is unavailable: skipping one cleanup cycle costs nothing, while
+    moving object files out from under a live writer risks the repository.
+    """
+    if _lock_has_live_holder(lock_path):
+        return True
+    try:
+        return os.path.getmtime(lock_path) > current - stale_seconds
+    except OSError:
+        return True
+
+
 def archive_stale_git_objects(repo, stale_min=None, now=None):
     """Preserve stale Git write debris without pruning recoverable work.
 
@@ -509,7 +538,7 @@ def archive_stale_git_objects(repo, stale_min=None, now=None):
     stale_seconds = (GIT_TMP_OBJECT_STALE_MIN if stale_min is None else stale_min) * 60
     current = time.time() if now is None else now
     locks = glob.glob(os.path.join(git_dir, "*.lock"))
-    if any(_lock_has_live_holder(lock) or os.path.getmtime(lock) > current - stale_seconds for lock in locks):
+    if any(_lock_blocks_object_archive(lock, current, stale_seconds) for lock in locks):
         return {"refs": 0, "objects": 0}
     objects = []
     for prefix in glob.glob(os.path.join(git_dir, "objects", "[0-9a-f][0-9a-f]")):
@@ -566,7 +595,18 @@ def archive_stale_git_objects_across_projects():
         repo = project.get("repo_path") or ""
         if not repo or not os.path.isdir(repo):
             continue
-        result = archive_stale_git_objects(repo)
+        # One unhealthy repo must not cost every repo behind it in the loop.
+        # This sweep is ordered by whatever the projects table returns, so an
+        # exception here used to end the whole run: the FileNotFoundError from
+        # this repo's .git/index.lock took out the remaining projects AND the
+        # phases of run() that come after this call, which is what turned a
+        # transient lock race into a 9-occurrence crash loop. Per-repo
+        # isolation keeps the sweep's failure radius to one repo.
+        try:
+            result = archive_stale_git_objects(repo)
+        except Exception as error:
+            print(f"janitor: archive_stale_git_objects({repo}) failed: {error!r}")
+            continue
         refs += result["refs"]
         objects += result["objects"]
     return refs, objects
