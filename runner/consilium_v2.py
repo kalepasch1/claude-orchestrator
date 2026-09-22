@@ -64,6 +64,15 @@ MAX_TURNS = int(os.environ.get("ORCH_CONSILIUM_MAX_TURNS", "18"))
 # call debates on that record — keeps the grounding contract (every citation is an opened URL) and
 # takes the research loop out of the frontier call. Dossiers are cached per question and every
 # opened source goes into an authority cache that later questions on the same vertical reuse.
+# ENGINE (operator direction 2026-09-21): tournaments run on the LOCAL stack — EXO/Ollama, the best
+# model that fits this host — at zero subscription cost. Research is local_research (rule-resolved
+# official URLs fetched by us, quotes verified as substrings of the page), the debate is one local
+# structured call on that dossier. The subscription models become an ESCALATION: only when the local
+# tournament cannot produce a usable, grounded result and ORCH_CONSILIUM_ESCALATE allows it.
+ENGINE = os.environ.get("ORCH_CONSILIUM_ENGINE", "local").strip().lower()          # local | frontier
+ESCALATE = os.environ.get("ORCH_CONSILIUM_ESCALATE", "high").strip().lower()       # never | high | always
+LOCAL_MIN_VERIFIED = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MIN_VERIFIED", "3"))
+LOCAL_MAX_TOKENS = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MAX_TOKENS", "9000"))
 MODE = os.environ.get("ORCH_CONSILIUM_MODE", "two_phase").strip().lower()
 # Research clerk on Sonnet 5 by default (need 6): the dossier is verified mechanically by URL and the
 # debate runs on Fable, so the clerk's job is retrieval, and Sonnet is weighted 0.2 in the ledger.
@@ -471,6 +480,8 @@ def _render_dossier(dossier):
         lines.append(f"[{n}] {src.get('url')} | {_s(src.get('authority'))[:120]} | "
                      f"{_s(src.get('jurisdiction'))[:40]} | {'verified' if src.get('verified') else 'UNVERIFIED'}")
         lines.append(f"    quote: \"{_s(src.get('quote'))[:320]}\" — {_s(src.get('proposition'))[:240]}")
+        if src.get("excerpt"):
+            lines.append(f"    text held (you may quote any span of it verbatim): {_s(src.get('excerpt'))[:1400]}")
     if dossier.get("unresolved"):
         lines.append("UNRESOLVED: " + "; ".join(_s(u)[:160] for u in dossier["unresolved"][:6]))
     return "\n".join(lines)
@@ -559,6 +570,72 @@ def _enforce_dossier(cites, dossier):
     return demoted
 
 
+# ── local engine ─────────────────────────────────────────────────────────────────────────────────
+def ready():
+    """Can a tournament start right now on the configured engine (or its escalation)?"""
+    if not ENABLED:
+        return False
+    if ENGINE == "local":
+        try:
+            import local_llm
+            if local_llm.available():
+                return True
+        except Exception:
+            pass
+        return ESCALATE != "never" and frontier.available(min_tokens=MIN_TOKENS)
+    return frontier.available(min_tokens=MIN_TOKENS)
+
+
+def _local_research(question, context, vertical, docket_id):
+    key = _dossier_key(question, docket_id)
+    cached = _load_dossier(key)
+    if cached and cached.get("_pages") is not None:
+        return cached, {"cached": True, "engine": "local_research", "sources": len(cached.get("sources") or []),
+                        "verified_sources": sum(1 for x in cached["sources"] if x.get("verified")), "tokens_in": 0, "tokens_out": 0}
+    import local_research
+    passages = []
+    try:
+        import corpus_retrieval
+        passages = corpus_retrieval.top_passages(question, k=CORPUS_K)
+    except Exception:
+        passages = []
+    dossier, info = local_research.build(question, context, vertical, corpus_passages=passages,
+                                         cache_hits=_cache_hits(question, vertical))
+    info["corpus_passages"] = len(passages)
+    if dossier:
+        _save_dossier(key, dossier)
+        _append_authority_cache(dossier["sources"], vertical, key)
+    return dossier, info
+
+
+def _enforce_pages(cites, dossier):
+    """LOCAL verification: a citation is verified only when its quote is a verbatim span of the text we
+    hold for that URL. Stricter than the frontier path — the bytes decide, not the model."""
+    pages = {_norm_url(u): t for u, t in ((dossier or {}).get("_pages") or {}).items()}
+    quotes = {_norm_url(x.get("url")): _s(x.get("quote")) for x in (dossier or {}).get("sources") or [] if x.get("verified")}
+    demoted = 0
+    for c in cites:
+        u = _norm_url(c.get("url"))
+        q = re.sub(r"\s+", " ", _s(c.get("quote"))).strip().strip('"“”')
+        page = pages.get(u, "")
+        ok = bool(u) and len(q) >= 20 and ((q in page) if page else (q in quotes.get(u, "") or quotes.get(u, "") == q))
+        if c.get("verified") and not ok:
+            demoted += 1
+        c["verified"] = ok
+        if not ok:
+            c["confidence"] = min(float(c.get("confidence") or 0.5), 0.5)
+    return demoted
+
+
+def _local_debate(user):
+    import local_llm
+    r = local_llm.chat(user, system=_system(None), json_schema=SCHEMA, max_tokens=LOCAL_MAX_TOKENS,
+                       temperature=0.3, timeout=int(os.environ.get("ORCH_CONSILIUM_LOCAL_TIMEOUT_S", "2700")),
+                       tag="consilium.local.tournament")
+    r["turns"] = 1
+    return r
+
+
 # ── the tournament ───────────────────────────────────────────────────────────────────────────────
 def _system(tools):
     return SYSTEM + ("" if tools else DOSSIER_RULES) + (LENGTH_RULES if COMPACT else "")
@@ -588,7 +665,7 @@ def _retryable(r):
 
 def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priority=None):
     """Return the memo-grade aggregate (gauntlet.run() shape) or None to let the legacy path run."""
-    if not ENABLED or not frontier.available(min_tokens=MIN_TOKENS):
+    if not ready():
         return None
     panel = _seat_pool(vertical, seats)
     if len(panel) < 2:
@@ -605,7 +682,34 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     mode = MODE if RESEARCH else "single"
     dossier, phases, fallback = None, {}, None
     tools = frontier.WEB_TOOLS if RESEARCH else None
-    if mode == "two_phase":
+    tier, r = "frontier", None
+    if ENGINE == "local":
+        may_escalate = ESCALATE == "always" or (ESCALATE == "high" and priority == "high")
+        try:
+            dossier, phases["research"] = _local_research(question, context, vertical, docket_id)
+        except Exception as e:
+            dossier, phases["research"] = None, {"error": f"{type(e).__name__}: {str(e)[:160]}", "engine": "local_research"}
+        nver = sum(1 for x in (dossier or {}).get("sources") or [] if x.get("verified"))
+        if dossier and nver >= LOCAL_MIN_VERIFIED:
+            lr = _local_debate(DEBATE_USER.format(dossier=_render_dossier(dossier), **fmt))
+            if _usable(lr):
+                tier, mode, tools, r = "local", "local", None, lr
+            else:
+                phases["local_debate"] = {"error": lr.get("error") or "malformed output", "attempts": lr.get("attempts")}
+        if r is None:
+            why = (phases.get("local_debate") or {}).get("error") or phases["research"].get("error") or f"only {nver} verified local sources"
+            if not (may_escalate and frontier.available(min_tokens=MIN_TOKENS)):
+                print(f"consilium_v2[local]: no usable local tournament ({why}); question stays pending", flush=True)
+                _note_failure(fkey, f"local: {why}")
+                return None
+            print(f"consilium_v2[local]: escalating to the frontier tier ({why})", flush=True)
+            fallback = {"from": "local", "to": "frontier", "reason": str(why)[:200]}
+            if dossier and nver >= LOCAL_MIN_VERIFIED:      # keep the free dossier; pay only for the debate
+                mode, tools = "two_phase", None
+                r = _tournament_call(DEBATE_USER.format(dossier=_render_dossier(dossier), **fmt), None)
+            else:
+                dossier = None
+    if r is None and mode == "two_phase":
         dossier, phases["research"] = _research_phase(question, context, vertical, docket_id)
         if dossier:
             tools = None
@@ -618,10 +722,11 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                 print("consilium_v2: budget cannot fund a single-call tournament; legacy gauntlet will run", flush=True)
                 _note_failure(fkey, phases["research"].get("error") or "research unusable")
                 return None
-    if mode == "single":
-        user = USER.format(**fmt)
-    r = _tournament_call(user, tools)
-    if not _usable(r):
+    if r is None:
+        if mode == "single":
+            user = USER.format(**fmt)
+        r = _tournament_call(user, tools)
+    if tier == "frontier" and not _usable(r):
         # MID-TIER RETRY (2026-09-12). The third live tournament (a prediction-market wagering
         # question, gaming vertical) died after 7 minutes and 199K weighted tokens with "API Error:
         # Fable's safeguards flagged this message" — a content classifier on the frontier tier, not
@@ -644,7 +749,8 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
         _note_failure(fkey, reason)
         return None
     phases["debate"] = {"model": r.get("model"), "tokens_in": r.get("tokens_in"), "tokens_out": r.get("tokens_out"),
-                        "turns": r.get("turns"), "latency_s": r.get("latency_s")}
+                        "turns": r.get("turns"), "latency_s": r.get("latency_s"), "tier": tier,
+                        "provider": r.get("provider"), "tok_per_s": r.get("tok_per_s")}
     j = r["json"]
     memo = j["memo"]
     seats_out = [s for s in (j.get("seats") or []) if isinstance(s, dict)]
@@ -697,19 +803,29 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
         cross = {"ran": not att.get("error"), "model": att.get("model"), "error": att.get("error") or "",
                  "severity": (aj or {}).get("severity"), "breaks": (aj or {}).get("breaks"),
                  "attack": _s((aj or {}).get("attack"))[:1500]}
-        if aj and str(aj.get("severity", "")).lower() in ("fatal", "material") and frontier.available(min_tokens=15000):
+        material = aj and str(aj.get("severity", "")).lower() in ("fatal", "material")
+        rev = {}
+        if material and tier == "local":
+            import local_llm
+            rev = local_llm.chat(REVISE.format(question=(question or "")[:1500], memo=json.dumps(memo)[:14000],
+                                               attack=json.dumps(aj)[:4000])
+                                 + "\n\nAUTHORITY DOSSIER (the only citable record):\n" + _render_dossier(dossier),
+                                 system=_system(None), json_schema=MEMO, max_tokens=5000, tag="consilium.local.revise")
+        elif material and frontier.available(min_tokens=15000):
             rev = frontier.complete(REVISE.format(question=(question or "")[:1500],
                                                   memo=json.dumps(memo)[:14000],
                                                   attack=json.dumps(aj)[:4000]),
                                     system=SYSTEM, need=9, tools=tools, max_turns=10 if tools else 1,
                                     json_schema=MEMO, tag="consilium.revise")
+        if material:
             rj = rev.get("json")
             if isinstance(rj, dict) and rj.get("memo") and not rev.get("error"):
                 memo = rj
                 cross["revised"] = True
 
     cites = [c for c in (memo.get("citations") or []) if isinstance(c, dict)]
-    demoted = _enforce_dossier(cites, dossier) if dossier else 0
+    demoted = (_enforce_pages(cites, dossier) if (dossier and dossier.get("_pages") is not None)
+               else _enforce_dossier(cites, dossier) if dossier else 0)
     verified = [c for c in cites if c.get("verified") and c.get("url")]
     rin = int((phases.get("research") or {}).get("tokens_in") or 0)
     rout = int((phases.get("research") or {}).get("tokens_out") or 0)
@@ -725,7 +841,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                "tokens_in": int(r.get("tokens_in") or 0) + rin, "tokens_out": int(r.get("tokens_out") or 0) + rout,
                "turns": int(r.get("turns") or 0) + int((phases.get("research") or {}).get("turns") or 0),
                "latency_s": round(time.time() - t0, 1),
-               "mode": mode, "phases": phases,
+               "mode": mode, "tier": tier, "cost_weighted": 0 if tier == "local" else None, "phases": phases,
                "dossier_sources": len((dossier or {}).get("sources") or []), "citations_demoted": demoted,
                "fallback": fallback, "cross_vendor": cross}
     agg = {"question": question,
@@ -742,7 +858,8 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
            "process": process}
     _append_transcript({"at": datetime.datetime.utcnow().isoformat(), "docket_id": docket_id,
                         "vertical": vertical, "priority": priority, "question": question,
-                        "tournament": j, "final_memo": memo, "process": process, "dossier": dossier})
+                        "tournament": j, "final_memo": memo, "process": process,
+                        "dossier": {k: v for k, v in (dossier or {}).items() if k != "_pages"} or None})
     print(f"consilium_v2[{mode}]: {r.get('model')} tournament on '{(question or '')[:70]}' -> "
           f"{len(cites)} citations ({len(verified)} verified, {demoted} demoted), red={red.get('severity')}, "
           f"flipped={flipped}, conceded={conceded}, tokens={process['tokens_in']}+{process['tokens_out']} "

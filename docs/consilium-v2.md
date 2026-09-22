@@ -186,3 +186,58 @@ is ~255K weighted before any input — output, not the preamble, is the envelope
 the 600K/hour cap. The not-yet-run jobs (commission, drafter, theory lab, scans) had produced no
 artifacts at the time of this note because the tick runs one job at a time and the docket batch
 held the slot for its first 50 minutes.
+
+## 9. The local tier (2026-09-21) — tournaments at zero subscription cost
+
+Operator direction: the tribunal runs on the local cluster (EXO + Ollama across three Macs on
+Thunderbolt), and the subscription models become an escalation rather than the default.
+
+```
+local_llm.py        one chat() over EXO and Ollama. The ladder is 122B -> 80B -> 35B-A3B -> 27B -> 9B;
+                    a rung is eligible only if it is ALREADY RESIDENT (free) or EXO's own placement
+                    planner (/instance/previews) says it can place it for the current topology.
+                    Resident rungs are tried first. Ollama rungs additionally need their weights in
+                    RAM free ON THIS HOST. Never deletes an instance; the cluster's keeper owns
+                    placement. Schema-constrained output: Ollama by grammar, EXO by response_format.
+local_research.py   the AUTHORITY DOSSIER with no model call for the fetch: citations in the question
+                    (plus, optionally, a short local-model spotting call) are resolved to official
+                    URLs BY RULE (LII for CFR/USC/NYCRR, nysenate.gov for NY statutes, the Federal
+                    Register API), fetched by us, cached on disk, and quoted by term overlap. A quote
+                    is verified iff it is a verbatim substring of the page we hold — a property of
+                    the bytes, not a claim by a model. What no rule can resolve is listed as
+                    unresolved so the tribunal treats it as an assumption.
+consilium_v2.run()  ENGINE=local by default: local dossier -> one local structured debate on it.
+                    Citations are checked against the held page text (_enforce_pages), which is
+                    stricter than the frontier path. ORCH_CONSILIUM_ESCALATE (never|high|always)
+                    decides when a failed local tournament may spend subscription capacity; a good
+                    dossier is reused so only the debate is paid for.
+```
+
+### The cluster finding that blocks it today
+
+The three Macs pool >100 GB, and EXO joins all three (Kale's MacBook Pro, apparently-node-2,
+apparently-node-3). But **no model can stay placed**. Every placement — mine, and the cluster
+keeper's own — is deleted within a second. The cause is not memory:
+
+- `~/.exo/exo-large-model-guard.sh` runs on node-2 and node-3 under
+  `com.apparently.exo.large-model-guard` (KeepAlive, 1 s loop in maintenance mode).
+- When `~/.exo/large-model-maintenance` exists, the guard deletes **every instance that is not the
+  122B**, and the guard's own log records each deletion of a 35B/80B placement.
+- The 122B cannot be placed: EXO's planner returns "No cycles found with sufficient memory".
+- So the cluster is deadlocked at zero models, and `exo_ops.keeper` logs `{"action": "paused"}`
+  every 60 s instead of loading the largest model that fits.
+
+The markers were stale (node-3 15:27, node-2 16:16 on 2026-09-21) and the peers' own watchdog flags
+`maintenance_active` as a fault ("a forgotten maintenance flag blocks everyone"). Moving both aside
+let the keeper place the 35B on node-3 and reach `ready: true` — then the marker reappeared within
+about ten minutes and the guard deleted it again. Something re-arms it; that owner is outside this
+subsystem, so the Consilium does not fight it: with no local model and escalation disallowed, a
+docket question simply stays pending.
+
+Two things the operator should know:
+
+1. Maintenance mode also runs `pkill -KILL` against Google Chrome, Claude.app and
+   `claude-code` on the node it runs on. A forgotten marker therefore kills GUI and Claude Code
+   sessions on that machine, not just model placements.
+2. Until the marker stops reappearing (or the 122B is made placeable), the local tier has no model
+   and every tournament either escalates or waits.

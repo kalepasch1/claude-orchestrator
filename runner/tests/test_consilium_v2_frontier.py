@@ -161,6 +161,7 @@ def test_tournament_retries_once_on_mid_tier_when_frontier_refuses(monkeypatch):
         return {"error": "", "model": kw["model"], "json": good, "tokens_in": 1000, "tokens_out": 500, "turns": 3}
 
     monkeypatch.setattr(c, "ENABLED", True)
+    monkeypatch.setattr(c, "ENGINE", "frontier")
     monkeypatch.setattr(c, "MODE", "single")
     monkeypatch.setattr(c, "CROSS_VENDOR", False)
     monkeypatch.setattr(c, "_seat_pool", lambda v, n: panel)
@@ -201,6 +202,7 @@ def _debate_json(cites):
 
 def _wire(monkeypatch, c, frontier, tmp_path, complete):
     monkeypatch.setattr(c, "ENABLED", True)
+    monkeypatch.setattr(c, "ENGINE", "frontier")   # these cover the subscription path; local has its own tests
     monkeypatch.setattr(c, "MODE", "two_phase")
     monkeypatch.setattr(c, "CROSS_VENDOR", False)
     monkeypatch.setattr(c, "DOSSIER_DIR", str(tmp_path / "dossiers"))
@@ -451,3 +453,125 @@ def test_commission_only_scores_frontier_grade_cards(monkeypatch):
     monkeypatch.setattr(pc.db, "select", fake_select)
     out = pc._candidates(5)
     assert [a["id"] for a in out] == ["v2"] and out[0]["citations"] == [{"source": "s"}]
+
+
+# ── 2026-09-21: the LOCAL engine is the default tier ─────────────────────────────────────────────
+LOCAL_PAGE = ("Sec. 1022.380 Registration of money services businesses. Each money services business must register "
+              "with FinCEN within 180 days after the date the business is established. Unrelated sentence.")
+
+
+def _local_dossier():
+    return {"issues": ["registration"], "unresolved": ["Some Letter (no rule-based URL)"], "queries": [],
+            "sources": [{"url": "https://law.example/1022.380", "title": "31 CFR 1022.380", "authority": "31 CFR 1022.380",
+                         "jurisdiction": "US_FEDERAL", "quote": "must register with FinCEN within 180 days",
+                         "excerpt": LOCAL_PAGE, "proposition": "", "verified": True, "origin": "fetched"},
+                        {"url": "https://law.example/unopened", "title": "x", "authority": "y", "jurisdiction": "US",
+                         "quote": "", "proposition": "", "verified": False, "origin": "fetched"},
+                        {"url": "https://law.example/corpus", "title": "c", "authority": "c", "jurisdiction": "NY",
+                         "quote": "Unrelated sentence.", "proposition": "", "verified": True, "origin": "corpus"},
+                        {"url": "https://law.example/third", "title": "t", "authority": "t", "jurisdiction": "US",
+                         "quote": "Registration of money services businesses.", "proposition": "", "verified": True,
+                         "origin": "fetched"}],
+            "_pages": {"https://law.example/1022.380": LOCAL_PAGE, "https://law.example/corpus": LOCAL_PAGE,
+                       "https://law.example/third": LOCAL_PAGE}}
+
+
+def test_local_engine_runs_the_tournament_free_and_verifies_against_the_page(monkeypatch, tmp_path):
+    import consilium_v2 as c
+    import frontier
+    import local_llm
+    monkeypatch.setattr(c, "ENABLED", True)
+    monkeypatch.setattr(c, "ENGINE", "local")
+    monkeypatch.setattr(c, "CROSS_VENDOR", False)
+    monkeypatch.setattr(c, "DOSSIER_DIR", str(tmp_path / "d"))
+    monkeypatch.setattr(c, "AUTHORITY_CACHE", str(tmp_path / "a.jsonl"))
+    monkeypatch.setattr(c, "FAILURES", str(tmp_path / "f.json"))
+    monkeypatch.setattr(c, "_seat_pool", lambda v, n: _fake_panel())
+    monkeypatch.setattr(c, "_append_transcript", lambda rec: None)
+    monkeypatch.setattr(c.corps, "publication_view", lambda e: {"label": e["public_label"]})
+    monkeypatch.setattr(c.corps, "record_bout", lambda *a, **k: None)
+    monkeypatch.setattr(c.db, "insert", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_local_research", lambda q, ctx, v, d: (_local_dossier(), {"engine": "local_research", "tokens_in": 0, "tokens_out": 0}))
+    monkeypatch.setattr(local_llm, "available", lambda: True)
+
+    def no_frontier(*a, **k):
+        raise AssertionError("the local engine must not spend subscription capacity")
+    monkeypatch.setattr(frontier, "complete", no_frontier)
+    seen = {}
+
+    def local_chat(user, **kw):
+        seen["system"], seen["prompt"] = kw.get("system"), user
+        cites = [{"source": "1022.380", "url": "https://law.example/1022.380",
+                  "quote": "must register with FinCEN within 180 days", "verified": True, "confidence": 0.9},
+                 {"source": "paraphrase", "url": "https://law.example/1022.380",
+                  "quote": "must register with FinCEN within 90 days", "verified": True, "confidence": 0.9},
+                 {"source": "unopened", "url": "https://law.example/unopened", "quote": "", "verified": True, "confidence": 0.9}]
+        return {"error": "", "json": _debate_json(cites), "text": "{}", "model": "Qwen3.5-35B-A3B-4bit",
+                "provider": "exo", "tokens_in": 9000, "tokens_out": 4000, "tok_per_s": 30.0, "attempts": []}
+    monkeypatch.setattr(local_llm, "chat", local_chat)
+
+    agg = c.run("When must an MSB register?", context="PRIORITY: high", vertical="finserv", docket_id="dL")
+    assert "AUTHORITY DOSSIER" in seen["prompt"] and "NO TOOLS IN THIS CALL" in seen["system"]
+    assert "text held" in seen["prompt"]                       # the tribunal reads the page, not just the quote
+    p = agg["process"]
+    assert p["tier"] == "local" and p["mode"] == "local" and p["cost_weighted"] == 0
+    assert p["phases"]["debate"]["provider"] == "exo"
+    # verification is against the bytes we hold: exact span true, altered text and unopened URL false
+    assert [cc["verified"] for cc in agg["citations"]] == [True, False, False]
+    assert p["verified_citations"] == 1 and p["citations_demoted"] == 2
+
+
+def test_local_failure_escalates_only_when_allowed(monkeypatch, tmp_path):
+    import consilium_v2 as c
+    import frontier
+    import local_llm
+    monkeypatch.setattr(c, "ENABLED", True)
+    monkeypatch.setattr(c, "ENGINE", "local")
+    monkeypatch.setattr(c, "CROSS_VENDOR", False)
+    monkeypatch.setattr(c, "DOSSIER_DIR", str(tmp_path / "d"))
+    monkeypatch.setattr(c, "AUTHORITY_CACHE", str(tmp_path / "a.jsonl"))
+    monkeypatch.setattr(c, "FAILURES", str(tmp_path / "f.json"))
+    monkeypatch.setattr(c, "_seat_pool", lambda v, n: _fake_panel())
+    monkeypatch.setattr(c, "_append_transcript", lambda rec: None)
+    monkeypatch.setattr(c.corps, "publication_view", lambda e: {"label": e["public_label"]})
+    monkeypatch.setattr(c.corps, "record_bout", lambda *a, **k: None)
+    monkeypatch.setattr(c.db, "insert", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_local_research", lambda q, ctx, v, d: (_local_dossier(), {"engine": "local_research", "tokens_in": 0, "tokens_out": 0}))
+    monkeypatch.setattr(local_llm, "available", lambda: True)
+    monkeypatch.setattr(local_llm, "chat", lambda user, **kw: {"error": "exo:big: skipped: No cycles found with sufficient memory",
+                                                               "json": None, "text": "", "attempts": []})
+    monkeypatch.setattr(frontier, "available", lambda min_tokens=4000: True)
+    paid = []
+    monkeypatch.setattr(frontier, "complete", lambda prompt, **kw: paid.append(kw.get("tag")) or {
+        "error": "", "json": _debate_json([]), "model": frontier.FABLE, "tokens_in": 12000, "tokens_out": 6000, "turns": 3})
+
+    # low priority + ESCALATE=high -> stays local, question left pending, no spend
+    monkeypatch.setattr(c, "ESCALATE", "high")
+    assert c.run("q?", context="PRIORITY: low", vertical="gaming", docket_id="d1") is None
+    assert paid == []
+    # high priority -> escalates; the free dossier was good enough, so only the DEBATE is paid for
+    agg = c.run("q2?", context="PRIORITY: high", vertical="gaming", docket_id="d2")
+    assert paid == ["consilium.tournament"] and agg["process"]["tier"] == "frontier"
+    assert agg["process"]["fallback"]["from"] == "local" and agg["process"]["mode"] == "two_phase"
+    # never -> no spend at any priority
+    paid.clear()
+    monkeypatch.setattr(c, "ESCALATE", "never")
+    assert c.run("q3?", context="PRIORITY: high", vertical="gaming", docket_id="d3") is None
+    assert paid == []
+
+
+def test_ready_prefers_local_and_does_not_require_subscription_budget(monkeypatch):
+    import consilium_v2 as c
+    import frontier
+    import local_llm
+    monkeypatch.setattr(c, "ENABLED", True)
+    monkeypatch.setattr(c, "ENGINE", "local")
+    monkeypatch.setattr(local_llm, "available", lambda: True)
+    monkeypatch.setattr(frontier, "available", lambda min_tokens=4000: False)
+    assert c.ready() is True                       # local tier needs no budget
+    monkeypatch.setattr(local_llm, "available", lambda: False)
+    monkeypatch.setattr(c, "ESCALATE", "never")
+    assert c.ready() is False                      # no local model and no escalation -> do not convene
+    monkeypatch.setattr(c, "ESCALATE", "high")
+    monkeypatch.setattr(frontier, "available", lambda min_tokens=4000: True)
+    assert c.ready() is True

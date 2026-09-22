@@ -137,9 +137,8 @@ FRONTIER_ONLY = os.environ.get("ORCH_DOCKET_FRONTIER_ONLY", "true").lower() not 
 
 def _frontier_ready():
     try:
-        import frontier
         import consilium_v2
-        return bool(consilium_v2.ENABLED) and frontier.available(min_tokens=consilium_v2.MIN_TOKENS)
+        return consilium_v2.ready()      # engine-aware: the local tier needs no subscription budget
     except Exception:
         return False
 
