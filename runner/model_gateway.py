@@ -224,13 +224,29 @@ def exo_placed_model():
     runners = state.get("runners") or {}
     if not instances or not runners:
         return None
-    # Every runner holding a shard has to be up; a pipeline missing one layer
-    # range cannot generate at all.
-    if not all("RunnerReady" in str(v) or "Ready" in str(v) for v in runners.values()):
-        return None
+
+    # READINESS IS PER INSTANCE, NOT PER CLUSTER (fixed 2026-09-21).
+    #
+    # This first asked whether EVERY runner in /state was ready. On a cluster with
+    # any churn that is almost never true: measured here with one instance fully
+    # ready, /state also held three RunnerLoading and one RunnerIdle left over
+    # from instances that had been torn down, and nine RunnerShuttingDown. So the
+    # ring was serving and this function said None, which made the whole exo
+    # route dead in exactly the conditions it was written for.
+    #
+    # The question that matters is narrower: for ONE instance, is every runner
+    # holding one of ITS shards ready? A pipeline missing a layer range cannot
+    # generate, so all of that instance's runners must be up -- but a stranger's
+    # loading runner says nothing about it. runnerToShard names them.
+    def _ready(runner_id):
+        return "Ready" in str(runners.get(runner_id, ""))
+
     for inst in instances.values():
         try:
-            return next(iter(inst.values()))["shardAssignments"]["modelId"]
+            assignments = next(iter(inst.values()))["shardAssignments"]
+            shard_runners = list((assignments.get("runnerToShard") or {}).keys())
+            if shard_runners and all(_ready(r) for r in shard_runners):
+                return assignments["modelId"]
         except Exception:
             continue
     return None
