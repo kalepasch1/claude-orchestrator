@@ -17,6 +17,10 @@ def _state(model="M", runner_states=("RunnerReady",), extra_runners=("RunnerShut
 def test_instance_readiness_ignores_runners_of_other_instances(monkeypatch):
     import local_llm as L
     assert L.exo_instance_ready("M", state=_state()) is True           # stale RunnerShuttingDown ignored
+    # a runner mid-request is serving, not gone
+    assert L.exo_instance_ready("M", state=_state(runner_states=("RunnerRunning",))) is True
+    assert L.exo_instance_ready("M", state=_state(runner_states=("RunnerReady", "RunnerRunning"))) is True
+    assert L.exo_instance_ready("M", state=_state(runner_states=("RunnerIdle",))) is False
     assert L.exo_instance_ready("M", state=_state(runner_states=("RunnerReady", "RunnerLoading"))) is False
     assert L.exo_instance_ready("OTHER", state=_state()) is False
     assert L.exo_instance_ready("M", state={"instances": {}, "runners": {}}) is False

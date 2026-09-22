@@ -234,6 +234,12 @@ about ten minutes and the guard deleted it again. Something re-arms it; that own
 subsystem, so the Consilium does not fight it: with no local model and escalation disallowed, a
 docket question simply stays pending.
 
+**Resolved 2026-09-21 (operator approved):** the `com.apparently.exo.large-model-guard` job was
+booted out on both peers and both markers moved aside. The keeper immediately placed the 35B-A3B on
+node-3 (42 tok/s) and then upgraded toward the 80B, exactly as its chain intends. Restore the guard
+with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.apparently.exo.large-model-guard.plist`
+on each peer; the markers are kept as `~/.exo/large-model-maintenance.disabled-by-operator-20260921`.
+
 Two things the operator should know:
 
 1. Maintenance mode also runs `pkill -KILL` against Google Chrome, Claude.app and
@@ -241,3 +247,36 @@ Two things the operator should know:
    sessions on that machine, not just model placements.
 2. Until the marker stops reappearing (or the 122B is made placeable), the local tier has no model
    and every tournament either escalates or waits.
+
+## 10. The local tournament, measured (2026-09-21)
+
+The frontier tier is rate-limited, so there the whole gauntlet is ONE call. The local tier has the
+opposite economics — calls are free, but a mid-size model cannot emit the full tournament object.
+Measured: a 27B/35B satisfies a small schema perfectly (verdict+why, 51 tokens) and returns
+malformed output for the full SCHEMA, which needs 6-10K tokens of nested JSON and truncates. So
+`local_tournament()` runs each round as its own call with its own small schema — 5 blind positions,
+5 steelman/settle, 4 bouts, red team, chair, citations — and assembles exactly the object the
+single-call path produces, so Elo, Brier, citation enforcement and the transcript are unchanged.
+
+First end-to-end local tournament (docket question on an RGS aggregator's AI marketing and MSB
+registration), escalation disabled so it had to finish locally or not at all:
+
+| | Frontier single-call (09-12) | Frontier two-phase (09-21) | **Local (09-21)** |
+|---|---|---|---|
+| Subscription tokens | 255K in / 51K out | 9.6K in / 13.5K out | **0** |
+| Budget-weighted cost | ~306K | ~77K | **0** |
+| Wall clock | 11.5 min | 16.5 min | **4.1 min** |
+| Calls | 1 | 2 | 17 (all free) |
+| Citations (verified) | 21 (19) | 20 (12) | 10 (7) |
+| Research phase | inside the paid call | paid | free, 5.6 s, 9/10 verified |
+
+The verification layer earns its place here. The local model produced two fabricated citations — a
+UK casino-licence definition attributed to 31 CFR 1010.100(t)(5), and a mis-stated 31 U.S.C.
+§ 5312(a)(2)(X) — and both were demoted automatically because their quotes are not verbatim spans of
+the pages we hold. The model's `verified: true` claim is never trusted; the bytes decide. The chair's
+red team also returned severity `fatal` on its own leading position, which is the tribunal working
+rather than failing.
+
+Local memo quality is below Fable's, so `ORCH_CONSILIUM_ESCALATE` still decides when a question is
+worth subscription capacity. The difference is that the floor is now free and grounded rather than
+absent.

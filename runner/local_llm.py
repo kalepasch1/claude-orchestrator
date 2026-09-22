@@ -163,6 +163,10 @@ def fits(provider, model, free=None):
 
 
 # ── EXO ──────────────────────────────────────────────────────────────────────────────────────────
+#: runner states in which the model can take a request
+_SERVING = __import__("re").compile(r"Ready|Running")
+
+
 def _runner_state(runners, runner_id):
     v = runners.get(runner_id)
     return next(iter(v.keys())) if isinstance(v, dict) and v else str(v)
@@ -187,7 +191,10 @@ def exo_instance_ready(model, state=None):
         if assign.get("modelId") != model:
             continue
         ids = list((assign.get("nodeToRunner") or {}).values())
-        if ids and all("Ready" in _runner_state(runners, r) for r in ids):
+        # A runner that is mid-request reports RunnerRunning, not RunnerReady. Treating Running as
+        # unavailable (measured 2026-09-21) made a busy model look gone, so the ladder fell through
+        # to an Ollama rung this host could not fund and the call was deferred on host_load.
+        if ids and all(_SERVING.search(_runner_state(runners, r)) for r in ids):
             return True
     return False
 

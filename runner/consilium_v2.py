@@ -636,6 +636,154 @@ def _local_debate(user):
     return r
 
 
+# ── the LOCAL tournament: many small calls instead of one large one ─────────────────────────────
+# The frontier tier is rate-limited, so there the whole gauntlet is ONE call. The local tier has the
+# opposite economics: calls are free but a mid-size model cannot emit the full tournament object in
+# one go. Measured 2026-09-21: a 35B/27B satisfies a small schema perfectly (verdict+why in 51
+# tokens) and returns malformed output for the full SCHEMA, which needs 6-10K tokens of nested JSON
+# and truncates. So locally each round is its own call with its own small schema, and the pieces are
+# assembled into exactly the object the single-call path produces — everything downstream (Elo,
+# Brier, citation enforcement, the transcript) is unchanged.
+R1_SCHEMA = {"type": "object", "properties": {
+    "position": {"type": "string"}, "analysis": {"type": "string"}, "probability": {"type": "number"}},
+    "required": ["position", "analysis", "probability"]}
+R2_SCHEMA = {"type": "object", "properties": {
+    "steelman": {"type": "string"}, "moved": {"type": "boolean"}, "outcome": {"type": "string"},
+    "final_position": {"type": "string"}, "grounds": {"type": "string"}, "probability": {"type": "number"}},
+    "required": ["steelman", "moved", "outcome", "final_position", "grounds", "probability"]}
+BOUT_SCHEMA = {"type": "object", "properties": {
+    "winner": {"type": "string"}, "margin": {"type": "number"}, "grounds": {"type": "string"}},
+    "required": ["winner", "margin", "grounds"]}
+RED_SCHEMA = {"type": "object", "properties": {
+    "breaks": {"type": "boolean"}, "attack": {"type": "string"}, "failing_fact_pattern": {"type": "string"},
+    "missed_authority": {"type": "string"}, "severity": {"type": "string"}, "durable_because": {"type": "string"}},
+    "required": ["breaks", "attack", "failing_fact_pattern", "missed_authority", "severity", "durable_because"]}
+CHAIR_SCHEMA = {"type": "object", "properties": {
+    "verdict": {"type": "string"}, "memo": {"type": "string"}, "confidence": {"type": "number"},
+    "dissent": {"type": "string"}, "flips_if": {"type": "string"}, "conditions": {"type": "string"},
+    "unsettled": {"type": "boolean"}, "assumptions": {"type": "array", "items": {"type": "string"}}},
+    "required": ["verdict", "memo", "confidence", "dissent", "flips_if", "conditions", "unsettled", "assumptions"]}
+CITE_SCHEMA = {"type": "object", "properties": {"citations": {"type": "array", "items": CITATION}},
+               "required": ["citations"]}
+
+LOCAL_BASE = """You are one seat on an adversarial legal tribunal. The AUTHORITY DOSSIER below is the ONLY record
+you may cite: every citation's url must be a dossier URL and its quote must be copied VERBATIM from that
+source's quoted text or the text held with it. Authority you believe exists but cannot find in the dossier
+is an assumption, never a citation. Be concise and specific. Return ONLY the JSON object."""
+
+
+def _lchat(prompt, schema, *, system=None, max_tokens=1200, tag="consilium.local"):
+    import local_llm
+    return local_llm.chat(prompt, system=system or LOCAL_BASE, json_schema=schema, max_tokens=max_tokens,
+                          temperature=0.3, timeout=int(os.environ.get("ORCH_CONSILIUM_LOCAL_TIMEOUT_S", "900")), tag=tag)
+
+
+def _seat_line(e):
+    return f'SEAT "{e.get("public_label")}" | method: {e.get("method")} | domain: {e.get("domain")}'
+
+
+def local_tournament(question, context, vertical, priority, panel, dossier):
+    """Run the five rounds as separate small local calls. Returns the single-call `j` shape, or None."""
+    doc = _render_dossier(dossier)
+    head = (f"QUESTION: {question}\nCONTEXT: {context}\nVERTICAL: {vertical}\nPRIORITY: {priority}\n"
+            f"TODAY: {datetime.date.today().isoformat()}\n\nAUTHORITY DOSSIER:\n{doc}\n")
+    calls = {"r1": 0, "r2": 0, "bouts": 0, "red": 0, "chair": 0, "cites": 0, "failed": 0}
+
+    # R1 BLIND — each seat alone, no seat sees another.
+    seats = []
+    for e in panel:
+        r = _lchat(head + f"\n{_seat_line(e)}\nDOCTRINE: {_s(e.get('doctrine'))[:600]}\n\n"
+                   "ROUND 1 (BLIND). Reasoning ONLY from your own doctrine and the dossier, state your position on the "
+                   "question, your analysis in at most 90 words, and your probability (0-1) that a regulator or court "
+                   "lands there within 24 months.", R1_SCHEMA, tag="consilium.local.r1")
+        j = r.get("json")
+        calls["r1"] += 1
+        if not isinstance(j, dict):
+            calls["failed"] += 1
+            continue
+        seats.append({"seat": e.get("public_label"), "r1_position": _s(j.get("position")),
+                      "r1_analysis": _s(j.get("analysis")), "r1_probability": j.get("probability"),
+                      "_expert": e})
+    if len(seats) < 2:
+        return None, calls
+
+    # R2 STEELMAN + R3 SETTLE — each seat against its most opposed peer.
+    board = "\n".join(f'- {x["seat"]}: {x["r1_position"][:240]} (p={x.get("r1_probability")})' for x in seats)
+    for x in seats:
+        others = [y for y in seats if y is not x]
+        opp = max(others, key=lambda y: abs(float(y.get("r1_probability") or 0.5) - float(x.get("r1_probability") or 0.5)))
+        r = _lchat(head + f"\n{_seat_line(x['_expert'])}\nYOUR R1 POSITION: {x['r1_position'][:400]}\n"
+                   f"ALL R1 POSITIONS:\n{board}\n\nMOST OPPOSED SEAT: {opp['seat']} — {opp['r1_position'][:400]}\n\n"
+                   "ROUND 2 (STEELMAN): argue THAT seat's position at its strongest in at most 80 words, adding the best "
+                   "dossier authority it did not use; a steelman weaker than the original is a failure. Say honestly "
+                   "whether it moved you. ROUND 3 (SETTLE): hold, concede or partially concede — outcome must be one of "
+                   "hold|concede|partial — give your final position, your grounds in at most 60 words, and your "
+                   "probability.", R2_SCHEMA, tag="consilium.local.r2")
+        j = r.get("json") or {}
+        calls["r2"] += 1
+        x.update(steelman_of=opp["seat"], steelman=_s(j.get("steelman")), moved=bool(j.get("moved")),
+                 r3_outcome=_s(j.get("outcome")) or "hold", r3_position=_s(j.get("final_position")) or x["r1_position"],
+                 r3_grounds=_s(j.get("grounds")), r3_probability=j.get("probability", x.get("r1_probability")),
+                 conceded=_s(j.get("grounds")) if str(j.get("outcome", "")).lower() in ("concede", "partial") else "")
+
+    # BOUTS — judged on grounding only.
+    bouts = []
+    pairs = [(seats[i], seats[j]) for i in range(len(seats)) for j in range(i + 1, len(seats))][:4]
+    for a, b in pairs:
+        r = _lchat(head + f"\nSEAT A: {a['seat']} — {a['r3_position'][:400]}\n  grounds: {a.get('r3_grounds','')[:240]}\n"
+                   f"SEAT B: {b['seat']} — {b['r3_position'][:400]}\n  grounds: {b.get('r3_grounds','')[:240]}\n\n"
+                   "Judge this bout on GROUNDING ONLY: did the seat name the operative authority from the dossier, apply "
+                   "it to THESE facts, and acknowledge its limits? Fluent prose with no authority loses to a plain answer "
+                   'that cites correctly. winner must be exactly "A" or "B"; margin 0-1; grounds at most 40 words.',
+                   BOUT_SCHEMA, tag="consilium.local.bout")
+        j = r.get("json") or {}
+        calls["bouts"] += 1
+        if j:
+            bouts.append({"a": a["seat"], "b": b["seat"], "winner": _s(j.get("winner")).strip().upper()[:1],
+                          "margin": j.get("margin", 0.5), "grounds": _s(j.get("grounds"))})
+
+    lead = max(seats, key=lambda x: float(x.get("r3_probability") or 0))
+    r = _lchat(head + f"\nLEADING POSITION ({lead['seat']}): {lead['r3_position'][:600]}\n  grounds: {lead.get('r3_grounds','')[:300]}\n\n"
+               "ROUND 4 (RED TEAM). Attack it: the fact pattern where it fails, the authority it missed or read too "
+               "generously, the jurisdiction where it is simply wrong, the step it assumed rather than established. "
+               "severity must be one of fatal|material|marginal|none. If it holds, say so and say why — a manufactured "
+               "objection is worse than a concession. Attack at most 150 words.", RED_SCHEMA, max_tokens=900,
+               tag="consilium.local.red")
+    calls["red"] += 1
+    red = r.get("json") if isinstance(r.get("json"), dict) else {}
+
+    settled = "\n".join(f'- {x["seat"]} [{x.get("r3_outcome")}]: {x["r3_position"][:300]} (p={x.get("r3_probability")})'
+                        for x in seats)
+    r = _lchat(head + f"\nSETTLED POSITIONS:\n{settled}\n\nRED TEAM: {_s(red.get('attack'))[:600]}\n\n"
+               "ROUND 5 (CHAIR). Write the memo a General Counsel will act on this week, 500-900 words: lead with the "
+               "answer, then the operative authority from the dossier, the application to these facts, the limits, what "
+               "would flip it, and the strongest surviving objection VERBATIM. If the honest answer is unsettled, say so "
+               "and give the decision rule for acting under that uncertainty. List every point you could not ground in "
+               "the dossier under assumptions.", CHAIR_SCHEMA, max_tokens=3000, tag="consilium.local.chair")
+    calls["chair"] += 1
+    chair = r.get("json") if isinstance(r.get("json"), dict) else None
+    if not chair or len(_s(chair.get("memo"))) < 200:
+        return None, calls
+
+    r = _lchat(head + f"\nMEMO:\n{_s(chair.get('memo'))[:6000]}\n\n"
+               "List the citations supporting this memo. EVERY citation must be a dossier source: copy its url exactly, "
+               "copy a VERBATIM quote of at most 40 words from that source's quoted text or held text, set verified true, "
+               "and state the proposition it supports with a confidence 0-1. Do not invent sections, and do not cite "
+               "anything absent from the dossier.", CITE_SCHEMA, max_tokens=2500, tag="consilium.local.cites")
+    calls["cites"] += 1
+    cj = r.get("json") if isinstance(r.get("json"), dict) else {}
+    cites = [c for c in (cj.get("citations") or []) if isinstance(c, dict)]
+
+    memo = {"verdict": _s(chair.get("verdict")), "memo": _s(chair.get("memo")), "citations": cites,
+            "assumptions": chair.get("assumptions") or [], "confidence": chair.get("confidence", 0.5),
+            "dissent": _s(chair.get("dissent")), "flips_if": _s(chair.get("flips_if")),
+            "conditions": _s(chair.get("conditions")), "unsettled": bool(chair.get("unsettled"))}
+    for x in seats:
+        x.pop("_expert", None)
+    return {"seats": seats, "bouts": bouts, "red_team": red, "memo": memo,
+            "research": {"queries": [], "sources_opened": [s.get("url") for s in (dossier.get("sources") or [])]}}, calls
+
+
 # ── the tournament ───────────────────────────────────────────────────────────────────────────────
 def _system(tools):
     return SYSTEM + ("" if tools else DOSSIER_RULES) + (LENGTH_RULES if COMPACT else "")
@@ -691,11 +839,15 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
             dossier, phases["research"] = None, {"error": f"{type(e).__name__}: {str(e)[:160]}", "engine": "local_research"}
         nver = sum(1 for x in (dossier or {}).get("sources") or [] if x.get("verified"))
         if dossier and nver >= LOCAL_MIN_VERIFIED:
-            lr = _local_debate(DEBATE_USER.format(dossier=_render_dossier(dossier), **fmt))
-            if _usable(lr):
-                tier, mode, tools, r = "local", "local", None, lr
+            t1 = time.time()
+            lj, lcalls = local_tournament(question, context, vertical, priority, panel, dossier)
+            if lj:
+                tier, mode, tools = "local", "local", None
+                r = {"json": lj, "error": "", "model": "local", "tokens_in": 0, "tokens_out": 0, "turns": sum(lcalls.values())}
+                phases["local_debate"] = {"calls": lcalls, "latency_s": round(time.time() - t1, 1)}
             else:
-                phases["local_debate"] = {"error": lr.get("error") or "malformed output", "attempts": lr.get("attempts")}
+                phases["local_debate"] = {"error": "local rounds incomplete", "calls": lcalls,
+                                          "latency_s": round(time.time() - t1, 1)}
         if r is None:
             why = (phases.get("local_debate") or {}).get("error") or phases["research"].get("error") or f"only {nver} verified local sources"
             if not (may_escalate and frontier.available(min_tokens=MIN_TOKENS)):

@@ -497,25 +497,37 @@ def test_local_engine_runs_the_tournament_free_and_verifies_against_the_page(mon
     def no_frontier(*a, **k):
         raise AssertionError("the local engine must not spend subscription capacity")
     monkeypatch.setattr(frontier, "complete", no_frontier)
-    seen = {}
+    prompts = []
 
-    def local_chat(user, **kw):
-        seen["system"], seen["prompt"] = kw.get("system"), user
-        cites = [{"source": "1022.380", "url": "https://law.example/1022.380",
-                  "quote": "must register with FinCEN within 180 days", "verified": True, "confidence": 0.9},
-                 {"source": "paraphrase", "url": "https://law.example/1022.380",
-                  "quote": "must register with FinCEN within 90 days", "verified": True, "confidence": 0.9},
-                 {"source": "unopened", "url": "https://law.example/unopened", "quote": "", "verified": True, "confidence": 0.9}]
-        return {"error": "", "json": _debate_json(cites), "text": "{}", "model": "Qwen3.5-35B-A3B-4bit",
-                "provider": "exo", "tokens_in": 9000, "tokens_out": 4000, "tok_per_s": 30.0, "attempts": []}
-    monkeypatch.setattr(local_llm, "chat", local_chat)
+    def fake_lchat(prompt, schema, *, system=None, max_tokens=1200, tag="x"):
+        prompts.append(prompt)
+        if tag.endswith("r1"):
+            return {"json": {"position": "No.", "analysis": "a", "probability": 0.6}}
+        if tag.endswith("r2"):
+            return {"json": {"steelman": "s", "moved": False, "outcome": "hold", "final_position": "No.",
+                             "grounds": "g", "probability": 0.6}}
+        if tag.endswith("bout"):
+            return {"json": {"winner": "A", "margin": 0.2, "grounds": "g"}}
+        if tag.endswith("red"):
+            return {"json": {"breaks": False, "attack": "a", "failing_fact_pattern": "f", "missed_authority": "m",
+                             "severity": "marginal", "durable_because": "d"}}
+        if tag.endswith("chair"):
+            return {"json": {"verdict": "No.", "memo": "m" * 600, "confidence": 0.7, "dissent": "d", "flips_if": "f",
+                             "conditions": "c", "unsettled": False, "assumptions": []}}
+        return {"json": {"citations": [
+            {"source": "exact", "proposition": "p", "confidence": 0.9, "url": "https://law.example/1022.380",
+             "verified": True, "quote": "must register with FinCEN within 180 days"},
+            {"source": "altered", "proposition": "p", "confidence": 0.9, "url": "https://law.example/1022.380",
+             "verified": True, "quote": "must register with FinCEN within 90 days"},
+            {"source": "unopened", "proposition": "p", "confidence": 0.9, "url": "https://law.example/unopened",
+             "verified": True, "quote": ""}]}}
+    monkeypatch.setattr(c, "_lchat", fake_lchat)
 
     agg = c.run("When must an MSB register?", context="PRIORITY: high", vertical="finserv", docket_id="dL")
-    assert "AUTHORITY DOSSIER" in seen["prompt"] and "NO TOOLS IN THIS CALL" in seen["system"]
-    assert "text held" in seen["prompt"]                       # the tribunal reads the page, not just the quote
+    assert any("text held" in p for p in prompts)      # the tribunal reads the page, not just the quote
     p = agg["process"]
     assert p["tier"] == "local" and p["mode"] == "local" and p["cost_weighted"] == 0
-    assert p["phases"]["debate"]["provider"] == "exo"
+    assert p["phases"]["local_debate"]["calls"]["chair"] == 1
     # verification is against the bytes we hold: exact span true, altered text and unopened URL false
     assert [cc["verified"] for cc in agg["citations"]] == [True, False, False]
     assert p["verified_citations"] == 1 and p["citations_demoted"] == 2
@@ -538,8 +550,7 @@ def test_local_failure_escalates_only_when_allowed(monkeypatch, tmp_path):
     monkeypatch.setattr(c.db, "insert", lambda *a, **k: None)
     monkeypatch.setattr(c, "_local_research", lambda q, ctx, v, d: (_local_dossier(), {"engine": "local_research", "tokens_in": 0, "tokens_out": 0}))
     monkeypatch.setattr(local_llm, "available", lambda: True)
-    monkeypatch.setattr(local_llm, "chat", lambda user, **kw: {"error": "exo:big: skipped: No cycles found with sufficient memory",
-                                                               "json": None, "text": "", "attempts": []})
+    monkeypatch.setattr(c, "_lchat", lambda prompt, schema, **kw: {"json": None, "error": "no local model"})
     monkeypatch.setattr(frontier, "available", lambda min_tokens=4000: True)
     paid = []
     monkeypatch.setattr(frontier, "complete", lambda prompt, **kw: paid.append(kw.get("tag")) or {
@@ -575,3 +586,68 @@ def test_ready_prefers_local_and_does_not_require_subscription_budget(monkeypatc
     monkeypatch.setattr(c, "ESCALATE", "high")
     monkeypatch.setattr(frontier, "available", lambda min_tokens=4000: True)
     assert c.ready() is True
+
+
+def test_local_tournament_runs_rounds_as_small_calls_and_assembles_the_single_call_shape(monkeypatch, tmp_path):
+    """A mid-size local model cannot emit the whole tournament object; each round is its own small call."""
+    import consilium_v2 as c
+    panel = [{"id": "e1", "public_label": "Formalist", "method": "doctrinal", "domain": "d", "doctrine": "text first"},
+             {"id": "e2", "public_label": "Realist", "method": "realist", "domain": "d", "doctrine": "enforcement first"},
+             {"id": "e3", "public_label": "Examiner", "method": "supervisory", "domain": "d", "doctrine": "process"}]
+    seen = []
+
+    def fake_lchat(prompt, schema, *, system=None, max_tokens=1200, tag="x"):
+        seen.append((tag, max_tokens, len(json.dumps(schema))))
+        assert "ONLY the JSON object" in (system or c.LOCAL_BASE) and "AUTHORITY DOSSIER" in prompt
+        if tag.endswith("r1"):
+            assert "ROUND 1 (BLIND)" in prompt and "ALL R1 POSITIONS" not in prompt   # blind really is blind
+            return {"json": {"position": "No.", "analysis": "a", "probability": 0.6}}
+        if tag.endswith("r2"):
+            assert "MOST OPPOSED SEAT" in prompt
+            return {"json": {"steelman": "s", "moved": True, "outcome": "partial", "final_position": "No, narrowed.",
+                             "grounds": "g", "probability": 0.55}}
+        if tag.endswith("bout"):
+            return {"json": {"winner": "A", "margin": 0.3, "grounds": "cited the rule"}}
+        if tag.endswith("red"):
+            return {"json": {"breaks": False, "attack": "atk", "failing_fact_pattern": "f",
+                             "missed_authority": "m", "severity": "marginal", "durable_because": "d"}}
+        if tag.endswith("chair"):
+            return {"json": {"verdict": "No.", "memo": "m" * 600, "confidence": 0.7, "dissent": "d",
+                             "flips_if": "f", "conditions": "c", "unsettled": False, "assumptions": ["a1"]}}
+        return {"json": {"citations": [{"source": "s", "proposition": "p", "confidence": 0.9,
+                                        "url": "https://law.example/1022.380", "verified": True, "quote": "q"}]}}
+    monkeypatch.setattr(c, "_lchat", fake_lchat)
+    j, calls = c.local_tournament("Q?", "ctx", "finserv", "high", panel, _local_dossier())
+    assert calls == {"r1": 3, "r2": 3, "bouts": 3, "red": 1, "chair": 1, "cites": 1, "failed": 0}
+    tags = [t for t, _, _ in seen]
+    assert tags[:3] == ["consilium.local.r1"] * 3 and tags[-1].endswith("cites")
+    # every schema stays small enough for a mid-size model
+    assert max(sz for _, _, sz in seen) < 1200
+    # assembled into exactly the shape the single-call path returns
+    assert set(j) == {"seats", "bouts", "red_team", "memo", "research"}
+    assert len(j["seats"]) == 3 and all("_expert" not in x for x in j["seats"])
+    s0 = j["seats"][0]
+    assert s0["r1_position"] == "No." and s0["r3_outcome"] == "partial" and s0["moved"] is True
+    assert s0["steelman_of"] in ("Realist", "Examiner") and s0["conceded"]
+    assert j["bouts"][0]["winner"] == "A" and j["red_team"]["severity"] == "marginal"
+    assert j["memo"]["verdict"] == "No." and j["memo"]["citations"][0]["url"].endswith("1022.380")
+    assert c._usable({"json": j, "error": ""})            # downstream accepts it unchanged
+
+
+def test_local_tournament_gives_up_rather_than_emit_a_hollow_memo(monkeypatch):
+    import consilium_v2 as c
+    panel = [{"id": "e1", "public_label": "A", "method": "m", "domain": "d"},
+             {"id": "e2", "public_label": "B", "method": "n", "domain": "d"}]
+    # chair truncates (the real 35B failure mode) -> no tournament rather than a stub memo
+    monkeypatch.setattr(c, "_lchat", lambda prompt, schema, **kw: (
+        {"json": {"position": "p", "analysis": "a", "probability": 0.5}} if kw.get("tag", "").endswith("r1") else
+        {"json": {"steelman": "s", "moved": False, "outcome": "hold", "final_position": "p", "grounds": "g", "probability": 0.5}} if kw.get("tag", "").endswith("r2") else
+        {"json": {"winner": "A", "margin": 0.1, "grounds": "g"}} if kw.get("tag", "").endswith("bout") else
+        {"json": {"breaks": False, "attack": "a", "failing_fact_pattern": "f", "missed_authority": "m", "severity": "none", "durable_because": "d"}} if kw.get("tag", "").endswith("red") else
+        {"json": {"verdict": "v", "memo": "too short", "confidence": 0.5, "dissent": "", "flips_if": "", "conditions": "", "unsettled": False, "assumptions": []}}))
+    j, calls = c.local_tournament("Q?", "", "gaming", "low", panel, _local_dossier())
+    assert j is None and calls["chair"] == 1
+    # fewer than two seats survive R1 -> stop before spending the rest
+    monkeypatch.setattr(c, "_lchat", lambda prompt, schema, **kw: {"json": None})
+    j, calls = c.local_tournament("Q?", "", "gaming", "low", panel, _local_dossier())
+    assert j is None and calls["r1"] == 2 and calls["failed"] == 2 and calls["chair"] == 0
