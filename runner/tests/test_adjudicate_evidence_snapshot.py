@@ -18,10 +18,28 @@ sys.path.insert(
 
 import adjudicate_evidence_snapshot as ade  # noqa: E402
 
+# Bound every git child explicitly rather than leaning on conftest's guard.
+#
+# runner/tests/conftest.py bounds an unbounded subprocess to 30s and warns
+# UnboundedSubprocessInTest. Under -W error::UserWarning -- which is how the
+# merge train's QA overlay runs the suite -- that warning is an error, so all
+# nine tests in this file failed on arrival and every branch the train rebased
+# reported this file by name. The tests themselves were never broken.
+#
+# 60s matches the siblings that already got this right --
+# test_adjudicate_conflicted_refs.py (the closest one: same adjudicate family,
+# same throwaway-repo fixture) and test_20260816_branch_share_fetch.py both
+# bound their git children at timeout=60.
+GIT_TIMEOUT_S = 60
+
 
 def _run(repo, *args):
     subprocess.run(
-        ["git", "-C", repo] + list(args), check=True, capture_output=True, text=True
+        ["git", "-C", repo] + list(args),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_S,
     )
 
 
@@ -39,7 +57,10 @@ def _commit(repo, message):
         message,
     )
     return subprocess.run(
-        ["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", repo, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_S,
     ).stdout.strip()
 
 
