@@ -74,6 +74,8 @@ JOBS = [
     ("card_freshness",   "card_freshness.py",       ["--apply"], 21600, 600),
     ("benchmark_ingest", "benchmark_ingest.py",     [],        43200, 1500),
     ("corpus_index",     "corpus_retrieval.py",     ["build"], 86400, 3000),
+    # 2026-09-21 — commission-accepted, citation-verified cards -> the law app's advisory intel.
+    ("consilium_export", "consilium_export.py",     ["--apply"], 3600, 600),
 ]
 
 

@@ -280,3 +280,38 @@ rather than failing.
 Local memo quality is below Fable's, so `ORCH_CONSILIUM_ESCALATE` still decides when a question is
 worth subscription capacity. The difference is that the floor is now free and grounded rather than
 absent.
+
+## 11. The output reaches the app (2026-09-21)
+
+Until now every Consilium card stopped in the orchestrator's own control plane. `consilium_admission.py`
+was written as the export contract but has no callers and demands signed counsel/revocation receipts
+that no production row carries, so nothing ever crossed.
+
+The app already had the path its other producer uses: `advisory_intel_propositions` in the
+apparently-law project, unique on `(source_system, source_proposition_id)`, with
+`advisory_intel_sync_log` recording each run. Before this job it held 311 rows from `smarter`, of
+which **309 were `citation_status = uncited`** and 2 verified. Verified citations are precisely what a
+Consilium card carries, so the Consilium became a second source system.
+
+`consilium_export.py` crosses a card only when all three hold:
+
+1. it came from the `consilium_v2` engine;
+2. the publication commission scored it `publish` or `steer_only`;
+3. it carries at least `ORCH_EXPORT_MIN_VERIFIED` (default 3) citations whose quotes were verified
+   against a page we opened. Unverified citations are dropped from the row, not exported beside the
+   verified ones.
+
+Every row lands `counsel_review_status = unreviewed` — the app's own human gate — so nothing reaches
+a customer on the strength of a model. The job never deletes and never edits a reviewed row.
+
+First live export: **24 cards, averaging 12.1 verified citations each**, across US federal, NY, MI,
+NJ, NV, GB and EU. The app's verified-proposition count went from 2 to 26.
+
+Two defects were found by running it for real rather than trusting the dry run:
+
+- Every row first landed `jurisdiction_code = UNKNOWN`, because card citations carry
+  `source/url/quote` but no jurisdiction field. It is now derived from the citation text and URL,
+  with a state signal beating the federal one.
+- The second run returned 409. A PostgREST upsert must name its conflict target; the first run only
+  succeeded because every row was new. With `on_conflict` set, two consecutive runs both report 24
+  upserted and the table holds 24 rows.
