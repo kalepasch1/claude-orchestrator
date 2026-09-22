@@ -54,7 +54,8 @@ def only(findings):
 class TestCatalog(unittest.TestCase):
     def test_forty_six_probes_with_unique_ids(self):
         ids = [p["id"] for p in PROBES]
-        self.assertEqual(len(ids), 48)  # fk_graph_edges + column_inventory joined (facts-only) 2026-09-14
+        self.assertEqual(len(ids), 49)  # fk_graph_edges + column_inventory joined (facts-only) 2026-09-14;
+        # record_tables_tamper_evidence: the probe forge's first fill 2026-09-15
         self.assertEqual(len(set(ids)), len(ids))
         self.assertTrue(all(re.match(r"^[a-z][a-z0-9_]+$", i) for i in ids))
 
@@ -762,6 +763,7 @@ NEW_PROBE_GATES = {
     "large_tables_without_index": ("medium", "performance", ["mysql", "postgres"], "data", ["availability"], None),
     "replication_slots_lagging": ("medium", "availability", ["postgres"], "data", ["availability"], None),
     "updated_at_without_trigger": ("heavy", "audit", ["mysql", "postgres"], "schema", ["audit_trail"], None),
+    "record_tables_tamper_evidence": ("cheap", "audit", ["postgres"], "schema", ["audit_trail"], None),
     "public_storage_buckets": ("cheap", "security", ["postgres"], "data", ["access_control", "data_minimization"],
                                ["supabase"]),
     "supabase_auth_config": ("medium", "security", ["postgres"], "data", ["access_control"], ["supabase"]),
@@ -851,6 +853,20 @@ class TestNewProbeCatalogEntries(unittest.TestCase):
         for role in ("supabase_admin", "authenticator", "postgres", "rds_superuser", "cloudsqlsuperuser"):
             self.assertIn(f"'{role}'", sql)
         self.assertIn("rolcanlogin", sql)
+
+    def test_tamper_evidence_sql_measures_catalogs_and_settings_only(self):
+        sql = probe_by_id("record_tables_tamper_evidence")["sql"]["postgres"]
+        for needle in ("pg_catalog.pg_trigger", "pg_catalog.pg_proc", "information_schema.role_table_grants",
+                       "pg_catalog.pg_roles", "pg_catalog.pg_settings", "tg.tgisinternal", "tableowner",
+                       "rolbypassrls", "'TRUNCATE'", "union all"):
+            self.assertIn(needle, sql)
+        for name in db_probes.TAMPER_SETTINGS:
+            self.assertIn(f"'{name}'", sql, "every change-log setting is named in the statement")
+        for role in ("supabase_admin", "authenticator", "postgres", "rds_superuser"):
+            self.assertIn(f"'{role}'", sql, "platform roles are excluded in SQL, like privileged_login_roles")
+        self.assertNotIn("from public.", sql, "catalog and settings only: never a record table's rows")
+        self.assertEqual(sql.count("count(*) filter"), 2)
+        self.assertEqual(sql.count("count(distinct g.grantee) filter"), 3)
 
 
 class TestNewCatalogParsers(unittest.TestCase):
@@ -961,6 +977,101 @@ class TestNewCatalogParsers(unittest.TestCase):
         self.assertEqual(f["title"], "public.matters has updated_at but no trigger maintains it")
         self.assertEqual(f["fingerprint"], fingerprint("updated_at_without_trigger", "public", "matters"))
         self.assertEqual(run_parse("updated_at_without_trigger", []), [])
+
+    def test_record_tables_tamper_evidence_severities_follow_exposure(self):
+        pid = "record_tables_tamper_evidence"
+
+        def table(name, rls=True, guard=0, stamp=0, unconditional=0, gated=0, truncate=0, names="", upd="f"):
+            return {"kind": "table", "schemaname": "public", "tablename": name, "rowsecurity": rls,
+                    "guard_triggers": guard, "guard_names": "", "stamp_triggers": stamp, "has_updated_at": upd,
+                    "unconditional_rewriters": unconditional, "gated_rewriters": gated, "truncate_grantees": truncate,
+                    "rewriter_names": names}
+        rows = [{"kind": "setting", "setting_name": "wal_level", "setting_value": "logical"},
+                {"kind": "setting", "setting_name": "archive_mode", "setting_value": "off"},
+                {"kind": "setting", "setting_name": "track_commit_timestamp", "setting_value": "off"},
+                {"kind": "setting", "setting_name": "log_statement", "setting_value": "ddl"},
+                # record tables: guarded (no gap), then one per severity rung
+                table("matter_events", guard="1", unconditional=1, gated=2, truncate=3, names="anon,authenticated,service_role"),
+                table("audit_log", rls="f", unconditional="2", names="authenticated,service_role"),
+                table("billing_ledger", gated=1, names="authenticated"),
+                table("signup_history", truncate=1, names="authenticated"),
+                table("delivery_journal"),
+                # mutable tables: rewritable and untraced, stamped, owner-only
+                table("matters", unconditional=1, gated=1, names="authenticated,service_role", upd="t"),
+                table("notes", stamp=1, unconditional=1, names="service_role", upd="t"),
+                table("reference_codes"),
+                "not a row"]
+        facts = {}
+        out = [vocab_ok(self, f, pid) for f in run_parse(pid, rows, facts=facts)]
+        self.assertEqual(len(out), 6, [f["title"] for f in out])
+        self.assertTrue(all(f["category"] == "audit" and f["evidence_kinds"] == ["audit_trail"] for f in out))
+        by = {f["object_name"]: f for f in out if f["object_name"]}
+        self.assertEqual(set(by), {"audit_log", "billing_ledger", "signup_history", "delivery_journal"},
+                         "a guarded record table is not a gap; mutable tables are tallied, not listed")
+        self.assertEqual(by["audit_log"]["severity"], "high")
+        self.assertEqual(by["audit_log"]["title"],
+                         "Record table public.audit_log is rewritable by non-owner roles with no immutability guard")
+        self.assertIn("RLS is OFF", by["audit_log"]["detail"])
+        self.assertIn("authenticated, service_role", by["audit_log"]["detail"])
+        self.assertEqual(by["audit_log"]["metrics"],
+                         {"guard_triggers": 0, "stamp_triggers": 0, "unconditional_rewriters": 2, "gated_rewriters": 0,
+                          "truncate_grantees": 0, "rowsecurity": False, "rewriters": ["authenticated", "service_role"],
+                          "has_updated_at": False})
+        self.assertEqual(by["audit_log"]["fingerprint"], fingerprint(pid, "public", "audit_log"))
+        self.assertEqual(by["billing_ledger"]["severity"], "medium")
+        self.assertIn("rewritable under RLS policy", by["billing_ledger"]["title"])
+        self.assertEqual(by["signup_history"]["severity"], "medium")
+        self.assertIn("can be truncated", by["signup_history"]["title"])
+        self.assertIn("ignores row-level security", by["signup_history"]["detail"])
+        self.assertEqual(by["delivery_journal"]["severity"], "low")
+        self.assertEqual(by["delivery_journal"]["title"], "Record table public.delivery_journal has no immutability guard")
+        self.assertTrue(all(f["direction"] == "undermines" for f in by.values()))
+        self.assertEqual(facts, {"record_tables": 5, "record_tables_unguarded": 4})
+        tally = only([f for f in out if f["fingerprint"] == fingerprint(pid, extra="mutable_tracing")])
+        self.assertEqual((tally["severity"], tally["direction"]), ("low", "undermines"))
+        self.assertEqual(tally["title"], "1 of 3 mutable public tables are rewritable by non-owner roles "
+                                         "with no audit or timestamp trigger")
+        self.assertEqual(tally["metrics"], {"tables": 3, "untraced_rewritable": 1, "with_trigger": 1})
+        self.assertEqual(tally["detail"], "public.matters")
+        posture = only([f for f in out if f["fingerprint"] == fingerprint(pid, extra="change_log_posture")])
+        self.assertEqual((posture["severity"], posture["direction"]), ("info", "undermines"))
+        self.assertEqual(posture["title"], "Change-log posture: wal_level=logical, archive_mode=off, "
+                                           "track_commit_timestamp=off, log_statement=ddl")
+        self.assertEqual(posture["metrics"]["aids"], [])
+        self.assertTrue(posture["metrics"]["wal_archivable"])
+        self.assertEqual(posture["metrics"]["settings"]["log_statement"], "ddl")
+
+    def test_record_tables_tamper_evidence_positives_and_tolerance(self):
+        pid = "record_tables_tamper_evidence"
+        rows = [{"SETTING_NAME": "TRACK_COMMIT_TIMESTAMP", "SETTING_VALUE": "on"},  # no kind, upper-cased: still a setting
+                {"kind": "setting", "setting_name": "log_statement", "setting_value": "mod"},
+                {"kind": "setting", "setting_name": "pgaudit.log", "setting_value": "write"},
+                {"kind": "setting", "setting_name": "wal_level", "setting_value": "minimal"},
+                {"schemaname": "public", "tablename": "matter_events", "guard_triggers": "2", "unconditional_rewriters": 1},
+                {"schemaname": "public", "tablename": "audit_log", "guard_triggers": 1},
+                {"schemaname": "public", "tablename": "matters", "stamp_triggers": "1", "unconditional_rewriters": "1"},
+                {"schemaname": "public", "tablename": "reference_codes"}]
+        facts = {}
+        out = [vocab_ok(self, f, pid) for f in run_parse(pid, rows, facts=facts)]
+        self.assertEqual(len(out), 3, [f["title"] for f in out])
+        self.assertTrue(all(f["direction"] == "supports" and f["severity"] == "info" for f in out))
+        guarded = only([f for f in out if f["fingerprint"] == fingerprint(pid, extra="all_guarded")])
+        self.assertEqual(guarded["title"], "All 2 record tables carry an immutability guard")
+        self.assertEqual(guarded["metrics"], {"tables": 2, "guard_triggers": 3})
+        self.assertEqual(guarded["detail"], "public.matter_events, public.audit_log")
+        tally = only([f for f in out if f["fingerprint"] == fingerprint(pid, extra="mutable_tracing")])
+        self.assertEqual(tally["title"], "All 2 mutable public tables are traced by a trigger or rewritable by the owner only")
+        self.assertEqual(tally["metrics"], {"tables": 2, "untraced_rewritable": 0, "with_trigger": 1})
+        posture = only([f for f in out if f["fingerprint"] == fingerprint(pid, extra="change_log_posture")])
+        self.assertEqual(posture["metrics"]["aids"], ["track_commit_timestamp", "log_statement=mod", "pgaudit.log=write"])
+        self.assertFalse(posture["metrics"]["wal_archivable"])
+        self.assertIn("track_commit_timestamp, log_statement=mod, pgaudit.log=write", posture["detail"])
+        self.assertEqual(facts, {"record_tables": 2, "record_tables_unguarded": 0})
+        self.assertEqual(run_parse(pid, []), [])
+        self.assertEqual(run_parse(pid, [None, 3, "x"]), [], "junk rows are ignored, never raised on")
+        settings_only = run_parse(pid, [{"kind": "setting", "setting_name": "wal_level", "setting_value": "replica"}])
+        self.assertEqual([f["fingerprint"] for f in settings_only], [fingerprint(pid, extra="change_log_posture")])
+        self.assertEqual(settings_only[0]["direction"], "undermines", "wal_level alone records nothing")
 
     def test_idle_in_transaction_sessions(self):
         rows = [{"pid": 7, "usename": "app", "application_name": "worker", "state": "idle in transaction", "idle_s": "400.2", "xact_age_s": 500},

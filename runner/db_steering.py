@@ -930,6 +930,14 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
             out["deploy_gate"] = gate.run_cycle()
         except Exception as e:
             print("db_steering: deploy gate failed: %s" % str(e)[:120])
+    forge = _import("db_probe_forge")
+    if forge is not None:
+        # Demand-driven catalog growth: unassessed memo arguments become proposal PRs
+        # (plan-only unless ORCH_DB_FORGE=1). Runs after everything that produces evidence.
+        try:
+            out["probe_forge"] = forge.forge_run()
+        except Exception as e:
+            print("db_steering: probe forge failed: %s" % str(e)[:120])
     out["duration_s"] = round(time.time() - started, 1)
     print("db_steering: " + json.dumps(out, default=str))
     return out
