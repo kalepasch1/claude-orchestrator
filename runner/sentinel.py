@@ -299,6 +299,30 @@ def checkout_guard(st=None):
                         f"work is still dirty in the working tree, NOT lost; leaving the checkout "
                         f"on '{branch}' rather than risking it")
                     return
+                # MIRROR BEFORE THE BRANCH SWITCH (2026-09-21), for the same reason the
+                # drift path below does it: `checkout -b` is the point of no return for
+                # this working tree, and until the stash is a ref on origin the only copy
+                # of the operator's work is a reflog entry that `git stash clear`, a reset
+                # or a fresh clone destroys without warning or trace.
+                #
+                # This rescue path was added after TestNoWorkIsLeftOnlyInAStash and
+                # reintroduced the shape that test class was written against. It pops
+                # immediately and reports loudly, which is why it looked safe — but
+                # between the push and the pop the work existed in exactly one place, and
+                # that place is the reflog. Best-effort: a failed archive is logged as
+                # LOCAL-ONLY and never blocks the rescue it runs inside.
+                try:
+                    _sha = (git("rev-parse", "stash@{0}").stdout or "").strip()
+                    if _sha:
+                        _ref = f"refs/archive/sentinel-drift/{int(time.time())}"
+                        git("update-ref", _ref, _sha)
+                        _pr = git("push", "origin", f"{_ref}:{_ref}")
+                        log("rescue-stash-archived",
+                            f"{_label} mirrored to {_ref} on origin"
+                            if _pr.returncode == 0 else
+                            f"{_label} is LOCAL-ONLY — archive push failed")
+                except Exception as _exc:
+                    log("rescue-stash-archived", f"{_label} is LOCAL-ONLY ({_exc})")
                 _cb = git("checkout", "-b", hb)
                 if _cb.returncode != 0:
                     git("stash", "pop")   # put the operator's work back where it was
