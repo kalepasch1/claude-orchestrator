@@ -12,16 +12,27 @@ app's .env as a fallback, and exposes the same tiny select() shape db.py does.
 
 READ-ONLY BY DESIGN. Nothing here writes. The corpus has its own review workflow (human review
 raises standing and gates nothing — see apparently-law/docs/corpus-migrations/README.md); the
-experts consume it and propose, they never mutate it. Fail-soft: any error returns [].
+experts consume it and propose, they never mutate it. Legacy callers remain fail-soft;
+strict callers distinguish an unavailable corpus from a successful empty read.
 """
 from __future__ import annotations
 import json
 import os
+import math
+import urllib.error
 import urllib.parse
 import urllib.request
 
 APPARENTLY_LAW_DIR = os.environ.get("APPARENTLY_LAW_DIR", os.path.expanduser("~/Documents/apparently-law"))
 _CREDS = None
+MAX_READ_BYTES = 4 * 1024 * 1024
+
+
+class CorpusReadError(RuntimeError):
+    """Sanitized operational reason: never includes source text, URLs or credentials."""
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
 
 
 def _creds():
@@ -54,37 +65,77 @@ def available():
     return bool(url and key)
 
 
-def select(table, params=None, timeout=40):
-    """GET /rest/v1/<table>?<params>. Returns a list (possibly empty). Never raises."""
+def select(table, params=None, timeout=40, *, strict=False):
+    """Bounded GET. strict=True raises CorpusReadError rather than returning false emptiness."""
     url, key = _creds()
     if not (url and key):
+        if strict:
+            raise CorpusReadError("corpus_unconfigured")
         return []
     qs = urllib.parse.urlencode(params or {}, safe=".,()*:")
     req = urllib.request.Request(f"{url}/rest/v1/{table}" + (f"?{qs}" if qs else ""),
                                  headers={"apikey": key, "Authorization": f"Bearer {key}",
                                           "Accept": "application/json"})
     try:
+        timeout = float(timeout)
+        timeout = min(40, max(1, timeout)) if math.isfinite(timeout) else 40
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            rows = json.loads(r.read().decode("utf-8", "replace"))
-        return rows if isinstance(rows, list) else []
+            raw = r.read(MAX_READ_BYTES + 1)
+        if len(raw) > MAX_READ_BYTES:
+            raise CorpusReadError("corpus_response_budget")
+        rows = json.loads(raw.decode("utf-8"))
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise CorpusReadError("corpus_response_invalid")
+        return rows
+    except urllib.error.HTTPError as error:
+        reason = ("corpus_auth_error" if error.code in (401, 403) else
+                  "corpus_query_error" if 400 <= error.code < 500 and error.code != 429 else
+                  "corpus_unavailable")
+        error.close()
+    except CorpusReadError as error:
+        reason = error.reason
+    except (ValueError, UnicodeError, TypeError):
+        reason = "corpus_response_invalid"
     except Exception:
-        return []
+        reason = "corpus_unavailable"
+    if strict:
+        raise CorpusReadError(reason) from None
+    return []
 
 
-def document_text(doc_id, max_chars=60000):
-    """Reassemble a document's text from its clause rows (ordered), capped."""
-    rows = select("corpus_clauses", {"select": "clause_id,heading,text", "doc_id": f"eq.{doc_id}",
-                                     "order": "clause_id.asc", "limit": "400"})
-    parts, n = [], 0
-    for r in rows:
-        t = (r.get("text") or "").strip()
-        if not t:
-            continue
-        parts.append(t)
-        n += len(t) + 2
-        if n >= max_chars:
-            break
-    return "\n\n".join(parts)[:max_chars]
+def document_text(doc_id, max_chars=60000, *, strict=False):
+    """Ordered clause source text, then the original document text if no usable clauses.
+
+    A failed clause query NEVER permits fallback: it is not evidence of missing
+    clauses. Only source text is read; summaries and generated material are excluded.
+    """
+    try:
+        max_chars = min(60000, max(0, int(max_chars)))
+        rows = select("corpus_clauses", {"select": "clause_id,heading,text", "doc_id": f"eq.{doc_id}",
+                                         "order": "clause_id.asc", "limit": "400"}, strict=True)
+        parts, n = [], 0
+        for row in rows:
+            value = row.get("text")
+            if value is not None and not isinstance(value, str):
+                raise CorpusReadError("corpus_response_invalid")
+            text = (value or "").strip()
+            if not text:
+                continue
+            parts.append(text)
+            n += len(text) + 2
+            if n >= max_chars:
+                break
+        if parts:
+            return "\n\n".join(parts)[:max_chars]
+        rows = select("corpus_documents", {"select": "text", "doc_id": f"eq.{doc_id}", "limit": "1"}, strict=True)
+        value = rows[0].get("text") if rows else None
+        if value is not None and not isinstance(value, str):
+            raise CorpusReadError("corpus_response_invalid")
+        return (value or "").strip()[:max_chars]
+    except CorpusReadError:
+        if strict:
+            raise
+        return ""
 
 
 def recent_feed(days=45, limit=40):

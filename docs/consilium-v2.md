@@ -186,3 +186,132 @@ is ~255K weighted before any input — output, not the preamble, is the envelope
 the 600K/hour cap. The not-yet-run jobs (commission, drafter, theory lab, scans) had produced no
 artifacts at the time of this note because the tick runs one job at a time and the docket batch
 held the slot for its first 50 minutes.
+
+## 9. The local tier (2026-09-21) — tournaments at zero subscription cost
+
+Operator direction: the tribunal runs on the local cluster (EXO + Ollama across three Macs on
+Thunderbolt), and the subscription models become an escalation rather than the default.
+
+```
+local_llm.py        one chat() over EXO and Ollama. The ladder is 122B -> 80B -> 35B-A3B -> 27B -> 9B;
+                    a rung is eligible only if it is ALREADY RESIDENT (free) or EXO's own placement
+                    planner (/instance/previews) says it can place it for the current topology.
+                    Resident rungs are tried first. Ollama rungs additionally need their weights in
+                    RAM free ON THIS HOST. Never deletes an instance; the cluster's keeper owns
+                    placement. Schema-constrained output: Ollama by grammar, EXO by response_format.
+local_research.py   the AUTHORITY DOSSIER with no model call for the fetch: citations in the question
+                    (plus, optionally, a short local-model spotting call) are resolved to official
+                    URLs BY RULE (LII for CFR/USC/NYCRR, nysenate.gov for NY statutes, the Federal
+                    Register API), fetched by us, cached on disk, and quoted by term overlap. A quote
+                    is verified iff it is a verbatim substring of the page we hold — a property of
+                    the bytes, not a claim by a model. What no rule can resolve is listed as
+                    unresolved so the tribunal treats it as an assumption.
+consilium_v2.run()  ENGINE=local by default: local dossier -> one local structured debate on it.
+                    Citations are checked against the held page text (_enforce_pages), which is
+                    stricter than the frontier path. ORCH_CONSILIUM_ESCALATE (never|high|always)
+                    decides when a failed local tournament may spend subscription capacity; a good
+                    dossier is reused so only the debate is paid for.
+```
+
+### The cluster finding that blocks it today
+
+The three Macs pool >100 GB, and EXO joins all three (Kale's MacBook Pro, apparently-node-2,
+apparently-node-3). But **no model can stay placed**. Every placement — mine, and the cluster
+keeper's own — is deleted within a second. The cause is not memory:
+
+- `~/.exo/exo-large-model-guard.sh` runs on node-2 and node-3 under
+  `com.apparently.exo.large-model-guard` (KeepAlive, 1 s loop in maintenance mode).
+- When `~/.exo/large-model-maintenance` exists, the guard deletes **every instance that is not the
+  122B**, and the guard's own log records each deletion of a 35B/80B placement.
+- The 122B cannot be placed: EXO's planner returns "No cycles found with sufficient memory".
+- So the cluster is deadlocked at zero models, and `exo_ops.keeper` logs `{"action": "paused"}`
+  every 60 s instead of loading the largest model that fits.
+
+The markers were stale (node-3 15:27, node-2 16:16 on 2026-09-21) and the peers' own watchdog flags
+`maintenance_active` as a fault ("a forgotten maintenance flag blocks everyone"). Moving both aside
+let the keeper place the 35B on node-3 and reach `ready: true` — then the marker reappeared within
+about ten minutes and the guard deleted it again. Something re-arms it; that owner is outside this
+subsystem, so the Consilium does not fight it: with no local model and escalation disallowed, a
+docket question simply stays pending.
+
+**Resolved 2026-09-21 (operator approved):** the `com.apparently.exo.large-model-guard` job was
+booted out on both peers and both markers moved aside. The keeper immediately placed the 35B-A3B on
+node-3 (42 tok/s) and then upgraded toward the 80B, exactly as its chain intends. Restore the guard
+with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.apparently.exo.large-model-guard.plist`
+on each peer; the markers are kept as `~/.exo/large-model-maintenance.disabled-by-operator-20260921`.
+
+Two things the operator should know:
+
+1. Maintenance mode also runs `pkill -KILL` against Google Chrome, Claude.app and
+   `claude-code` on the node it runs on. A forgotten marker therefore kills GUI and Claude Code
+   sessions on that machine, not just model placements.
+2. Until the marker stops reappearing (or the 122B is made placeable), the local tier has no model
+   and every tournament either escalates or waits.
+
+## 10. The local tournament, measured (2026-09-21)
+
+The frontier tier is rate-limited, so there the whole gauntlet is ONE call. The local tier has the
+opposite economics — calls are free, but a mid-size model cannot emit the full tournament object.
+Measured: a 27B/35B satisfies a small schema perfectly (verdict+why, 51 tokens) and returns
+malformed output for the full SCHEMA, which needs 6-10K tokens of nested JSON and truncates. So
+`local_tournament()` runs each round as its own call with its own small schema — 5 blind positions,
+5 steelman/settle, 4 bouts, red team, chair, citations — and assembles exactly the object the
+single-call path produces, so Elo, Brier, citation enforcement and the transcript are unchanged.
+
+First end-to-end local tournament (docket question on an RGS aggregator's AI marketing and MSB
+registration), escalation disabled so it had to finish locally or not at all:
+
+| | Frontier single-call (09-12) | Frontier two-phase (09-21) | **Local (09-21)** |
+|---|---|---|---|
+| Subscription tokens | 255K in / 51K out | 9.6K in / 13.5K out | **0** |
+| Budget-weighted cost | ~306K | ~77K | **0** |
+| Wall clock | 11.5 min | 16.5 min | **4.1 min** |
+| Calls | 1 | 2 | 17 (all free) |
+| Citations (verified) | 21 (19) | 20 (12) | 10 (7) |
+| Research phase | inside the paid call | paid | free, 5.6 s, 9/10 verified |
+
+The verification layer earns its place here. The local model produced two fabricated citations — a
+UK casino-licence definition attributed to 31 CFR 1010.100(t)(5), and a mis-stated 31 U.S.C.
+§ 5312(a)(2)(X) — and both were demoted automatically because their quotes are not verbatim spans of
+the pages we hold. The model's `verified: true` claim is never trusted; the bytes decide. The chair's
+red team also returned severity `fatal` on its own leading position, which is the tribunal working
+rather than failing.
+
+Local memo quality is below Fable's, so `ORCH_CONSILIUM_ESCALATE` still decides when a question is
+worth subscription capacity. The difference is that the floor is now free and grounded rather than
+absent.
+
+## 11. The output reaches the app (2026-09-21)
+
+Until now every Consilium card stopped in the orchestrator's own control plane. `consilium_admission.py`
+was written as the export contract but has no callers and demands signed counsel/revocation receipts
+that no production row carries, so nothing ever crossed.
+
+The app already had the path its other producer uses: `advisory_intel_propositions` in the
+apparently-law project, unique on `(source_system, source_proposition_id)`, with
+`advisory_intel_sync_log` recording each run. Before this job it held 311 rows from `smarter`, of
+which **309 were `citation_status = uncited`** and 2 verified. Verified citations are precisely what a
+Consilium card carries, so the Consilium became a second source system.
+
+`consilium_export.py` crosses a card only when all three hold:
+
+1. it came from the `consilium_v2` engine;
+2. the publication commission scored it `publish` or `steer_only`;
+3. it carries at least `ORCH_EXPORT_MIN_VERIFIED` (default 3) citations whose quotes were verified
+   against a page we opened. Unverified citations are dropped from the row, not exported beside the
+   verified ones.
+
+Every row lands `counsel_review_status = unreviewed` — the app's own human gate — so nothing reaches
+a customer on the strength of a model. The job never deletes and never edits a reviewed row.
+
+First live export: **24 cards, averaging 12.1 verified citations each**, across US federal, NY, MI,
+NJ, NV, GB and EU. The app's verified-proposition count went from 2 to 26.
+
+Two defects were found by running it for real rather than trusting the dry run:
+
+- Every row first landed `jurisdiction_code = UNKNOWN`, because card citations carry
+  `source/url/quote` but no jurisdiction field. It is now derived from the citation text and URL,
+  with a state signal beating the federal one.
+- The second run returned 409. A PostgREST upsert must name its conflict target; the first run only
+  succeeded because every row was new. With `on_conflict` set, two consecutive runs both report 24
+  upserted and the table holds 24 rows.

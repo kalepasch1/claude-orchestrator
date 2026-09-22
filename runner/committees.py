@@ -840,7 +840,35 @@ def _relevant(title, body, committees):
     return sel[:MAX_COMMITTEES + 1] if sel else committees[:MAX_COMMITTEES]
 
 
+CONSILIUM_CODE = os.environ.get("ORCH_COMMITTEES_CONSILIUM", "true").lower() not in ("0", "false", "no", "off")
+CONSILIUM_CODE_MIN_MATERIALITY = float(os.environ.get("ORCH_COMMITTEES_CONSILIUM_MIN_MATERIALITY", "0.5"))
+
+
+def _consilium_code_review(title, body, app=None):
+    """2026-09-12: material coding decisions that carry a diff go to the Consilium engineering tribunal
+    (one frontier call, verbatim-quoted findings) instead of the local-model panels. None -> legacy path."""
+    if not CONSILIUM_CODE:
+        return None
+    try:
+        import consilium_v2
+        if not consilium_v2.has_diff(body):
+            return None
+        mat = issue_materiality(title, body)
+        if mat < CONSILIUM_CODE_MIN_MATERIALITY:
+            return None
+        agg = consilium_v2.run_code(title, body, project=app, blast_radius=mat)
+        if agg:
+            agg["materiality"] = mat
+        return agg
+    except Exception as e:  # fail-soft by contract
+        print(f"committees: consilium code review unavailable ({type(e).__name__}: {str(e)[:100]}); panels will run", flush=True)
+        return None
+
+
 def review(subject_type, subject_id, title, body, app=None):
+    _v2 = _consilium_code_review(title, body, app)
+    if _v2:
+        return _v2
     # ADAPTIVE: assemble the optimal expert panels for THIS issue on the fly (no fixed committees).
     committees = _triage_panels(title, body, app)
     panel = []

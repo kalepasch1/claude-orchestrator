@@ -41,6 +41,7 @@ os.environ.pop("NODE_ENV", None)
 # Load the normal configuration before applying subsystem fallbacks. Shell/launchd values
 # still win through db._load_env's setdefault; central runner/.env must win over these defaults.
 import db  # noqa: E402  (loads runner/.env with setdefault)
+from consilium_outcomes import classify_outcome  # noqa: E402
 
 _DEFAULTS = {
     "ORCH_CONSILIUM_V2": "true",
@@ -73,6 +74,8 @@ JOBS = [
     ("card_freshness",   "card_freshness.py",       ["--apply"], 21600, 600),
     ("benchmark_ingest", "benchmark_ingest.py",     [],        43200, 1500),
     ("corpus_index",     "corpus_retrieval.py",     ["build"], 86400, 3000),
+    # 2026-09-21 — commission-accepted, citation-verified cards -> the law app's advisory intel.
+    ("consilium_export", "consilium_export.py",     ["--apply"], 3600, 600),
 ]
 
 
@@ -193,7 +196,8 @@ def run_job(name, script, args, timeout_s):
         _log(f"{name} rc={proc.returncode} in {time.time() - t0:.0f}s" +
              ("\n    " + "\n    ".join(tail) if tail else "") +
              ("\n    stderr: " + " | ".join(err) if err and proc.returncode != 0 else ""))
-        return {"rc": proc.returncode, "secs": round(time.time() - t0), "tail": tail[-3:]}
+        outcome = classify_outcome(name, proc.stdout, proc.returncode)
+        return {"rc": proc.returncode, "secs": round(time.time() - t0), "tail": tail[-3:], **outcome}
     except subprocess.TimeoutExpired:
         _log(f"{name} TIMEOUT after {timeout_s}s")
         return {"rc": -1, "secs": timeout_s, "tail": ["timeout"]}
@@ -203,17 +207,34 @@ def run_job(name, script, args, timeout_s):
 
 
 def _record_result(state, name, result):
-    """A resource deferral is an attempt, never a completed run or a new due date."""
+    """Attempt, execution completion, reported production, and absorption are distinct.
+
+    `at` retains the legacy scheduling timestamp; `last_attempt` remains retry-only
+    for older consumers. `latest_attempt` is the honest receipt for every attempt.
+    """
     now = time.time()
+    previous = state.get(name)
+    previous = previous if isinstance(previous, dict) else {}
+    latest = {"at": now, **{k: result[k] for k in (
+        "status", "reason", "rc", "secs", "partial", "execution_success", "evidence",
+        "counters", "absorption", "value") if k in result}}
+    latest.setdefault("status", "failed" if result.get("rc") not in (0, None) else "unverified")
+    latest.setdefault("execution_success", result.get("rc") == 0)
+    latest.setdefault("absorption", "unverified")
+    latest.setdefault("value", "unverified")
     if result.get("deferred") is True:
-        previous = state.get(name)
         previous_attempt = previous.get("last_attempt") if isinstance(previous, dict) else None
         attempts = min(7, int(_finite_number(previous_attempt.get("attempts"))) + 1) if isinstance(previous_attempt, dict) else 1
         state[name] = {**(previous if isinstance(previous, dict) else {}),
                        "last_attempt": {"at": now, "attempts": attempts, "retry_after": now + _retry_delay(attempts), **{k: result[k] for k in
                                         ("status", "reason", "rc", "secs", "partial") if k in result}}}
     else:
-        state[name] = {"at": now, **result}
+        state[name] = {"at": now, **result,
+                       **{k: previous[k] for k in ("last_productive_at", "last_productive_outcome") if k in previous}}
+        if result.get("status") in ("produced", "work_done"):
+            state[name]["last_productive_at"] = now
+            state[name]["last_productive_outcome"] = latest
+    state[name]["latest_attempt"] = latest
     _save(state)
     heartbeat(state)
 
@@ -290,7 +311,10 @@ def status():
                      "last_run": datetime.datetime.fromtimestamp(last).isoformat() if last else None,
                      "due_in_min": max(0, round((last + interval - now) / 60)) if last else 0,
                      "rc": st.get("rc"), "secs": st.get("secs"),
-                     "last_attempt": st.get("last_attempt")})
+                     "last_attempt": st.get("last_attempt"),
+                     "latest_attempt": st.get("latest_attempt"),
+                     "last_productive_at": st.get("last_productive_at"),
+                     "outcome_evidence": "reported_only; absorption and value unverified"})
     try:
         import frontier
         fb = frontier.status()

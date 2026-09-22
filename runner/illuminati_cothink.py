@@ -130,13 +130,54 @@ def review(phase: str, subject: Dict[str, Any]) -> Dict[str, Any]:
         return {"phase": phase, "verdict": "review",
                 "rationale": f"unknown phase '{phase}'", "dimensions": [], "degraded": False}
     if not ENABLED:
-        return _degraded(phase, "co-think disabled by ORCH_ILLUMINATI_COTHINK")
+        base = _degraded(phase, "co-think disabled by ORCH_ILLUMINATI_COTHINK")
+    else:
+        try:
+            raw = _post("/api/cade/review", {"phase": phase, "subject": subject or {}})
+            base = _normalize(raw, phase)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError,
+                ValueError, RuntimeError) as e:
+            base = _degraded(phase, str(e)[:200])
+    if phase == "premerge":
+        base = _with_consilium(base, subject or {})
+    return base
+
+
+CONSILIUM_PREMERGE = os.environ.get("ORCH_ILLUMINATI_CONSILIUM", "true").lower() not in ("0", "false", "no", "off")
+_STRICTNESS = {"proceed": 0, "review": 1, "escalate": 2}
+
+
+def _with_consilium(base: Dict[str, Any], subject: Dict[str, Any]) -> Dict[str, Any]:
+    """2026-09-12: pre-merge verdicts also run the Consilium engineering tribunal over the diff and take
+    the STRICTER of the two verdicts. A degraded remote verdict (Illuminati unreachable) is replaced by
+    the tribunal's when it ran. Fail-soft: any error leaves `base` untouched."""
+    if not CONSILIUM_PREMERGE:
+        return base
     try:
-        raw = _post("/api/cade/review", {"phase": phase, "subject": subject or {}})
-        return _normalize(raw, phase)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError,
-            ValueError, RuntimeError) as e:
-        return _degraded(phase, str(e)[:200])
+        import consilium_v2
+        diff = subject.get("diff") or subject.get("body") or subject.get("description") or ""
+        if not consilium_v2.has_diff(diff):
+            return base
+        agg = consilium_v2.run_code(subject.get("title") or subject.get("task_title") or "pre-merge review",
+                                    subject.get("body") or "", diff, project=subject.get("project"),
+                                    blast_radius=float(subject.get("blast_radius") or 0.7))
+        if not agg:
+            return base
+        mine = {"approve": "proceed", "revise": "review", "block": "escalate"}.get(agg.get("verdict"), "review")
+        dims = [{"dimension": f"code:{f.get('severity')}", "finding": f.get("claim"), "file": f.get("file"),
+                 "evidence": f.get("evidence"), "verified": f.get("verified")} for f in (agg.get("findings") or [])[:12]]
+        out = dict(base)
+        if base.get("degraded") or _STRICTNESS.get(mine, 1) > _STRICTNESS.get(base.get("verdict"), 0):
+            out["verdict"] = mine
+            out["rationale"] = (f"Consilium engineering tribunal: {agg.get('summary') or ''}"[:1500]
+                                + (f" | Illuminati: {base.get('rationale')}"[:1500] if base.get("rationale") else ""))
+            out["degraded"] = False
+        out["dimensions"] = list(base.get("dimensions") or []) + dims
+        out["consilium"] = {"verdict": agg.get("verdict"), "risk": agg.get("risk"), "recommendation": agg.get("recommendation"),
+                            "process": agg.get("process")}
+        return out
+    except Exception:  # noqa: BLE001 — steering is fail-soft by contract
+        return base
 
 
 # ── Escalation: the part that makes the verdict matter ──────────────────────
