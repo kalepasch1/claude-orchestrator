@@ -21,8 +21,15 @@ import agentic_repair
 import queue_janitor
 
 
+# Bound the git children: conftest's guard otherwise warns
+# UnboundedSubprocessInTest, which the merge train's QA overlay runs as an
+# error. 60s matches the sibling test files that already pass timeout=.
+GIT_TIMEOUT_S = 60
+
+
 def _git(repo, *args):
-    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True,
+                          text=True, timeout=GIT_TIMEOUT_S)
 
 
 def _ts(seconds_ago):
