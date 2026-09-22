@@ -35,6 +35,7 @@ _STACK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "2080")
 _ALIASES = {
     "household_legal": "household_legal",
     "contracts": "contracts",
+    "delegation": "delegation",
 }
 
 __all__ = list(_ALIASES)

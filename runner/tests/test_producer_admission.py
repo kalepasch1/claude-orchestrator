@@ -68,7 +68,13 @@ CHATGPT = {"slug": "chatgpt-local-reconcile-tomorrow-abc123",
            "submitted_by_label": "ChatGPT local-build audit (operator-directed)"}
 
 #: One read before the TTL expires, one after.
-READS_AFTER_EXPIRY = 2
+#: DB reads one `_measure` costs: the producer's window scan, plus one fleet-QUEUED
+#: count for the queue-share signal (2026-09-09). Was 1 before that signal existed.
+#: What these tests actually protect is that the count is per-producer-per-TTL and not
+#: per-insert, which is unchanged — but the constant has to track the real number or
+#: the guard stops being able to catch a genuine regression.
+READS_PER_MEASURE = 2
+READS_AFTER_EXPIRY = 2 * READS_PER_MEASURE
 
 
 # ── identity ─────────────────────────────────────────────────────────────────────────
@@ -210,7 +216,9 @@ def test_verdicts_are_cached_so_the_insert_path_stays_cheap(monkeypatch):
     db = FakeDB(rows(100, redundant=60))
     for _ in range(5):
         pa.verdict(CHATGPT, db=db)
-    assert db.calls == 1, "the DB was read %d times for one producer" % db.calls
+    assert db.calls == READS_PER_MEASURE, (
+        "five verdicts cost %d reads; one measure's worth is %d, so the cache is not "
+        "holding" % (db.calls, READS_PER_MEASURE))
 
 
 def test_the_cache_expires(monkeypatch):

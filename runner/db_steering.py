@@ -74,6 +74,8 @@ SOURCE_PARALLEL = max(1, int(os.environ.get("ORCH_DB_STEERING_SOURCE_PARALLEL", 
 SCHEMA_FULL_MAX_AGE_S = int(os.environ.get("ORCH_DB_SCHEMA_FULL_MAX_AGE_S", "21600"))
 #: A posture snapshot is written when the posture moved, else at most this often.
 SNAPSHOT_MIN_INTERVAL_S = int(os.environ.get("ORCH_DB_SNAPSHOT_MIN_INTERVAL_S", "3600"))
+#: How often the loop (re)spawns the detached expert-gauntlet child.
+GAUNTLET_SPAWN_S = int(os.environ.get("ORCH_DB_MEMO_GAUNTLET_SPAWN_S", "600"))
 #: How many open, material, still-unfiled findings are re-offered for remediation each
 #: scan (findings first written by a manual `db_link scan --write`, or whose swarm task
 #: was refused by release backpressure, would otherwise never be filed).
@@ -814,6 +816,49 @@ def file_remediation(source, new_rows, budget=MAX_TASKS_PER_RUN):
 
 # ── the loop ──────────────────────────────────────────────────────────────────────────
 
+def _rotated(items, now=None):
+    """The same list starting at a position that advances one step per cadence, so every
+    project is first in line for the memo slot in turn. Stateless (derived from the clock);
+    alphabetical order gave the slot to the same two projects for a week."""
+    items = list(items)
+    if len(items) < 2:
+        return items
+    k = int((time.time() if now is None else now) // max(1, LOOP_CADENCE_S)) % len(items)
+    return items[k:] + items[:k]
+
+
+_gauntlet_spawned_at = [0.0]
+
+
+def spawn_gauntlet(now=None):
+    """Start `db_memo.py gauntlet-next` detached. The expert panel is many model calls; it
+    must never run inside a 120 s cycle. The child is single-instance (its own flock) and
+    exits at once when no memo has earned a review, so spawning is cheap and idempotent.
+    Returns the pid, or None when disabled / throttled / failed. Never raises."""
+    now = time.time() if now is None else now
+    if os.environ.get("ORCH_DB_MEMO_GAUNTLET", "true").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if now - _gauntlet_spawned_at[0] < GAUNTLET_SPAWN_S:
+        return None
+    _gauntlet_spawned_at[0] = now
+    try:
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        home = os.environ.get("CLAUDE_ORCH_HOME") or os.path.join(os.path.dirname(here), ".runtime")
+        log = subprocess.DEVNULL
+        try:
+            os.makedirs(os.path.join(home, "logs"), exist_ok=True)
+            log = open(os.path.join(home, "logs", "db_memo_gauntlet.log"), "a")
+        except Exception as e:
+            print("db_steering: gauntlet log unavailable, output discarded: %s" % str(e)[:80])
+        proc = subprocess.Popen([sys.executable, os.path.join(here, "db_memo.py"), "gauntlet-next"],
+                                cwd=here, env=os.environ.copy(), stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=log, start_new_session=True)
+        return proc.pid
+    except Exception as e:
+        print("db_steering: gauntlet spawn failed: %s: %s" % (type(e).__name__, str(e)[:120]))
+        return None
+
 def _scan_many(rows, started, budget_s, out, dry_run=False):
     """Scan `rows` (already stalest-first) in waves of SOURCE_PARALLEL, honouring the
     wall-clock budget between waves. Yields (source, result) in input order so everything
@@ -890,7 +935,7 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
             print("db_steering: docket seed failed: %s" % str(e)[:120])
     memo_started = time.time()
     memo_slots = MEMO_MAX_PER_CYCLE
-    for proj in sorted(touched_projects):
+    for proj in _rotated(sorted(touched_projects)):
         signals = []
         pd = proj_deltas.get(proj) or {}
         if pd.get("new") or pd.get("resolved"):
@@ -904,7 +949,11 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
                     r = memo.rebuild_if_changed(proj, max_memos=memo_slots) or {}
                     drafted = int(r.get("drafted") or 0) + int(r.get("deterministic") or 0)
                     out["memos"] += drafted
-                    memo_slots -= drafted
+                    # A rejected draft spent a model call too: it consumes the slot, or a
+                    # run of rejections would make one model call per project per cycle.
+                    memo_slots -= drafted + int(r.get("rejected") or 0)
+                    if r.get("rejected"):
+                        out["memos_rejected"] = out.get("memos_rejected", 0) + int(r["rejected"])
                 else:
                     # Evidence is already attached; the draft catches up next cycle. The
                     # signals and the brief never wait on a model.
@@ -913,6 +962,10 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
             except Exception as e:
                 print("db_steering: memo rebuild failed for %s: %s" % (proj, str(e)[:120]))
         refresh_brief(proj, signals=signals)
+    if memo and not dry_run:
+        pid = spawn_gauntlet()
+        if pid:
+            out["gauntlet_pid"] = pid
     # Auto-remediation draft PRs and the deploy gate ride the same cycle. Both are
     # env-gated off by default, self-capped (MAX_PRS / MAX_PROJECTS), and fail soft —
     # neither is allowed to starve scans or wed the loop on a GitHub/Vercel outage.
@@ -930,6 +983,14 @@ def run(budget_s=None, sources=None, dry_run=False, project=None):
             out["deploy_gate"] = gate.run_cycle()
         except Exception as e:
             print("db_steering: deploy gate failed: %s" % str(e)[:120])
+    forge = _import("db_probe_forge")
+    if forge is not None:
+        # Demand-driven catalog growth: unassessed memo arguments become proposal PRs
+        # (plan-only unless ORCH_DB_FORGE=1). Runs after everything that produces evidence.
+        try:
+            out["probe_forge"] = forge.forge_run()
+        except Exception as e:
+            print("db_steering: probe forge failed: %s" % str(e)[:120])
     out["duration_s"] = round(time.time() - started, 1)
     print("db_steering: " + json.dumps(out, default=str))
     return out

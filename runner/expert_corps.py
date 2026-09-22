@@ -109,7 +109,31 @@ STANCES = ["conservative/protective", "aggressive/expansionist", "adversarial re
 _DIVERSE_KINDS = {"seat", "judge"}
 
 
+# CONSILIUM V2 ROUTING (2026-09-11, see frontier.py). Roles that decide — chair, judge, red team —
+# and the research cycle (which must OPEN sources, not recall them) go to the frontier tier on
+# subscription capacity; seats and everything else go to the strong local model. The old path
+# (choose/choose_diverse) is the fallback when the frontier is disabled, paused, cooling down,
+# or out of budget — so a rate-limited week degrades to local instead of stopping.
+_FRONTIER_ROLES = {"chair": 9, "judge": 8, "redteam": 9, "research": 8}
+
+
 def _complete(prompt, kind="review", need=None):
+    try:
+        import frontier
+        if frontier.ENABLED:
+            tier = _FRONTIER_ROLES.get(str(need))
+            if tier and frontier.available():
+                r = frontier.complete(prompt, need=tier,
+                                      tools=(frontier.WEB_TOOLS if need == "research" else None),
+                                      max_turns=(10 if need == "research" else 1),
+                                      tag=f"corps.{need}")
+                if r.get("text") and not r.get("error"):
+                    return r["text"]
+            r = frontier.local_complete(prompt, tag=f"corps.{need or kind}")
+            if r.get("text"):
+                return r["text"]
+    except Exception:
+        pass
     try:
         import model_policy, model_gateway
         if need in _DIVERSE_KINDS:
@@ -364,8 +388,13 @@ wrong. Then state what you believe the current state of that authority is. Be sp
 falsifiable — name the statute, rule, docket, agency guidance, case, or dataset. A vague gesture at
 "recent developments" is a failure.
 
+If web tools are available, OPEN the authority before you claim it: every claim carries the URL
+you actually read and a verbatim quote of at most 30 words. A claim without an opened URL is
+unsourced and will be discounted; a fabricated citation retires the seat.
+
 Return ONE JSON object:
 {{"claims":[{{"claim":"a specific, checkable proposition","source":"the authority or dataset",
+   "source_url":"the URL you opened, or \"\" if none","quote":"<=30 words verbatim, or \"\"",
    "salience":0.0-1.0,"changes_doctrine":true|false}}],
   "revised_doctrine":"your doctrine restated if anything above changes it, else repeat it verbatim",
   "open_question":"the single question whose answer would most change your view"}}"""
@@ -392,11 +421,17 @@ def research(expert):
         if not isinstance(c, dict) or not c.get("claim"):
             continue
         try:
+            _url = str(c.get("source_url") or "").strip()
+            if not _url.lower().startswith(("http://", "https://")):
+                _url = ""
             db.insert("expert_memory", {
                 "expert_id": expert["id"], "kind": "research",
-                "claim": str(c["claim"])[:2000],
+                "claim": (str(c["claim"])[:1900] + (f' — "{str(c.get("quote"))[:200]}"' if c.get("quote") and _url else ""))[:2000],
                 "source": str(c.get("source") or "")[:500] or None,
-                "salience": max(0.0, min(1.0, float(c.get("salience") or 0.5))),
+                "source_url": _url[:500] or None,
+                # Sourced claims carry more weight than recalled ones; the model's own salience
+                # is discounted when it could not open a source for it.
+                "salience": max(0.0, min(1.0, float(c.get("salience") or 0.5) * (1.0 if _url else 0.6))),
                 "generation": int(expert.get("generation") or 1)})
             wrote += 1
         except Exception:
@@ -471,9 +506,23 @@ def evolve(expert):
     if int(expert.get("bouts") or 0) < 3:
         return False
     gen = int(expert.get("generation") or 1)
+    # GENERATION INFLATION FIX (2026-09-11): `source` is free text the model fills in whether or
+    # not the authority exists, so "learned something citable" was always true and generations
+    # climbed into the thousands (observed max 5,297) — exactly the theater the module docstring
+    # warns against. Evolution now requires OPENED sources (source_url) and at most one advance
+    # per ORCH_EXPERT_EVOLVE_COOLDOWN_H hours.
+    try:
+        last = str(expert.get("evolved_at") or "")
+        if last:
+            import datetime as _dt
+            age_h = (_dt.datetime.utcnow() - _dt.datetime.fromisoformat(last.replace("Z", "").split("+")[0])).total_seconds() / 3600
+            if age_h < float(os.environ.get("ORCH_EXPERT_EVOLVE_COOLDOWN_H", "24")):
+                return False
+    except Exception:
+        pass
     try:
         fresh = db.count("expert_memory", {"expert_id": f"eq.{expert['id']}",
-                                           "generation": f"eq.{gen}", "source": "not.is.null"}) or 0
+                                           "generation": f"eq.{gen}", "source_url": "not.is.null"}) or 0
     except Exception:
         fresh = 0
     if fresh < 2:

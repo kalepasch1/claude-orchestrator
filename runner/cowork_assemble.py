@@ -275,6 +275,83 @@ def get_preopt_cache(task_id):
     return False, ""
 
 
+MERGED_LEARNINGS_HEADING = "## Prior merge learnings"
+MAX_MERGED_LEARNINGS = 5
+MERGED_LEARNINGS_LAYER = "merged_diff_memory"
+
+
+def _claude_project_dir(repo_path):
+    """The ~/.claude/projects directory name Claude uses for a repo path.
+
+    `/Users/kpasch/Documents/beethoven/claude-orchestrator` ->
+    `-Users-kpasch-Documents-beethoven-claude-orchestrator`, matching the
+    constant already hard-coded in merged_diff_memory.
+
+    This is why the enrichment below cannot key off `--project-id`:
+    merged_diff_scan.scan_project() treats its argument as a DIRECTORY NAME
+    under ~/.claude/projects, and --project-id is the orchestrator's DB UUID.
+    A UUID never names a memory directory, so scan_project() returned [] for
+    every task and the enrichment was a permanent, silent no-op.
+    """
+    path = (repo_path or "").strip()
+    if not path:
+        return ""
+    return os.path.abspath(os.path.expanduser(path)).replace("/", "-")
+
+
+def merged_diff_learnings(repo_path, project_id="", limit=MAX_MERGED_LEARNINGS):
+    """Up to `limit` distinct rules from this project's merged-diff memos.
+
+    Memos come back newest-filename-first from scan_project, so the rules are
+    in newest-first encounter order. `project_id` is tried as a fallback key
+    for callers that already pass a directory name.
+    """
+    from merged_diff_scan import scan_project
+
+    memos = []
+    for key in (_claude_project_dir(repo_path), str(project_id or "").strip()):
+        if not key:
+            continue
+        memos = scan_project(key) or []
+        if memos:
+            break
+
+    rules = []
+    for memo in memos:
+        for rule in (memo.get("rules") or []):
+            if rule and rule not in rules:
+                rules.append(rule)
+                if len(rules) >= limit:
+                    return rules
+    return rules
+
+
+def apply_merged_diff_enrichment(result, repo_path, project_id=""):
+    """Append prior merge learnings to `result`. True when the block was added.
+
+    Fail-soft: any failure to read memory leaves `result` untouched and returns
+    False, because a missing learnings block must never cost the caller its
+    prompt.
+    """
+    try:
+        rules = merged_diff_learnings(repo_path, project_id)
+    except Exception as e:
+        _log.debug("merged-diff scan enrichment skipped: %s", e)
+        return False
+
+    if not rules:
+        return False
+
+    block = "\n\n" + MERGED_LEARNINGS_HEADING + "\n" + "\n".join(f"- {r}" for r in rules)
+    result["enriched_prompt"] = (result.get("enriched_prompt") or "") + block
+
+    layers = list(result.get("layers_used") or [])
+    if MERGED_LEARNINGS_LAYER not in layers:
+        layers.append(MERGED_LEARNINGS_LAYER)
+    result["layers_used"] = layers
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cowork intelligence assembler")
     parser.add_argument("--task-id", required=True)
@@ -324,6 +401,12 @@ def main():
     preopt_available, context_pack_summary = get_preopt_cache(args.task_id)
     result["preopt_available"] = preopt_available
     result["context_pack_summary"] = context_pack_summary
+
+    # 8. Merged-diff memory enrichment — append prior merge learnings to prompt.
+    # merged_diff_memory writes memos that nothing read back; this is the read
+    # side. Keyed off the repo path, not --project-id: see _claude_project_dir.
+    if apply_merged_diff_enrichment(result, args.repo_path, args.project_id):
+        layers_used = result["layers_used"]
 
     elapsed = time.monotonic() - t0
     _log.info("assembly complete in %.2fs, layers=%s model=%s", elapsed, layers_used, model)

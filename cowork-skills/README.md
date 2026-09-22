@@ -23,3 +23,20 @@ skill, re-run the sync:
 4. `FOR UPDATE OF t SKIP LOCKED` — locking the joined `projects` row makes 16 concurrent
    executors skip each other's whole projects.
 5. DONE only after a verified push of a non-doc diff. No stub commits, no DONE on push failure.
+6. Commits are authored `kalepasch1 <kalepasch@gmail.com>` — the canonical identity every
+   repo's CLAUDE.md mandates and the release train's `author_identity_guard` enforces.
+   All 16 skills said `user.name=` followed by the display name instead, so every executor
+   produced commits the guard then REFUSED to push:
+
+       author_identity_guard: name drift e69061a74340 'Kale Pasch' (canonical 'kalepasch1')
+       author_identity_guard: REFUSED.
+       error: failed to push some refs to 'https://github.com/kalepasch1/tomorrow.git'
+
+   Sixteen executors, every run, generating work the release train could not ship — while
+   the guard's own message named the correct value. `runner/tests/test_cowork_skill_git_identity.py`
+   fails if it comes back.
+
+   NOTE: these versioned copies and the live skills have drifted well beyond this line
+   (a full live→backup sync is ~1,240 lines). That sync is its own task; it was not folded
+   in here, because a one-line identity correction and an unreviewed bulk overwrite should
+   not arrive in the same commit. Both sides were corrected in place instead.

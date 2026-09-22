@@ -158,6 +158,15 @@ def emit_operator_cards(proj_name, operator, src):
 _LIVE_TASK_STATES = "in.(QUEUED,RUNNING,RETRY,DONE,MERGED)"
 
 
+def _is_canonical_chatgpt_audit(path, task):
+    """Recognize the scanner's fingerprint-bound manifest, not a free-text label."""
+    name = os.path.basename(str(path or ""))
+    match = re.match(r"^chatgpt-local-audit-[a-z0-9-]+-([0-9a-f]{12})\.md$", name)
+    slug = str((task or {}).get("slug") or "")
+    return bool(match and slug.startswith("chatgpt-local-reconcile-")
+                and slug.endswith("-" + match.group(1)))
+
+
 def _existing_live_slugs(slugs):
     """Return live/settled matches for only the intake slugs in this run.
 
@@ -238,7 +247,8 @@ def ingest_file(path, projects_by_name, existing=None):
                 skipped += 1; continue
         if t["slug"] in existing:
             skipped += 1; continue
-        if t.get("submitted_by_label"):
+        canonical_audit = _is_canonical_chatgpt_audit(path, t)
+        if t.get("submitted_by_label") or canonical_audit:
             ok, reason = True, "operator-origin"
         else:
             ok, reason = intake_gate.should_queue(t, proj)
@@ -259,8 +269,12 @@ def ingest_file(path, projects_by_name, existing=None):
         # back-pressure cannot silently refuse the owner's recovery directive.
         if t.get("submitted_by_label"):
             row["submitted_by_label"] = t["submitted_by_label"]
-        elif str(t["slug"]).startswith("chatgpt-local-reconcile-"):
+        elif canonical_audit:
             row["submitted_by_label"] = "ChatGPT local-build audit (operator-directed)"
+            # This private flag is trusted because both the canonical filename and
+            # the task slug carry the same scanner fingerprint. db.insert removes
+            # it before persistence after applying the narrow recovery bypass.
+            row["_operator_directed_recovery"] = True
         if t.get("model"):
             row["model"] = t["model"]
         if _branch_bootstrap:

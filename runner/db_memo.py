@@ -73,6 +73,21 @@ FP_LEN = 12  # the citation form: [fp:<first 12 hex of the finding fingerprint>]
 #: the unit that falls back to per-row on failure.
 BULK_CHUNK = int(os.environ.get("ORCH_DB_MEMO_BULK_CHUNK", "200"))
 
+#: A model draft rejected by the hollow-memo guard is not retried against the SAME evidence
+#: more often than this. Without it the first live week burned one ~90 s model call per
+#: cycle on the same few memos and starved every other project's drafts.
+REJECT_RETRY_S = int(os.environ.get("ORCH_DB_MEMO_REJECT_RETRY_S", "3600"))
+#: A gauntlet that produced no panel result is not re-attempted for the memo before this.
+GAUNTLET_RETRY_S = int(os.environ.get("ORCH_DB_MEMO_GAUNTLET_RETRY_S", "21600"))
+#: The memo prompt (~12k chars in, ~4k out) takes 70-90 s on the costless local 4b model
+#: when it is idle — right at model_gateway's 90 s default, so under any load the call
+#: timed out and came back empty. 86 of 90 memos sat on a deterministic template for a
+#: week because of that default. The memo call carries its own, realistic timeout.
+MODEL_TIMEOUT_S = int(os.environ.get("ORCH_DB_MEMO_MODEL_TIMEOUT_S", "240"))
+#: An EMPTY completion is an outage (timeout, busy local server), not a hollow draft: it
+#: is retried sooner than a draft the guard actually rejected.
+EMPTY_RETRY_S = int(os.environ.get("ORCH_DB_MEMO_EMPTY_RETRY_S", "600"))
+
 CLOSING_LINE = ("Internal work product — not legal advice; evidence is machine-collected "
                 "and should be verified before reliance.")
 
@@ -677,6 +692,17 @@ def _baseline_lines(project) -> list:
         return []
 
 
+def _expert_authority(memo_row, args) -> list:
+    """Up to three data-vertical expert insights bearing on this memo; [] when the module or
+    the table is absent. Never raises."""
+    try:
+        import steering_insights
+        subject = " ".join([str(memo_row.get("title") or "")] + [str(a.get("claim") or "") for a in (args or [])])
+        return list(steering_insights.authority_lines(subject, vertical="data", limit=3) or [])
+    except Exception:
+        return []
+
+
 def _build_prompt(memo_row: dict, ledger: list, args: list) -> str:
     memo_kind = memo_row.get("memo_kind") or ""
     spec = MEMO_KINDS.get(memo_kind, {})
@@ -697,6 +723,11 @@ def _build_prompt(memo_row: dict, ledger: list, args: list) -> str:
         # Context only: the rules below still forbid asserting anything without a ledger
         # citation, so the baseline can shape emphasis but never becomes a cited fact.
         head += ["", "Fleet baseline (comparative context):"] + [f"- {line}" for line in baseline]
+    authority = _expert_authority(memo_row, args)
+    if authority:
+        # Same standing as the baseline: it may shape emphasis, never replace a ledger cite.
+        head += ["", "Positions the expert panels have already taken (context, not evidence):"] + [
+            f"- {line}" for line in authority]
     head += [
         "",
         "RULES — a memo that breaks any of these is a failing answer:",
@@ -741,7 +772,7 @@ def _call_model(prompt: str):
     """ONE costless-first completion. Raises on any failure so the caller can fall back."""
     import model_policy, model_gateway
     prov, model, _ = model_policy.choose("review", agentic=False, need=MODEL_NEED)
-    r = model_gateway.complete(prov, model, prompt)
+    r = model_gateway.complete(prov, model, prompt, timeout=MODEL_TIMEOUT_S)
     text = _s(r.get("text") if isinstance(r, dict) else r).strip()
     return text, prov, model
 
@@ -852,12 +883,37 @@ def _thesis_of(body: str) -> str:
     return ""
 
 
+def _rejection_marker(h: str, kind: str = "rejected") -> str:
+    """What evidence_hash holds after a failed draft: never equal to a real hash (so the
+    memo still counts as not-current), but enough to recognise 'same evidence, tried at T'.
+    kind is 'rejected' (the guard refused the prose) or 'empty' (the model said nothing)."""
+    return "%s:%s:%d" % (kind, h, int(time.time()))
+
+
+def _marker_kind(reason) -> str:
+    return "empty" if str(reason or "").startswith("empty draft") else "rejected"
+
+
+def _rejected_recently(stored, h: str, now=None) -> bool:
+    parts = str(stored or "").split(":")
+    if len(parts) != 3 or parts[0] not in ("rejected", "empty") or parts[1] != h:
+        return False
+    window = EMPTY_RETRY_S if parts[0] == "empty" else REJECT_RETRY_S
+    try:
+        return (now or time.time()) - float(parts[2]) < window
+    except ValueError:
+        return False
+
+
 def _rebuild_one(memo: dict, force: bool) -> dict:
     memo_id, memo_kind, project = memo.get("id"), memo.get("memo_kind"), memo.get("project")
     ledger = _load_ledger(memo_id)
     h = _hash_ledger(ledger)
     if not force and h and h == (memo.get("evidence_hash") or ""):
         return {"memo_kind": memo_kind, "outcome": "skipped", "reason": "evidence unchanged"}
+    if not force and h and _rejected_recently(memo.get("evidence_hash"), h):
+        return {"memo_kind": memo_kind, "outcome": "skipped",
+                "reason": "draft rejected recently for this evidence; backing off"}
     args = score_arguments(memo_kind, ledger)
     last_evidence_at = None
     for x in ledger:
@@ -886,10 +942,12 @@ def _rebuild_one(memo: dict, force: bool) -> dict:
         # deterministic rendering stands in so a memo exists.
         print(f"db_memo: {project}/{memo_kind} rejected model draft: {reason}")
         if memo.get("body"):
-            db.update(MEMO_TABLE, {"id": memo_id}, {**common, "status": "stale"})
+            db.update(MEMO_TABLE, {"id": memo_id}, {**common, "status": "stale",
+                                                    "evidence_hash": _rejection_marker(h, _marker_kind(reason))})
             return {"memo_kind": memo_kind, "outcome": "rejected", "reason": reason, "model_calls": 1}
         body, prov, model = render_markdown({**memo, "arguments": args}, ledger), None, "deterministic"
         patch = {**common, "body": body, "thesis": _thesis_of(body), "status": "stale",
+                 "evidence_hash": _rejection_marker(h, _marker_kind(reason)),
                  "model_provider": None, "model_name": model, "drafted_at": _now_iso()}
         db.update(MEMO_TABLE, {"id": memo_id}, patch)
         return {"memo_kind": memo_kind, "outcome": "rejected_fallback_deterministic", "reason": reason,
@@ -1010,6 +1068,10 @@ def gauntlet_review(memo_row: dict, findings_delta: list):
             except Exception as e:
                 print(f"db_memo: committees fallback failed on {memo_id}: {type(e).__name__}: {str(e)[:120]}")
         if not agg or not isinstance(agg, dict):
+            # Remember the attempt (gauntlet_at stays null, so nothing shows as reviewed):
+            # a panel that cannot convene must not be re-convened every cycle.
+            db.update(MEMO_TABLE, {"id": memo_id}, {"gauntlet": {"error": "no panel result",
+                                                                 "attempted_at": _now_iso()}})
             return None
         try:
             stored = json.loads(json.dumps(agg, default=str)[:20000])
@@ -1024,6 +1086,66 @@ def gauntlet_review(memo_row: dict, findings_delta: list):
     except Exception as e:
         print(f"db_memo: gauntlet_review failed: {type(e).__name__}: {str(e)[:160]}")
         return None
+
+
+def gauntlet_candidates(limit: int = 5) -> list:
+    """Memos that have earned an expert review: a real model draft (never a deterministic
+    template), not reviewed since it was last drafted, outside the review and retry
+    intervals. Oldest draft first. Never raises."""
+    out = []
+    try:
+        rows = db.select(MEMO_TABLE, {"select": "*", "status": "in.(draft,reviewed)",
+                                      "order": "drafted_at.asc,id.asc", "limit": "200"}) or []
+        now = time.time()
+        min_interval = float(os.environ.get("ORCH_DB_MEMO_GAUNTLET_MIN_INTERVAL_S", "86400") or 86400)
+        for m in rows:
+            if not m.get("body") or (m.get("model_name") or "deterministic") == "deterministic":
+                continue
+            last = _parse_ts(m.get("gauntlet_at"))
+            drafted = _parse_ts(m.get("drafted_at")) or 0
+            if last is not None and (drafted <= last or now - last < min_interval):
+                continue
+            g = _jsonish(m.get("gauntlet"), {}) or {}
+            tried = _parse_ts(g.get("attempted_at")) if isinstance(g, dict) else None
+            if last is None and tried is not None and now - tried < GAUNTLET_RETRY_S:
+                continue
+            out.append(m)
+            if len(out) >= limit:
+                break
+    except Exception as e:
+        print(f"db_memo: gauntlet_candidates failed: {type(e).__name__}: {str(e)[:120]}")
+    return out
+
+
+def gauntlet_next(max_reviews: int = 1) -> dict:
+    """Run the expert-corps gauntlet on the next memo(s) that earned it. Meant to run OUT
+    of the steering loop (a multi-round panel on costless models takes minutes): the loop
+    spawns `db_memo.py gauntlet-next` detached and single-instance. Never raises."""
+    out = {"candidates": 0, "reviewed": [], "skipped": []}
+    if not _env_flag("ORCH_DB_MEMO_GAUNTLET", "true"):
+        out["skipped"].append("disabled")
+        return out
+    cands = gauntlet_candidates(limit=max(5, max_reviews * 5))
+    out["candidates"] = len(cands)
+    for m in cands:
+        if len(out["reviewed"]) >= max_reviews:
+            break
+        label = "%s/%s" % (m.get("project"), m.get("memo_kind"))
+        try:
+            material = [x for x in _load_ledger(m.get("id"))
+                        if is_material(x) and x.get("weight", 0) > 0 and x.get("direction") == "undermines"]
+        except Exception as e:
+            out["skipped"].append("%s: ledger %s" % (label, type(e).__name__))
+            continue
+        if not material:
+            out["skipped"].append("%s: no material evidence" % label)
+            continue
+        agg = gauntlet_review(m, material)
+        if agg:
+            out["reviewed"].append(label)
+        else:
+            out["skipped"].append("%s: no panel result" % label)
+    return out
 
 
 # ── read models for the brief / web API ────────────────────────────────────────────────
@@ -1223,6 +1345,9 @@ def run(project: str = None, limit: int = None, force: bool = False) -> dict:
 
 
 def _cli(argv):
+    if argv and argv[0] == "gauntlet-next":
+        print(json.dumps(gauntlet_next(), indent=2, default=str))
+        return 0
     force = "--force" in argv
     render = None
     if "--render" in argv:
@@ -1247,7 +1372,11 @@ def _cli(argv):
 
 if __name__ == "__main__":
     import single_instance
-    _owned, _deadline = single_instance.guard("db_memo", interval_s=600)
+    # The gauntlet child holds its own lock with a long leash: a multi-round panel on
+    # costless models legitimately runs for many minutes.
+    _is_gauntlet = len(sys.argv) > 1 and sys.argv[1] == "gauntlet-next"
+    _owned, _deadline = single_instance.guard("db_memo_gauntlet" if _is_gauntlet else "db_memo",
+                                              interval_s=3600 if _is_gauntlet else 600)
     if not _owned:
         print(json.dumps({"skipped": "db_memo already running"}))
         raise SystemExit(0)

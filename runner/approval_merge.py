@@ -22,6 +22,7 @@ import shadow_mode
 import db
 import agentic_repair
 import worktree_isolation
+from staging_branch import staging_branch_for
 
 MARK = "merge-handler"          # decided_by sentinel => already processed
 MAX_FETCH_RETRIES = 3
@@ -211,7 +212,9 @@ def _detect_prod_branch(repo, proj):
 def _integration_base(repo, proj, task_base):
     if os.environ.get("ORCH_CODE_MERGE_TARGET", "dev").lower() not in ("dev", "staging", "integration"):
         return task_base
-    dev = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+    # The project's own staging branch (projects.staging_branch), then the
+    # fleet's. `proj` is the registry row the caller already holds.
+    dev = staging_branch_for(repo, row=proj)[0]
     try:
         if subprocess.run(["git", "rev-parse", "--verify", dev], cwd=repo,
                           capture_output=True).returncode != 0:

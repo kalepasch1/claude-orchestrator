@@ -35,6 +35,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import auth_expiry
 
 MAX_REQUEUES = int(os.environ.get("ORCH_TRIAGE_MAX_REQUEUES", "2"))
 MIN_AGE_MIN  = int(os.environ.get("ORCH_TRIAGE_MIN_AGE_MIN", "10"))
@@ -326,13 +327,22 @@ def fleet_config_secret_audit():
 # "OAuth session expired and could not be refreshed" as the last log line and 22
 # with no log tail at all (a silent failure — the class this fleet keeps paying
 # for). Those are recoverable; a genuine code failure is not.
-_INFRA_PATTERNS = re.compile(
-    r"oauth|session expired|could not be refreshed|not authenticated|401|403|"
+#
+# The auth half of this vocabulary now comes from `auth_expiry`, because this
+# regex and the two other auth checks in the fleet had drifted apart: it missed
+# "Please run /login", "invalid api key" and "authentication_error" — all of them
+# ways this platform says the credential died, and every one of them a task whose
+# work stayed quarantined instead of being requeued here. The non-auth half
+# (rate limits, quota, timeouts, 5xx, circuit/DB) stays local: those are also
+# infrastructure, but re-authenticating does not fix them, so they do not belong
+# in an auth vocabulary.
+_INFRA_ONLY_PATTERNS = (
     r"rate.?limit|usage limit|429|quota|"
     r"timed? ?out|timeout|connection (reset|refused|aborted)|"
     r"temporarily unavailable|50[0234] |bad gateway|"
-    r"circuit ?open|call cap|db=down|database is down",
-    re.I)
+    r"circuit ?open|call cap|db=down|database is down")
+_INFRA_PATTERNS = re.compile(
+    auth_expiry.AUTH_EXPIRY_RE.pattern + "|" + _INFRA_ONLY_PATTERNS, re.I)
 _INFRA_MARK = re.compile(r"\[infra-recover:(\d+)\]")
 MAX_INFRA_RECOVERIES = int(os.environ.get("ORCH_MAX_INFRA_RECOVERIES", "2"))
 

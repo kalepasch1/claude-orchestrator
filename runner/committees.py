@@ -229,6 +229,22 @@ def _seat_need(committee, seat):
 
 
 def _complete(prompt, kind="review", need=None):
+    # CONSILIUM V2 ROUTING (2026-09-11, frontier.py): seats that carry weight — legal/regulatory/
+    # security seats (need 8+), the red seat (7), the chair (9) — run on the frontier tier on
+    # subscription capacity; ordinary seats and triage run on the strong local model. The old
+    # cross-provider rotation remains the fallback when the frontier is paused or out of budget.
+    try:
+        import frontier
+        if frontier.ENABLED:
+            if isinstance(need, (int, float)) and need >= 7 and frontier.available():
+                r = frontier.complete(prompt, need=int(need), tag=f"committee.need{int(need)}")
+                if r.get("text") and not r.get("error"):
+                    return r["text"]
+            r = frontier.local_complete(prompt, tag="committee.seat")
+            if r.get("text"):
+                return r["text"]
+    except Exception:
+        pass
     try:
         import model_policy, model_gateway
         prov, model, _ = model_policy.choose_diverse(kind, need=need)
@@ -710,7 +726,10 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
         f"- {p['seat']}: verdict={p.get('verdict')} score={p.get('score')} conviction={p.get('conviction')} "
         f"| basis: {p.get('basis','')} | risk: {p.get('risk','')} | conditions: {p.get('conditions','')} "
         f"| rec: {p.get('recommendation','')}" for p in positions)[:2000]
-    syn = _json(CHAIR_PROMPT.replace("{chair}", chair).replace("{committee}", name).replace("{positions}", pos_txt))
+    # The chair DECIDES — it gets the frontier tier (need 9) so the memo that steers a build is
+    # written by the strongest model available, not the cheapest.
+    syn = _json(CHAIR_PROMPT.replace("{chair}", chair).replace("{committee}", name).replace("{positions}", pos_txt),
+                need=9)
     if not syn:  # fallback: conviction-weighted seat aggregate
         tw = sum(float(p.get("conviction", 5) or 5) for p in positions) or 1.0
         score = sum(float(p.get("score", 5) or 5) * float(p.get("conviction", 5) or 5) for p in positions) / tw
@@ -821,7 +840,35 @@ def _relevant(title, body, committees):
     return sel[:MAX_COMMITTEES + 1] if sel else committees[:MAX_COMMITTEES]
 
 
+CONSILIUM_CODE = os.environ.get("ORCH_COMMITTEES_CONSILIUM", "true").lower() not in ("0", "false", "no", "off")
+CONSILIUM_CODE_MIN_MATERIALITY = float(os.environ.get("ORCH_COMMITTEES_CONSILIUM_MIN_MATERIALITY", "0.5"))
+
+
+def _consilium_code_review(title, body, app=None):
+    """2026-09-12: material coding decisions that carry a diff go to the Consilium engineering tribunal
+    (one frontier call, verbatim-quoted findings) instead of the local-model panels. None -> legacy path."""
+    if not CONSILIUM_CODE:
+        return None
+    try:
+        import consilium_v2
+        if not consilium_v2.has_diff(body):
+            return None
+        mat = issue_materiality(title, body)
+        if mat < CONSILIUM_CODE_MIN_MATERIALITY:
+            return None
+        agg = consilium_v2.run_code(title, body, project=app, blast_radius=mat)
+        if agg:
+            agg["materiality"] = mat
+        return agg
+    except Exception as e:  # fail-soft by contract
+        print(f"committees: consilium code review unavailable ({type(e).__name__}: {str(e)[:100]}); panels will run", flush=True)
+        return None
+
+
 def review(subject_type, subject_id, title, body, app=None):
+    _v2 = _consilium_code_review(title, body, app)
+    if _v2:
+        return _v2
     # ADAPTIVE: assemble the optimal expert panels for THIS issue on the fly (no fixed committees).
     committees = _triage_panels(title, body, app)
     panel = []

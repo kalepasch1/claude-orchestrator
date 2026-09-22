@@ -649,6 +649,36 @@ class FocusBriefTest(Base):
         self.assertIn("Touched by this task", focused)
 
 
+class MemoSchedulingTest(Base):
+    def test_rotation_gives_every_project_the_first_slot_in_turn(self):
+        items = ["a", "b", "c"]
+        firsts = [db_steering._rotated(items, now=i * db_steering.LOOP_CADENCE_S)[0] for i in range(6)]
+        self.assertEqual(firsts, ["a", "b", "c", "a", "b", "c"])
+        self.assertEqual(sorted(db_steering._rotated(items, now=12345)), items)
+        self.assertEqual(db_steering._rotated(["only"]), ["only"])
+        self.assertEqual(db_steering._rotated([]), [])
+
+    def test_spawn_gauntlet_is_detached_throttled_and_switchable(self):
+        calls = []
+
+        class FakePopen:
+            pid = 4242
+
+            def __init__(self, argv, **kw):
+                calls.append((argv, kw))
+        db_steering._gauntlet_spawned_at[0] = 0.0
+        with patch("subprocess.Popen", FakePopen), patch.dict(os.environ, {"CLAUDE_ORCH_HOME": tempfile.mkdtemp()}):
+            self.assertEqual(db_steering.spawn_gauntlet(now=10_000.0), 4242)
+            self.assertIsNone(db_steering.spawn_gauntlet(now=10_000.0 + db_steering.GAUNTLET_SPAWN_S - 1), "throttled")
+            self.assertEqual(db_steering.spawn_gauntlet(now=10_000.0 + db_steering.GAUNTLET_SPAWN_S + 1), 4242)
+            with patch.dict(os.environ, {"ORCH_DB_MEMO_GAUNTLET": "false"}):
+                self.assertIsNone(db_steering.spawn_gauntlet(now=99_999.0))
+        argv, kw = calls[0]
+        self.assertTrue(argv[1].endswith("db_memo.py") and argv[2] == "gauntlet-next")
+        self.assertTrue(kw.get("start_new_session"), "never a child of the cycle")
+        db_steering._gauntlet_spawned_at[0] = 0.0
+
+
 class LoopPlumbingTest(Base):
     def test_loop_row_cadence_follows_the_knob(self):
         self.fake.tables["loops"] = [{"id": "L1", "type": "db_steering", "enabled": True, "cadence_seconds": 600}]

@@ -14,8 +14,10 @@ with ORCH_GUARDRAIL_MODE=block every claim was refused with
 the message read like a leak — so the obvious response would have been to go
 hunting for worktrees to delete.
 """
+import contextlib
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -23,14 +25,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import workflow_guardrails as wg  # noqa: E402
 
 
+@contextlib.contextmanager
 def _repo_with(n_worktrees):
     """Patch _git so `worktree list --porcelain` reports n worktrees.
 
     git lists the main checkout first, so a repo with n additional worktrees
     prints n+1 "worktree " lines.
+
+    The directories are REAL. check_worktree_count discounts registrations whose
+    directory no longer exists (see stale_worktrees), so a fixture pointing at
+    made-up paths would have every entry classed as stale and counted as zero —
+    which would quietly turn every assertion below into a test of pruning rather
+    than a test of the cap.
     """
-    out = "".join(f"worktree /p/{i}\nHEAD abc\n\n" for i in range(n_worktrees + 1))
-    return mock.patch.object(wg, "_git", lambda *a, **k: (0, out, ""))
+    with tempfile.TemporaryDirectory() as td:
+        paths = []
+        for i in range(n_worktrees + 1):
+            p = os.path.join(td, f"p{i}")
+            os.mkdir(p)
+            paths.append(p)
+        out = "".join(f"worktree {p}\nHEAD abc\n\n" for p in paths)
+        with mock.patch.object(wg, "_git", lambda *a, **k: (0, out, "")):
+            yield
 
 
 class WorktreeCapTest(unittest.TestCase):

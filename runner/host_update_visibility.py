@@ -33,6 +33,7 @@ import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import auth_expiry
 
 ALERT_KIND = "host_update"
 
@@ -57,12 +58,16 @@ _DIAGNOSES = (
       "trust this folder", "trust the files in this workspace"),
      "Claude Code is waiting on an unaccepted workspace-trust dialog. "
      "A human must accept it AT THE KEYBOARD on this host; it cannot be done remotely."),
+    # The substrings stay listed here for readability and ordering, but the
+    # authoritative check is `auth_expiry` (see classify_pull_failure): this list
+    # was the most complete of the fleet's three auth vocabularies and the other
+    # two were missing entries from it, which is what prompted consolidating
+    # them. Anything this list knows, `auth_expiry` also knows.
     ("not-logged-in",
      ("not logged in", "please run /login", "invalid api key", "authentication_error",
       "oauth token has expired", "credentials could not be", "could not read username",
       "terminal prompts disabled", "authentication failed"),
-     "Credentials are expired or absent. Re-authenticate on this host "
-     "(Claude Code: /login; git: refresh the credential helper)."),
+     "Credentials are expired or absent. " + auth_expiry.REMEDIATION),
     ("dirty-checkout",
      ("local changes would be overwritten", "please commit your changes or stash them",
       "your local changes to the following files", "cannot pull with rebase",
@@ -95,6 +100,14 @@ def classify_pull_failure(stderr):
         for needle in needles:
             if needle in text:
                 return code, explanation
+    # Last chance before giving up: the shared auth vocabulary knows phrasings no
+    # single caller listed ("Failed to authenticate: OAuth session expired...",
+    # "Refresh token is invalid", bare 401/403). Reporting those as a generic
+    # 'git-error' sends the operator to read the machine for a cause the fleet
+    # already knows how to name, and — worse — the same string was being missed
+    # by the recovery path that would otherwise requeue the work.
+    if auth_expiry.is_auth_expiry(text):
+        return "not-logged-in", "Credentials are expired or absent. " + auth_expiry.REMEDIATION
     return "git-error", ("Unrecognized git failure. The verbatim stderr is recorded above; "
                         "it needs a human read.")
 
