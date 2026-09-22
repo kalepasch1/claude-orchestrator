@@ -95,12 +95,18 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".runtime"
               ".pytest_cache", "dist", "build", ".next", ".output", ".vercel"}
 
 
-def local_module_names(package_dirs=("runner", "scripts", "tests", "tools")) -> set[str]:
+def local_module_names(package_dirs=("runner", "scripts", "src", "tests", "tools")) -> set[str]:
     """Names that resolve to files IN THIS REPO rather than to installed packages.
 
     Scanned recursively. A shallow scan of each directory's top level was not enough:
     runner/tests/ and runner/tools/ put dozens of local modules one level down, and every
     one of them was reported as a missing third-party dependency.
+
+    `src` added 2026-09-21: it is a package at the repo root (src/orchestrator/...) and
+    runner/test_counterfactual.py imports `from src.orchestrator.runners...`. Because the
+    directory was never scanned, `src` was reported as "not in any requirements file" and
+    the deps job failed on every branch -- telling the author to pip install a directory
+    that is already in the checkout.
     """
     import os
     names: set[str] = set()
