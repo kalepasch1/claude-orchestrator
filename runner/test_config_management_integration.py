@@ -138,17 +138,33 @@ class TestConfigDriftDetection(unittest.TestCase):
     @patch("config_drift.db")
     def test_safe_prefix_whitelist_honored(self, mock_db):
         """Whitelisted prefixes are included."""
+<<<<<<< HEAD
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         mock_db.select.return_value = [
             {"key": "ORCH_VALID", "value": "ok", "updated_at": now},
             {"key": "MAX_PARALLEL", "value": "4", "updated_at": now},
             {"key": "MERGE_MAX_AGE_S", "value": "3600", "updated_at": now},
+=======
+        # Clear these to avoid drift from existing env values
+        for key in ("ORCH_VALID", "MAX_PARALLEL", "MERGE_MAX_AGE_S"):
+            os.environ.pop(key, None)
+
+        recent = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).isoformat()
+        mock_db.select.return_value = [
+            {"key": "ORCH_VALID", "value": "ok", "updated_at": recent},
+            {"key": "MAX_PARALLEL", "value": "4", "updated_at": recent},
+            {"key": "MERGE_MAX_AGE_S", "value": "3600", "updated_at": recent},
+>>>>>>> improve-enhance-testing-framework-slice-5
         ]
 
         drifts = config_drift.detect_drift()
         # These should be scanned (no prefix rejection)
         # No drift because env doesn't have them, and we only report divergence
+<<<<<<< HEAD
         # if env_val is not None
+=======
+        # if env_val is not None; recent updates don't trigger stale warnings
+>>>>>>> improve-enhance-testing-framework-slice-5
         self.assertEqual(len(drifts), 0)
 
 
@@ -247,10 +263,22 @@ class TestConfigTick(unittest.TestCase):
     @patch("config_drift.suggest_updates")
     def test_tick_returns_tuple(self, mock_suggest, mock_detect):
         """tick() returns (drifts, suggestions) tuple."""
+<<<<<<< HEAD
         mock_detect.return_value = [{"key": "TEST", "kind": "env_db_divergence"}]
         mock_suggest.return_value = [{"key": "PARALLEL", "suggested": 8}]
 
         result = config_drift.tick()
+=======
+        mock_detect.return_value = [
+            {"key": "TEST", "kind": "env_db_divergence", "env_value": "e", "db_value": "d", "suggestion": "s"}
+        ]
+        mock_suggest.return_value = [
+            {"key": "PARALLEL", "suggested": 8, "reason": "queue depth high"}
+        ]
+
+        with patch("builtins.print"):  # suppress print output from tick()
+            result = config_drift.tick()
+>>>>>>> improve-enhance-testing-framework-slice-5
         self.assertIsInstance(result, tuple)
         self.assertEqual(len(result), 2)
         drifts, suggestions = result
@@ -289,8 +317,13 @@ class TestConfigConsumerThreadSafety(unittest.TestCase):
 
     def test_singleton_instance_is_reused(self):
         """Multiple imports get the same singleton."""
+<<<<<<< HEAD
         c1 = config_consumer._config_instance
         c2 = config_consumer._config_instance
+=======
+        c1 = config_consumer._consumer
+        c2 = config_consumer._consumer
+>>>>>>> improve-enhance-testing-framework-slice-5
         self.assertIs(c1, c2)
 
     def test_concurrent_reads_are_safe(self):
@@ -340,7 +373,11 @@ class TestConfigConsumerFailSoft(unittest.TestCase):
     @patch("config_consumer.fleet_control")
     def test_returns_default_on_missing_key(self, mock_fc):
         """Missing config key returns default, doesn't crash."""
+<<<<<<< HEAD
         mock_fc.select.return_value = None
+=======
+        mock_fc.get_fleet_config.return_value = None
+>>>>>>> improve-enhance-testing-framework-slice-5
 
         result = config_consumer.load_config("NONEXISTENT_KEY", default="fallback")
         self.assertEqual(result, "fallback")
@@ -391,7 +428,11 @@ class TestConfigConsumerFailSoft(unittest.TestCase):
 
             # Cache should not grow unbounded
             self.assertLessEqual(
+<<<<<<< HEAD
                 len(config_consumer._config_instance._cache),
+=======
+                len(config_consumer._consumer._cache),
+>>>>>>> improve-enhance-testing-framework-slice-5
                 original_max
             )
         finally:
