@@ -121,6 +121,61 @@ class PostingTest(unittest.TestCase):
         self.assertIn("error", out)
 
 
+class EveryOpenPrTest(unittest.TestCase):
+    """2026-09-26: one page of 20 left 48 of 68 open PRs without the REQUIRED status, so
+    each sat BLOCKED with every real check green. Every open PR must be reached."""
+
+    def _run(self, n_prs, current=()):
+        posts, reads = [], []
+        heads = ["%040x" % (i + 1) for i in range(n_prs)]
+
+        def gh(method, path, body=None):
+            if method == "GET" and "/pulls?" in path:
+                q = dict(kv.split("=") for kv in path.split("?")[1].split("&"))
+                per, page = int(q["per_page"]), int(q.get("page", "1"))
+                reads.append(page)
+                return [{"head": {"sha": h}} for h in heads[(page - 1) * per: page * per]]
+            if method == "GET" and "/git/ref/heads/" in path:
+                return {"object": {"sha": "b" * 40}}
+            if method == "GET" and path.endswith("/status"):
+                sha = path.split("/commits/")[1].split("/")[0]
+                if sha in current:
+                    return {"statuses": [{"context": G.CONTEXT, "state": "success", "description": "posture ok (0 medium/low open)"}]}
+                return {"statuses": [{"context": "vitest", "state": "success", "description": "x"}]}
+            if method == "POST" and "/statuses/" in path:
+                posts.append(path.split("/statuses/")[1])
+                return {"state": "ok"}
+            return {}
+
+        with patch.object(G, "ENABLED", True), \
+             patch.object(G.db, "count", lambda t, p: 0), \
+             patch.object(G, "_vercel_latest_sha", lambda vp: ("d" * 40, "READY", "https://v.test")), \
+             patch.object(G.db_remediate, "repo_for_project", lambda p: "me/x"), \
+             patch.object(G.db_remediate, "_gh", gh):
+            out = G.check_project({"name": "x", "vercel_project": "vp", "prod_branch": "main"})
+        return out, posts, reads, heads
+
+    def test_every_open_pr_is_reached_across_pages(self):
+        out, posts, reads, heads = self._run(230)
+        self.assertEqual(out["prs_covered"], 230)
+        self.assertEqual(reads, [1, 2, 3], "three pages of 100, the last short")
+        self.assertTrue(set(heads) <= set(posts), "the oldest PR gets the status too")
+        self.assertTrue(out["posted"])
+
+    def test_the_ceiling_still_holds(self):
+        with patch.object(G, "MAX_PRS", 150):
+            out, posts, reads, heads = self._run(400)
+        self.assertEqual(out["prs_covered"], 150)
+        self.assertEqual(reads, [1, 2])
+
+    def test_a_head_already_carrying_this_posture_is_not_reposted(self):
+        out, posts, reads, heads = self._run(3, current={"%040x" % 1})
+        self.assertNotIn("%040x" % 1, posts)
+        self.assertIn("%040x" % 2, posts)
+        self.assertEqual(out["prs_already_current"], 1)
+        self.assertTrue(out["posted"])
+
+
 class CommentFallbackTest(unittest.TestCase):
     def test_403_status_falls_back_to_comment_upsert(self):
         calls = []
