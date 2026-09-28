@@ -102,6 +102,25 @@ class TestCatalog(unittest.TestCase):
                     self.assertTrue(re.match(r"^\s*(select|with)\b", rendered, re.I), rendered[:60])
                     self.assertNotIn("{", rendered, "placeholders must all be rendered")
 
+    def test_postgres_statements_never_read_information_schema(self):
+        # information_schema.role_table_grants / columns / tables re-check privileges per row
+        # across every relation; on a 14.5K-relation Supabase project one probe using them
+        # took >30 s and dragged its whole json_build_object bundle to ~110 s per run.
+        # Postgres probes read pg_catalog (pg_class, pg_attribute, aclexplode) instead.
+        statements = [(p["id"], p["sql"]["postgres"]) for p in PROBES if "postgres" in p["sql"]]
+        statements.append(("SCHEMA_SIGNATURE_SQL", db_probes.SCHEMA_SIGNATURE_SQL["postgres"]))
+        for pid, sql in statements:
+            with self.subTest(probe=pid):
+                self.assertNotIn("information_schema.", sql.lower())
+
+    def test_pg_grants_mirror_information_schema_privileges(self):
+        # aclexplode must see the owner's implicit grants (NULL relacl) and name PUBLIC like
+        # information_schema does, or anon/PUBLIC exposure findings silently disappear.
+        sql = probe_by_id("anon_or_public_grants")["sql"]["postgres"]
+        self.assertIn("acldefault('r', c.relowner)", sql)
+        self.assertIn("when x.grantee = 0 then 'PUBLIC'", sql)
+        self.assertNotIn("'MAINTAIN'", db_probes._PG_TABLE_PRIVS, "information_schema never reports MAINTAIN")
+
     def test_validate_catalog_is_clean(self):
         self.assertEqual(db_probes.validate_catalog(), [])
 
@@ -856,8 +875,8 @@ class TestNewProbeCatalogEntries(unittest.TestCase):
 
     def test_tamper_evidence_sql_measures_catalogs_and_settings_only(self):
         sql = probe_by_id("record_tables_tamper_evidence")["sql"]["postgres"]
-        for needle in ("pg_catalog.pg_trigger", "pg_catalog.pg_proc", "information_schema.role_table_grants",
-                       "pg_catalog.pg_roles", "pg_catalog.pg_settings", "tg.tgisinternal", "tableowner",
+        for needle in ("pg_catalog.pg_trigger", "pg_catalog.pg_proc", "pg_catalog.aclexplode",
+                       "pg_catalog.pg_roles", "pg_catalog.pg_settings", "tg.tgisinternal", "c.relowner",
                        "rolbypassrls", "'TRUNCATE'", "union all"):
             self.assertIn(needle, sql)
         for name in db_probes.TAMPER_SETTINGS:
