@@ -17,6 +17,8 @@ SHAPE OF A PROBE. Each entry of PROBES is a dict:
 Every statement is ONE SELECT/WITH, no semicolons, bounded with LIMIT, catalog-only. The
 single exception to "never touch user data" is deliberate: there is none. Even the
 "orphaned rows" idea is served by the catalog (NOT VALID constraints) instead of a scan.
+Postgres statements read pg_catalog only, never information_schema: its privilege-checking
+views cost minutes per bundle on a large catalog (see _pg_acl and the test pinning it).
 
 FACTS. run_all runs probes in list order and hands every parse the same `facts` dict, so a
 later probe can be gated on an earlier discovery (`requires_fact`: supabase_migrations
@@ -1176,6 +1178,45 @@ def _p_edge_functions(rows, source, facts=None):
 
 _PG_PII = f"'({PII_COLUMN_PATTERN})'"
 
+# pg_catalog building blocks. Postgres statements never read information_schema: its views
+# (role_table_grants, columns, tables) re-check privileges row by row across every relation
+# in the database and measured ~110 s per bundle on a 14.5K-relation project, against
+# milliseconds for the same answer from pg_class / pg_attribute / aclexplode. A test pins it.
+#
+# _pg_acl(alias): one row per (grantor, grantee, privilege) of a relation, with the owner's
+# implicit default when relacl is NULL, exactly as information_schema.table_privileges does.
+# _PG_GRANTEE: the grantee's role name, 'PUBLIC' for grantee 0 (type name, like the view's).
+# _PG_TABLE_PRIVS: the privileges information_schema reports (PG17's MAINTAIN excluded).
+# _pg_user_col(alias): a live user column (no system columns, no dropped ones).
+# _pg_base_type(att, ty): the column's type with one domain level resolved, the way
+# information_schema.columns.data_type resolves it.
+# _PG_TEXT_TYPES: the base types information_schema names text / character varying /
+# character / json / jsonb.
+
+
+def _pg_acl(alias):
+    return f"pg_catalog.aclexplode(coalesce({alias}.relacl, pg_catalog.acldefault('r', {alias}.relowner)))"
+
+
+_PG_GRANTEE = "case when x.grantee = 0 then 'PUBLIC'::name else pg_catalog.pg_get_userbyid(x.grantee) end"
+_PG_TABLE_PRIVS = "('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER')"
+_PG_TEXT_TYPES = ("('pg_catalog.text'::pg_catalog.regtype, 'pg_catalog.varchar'::pg_catalog.regtype, "
+                  "'pg_catalog.bpchar'::pg_catalog.regtype, 'pg_catalog.json'::pg_catalog.regtype, "
+                  "'pg_catalog.jsonb'::pg_catalog.regtype)")
+
+
+def _pg_user_col(alias):
+    return f"{alias}.attnum > 0 and not {alias}.attisdropped"
+
+
+def _pg_base_type(att, ty):
+    return f"(case when {ty}.typtype = 'd' then {ty}.typbasetype else {att}.atttypid end)"
+
+
+# The tables (relkind r/p) of schema public, as pg_tables lists them: `c` and `n` in scope.
+_PG_PUBLIC_TABLES = ("pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                     "and n.nspname = 'public' and c.relkind in ('r', 'p')")
+
 _SQL = {
     "rls_disabled_tables": {
         "postgres": "select schemaname, tablename, rowsecurity from pg_catalog.pg_tables "
@@ -1185,11 +1226,11 @@ _SQL = {
                     "and t.rowsecurity and not exists (select 1 from pg_catalog.pg_policies p "
                     "where p.schemaname = t.schemaname and p.tablename = t.tablename) order by t.tablename limit 500"},
     "anon_or_public_grants": {
-        "postgres": "select g.grantee, g.table_schema as schemaname, g.table_name as tablename, g.privilege_type, "
-                    "t.rowsecurity from information_schema.role_table_grants g "
-                    "join pg_catalog.pg_tables t on t.schemaname = g.table_schema and t.tablename = g.table_name "
-                    "where g.table_schema = 'public' and g.grantee in ('anon', 'PUBLIC') "
-                    "order by g.table_name, g.grantee, g.privilege_type limit 500"},
+        "postgres": "select g.grantee, n.nspname as schemaname, c.relname as tablename, g.privilege_type, "
+                    f"c.relrowsecurity as rowsecurity from {_PG_PUBLIC_TABLES} "
+                    f"cross join lateral (select {_PG_GRANTEE} as grantee, x.privilege_type from {_pg_acl('c')} x) g "
+                    f"where g.grantee in ('anon', 'PUBLIC') and g.privilege_type in {_PG_TABLE_PRIVS} "
+                    "order by c.relname, g.grantee, g.privilege_type limit 500"},
     "tables_without_primary_key": {
         "postgres": "select n.nspname as schemaname, c.relname as tablename, c.reltuples::bigint as est_rows "
                     "from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
@@ -1251,13 +1292,16 @@ _SQL = {
                     "from pg_stat_statements s where (s.mean_exec_time > 250 or s.calls > 100000) "
                     "and s.query not like '%pg_stat_statements%' order by s.total_exec_time desc limit 15"},
     "missing_audit_columns": {
-        "postgres": "select t.schemaname, t.tablename, bool_or(c.column_name in ('created_at', 'inserted_at')) as has_created, "
-                    "bool_or(c.column_name = 'updated_at') as has_updated, "
-                    "exists (select 1 from information_schema.role_table_grants g where g.table_schema = t.schemaname "
-                    "and g.table_name = t.tablename and g.privilege_type = 'UPDATE' and g.grantee <> t.tableowner) as has_update_grants "
-                    "from pg_catalog.pg_tables t join information_schema.columns c "
-                    "on c.table_schema = t.schemaname and c.table_name = t.tablename "
-                    "where t.schemaname = 'public' group by t.schemaname, t.tablename, t.tableowner order by t.tablename limit 500",
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, "
+                    "exists (select 1 from pg_catalog.pg_attribute a where a.attrelid = c.oid "
+                    f"and {_pg_user_col('a')} and a.attname in ('created_at', 'inserted_at')) as has_created, "
+                    "exists (select 1 from pg_catalog.pg_attribute a where a.attrelid = c.oid "
+                    f"and {_pg_user_col('a')} and a.attname = 'updated_at') as has_updated, "
+                    f"exists (select 1 from {_pg_acl('c')} x where x.privilege_type = 'UPDATE' "
+                    "and x.grantee <> c.relowner) as has_update_grants "
+                    f"from {_PG_PUBLIC_TABLES} "
+                    "where exists (select 1 from pg_catalog.pg_attribute a where a.attrelid = c.oid "
+                    f"and {_pg_user_col('a')}) order by c.relname limit 500",
         "mysql": "select t.table_schema as schemaname, t.table_name as tablename, "
                  "max(c.column_name in ('created_at', 'inserted_at')) as has_created, "
                  "max(c.column_name = 'updated_at') as has_updated, 1 as has_update_grants "
@@ -1272,11 +1316,11 @@ _SQL = {
                  f"where table_schema = database() and table_type = 'BASE TABLE' and table_name regexp '{AUDIT_TABLE_PATTERN}' "
                  "order by table_name limit 100"},
     "pii_columns_inventory": {
-        "postgres": "select c.table_schema as schemaname, c.table_name as tablename, "
-                    "array_agg(c.column_name order by c.column_name) as columns from information_schema.columns c "
-                    "join pg_catalog.pg_tables t on t.schemaname = c.table_schema and t.tablename = c.table_name "
-                    f"where c.table_schema = 'public' and c.column_name ~* {_PG_PII} "
-                    "group by c.table_schema, c.table_name order by c.table_name limit 500",
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, "
+                    "array_agg(a.attname::text order by a.attname) as columns "
+                    f"from {_PG_PUBLIC_TABLES} join pg_catalog.pg_attribute a on a.attrelid = c.oid "
+                    f"where {_pg_user_col('a')} and a.attname ~* {_PG_PII} "
+                    "group by n.nspname, c.relname order by c.relname limit 500",
         "mysql": "select c.table_schema as schemaname, c.table_name as tablename, "
                  "group_concat(c.column_name order by c.column_name) as columns from information_schema.columns c "
                  f"where c.table_schema = database() and lower(c.column_name) regexp {_PG_PII} "
@@ -1292,15 +1336,15 @@ _SQL = {
                      f"and regexp_like(lower(column_name), '.*({PII_COLUMN_PATTERN}).*') "
                      "group by table_schema, table_name order by table_name limit 500"},
     "pii_exposed_tables": {
-        "postgres": "select c.table_schema as schemaname, c.table_name as tablename, t.rowsecurity, "
-                    "array_agg(c.column_name order by c.column_name) as columns from information_schema.columns c "
-                    "join pg_catalog.pg_tables t on t.schemaname = c.table_schema and t.tablename = c.table_name "
-                    f"where c.table_schema = 'public' and not t.rowsecurity and c.column_name ~* {_PG_PII} "
-                    "group by c.table_schema, c.table_name, t.rowsecurity order by c.table_name limit 200"},
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, c.relrowsecurity as rowsecurity, "
+                    "array_agg(a.attname::text order by a.attname) as columns "
+                    f"from {_PG_PUBLIC_TABLES} join pg_catalog.pg_attribute a on a.attrelid = c.oid "
+                    f"where not c.relrowsecurity and {_pg_user_col('a')} and a.attname ~* {_PG_PII} "
+                    "group by n.nspname, c.relname, c.relrowsecurity order by c.relname limit 200"},
     "soft_delete_without_purge": {
-        "postgres": "select c.table_schema as schemaname, c.table_name as tablename from information_schema.columns c "
-                    "join pg_catalog.pg_tables t on t.schemaname = c.table_schema and t.tablename = c.table_name "
-                    "where c.table_schema = 'public' and c.column_name = 'deleted_at' order by c.table_name limit 200",
+        "postgres": "select n.nspname as schemaname, c.relname as tablename "
+                    f"from {_PG_PUBLIC_TABLES} join pg_catalog.pg_attribute a on a.attrelid = c.oid "
+                    f"where {_pg_user_col('a')} and a.attname = 'deleted_at' order by c.relname limit 200",
         "mysql": "select c.table_schema as schemaname, c.table_name as tablename from information_schema.columns c "
                  "where c.table_schema = database() and c.column_name = 'deleted_at' order by c.table_name limit 200"},
     "pg_cron_jobs": {
@@ -1313,8 +1357,10 @@ _SQL = {
         "postgres": "select e.extname, e.extversion, n.nspname as schemaname from pg_catalog.pg_extension e "
                     "join pg_catalog.pg_namespace n on n.oid = e.extnamespace order by e.extname limit 200"},
     "schema_migrations_state": {
-        "postgres": "select count(*) as n from information_schema.tables "
-                    "where table_schema = 'supabase_migrations' and table_name = 'schema_migrations'"},
+        "postgres": "select count(*) as n from pg_catalog.pg_class c "
+                    "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    "where n.nspname = 'supabase_migrations' and c.relname = 'schema_migrations' "
+                    "and c.relkind in ('r', 'v', 'f', 'p')"},
     "schema_migrations_latest": {
         "postgres": "select count(*) as n, max(version) as latest from supabase_migrations.schema_migrations"},
     "ai_call_logging_presence": {
@@ -1365,11 +1411,13 @@ _SQL = {
                  "'' as verb from information_schema.processlist where command <> 'Sleep' and time > 300 "
                  "and id <> connection_id() order by time desc limit 50"},
     "timestamp_without_timezone": {
-        "postgres": "select c.table_schema as schemaname, c.table_name as tablename, "
-                    "array_agg(c.column_name order by c.column_name) as columns from information_schema.columns c "
-                    "join pg_catalog.pg_tables t on t.schemaname = c.table_schema and t.tablename = c.table_name "
-                    "where c.table_schema = 'public' and c.data_type = 'timestamp without time zone' "
-                    "group by c.table_schema, c.table_name order by c.table_name limit 200"},
+        "postgres": "select n.nspname as schemaname, c.relname as tablename, "
+                    "array_agg(a.attname::text order by a.attname) as columns "
+                    f"from {_PG_PUBLIC_TABLES} join pg_catalog.pg_attribute a on a.attrelid = c.oid "
+                    "join pg_catalog.pg_type ty on ty.oid = a.atttypid "
+                    f"where {_pg_user_col('a')} "
+                    f"and {_pg_base_type('a', 'ty')} = 'pg_catalog.timestamp'::pg_catalog.regtype "
+                    "group by n.nspname, c.relname order by c.relname limit 200"},
     "uuid_text_keys": {
         "postgres": "select n.nspname as schemaname, c.relname as tablename, a.attname as column_name "
                     "from pg_catalog.pg_constraint k join pg_catalog.pg_class c on c.oid = k.conrelid "
@@ -1438,33 +1486,30 @@ _SQL = {
                     "and d.refclassid = 'pg_catalog.pg_class'::regclass "
                     "join pg_catalog.pg_class t on t.oid = d.refobjid and t.oid <> v.oid and t.relkind in ('r', 'p') "
                     "join pg_catalog.pg_namespace tn on tn.oid = t.relnamespace "
-                    "join information_schema.role_table_grants g on g.table_schema = vn.nspname "
-                    "and g.table_name = v.relname and g.privilege_type = 'SELECT' "
-                    "and g.grantee in ('anon', 'authenticated', 'PUBLIC') "
+                    f"join lateral (select {_PG_GRANTEE} as grantee from {_pg_acl('v')} x "
+                    "where x.privilege_type = 'SELECT') g on g.grantee in ('anon', 'authenticated', 'PUBLIC') "
                     f"where v.relkind in ('v', 'm') and t.relrowsecurity and {_user_schema('vn.nspname')} "
                     "group by vn.nspname, v.relname, v.relkind, v.reloptions order by vn.nspname, v.relname limit 200"},
     "pii_readable_by_anon": {
-        "postgres": "select c.table_schema as schemaname, c.table_name as tablename, t.rowsecurity, "
-                    "array_agg(c.column_name order by c.column_name) as columns, "
-                    "(select array_agg(distinct g.grantee::text) from information_schema.role_table_grants g "
-                    "where g.table_schema = c.table_schema and g.table_name = c.table_name "
-                    "and g.privilege_type = 'SELECT' and g.grantee in ('anon', 'PUBLIC')) as grantees "
-                    "from information_schema.columns c "
-                    "join pg_catalog.pg_tables t on t.schemaname = c.table_schema and t.tablename = c.table_name "
-                    f"where c.table_schema = 'public' and c.column_name ~* {_PG_PII} "
-                    "and c.data_type in ('text', 'character varying', 'character', 'json', 'jsonb') "
-                    "and exists (select 1 from information_schema.role_table_grants g where g.table_schema = c.table_schema "
-                    "and g.table_name = c.table_name and g.privilege_type = 'SELECT' and g.grantee in ('anon', 'PUBLIC')) "
-                    "group by c.table_schema, c.table_name, t.rowsecurity order by c.table_name limit 200"},
+        "postgres": "with g as (select c.oid, array_agg(distinct gr.grantee::text) as grantees "
+                    f"from {_PG_PUBLIC_TABLES} "
+                    f"cross join lateral (select {_PG_GRANTEE} as grantee from {_pg_acl('c')} x "
+                    "where x.privilege_type = 'SELECT') gr where gr.grantee in ('anon', 'PUBLIC') group by c.oid) "
+                    "select n.nspname as schemaname, c.relname as tablename, c.relrowsecurity as rowsecurity, "
+                    "array_agg(a.attname::text order by a.attname) as columns, g.grantees "
+                    "from g join pg_catalog.pg_class c on c.oid = g.oid "
+                    "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    "join pg_catalog.pg_attribute a on a.attrelid = c.oid "
+                    "join pg_catalog.pg_type ty on ty.oid = a.atttypid "
+                    f"where {_pg_user_col('a')} and a.attname ~* {_PG_PII} "
+                    f"and {_pg_base_type('a', 'ty')} in {_PG_TEXT_TYPES} "
+                    "group by n.nspname, c.relname, c.relrowsecurity, g.grantees order by c.relname limit 200"},
     "updated_at_without_trigger": {
-        "postgres": "select t.schemaname, t.tablename from pg_catalog.pg_tables t "
-                    "join information_schema.columns c on c.table_schema = t.schemaname and c.table_name = t.tablename "
-                    "where t.schemaname = 'public' and c.column_name = 'updated_at' "
-                    "and not exists (select 1 from pg_catalog.pg_trigger tg "
-                    "join pg_catalog.pg_class tc on tc.oid = tg.tgrelid "
-                    "join pg_catalog.pg_namespace tn on tn.oid = tc.relnamespace "
-                    "where tn.nspname = t.schemaname and tc.relname = t.tablename and not tg.tgisinternal "
-                    "and (tg.tgtype::int & 16) <> 0) order by t.tablename limit 500",
+        "postgres": f"select n.nspname as schemaname, c.relname as tablename from {_PG_PUBLIC_TABLES} "
+                    "where exists (select 1 from pg_catalog.pg_attribute a where a.attrelid = c.oid "
+                    f"and {_pg_user_col('a')} and a.attname = 'updated_at') "
+                    "and not exists (select 1 from pg_catalog.pg_trigger tg where tg.tgrelid = c.oid "
+                    "and not tg.tgisinternal and (tg.tgtype::int & 16) <> 0) order by c.relname limit 500",
         "mysql": "select c.table_schema as schemaname, c.table_name as tablename from information_schema.columns c "
                  "where c.table_schema = database() and c.column_name = 'updated_at' "
                  "and lower(c.extra) not like '%on update%' "
@@ -1485,33 +1530,34 @@ _SQL = {
                     "join pg_catalog.pg_proc p on p.oid = tg.tgfoid "
                     "where tn.nspname = 'public' and not tg.tgisinternal and tg.tgenabled <> 'D' "
                     "group by tn.nspname, tc.relname), "
-                    "rw as (select g.table_schema as schemaname, g.table_name as tablename, "
+                    "rw as (select n.nspname as schemaname, c.relname as tablename, "
                     "count(distinct g.grantee) filter (where g.privilege_type in ('UPDATE', 'DELETE') "
-                    "and (not t.rowsecurity or coalesce(r.rolbypassrls, false))) as unconditional_rewriters, "
+                    "and (not c.relrowsecurity or coalesce(r.rolbypassrls, false))) as unconditional_rewriters, "
                     "count(distinct g.grantee) filter (where g.privilege_type in ('UPDATE', 'DELETE') "
-                    "and t.rowsecurity and not coalesce(r.rolbypassrls, false)) as gated_rewriters, "
+                    "and c.relrowsecurity and not coalesce(r.rolbypassrls, false)) as gated_rewriters, "
                     "count(distinct g.grantee) filter (where g.privilege_type = 'TRUNCATE') as truncate_grantees, "
                     "string_agg(distinct g.grantee::text, ',' order by g.grantee::text) as rewriter_names "
-                    "from information_schema.role_table_grants g "
-                    "join pg_catalog.pg_tables t on t.schemaname = g.table_schema and t.tablename = g.table_name "
-                    "left join pg_catalog.pg_roles r on r.rolname = g.grantee "
-                    "where g.table_schema = 'public' and g.privilege_type in ('UPDATE', 'DELETE', 'TRUNCATE') "
-                    f"and g.grantee <> t.tableowner and g.grantee not in {_PLATFORM_ROLES_SQL} "
-                    "group by g.table_schema, g.table_name) "
-                    "select 'table' as kind, t.schemaname, t.tablename, t.rowsecurity, "
+                    f"from {_PG_PUBLIC_TABLES} "
+                    f"cross join lateral (select {_PG_GRANTEE} as grantee, x.grantee as grantee_oid, x.privilege_type "
+                    f"from {_pg_acl('c')} x) g "
+                    "left join pg_catalog.pg_roles r on r.oid = g.grantee_oid "
+                    "where g.privilege_type in ('UPDATE', 'DELETE', 'TRUNCATE') "
+                    f"and g.grantee_oid <> c.relowner and g.grantee not in {_PLATFORM_ROLES_SQL} "
+                    "group by n.nspname, c.relname) "
+                    "select 'table' as kind, n.nspname as schemaname, c.relname as tablename, "
+                    "c.relrowsecurity as rowsecurity, "
                     "coalesce(trg.guard_triggers, 0) as guard_triggers, coalesce(trg.guard_names, '') as guard_names, "
                     "coalesce(trg.stamp_triggers, 0) as stamp_triggers, "
-                    "exists (select 1 from information_schema.columns c where c.table_schema = t.schemaname "
-                    "and c.table_name = t.tablename and c.column_name = 'updated_at') as has_updated_at, "
+                    "exists (select 1 from pg_catalog.pg_attribute a where a.attrelid = c.oid "
+                    f"and {_pg_user_col('a')} and a.attname = 'updated_at') as has_updated_at, "
                     "coalesce(rw.unconditional_rewriters, 0) as unconditional_rewriters, "
                     "coalesce(rw.gated_rewriters, 0) as gated_rewriters, "
                     "coalesce(rw.truncate_grantees, 0) as truncate_grantees, "
                     "coalesce(rw.rewriter_names, '') as rewriter_names, "
                     "null::text as setting_name, null::text as setting_value "
-                    "from pg_catalog.pg_tables t "
-                    "left join trg on trg.schemaname = t.schemaname and trg.tablename = t.tablename "
-                    "left join rw on rw.schemaname = t.schemaname and rw.tablename = t.tablename "
-                    "where t.schemaname = 'public' "
+                    f"from {_PG_PUBLIC_TABLES} "
+                    "left join trg on trg.schemaname = n.nspname and trg.tablename = c.relname "
+                    "left join rw on rw.schemaname = n.nspname and rw.tablename = c.relname "
                     "union all select 'setting', null, null, null, null, null, null, null, null, null, null, null, "
                     f"s.name, s.setting from pg_catalog.pg_settings s where s.name in {_TAMPER_SETTINGS_SQL} "
                     "order by kind, schemaname, tablename, setting_name limit 500"},
@@ -1554,9 +1600,11 @@ _SQL = {
                     "join pg_catalog.pg_namespace rn on rn.oid = rc.relnamespace "
                     f"where k.contype = 'f' and {_user_schema('n.nspname')} order by c.relname limit 1000"},
     "column_inventory": {
-        "postgres": "select table_name as tablename, array_agg(column_name order by ordinal_position) as columns "
-                    "from information_schema.columns where table_schema = 'public' "
-                    "group by table_name order by table_name limit 500"},
+        "postgres": "select c.relname as tablename, array_agg(a.attname::text order by a.attnum) as columns "
+                    "from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                    "join pg_catalog.pg_attribute a on a.attrelid = c.oid "
+                    f"where n.nspname = 'public' and c.relkind in ('r', 'v', 'f', 'p') and {_pg_user_col('a')} "
+                    "group by c.relname order by c.relname limit 500"},
 }
 
 
