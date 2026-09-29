@@ -134,6 +134,75 @@ def caselaw(query, n=4):
     return out
 
 
+# (code, name, CourtListener court ids: court of last resort first, then the main appellate courts).
+# 2026-09-29: an unfiltered "Ohio ... chance skill" search returned Alabama, California and Kansas
+# opinions; a per-jurisdiction question needs that jurisdiction's courts.
+STATES = [
+    ("AL", "Alabama", "ala alacivapp alacrimapp"), ("AK", "Alaska", "alaska alaskactapp"),
+    ("AZ", "Arizona", "ariz arizctapp"), ("AR", "Arkansas", "ark arkctapp"), ("CA", "California", "cal calctapp calag"),
+    ("CO", "Colorado", "colo coloctapp"), ("CT", "Connecticut", "conn connappct"), ("DE", "Delaware", "del delch delsuperct"),
+    ("DC", "District of Columbia", "dc"), ("FL", "Florida", "fla fladistctapp"), ("GA", "Georgia", "ga gactapp"),
+    ("HI", "Hawaii", "haw hawapp"), ("ID", "Idaho", "idaho idahoctapp"), ("IL", "Illinois", "ill illappct"),
+    ("IN", "Indiana", "ind indctapp"), ("IA", "Iowa", "iowa iowactapp"), ("KS", "Kansas", "kan kanctapp"),
+    ("KY", "Kentucky", "ky kyctapp"), ("LA", "Louisiana", "la lactapp"), ("ME", "Maine", "me"),
+    ("MD", "Maryland", "md mdctspecapp"), ("MA", "Massachusetts", "mass massappct"), ("MI", "Michigan", "mich michctapp"),
+    ("MN", "Minnesota", "minn minnctapp"), ("MS", "Mississippi", "miss missctapp"), ("MO", "Missouri", "mo moctapp"),
+    ("MT", "Montana", "mont"), ("NE", "Nebraska", "neb nebctapp"), ("NV", "Nevada", "nev nevapp"),
+    ("NH", "New Hampshire", "nh"), ("NJ", "New Jersey", "nj njsuperctappdiv"), ("NM", "New Mexico", "nm nmctapp"),
+    ("NY", "New York", "ny nyappdiv nyappterm"), ("NC", "North Carolina", "nc ncctapp"), ("ND", "North Dakota", "nd ndctapp"),
+    ("OH", "Ohio", "ohio ohioctapp"), ("OK", "Oklahoma", "okla oklacivapp oklacrimapp"), ("OR", "Oregon", "or orctapp"),
+    ("PA", "Pennsylvania", "pa pasuperct pacommwct"), ("RI", "Rhode Island", "ri"), ("SC", "South Carolina", "sc scctapp"),
+    ("SD", "South Dakota", "sd"), ("TN", "Tennessee", "tenn tennctapp tenncrimapp"), ("TX", "Texas", "tex texapp texcrimapp"),
+    ("UT", "Utah", "utah utahctapp"), ("VT", "Vermont", "vt"), ("VA", "Virginia", "va vactapp"),
+    ("WA", "Washington", "wash washctapp"), ("WV", "West Virginia", "wva"), ("WI", "Wisconsin", "wis wisctapp"),
+    ("WY", "Wyoming", "wyo"), ("PR", "Puerto Rico", "prsupreme"), ("GU", "Guam", "guam"),
+]
+_BY_CODE = {c: (c, n, ids) for c, n, ids in STATES}
+_BY_NAME = {n.lower(): (c, n, ids) for c, n, ids in STATES}
+
+
+def state(code_or_name):
+    """'US-OH' | 'OH' | 'Ohio' -> (code, name, court ids) or None."""
+    t = str(code_or_name or "").strip()
+    if not t:
+        return None
+    up = t.upper()
+    if up.startswith("US-"):
+        up = up[3:]
+    return _BY_CODE.get(up) or _BY_NAME.get(t.lower())
+
+
+def caselaw_opinions(query, courts, n=4):
+    """Opinions from the named courts, each with a fetchable PDF of its text (the court's own copy or the
+    public storage copy) — the opinion pages themselves are bot-protected and the opinion API needs a
+    token. -> [{authority, url (the PDF), page_url, court, date, snippet}], or None when the search itself
+    failed (timeout, throttling) — callers must not read an outage as "no authority exists"."""
+    out = []
+    try:
+        d = _get_json("https://www.courtlistener.com/api/rest/v4/search/?type=o&order_by=score%%20desc"
+                      "&page_size=%d&highlight=on%s&q=%s" % (n, ("&court=" + urllib.parse.quote(courts)) if courts else "",
+                                                urllib.parse.quote(query[:200])))
+    except Exception:
+        return None
+    for r in (d.get("results") or [])[:n]:
+        ops = r.get("opinions") or []
+        pdf = ""
+        for o in ops:
+            if o.get("local_path"):
+                pdf = "https://storage.courtlistener.com/" + str(o["local_path"]).lstrip("/")
+                break
+            if str(o.get("download_url") or "").lower().endswith(".pdf"):
+                pdf = o["download_url"]
+                break
+        cites = ", ".join(r.get("citation") or [])[:80]
+        out.append({"authority": f"{_strip(r.get('caseName'))[:120]}{(', ' + cites) if cites else ''} "
+                                 f"({r.get('court_id')}, {str(r.get('dateFiled') or '')[:10]})",
+                    "url": pdf, "page_url": "https://www.courtlistener.com" + str(r.get("absolute_url") or ""),
+                    "court": r.get("court_id") or "", "date": str(r.get("dateFiled") or "")[:10],
+                    "snippet": _strip(" ".join(str(o.get("snippet") or "") for o in ops))[:600]})
+    return out
+
+
 BACKENDS = {"ecfr": ecfr, "fr": federal_register, "caselaw": caselaw}
 
 

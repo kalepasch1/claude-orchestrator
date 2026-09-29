@@ -102,8 +102,36 @@ def to_text(raw, url=""):
     return re.sub(r"\s+", " ", txt).strip()
 
 
+PDF_MAX_BYTES = int(os.environ.get("ORCH_LOCAL_RESEARCH_PDF_MAX_BYTES", str(20_000_000)))
+
+
+def pdf_text(data):
+    """PDF bytes -> text in the same canonical form as pages ('' on failure). pdftotext when installed,
+    pypdf otherwise. Court opinions, tribal-state compacts, AG opinions and much agency guidance are
+    published only as PDFs (2026-09-29: every opinion the question-family pass needed)."""
+    import shutil
+    import subprocess
+    txt = ""
+    exe = shutil.which("pdftotext") or ("/opt/homebrew/bin/pdftotext" if os.path.exists("/opt/homebrew/bin/pdftotext") else None)
+    if exe:
+        try:
+            r = subprocess.run([exe, "-q", "-enc", "UTF-8", "-", "-"], input=data, capture_output=True, timeout=120)
+            txt = r.stdout.decode("utf-8", "replace") if r.returncode == 0 else ""
+        except Exception:
+            txt = ""
+    if len(txt.strip()) < 200:
+        try:
+            import io
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            txt = "\n".join((pg.extract_text() or "") for pg in reader.pages[:400])
+        except Exception:
+            txt = txt or ""
+    return re.sub(r"\s+", " ", txt.replace("\x0c", " ")).strip()
+
+
 def fetch(url, timeout=25):
-    """-> page text ('' on failure). Cached on disk for PAGE_TTL_S."""
+    """-> page text ('' on failure). Cached on disk for PAGE_TTL_S. PDFs are converted to text."""
     key = hashlib.sha1(url.encode()).hexdigest()
     path = os.path.join(PAGES, key + ".txt")
     try:
@@ -114,13 +142,17 @@ def fetch(url, timeout=25):
         pass
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html,application/json;q=0.9,*/*;q=0.5"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if "pdf" in (r.headers.get("Content-Type") or "").lower():
-                return ""
-            raw = r.read(3_000_000).decode("utf-8", "replace")
+        with urllib.request.urlopen(req, timeout=max(timeout, 60) if url.lower().split("?")[0].endswith(".pdf") else timeout) as r:
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if "pdf" in ctype or url.lower().split("?")[0].endswith(".pdf"):
+                data = r.read(PDF_MAX_BYTES + 1)
+                if len(data) > PDF_MAX_BYTES or not data.startswith(b"%PDF"):
+                    return ""
+                txt = pdf_text(data)
+            else:
+                txt = to_text(r.read(3_000_000).decode("utf-8", "replace"), url)
     except Exception:
         return ""
-    txt = to_text(raw, url)
     if len(txt) < 200:
         return ""
     try:

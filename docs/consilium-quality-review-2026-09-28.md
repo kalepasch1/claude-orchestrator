@@ -223,3 +223,36 @@ scoring rigor, novelty, utility and exposure together. Only a card whose panel c
 0.06 of the publication bar gets the separate reviewers, including the cross-vendor exposure check.
 Steering and revise decisions come from the panel: about four reviewer calls become one for most
 cards. A failed panel falls back to the separate reviewers (`PUBCOM_PANEL=false` turns it off).
+
+## 11. Question families: one chart instead of one tournament per jurisdiction (2026-09-29)
+
+**Why.** Two gap families, "which chance/skill test does <state> apply" (47) and "how would <tribe>
+classify a game under IGRA" (35), were 81 of 4,336 docketable gaps and 78% of their value; each answer
+unblocks about 57 propositions. As separate matters they would re-research the same general law 81
+times and could disagree with each other.
+
+**The pass** (`runner/family_matrix.py`, run by `legal_docket` before the one-at-a-time route):
+
+| Step | Who decides |
+|---|---|
+| Family | Gap questions identical except for the place or party they name |
+| Framework | Researched once per family and kept: IGRA and NIGC definitions; opinions that set the competing chance/skill tests side by side |
+| Cells | Free: the jurisdiction's own courts (CourtListener, court-filtered, opinion PDFs opened), its tribal-state compacts (BIA index, 1,201 documents), the corpus |
+| Passages | Windows centred on the question's own vocabulary (the options it lists); at least two subject words as whole words |
+| Chart | One call per 4 cells: choice, short answer citing passage ids, status, verbatim quotes, and whether the sources concern the named entity |
+| Verify | Every quote re-found in its passage. A cell must rest on its own sources; framework passages alone cannot decide a jurisdiction |
+| Mint | Each settled or contested cell becomes that member's card, with the family comparison. Open cells retry, then go to the firm |
+
+**Live validation (sandboxed, nothing minted).** Illinois (*Dew-Becker v. Wu*, 2020) and Iowa (*Banilla
+Games*, 2018): predominant/dominant factor, each from its own supreme court. Laguna Pueblo, Oneida
+Indian Nation and Saginaw Chippewa: Class III compacts covering electronic devices, internet play not
+addressed in the passages opened. One chart call per four cells, about 22K tokens in on GPT-5.5.
+
+**Caught before live use.** A prefix match mapped every "Class III" answer to "Class II"; the New York
+Oneida Indian Nation matched the Oneida Nation of Wisconsin's compact; stemmed search matched "any
+chance of finding employment"; a search outage would have been recorded as "no law exists". Each has a
+test.
+
+**Shared improvements.** `local_research.fetch` now reads PDFs (pdftotext, pypdf fallback), which every
+tribunal benefits from. `authority_search.caselaw_opinions` searches one jurisdiction's courts and
+returns each opinion's PDF; a failed search returns None, never an empty "no results".
