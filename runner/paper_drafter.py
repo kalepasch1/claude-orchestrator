@@ -29,6 +29,9 @@ import frontier
 _s = common_utils.safe_string_coerce
 BATCH = int(os.environ.get("ORCH_PAPER_BATCH", "2"))
 NOVELTY_FLOOR = float(os.environ.get("ORCH_PAPER_NOVELTY_FLOOR", "0.72"))
+PAPER_NOVELTY_MIN = float(os.environ.get("ORCH_PAPER_NOVELTY_MIN", "0.50"))
+PAPER_EVIDENCE_MIN = float(os.environ.get("ORCH_PAPER_EVIDENCE_MIN", "0.75"))
+PAPER_RIGOR_MIN = float(os.environ.get("ORCH_PAPER_RIGOR_MIN", "0.65"))
 PROJECT = os.environ.get("ORCH_PAPER_PROJECT", "apparently-law")
 PAPERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "consilium", "papers")
 
@@ -103,7 +106,13 @@ def _candidates(limit):
     for rv in revs:
         det = _loads(rv.get("detail"), {})
         scores = (det or {}).get("scores") or {}
-        if rv.get("decision") == "steer_only" and float(scores.get("novelty") or 0) < NOVELTY_FLOOR:
+        # 2026-09-28: no card had ever reached the publish bar and the 0.72 novelty floor excluded
+        # every steering card, so the drafter had produced zero papers in 16 days. A steering card
+        # that is well grounded and well reasoned with a real (if modest) new angle is worth a
+        # DRAFT — it still goes to a human, and the draft re-verifies every source.
+        n, e, g = (float(scores.get(k) or 0) for k in ("novelty", "evidence", "rigor"))
+        strong = n >= PAPER_NOVELTY_MIN and e >= PAPER_EVIDENCE_MIN and g >= PAPER_RIGOR_MIN
+        if rv.get("decision") == "steer_only" and n < NOVELTY_FLOOR and not strong:
             continue
         slug = f"paper:{rv.get('artifact_id')}"
         if db.select("approvals", {"select": "id", "slug": f"eq.{slug}", "limit": "1"}):

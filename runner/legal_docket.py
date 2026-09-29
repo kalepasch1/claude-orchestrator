@@ -234,7 +234,13 @@ def run(limit=BATCH):
             print("legal_docket: matrix top-up " + json.dumps({k: topped[k] for k in ("proposed", "admitted", "rejected")}))
         except Exception as e:
             print(f"legal_docket: matrix top-up skipped: {type(e).__name__}: {str(e)[:100]}")
-    rows = _stale_or_unanswered(limit)
+    only = {p.strip().lower() for p in os.environ.get("ORCH_DOCKET_PRIORITIES", "").split(",") if p.strip()}
+    if only:
+        # Host-constrained run: only questions the frontier tier will take are convened; the rest
+        # wait for a tick that can fund local inference rather than being skipped one by one.
+        rows = [r for r in _stale_or_unanswered(limit * 6) if str(r.get("priority") or "").lower() in only][:limit]
+    else:
+        rows = _stale_or_unanswered(limit)
     if not rows:
         print(json.dumps({"seeded": seeded, "convened": 0, "note": "docket empty or fully answered"}))
         return {"seeded": seeded, "convened": 0}

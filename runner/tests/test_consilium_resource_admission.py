@@ -32,9 +32,13 @@ class ConsiliumResourceAdmissionTest(unittest.TestCase):
         for key in DEFAULT_KEYS:
             os.environ.pop(key, None)
         self.db = types.SimpleNamespace(upsert=Mock())
+        # 2026-09-28: the heartbeat goes through consilium_controls.put (scope-aware); the bare
+        # db.upsert this test used to assert on was rejected by the database and wrote nothing.
+        self.controls = types.SimpleNamespace(put=Mock(return_value=True))
         self.host_gate = Mock(return_value={"admitted": True, "reason": "ok", "free_gb": 20})
         self.stack.enter_context(patch.dict(sys.modules, {
             "db": self.db,
+            "consilium_controls": self.controls,
             "frontier": types.SimpleNamespace(budget=lambda: {}, status=lambda: {}),
             "kill_switch": types.SimpleNamespace(is_paused=lambda _: False),
             "local_model_slots": types.SimpleNamespace(host_admission_status=self.host_gate),
@@ -112,7 +116,8 @@ class ConsiliumResourceAdmissionTest(unittest.TestCase):
         self.assertEqual(self.t.next_due(state, now=state["expert_corps"]["last_attempt"]["retry_after"])[0], "expert_corps")
         self.host_gate.assert_called_once_with()
         self.run.assert_not_called()
-        payload = json.loads(self.db.upsert.call_args.args[1]["value"])
+        self.assertEqual(self.controls.put.call_args.args[0], "consilium_heartbeat")
+        payload = json.loads(json.dumps(self.controls.put.call_args.args[1], default=str))
         self.assertEqual(payload["last_runs"]["expert_corps"]["last_attempt"]["status"], "deferred")
 
     def test_never_run_job_remains_never_run_after_deferral(self):
