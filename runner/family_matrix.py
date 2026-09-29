@@ -53,6 +53,7 @@ CHUNK = int(os.environ.get("ORCH_FAMILY_CHUNK", "4"))
 NEED = int(os.environ.get("ORCH_FAMILY_NEED", "7"))
 RETRY_DAYS = int(os.environ.get("ORCH_FAMILY_RETRY_DAYS", "14"))
 NO_SOURCE_RETRY_DAYS = int(os.environ.get("ORCH_FAMILY_NO_SOURCE_RETRY_DAYS", "3"))
+TRANSIENT_LIMIT = int(os.environ.get("ORCH_FAMILY_TRANSIENT_LIMIT", "3"))
 PASSAGES_PER_CELL = int(os.environ.get("ORCH_FAMILY_PASSAGES", "4"))
 FRAMEWORK_PASSAGES = 6
 PASSAGE_CHARS = 850
@@ -694,7 +695,16 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
     for n, row in enumerate(rows, 1):
         ps, transient = cell_research(row, fam, opts, fetcher=fetcher, searcher=searcher, compacts=compacts)
         if not ps and transient:
-            out["transient"] += 1            # an outage: not recorded, retried on the next pass
+            out["transient"] += 1            # an outage: retried on the next pass...
+            tries = st.setdefault("transient", {})
+            tries[str(row["id"])] = tries.get(str(row["id"]), 0) + 1
+            if tries[str(row["id"])] >= TRANSIENT_LIMIT:
+                # ...but a search that keeps failing (a bad court id, a dead host) must not keep the
+                # family first in line forever and starve the one-at-a-time route.
+                st["cells"][str(row["id"])] = {"member": row["_member"], "status": "open", "no_sources": True,
+                                               "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                               "why": f"search failed {tries[str(row['id'])]} times"}
+                tries.pop(str(row["id"]))
             continue
         for k, p in enumerate(ps, 1):
             p["id"] = f"M{n}.{k}"

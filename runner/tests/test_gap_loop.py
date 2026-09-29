@@ -453,3 +453,12 @@ def test_model_flagged_wrong_entity_opens_the_cell():
                         "quotes": [{"passage": "M1.1", "quote": "The Oneida Nation and the State of Wisconsin agree that class III gaming"}]},
                        cell, [])
     assert v["status"] == "open" and "different entity" in v["why"]
+
+
+def test_a_search_that_keeps_failing_stops_holding_the_queue(monkeypatch, tmp_path):
+    fm, fetcher, _ = _fam_env(monkeypatch, tmp_path)
+    fam = fm.families(_fam_rows())[0]
+    down = lambda query, courts, n: None
+    for _ in range(fm.TRANSIENT_LIMIT):
+        fm.run(fam, mint=None, fetcher=fetcher, searcher=down, chart=lambda p: (None, {}), compacts=[], write_doc=False)
+    assert fm.todo(fam) == [] and fm.next_family(_fam_rows()) is None
