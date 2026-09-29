@@ -317,7 +317,10 @@ def _slices(page, want, source, k, f=None):
     wins.sort(key=lambda w: (-w[0], w[1]))
     out = []
     for sc, s, e, text in wins:
-        if sc < 4 or any(not (e <= ps or s >= pe) for _, ps, pe in [(0, o["_s"], o["_e"]) for o in out]):
+        # A doctrinal phrase (score >= 4), or every subject word of the question as a whole word: a passage
+        # can decide the test without naming it ("whether chance or skill predominates in gambling").
+        on_topic = sc >= 4 or (len(f["anchors"]) >= 3 and _anchor_hits(text.lower(), f) == len(f["anchors"]))
+        if not on_topic or any(not (e <= ps or s >= pe) for _, ps, pe in [(0, o["_s"], o["_e"]) for o in out]):
             continue
         out.append({"text": text, "score": sc, "authority": source["authority"], "url": source["url"],
                     "origin": source.get("origin"), "_s": s, "_e": e})
@@ -481,6 +484,25 @@ def cell_research(row, fam, opts, *, fetcher, searcher, compacts=None):
                               "origin": "caselaw_excerpt", "_held": _s(c["snippet"])})
     if re.search(r"tribe|tribal|igra|compact", fam["template"]):
         cands += compacts_for(member, index=compacts)
+    # The corpus by full-text search, scoped to the jurisdiction (2026-09-29: the embedding route below is
+    # skipped whenever the host cannot run a local embedding model, which is most of the day; this one
+    # needs none, and found the Ohio Supreme Court's skill-game decision CourtListener had no PDF for).
+    codes = []
+    if st:
+        codes = [f"US-{st[0]}", st[0]]
+    elif _s(row.get("_jurisdiction")):
+        codes = [_s(row.get("_jurisdiction"))]
+    if codes:
+        try:
+            import corpus_db
+            hits = corpus_db.passages_scoped(" ".join(anchors(fam["question"])), codes, limit=6)
+            for p in hits or []:
+                if p.get("source_url") and len(_s(p.get("text"))) >= 100:
+                    cands.append({"authority": (_s(p.get("title")) or _s(p.get("heading")))[:160] + (
+                                      f" ({p.get('doc_type')})" if p.get("doc_type") else ""),
+                                  "url": p["source_url"], "origin": "corpus", "_held": _s(p["text"])})
+        except Exception:
+            pass
     try:
         import local_llm
         free = local_llm.free_gb()
