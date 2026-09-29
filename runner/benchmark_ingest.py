@@ -151,7 +151,7 @@ def run(limit=BATCH, dry_run=False):
             out["considered"] += 1
             out["results"].append({"id": t.get("id"), "case": t.get("case_name"), "prompt": prompt_for(t)})
             continue
-        if not frontier.available(min_tokens=MIN_TOKENS):
+        if not frontier.can_think(min_tokens=MIN_TOKENS, min_tier="codex"):
             out["skipped_budget"] += 1
             break
         out["considered"] += 1

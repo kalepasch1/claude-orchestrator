@@ -127,7 +127,7 @@ def build(vertical, force=False):
         return {"vertical": vertical, "built": False, "reason": f"only {len(cards)} frontier cards"}
     if have and not force and len(cards) - int(have.get("cards_used") or 0) < REBUILD_AFTER_NEW_CARDS:
         return {"vertical": vertical, "built": False, "reason": "current"}
-    if not frontier.available(min_tokens=60000):
+    if not frontier.can_think(min_tokens=60000, min_tier="codex"):
         return {"vertical": vertical, "built": False, "reason": "frontier unavailable"}
     blocks, allowed = [], {}
     for c in cards[:14]:
@@ -138,7 +138,7 @@ def build(vertical, force=False):
                       f"REASONING: {_s(c.get('position'))[:2200]}\nFLIPS IF: {_s(c.get('flips_if'))[:400]}\n"
                       f"AUTHORITIES OPENED: {json.dumps(cs)[:2200]}")
     r = frontier.complete(f"PRACTICE AREA: {vertical}\nTODAY: {datetime.date.today().isoformat()}\n\n" + "\n\n".join(blocks),
-                          system=SYSTEM, need=8, json_schema=SCHEMA, timeout=900, tag="playbook.build")
+                          system=SYSTEM, need=8, json_schema=SCHEMA, timeout=900, tag="playbook.build", min_tier="codex")
     j = r.get("json")
     if r.get("error") or not isinstance(j, dict) or not j.get("topics"):
         return {"vertical": vertical, "built": False, "reason": (r.get("error") or "malformed output")[:200]}

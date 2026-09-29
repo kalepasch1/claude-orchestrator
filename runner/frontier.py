@@ -92,6 +92,18 @@ _AUTH_PATTERNS = ("failed to authenticate", "oauth session expired", "not logged
                   "invalid api key", "authentication_error")
 AUTH_COOLDOWN_MIN = int(os.environ.get("ORCH_FRONTIER_AUTH_COOLDOWN_MIN", "30"))
 CODEX_FALLBACK = os.environ.get("ORCH_FRONTIER_CODEX_FALLBACK", "true").lower() not in ("0", "false", "no", "off")
+# NEVER IDLE (operator direction 2026-09-29): "always run lower intelligence reviews if cloud models
+# like Fable are not available or stop working, so we never have a break in effort." Every call
+# walks the chain Claude -> GPT-5.5 (Codex) -> the strongest local model, and the result records
+# which tier answered. Callers that must not accept a lower tier say so with min_tier.
+NEVER_IDLE = os.environ.get("ORCH_NEVER_IDLE", "true").lower() not in ("0", "false", "no", "off")
+TIERS = ("frontier", "codex", "local")
+# LOCAL FIRST (same direction: "use local super intelligent models as much as possible"). Routine
+# calls at or below this need level, with no web tools, go to a strong resident local model first
+# and climb the chain only if it fails.
+LOCAL_FIRST_MAX_NEED = int(os.environ.get("ORCH_LOCAL_FIRST_MAX_NEED", "6"))
+LOCAL_FIRST_MIN_B = float(os.environ.get("ORCH_LOCAL_FIRST_MIN_B", "20"))
+AUTH_REPROBE_S = int(os.environ.get("ORCH_FRONTIER_AUTH_REPROBE_S", "300"))
 
 _RATE_PATTERNS = ("usage limit", "rate limit", "hit your", "weekly limit", "too many requests",
                   "overloaded", "\"429\"", "status 429", "quota")
@@ -210,6 +222,139 @@ def auth_down():
     return time.time() < float(s.get("cooldown_until", 0) or 0) and is_auth_error(s.get("cooldown_reason"))
 
 
+def _reprobe_auth():
+    """While login is down, try one tiny lean call every AUTH_REPROBE_S. A fresh /login is picked up
+    within minutes instead of waiting out the cooldown (2026-09-29: the operator logged in at 10:43 and
+    a stale cooldown kept every job on the fallback tiers)."""
+    s = _load()
+    if time.time() - float(s.get("auth_probe_at", 0) or 0) < AUTH_REPROBE_S:
+        return False
+    with _lock:
+        s = _load()
+        s["auth_probe_at"] = time.time()
+        _save(s)
+    _ensure_home()
+    try:
+        env = dict(os.environ)
+        env.pop("ANTHROPIC_API_KEY", None)
+        p = subprocess.run([CLAUDE_BIN, "-p", "Reply with exactly: OK", "--model", SONNET, "--output-format", "json",
+                            "--max-turns", "1", "--tools", "", "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
+                            "--setting-sources", "", "--no-session-persistence"],
+                           capture_output=True, text=True, timeout=90, cwd=tempfile.gettempdir(), env=env)
+        j = json.loads(p.stdout or "{}")
+        ok = p.returncode == 0 and not j.get("is_error")
+    except Exception:
+        ok = False
+    if ok:
+        with _lock:
+            s = _load()
+            s["cooldown_until"] = 0
+            s["cooldown_reason"] = ""
+            s["auth_recovered_at"] = time.time()
+            _save(s)
+    return ok
+
+
+def tier_available(tier, min_tokens=4000):
+    if tier == "frontier":
+        return available(min_tokens)
+    if tier == "codex":
+        return codex_available(min_tokens)
+    if tier == "local":
+        if os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+            return False
+        try:
+            import local_llm
+            return local_llm.available()
+        except Exception:
+            return False
+    return False
+
+
+def can_think(min_tokens=4000, min_tier="local"):
+    """Is ANY acceptable tier able to take a call? The gate every job should use: effort only stops
+    when nothing at or above `min_tier` can answer."""
+    if not NEVER_IDLE:
+        return available(min_tokens)
+    floor = TIERS.index(min_tier) if min_tier in TIERS else len(TIERS) - 1
+    return any(tier_available(t, min_tokens) for t in TIERS[:floor + 1])
+
+
+def best_tier(min_tokens=4000, min_tier="local"):
+    floor = TIERS.index(min_tier) if min_tier in TIERS else len(TIERS) - 1
+    for t in TIERS[:floor + 1]:
+        if tier_available(t, min_tokens):
+            return t
+    return None
+
+
+def research_context(prompt, max_sources=4, max_chars=6000):
+    """For a lower tier standing in for a web-tool call: search the official APIs and fetch the pages
+    OURSELVES, and hand the model exact passages to work from."""
+    try:
+        import authority_search as asrch
+        import local_research
+    except Exception:
+        return ""
+    body = re.sub(r"\s+", " ", prompt or "")[:3000]
+    want = asrch.terms(body, limit=18)
+    if not want:
+        return ""
+    try:
+        hits, _ = asrch.search([" ".join(want[:6]), " ".join(want[6:12]) or " ".join(want[:4])], per_query=3,
+                               backends=("ecfr", "fr"))
+    except Exception:
+        hits = []
+    urls = [u for u in re.findall(r"https?://[^\s\"'<>)\]]+", body)][:4]
+    blocks, seen = [], set()
+    for h in [{"url": u, "authority": u} for u in urls] + hits:
+        u = h.get("url")
+        if not u or u in seen or len(blocks) >= max_sources:
+            continue
+        seen.add(u)
+        page = local_research.fetch(u) or ""
+        if len(page) < 200:
+            continue
+        ps = asrch.passages(page, want, k=2, width=700)
+        if ps:
+            blocks.append(f"SOURCE {h.get('authority') or u} <{u}>\n" + "\n".join(p["text"] for p in ps))
+    if not blocks:
+        return ""
+    return ("\n\nRESEARCH (you have no web access; the system searched official sources and fetched these pages "
+            "for you. Cite ONLY these URLs, quote ONLY words that appear below, and treat anything else you "
+            "believe as an assumption):\n" + "\n\n".join(blocks))[:max_chars]
+
+
+def _local_as(out, prompt, system, json_schema, timeout, tag, project, research=False):
+    """The last rung: the strongest local model that fits, with fetched research when the caller
+    wanted web tools."""
+    try:
+        import local_llm
+        user = prompt + (research_context(prompt) if research else "")
+        r = local_llm.chat(user, system=system, json_schema=json_schema, max_tokens=int(os.environ.get(
+            "ORCH_LOCAL_FALLBACK_MAX_TOKENS", "6000")), timeout=min(int(timeout or 900), 1800), tag=f"{tag}.local",
+            project=project)
+    except Exception as e:
+        r = {"text": "", "json": None, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+    out.update(text=r.get("text") or "", json=r.get("json"), model=r.get("model") or "local", provider=r.get("provider") or "local",
+               tokens_in=r.get("tokens_in") or 0, tokens_out=r.get("tokens_out") or 0, error=r.get("error") or "",
+               degraded=bool(r.get("error")), latency_s=r.get("latency_s") or 0.0, tier="local")
+    return out
+
+
+def _strong_local_resident():
+    try:
+        import local_llm
+        import local_tribunal
+        for spec in local_llm.MODELS:
+            p, _, m = spec.partition(":")
+            if local_tribunal.size_b(m) >= LOCAL_FIRST_MIN_B and local_llm.resident(p, m):
+                return spec
+    except Exception:
+        pass
+    return None
+
+
 def _mark_auth_failure(reason):
     with _lock:
         s = _load()
@@ -255,6 +400,8 @@ def available(min_tokens=4000):
     if not ENABLED or not shutil.which(CLAUDE_BIN):
         return False
     if _paused():
+        return False
+    if auth_down() and not _reprobe_auth():
         return False
     b = budget()
     return (not b["in_cooldown"]) and b["remaining_hour"] >= min_tokens and b["remaining_day"] >= min_tokens
@@ -377,7 +524,65 @@ def max_turns_hit(raw):
 
 def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=None,
              json_schema=None, timeout=900, project="consilium", tag="frontier",
-             salvage=True, resume=None):
+             salvage=True, resume=None, min_tier="local"):
+    """The gateway. Claude first (or a strong local model first for routine no-tool work), then
+    GPT-5.5, then the strongest local model — until one answers. result["tier"] says which did."""
+    kw = dict(system=system, model=model, need=need, tools=tools, max_turns=max_turns, json_schema=json_schema,
+              timeout=timeout, project=project, tag=tag, salvage=salvage, resume=resume)
+    if not NEVER_IDLE or resume:
+        r = _complete_claude(prompt, **kw)
+        r.setdefault("tier", "frontier")
+        return r
+    floor = TIERS.index(min_tier) if min_tier in TIERS else len(TIERS) - 1
+    need_n = NEED_LABELS.get(need.lower(), 7) if isinstance(need, str) else (need if isinstance(need, (int, float)) else 7)
+    attempts = []
+    base = {"text": "", "json": None, "model": None, "tokens_in": 0, "tokens_out": 0, "rc": None, "error": "",
+            "degraded": False, "turns": 0, "latency_s": 0.0}
+    # local first for routine work when a strong model is already resident
+    if (not tools and need_n <= LOCAL_FIRST_MAX_NEED and floor >= 2 and not model and _strong_local_resident()):
+        r = _local_as(dict(base), prompt, system, json_schema, timeout, tag, project)
+        if not r.get("error") and (r.get("json") is not None or not json_schema):
+            r["tier_path"] = ["local-first"]
+            return r
+        attempts.append(("local-first", r.get("error") or "unparseable"))
+    if tier_available("frontier", 4000):
+        r = _complete_claude(prompt, **kw)
+        if not r.get("error") and not r.get("fallback"):
+            r["tier"] = "frontier"
+            return r
+        if r.get("fallback") and not r.get("error"):          # the auth path already served via codex
+            r["tier"] = "codex"
+            return r
+        attempts.append(("frontier", r.get("error") or "no result"))
+    else:
+        attempts.append(("frontier", "unavailable"))
+    if floor >= 1 and codex_available():
+        extra = research_context(prompt) if tools else ""
+        r = codex_complete(prompt + extra, system=system, json_schema=json_schema, timeout=timeout, project=project,
+                           tag=f"{tag}.codex")
+        if not r.get("error") and (r.get("json") is not None or not json_schema):
+            out = dict(base)
+            out.update(text=r.get("text") or "", json=r.get("json"), model=r.get("model"), provider="openai-codex",
+                       tokens_in=r.get("tokens_in") or 0, tokens_out=r.get("tokens_out") or 0,
+                       latency_s=r.get("latency_s") or 0.0, tier="codex", research_injected=bool(extra),
+                       fallback={"from": "frontier", "to": "codex", "reason": str(attempts[-1][1])[:160]})
+            return out
+        attempts.append(("codex", r.get("error") or "unparseable"))
+    if floor >= 2 and tier_available("local"):
+        r = _local_as(dict(base), prompt, system, json_schema, timeout, tag, project, research=bool(tools))
+        if not r.get("error") and (r.get("json") is not None or not json_schema):
+            r["fallback"] = {"from": attempts[0][0], "to": "local", "reason": "; ".join(f"{a}: {str(b)[:80]}" for a, b in attempts)[:300]}
+            return r
+        attempts.append(("local", r.get("error") or "unparseable"))
+    out = dict(base)
+    out.update(error="no tier could answer: " + "; ".join(f"{a}: {str(b)[:100]}" for a, b in attempts), degraded=True,
+               tier=None, attempts=attempts)
+    return out
+
+
+def _complete_claude(prompt, *, system=None, model=None, need=9, tools=None, max_turns=None,
+                     json_schema=None, timeout=900, project="consilium", tag="frontier",
+                     salvage=True, resume=None):
     """One lean frontier call. Returns
     {text, json, model, tokens_in, tokens_out, rc, error, degraded, turns, latency_s}.
 
@@ -481,7 +686,7 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
                session_id=raw.get("session_id"))
     if (err and keep_session and not resume and json_schema and parsed is None
             and max_turns_hit(raw) and raw.get("session_id") and available()):
-        s2 = complete(SALVAGE_PROMPT, system=system, model=model, tools=None, max_turns=3,
+        s2 = _complete_claude(SALVAGE_PROMPT, system=system, model=model, tools=None, max_turns=3,
                       json_schema=json_schema, timeout=min(timeout, 600), project=project,
                       tag=f"{tag}.salvage", salvage=False, resume=raw["session_id"])
         out["salvage"] = {"error": s2.get("error") or "", "tokens_in": s2.get("tokens_in"),
@@ -644,7 +849,7 @@ def route_json(prompt, need=7, *, system=None, arr=False, tools=None, json_schem
     budget allows; strong local otherwise. Always returns a dict/list (possibly empty)."""
     empty = [] if arr else {}
     m = model_for(need)
-    if m and available():
+    if m and can_think():
         r = complete(prompt, system=system, model=m, tools=tools, max_turns=max_turns,
                      json_schema=json_schema, project=project, tag=tag)
         j = r.get("json")

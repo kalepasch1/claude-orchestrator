@@ -93,9 +93,12 @@ def _triaged_ids():
         with open(LEDGER) as f:
             for line in f:
                 try:
-                    ids.add(json.loads(line).get("id"))
+                    rec = json.loads(line)
                 except Exception:
-                    pass
+                    continue
+                if rec.get("tier") == "local" or rec.get("dry_run"):
+                    continue            # a cloud-tier clerk should still see it
+                ids.add(rec.get("id"))
     except OSError:
         pass
     return ids
@@ -117,12 +120,19 @@ def decide(batch):
     r = frontier.complete(f"TODAY: {datetime.date.today().isoformat()}\n\nQUESTIONS:\n{lines}",
                           system=SYSTEM, need=9, json_schema=SCHEMA, timeout=900, tag="docket.triage")
     j = r.get("json")
+    decide.last_tier = r.get("tier") or "frontier"
     if r.get("error") or not isinstance(j, dict):
         return None, r.get("error") or "malformed output"
     return [d for d in j.get("decisions") or [] if isinstance(d, dict)], ""
 
 
-def apply(batch, decisions, dry_run=False):
+decide.last_tier = "frontier"
+
+
+def apply(batch, decisions, dry_run=False, tier="frontier"):
+    """A LOCAL-tier clerk (the cloud tiers were unavailable) may re-prioritise and set the lens, but
+    may not retire or rewrite a question: those are judgements about the law. Its entries are marked
+    so a cloud-tier pass revisits them, and legal_docket does not treat them as vetted."""
     out = {"keep": 0, "rewrite": 0, "retire": 0, "high": 0, "errors": 0}
     max_high = max(1, int(len(batch) * HIGH_SHARE))
     ranked = sorted(decisions, key=lambda d: -float(d.get("decision_value") or 0))
@@ -137,6 +147,8 @@ def apply(batch, decisions, dry_run=False):
         row = batch[n - 1]
         decision = str(d.get("decision") or "keep").lower()
         if decision not in ("keep", "rewrite", "retire"):
+            decision = "keep"
+        if tier == "local":
             decision = "keep"
         pr = str(d.get("priority") or "medium").lower()
         pr = pr if pr in ("high", "medium", "low") else "medium"
@@ -157,7 +169,7 @@ def apply(batch, decisions, dry_run=False):
         _ledger({"at": datetime.datetime.utcnow().isoformat(), "id": row.get("id"), "decision": decision,
                  "original": {k: row.get(k) for k in ("vertical", "question", "priority", "lens", "status")},
                  "patch": patch, "premise_ok": d.get("premise_ok"), "premise_error": _s(d.get("premise_error"))[:300],
-                 "decision_value": d.get("decision_value"), "lens": lens, "dry_run": dry_run})
+                 "decision_value": d.get("decision_value"), "lens": lens, "dry_run": dry_run, "tier": tier})
         if not dry_run:
             try:
                 db.update("legal_docket", {"id": row["id"]}, patch)
@@ -184,8 +196,8 @@ def run(priorities=None, max_batches=MAX_BATCHES, dry_run=False):
         if tally["batches"] >= max_batches:
             tally["stopped"] = "max_batches"
             break
-        if not frontier.available(min_tokens=MIN_TOKENS):
-            tally["stopped"] = "frontier unavailable or out of budget"
+        if not frontier.can_think(min_tokens=MIN_TOKENS):
+            tally["stopped"] = "no model tier available"
             break
         batch = rows[i:i + BATCH]
         decisions, err = decide(batch)
@@ -196,7 +208,9 @@ def run(priorities=None, max_batches=MAX_BATCHES, dry_run=False):
                 tally["stopped"] = "repeated failures"
                 break
             continue
-        r = apply(batch, decisions, dry_run=dry_run)
+        r = apply(batch, decisions, dry_run=dry_run, tier=decide.last_tier)
+        tally.setdefault("tiers", {})
+        tally["tiers"][decide.last_tier] = tally["tiers"].get(decide.last_tier, 0) + 1
         tally["batches"] += 1
         for k in ("keep", "rewrite", "retire", "high", "errors"):
             tally[k] += r[k]

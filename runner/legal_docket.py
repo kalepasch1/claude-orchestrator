@@ -235,7 +235,7 @@ def _triaged_ids():
                     rec = json.loads(line)
                 except Exception:
                     continue
-                if rec.get("dry_run") or rec.get("decision") == "retire":
+                if rec.get("dry_run") or rec.get("decision") == "retire" or rec.get("tier") == "local":
                     continue
                 ids.add(rec.get("id"))
     except OSError:

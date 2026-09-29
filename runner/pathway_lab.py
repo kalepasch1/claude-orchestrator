@@ -497,7 +497,7 @@ def _markdown(objective, vertical, card, j, final, killed, adj, process):
 def run_one(objective, vertical, card=None, docket_id=None, fetcher=None):
     """One structuring run. Returns a summary dict, or {'error': ...}."""
     t0 = time.time()
-    if not frontier.available(min_tokens=MIN_TOKENS):
+    if not frontier.can_think(min_tokens=MIN_TOKENS):
         return {"error": "frontier unavailable or budget below the pathway envelope"}
     s = structure(objective, vertical, card)
     j = s.get("json")
@@ -509,7 +509,8 @@ def run_one(objective, vertical, card=None, docket_id=None, fetcher=None):
     d = adjudicate(objective, j, attacks) if attacks.get("attacks") else {"json": None}
     adj = d.get("json") if isinstance(d.get("json"), dict) and not d.get("error") else {}
     final, killed = assemble(j, attacks, adj)
-    process = {"engine": "pathway_lab", "model": s.get("model"), "adversary_model": a.get("model"),
+    process = {"engine": "pathway_lab", "model": s.get("model"), "tier": s.get("tier") or "frontier",
+               "adversary_model": a.get("model"), "adversary_tier": a.get("tier"),
                "adversary_error": a.get("error") or "", "adjudicated": bool(adj),
                "citations_total": total, "citations_verified": ok,
                "tokens": {"structure": [s.get("tokens_in"), s.get("tokens_out")],
@@ -592,7 +593,7 @@ def run(limit=RUNS_PER_TICK):
     out = {"candidates": 0, "runs": 0, "pathways": 0, "skipped": None}
     if not ENABLED:
         out["skipped"] = "disabled"
-    elif not frontier.available(min_tokens=MIN_TOKENS):
+    elif not frontier.can_think(min_tokens=MIN_TOKENS):
         out["skipped"] = "frontier unavailable or budget below the pathway envelope"
     else:
         for card in _candidates(limit):

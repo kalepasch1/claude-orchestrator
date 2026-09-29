@@ -130,11 +130,12 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
         return {"score": 0.0, "rationale": "frontier unavailable — fail-closed", "error": "frontier_unavailable"}
     instr = system_prompt + "\n\nReturn ONLY JSON: {\"score\": <0.0-1.0>, \"rationale\": \"<=200 chars\"}"
     try:
-        data = None
+        data, tier = None, "frontier"
         if reviewer_key == "risk" and frontier.codex_available():
             r = frontier.codex_complete("ARTIFACT:\n" + body, system=instr, json_schema=SCORE_SCHEMA,
                                         tag="pubcom.risk")
             data = r.get("json") if not r.get("error") else None
+            tier = "codex"
         if data is None:
             tools = frontier.WEB_TOOLS if (reviewer_key == "evidence" and not mechanical) else None
             # The artifact stays a single, complete JSON document; the check table rides in the
@@ -149,6 +150,7 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
             data = r.get("json") if not r.get("error") else None
             if data is None and r.get("text") and not r.get("error"):
                 data = frontier.extract_json(r["text"])
+            tier = r.get("tier") or "frontier"
         # A local completion cannot open the evidence reviewer's cited URLs. An
         # unavailable reviewer is a deferred review, not an adverse merits decision.
         if not isinstance(data, dict):
@@ -156,7 +158,7 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
         score = data.get("score")
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score) or not 0 <= score <= 1:
             raise ValueError("invalid score")
-        return {"score": score,
+        return {"score": score, "tier": tier,
                 "rationale": str(data.get("rationale", ""))[:200]}
     except Exception as e:
         return {"score": 0.0, "rationale": f"scoring error (fail-closed): {type(e).__name__}", "error": "reviewer_unavailable"}
@@ -164,7 +166,7 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
 
 def review_artifact(artifact: dict) -> dict:
     """Run the full commission over one artifact. Returns the decision record."""
-    scores, rationales = {}, {}
+    scores, rationales, tiers = {}, {}, {}
     # EVIDENCE FIRST (2026-09-28). Grounding is the one floor that rejects on every track, so it is
     # scored first and an ungrounded card stops there. The commission had been spending five
     # frontier reviewers on each of 50 cards that the evidence reviewer alone would have rejected.
@@ -175,6 +177,7 @@ def review_artifact(artifact: dict) -> dict:
                     "decision": "deferred", "reason": r["error"]}
         scores[key] = r["score"]
         rationales[key] = r["rationale"]
+        tiers[key] = r.get("tier") or "frontier"
         if key == "evidence" and r["score"] < EVIDENCE_FLOOR:
             return {"artifact_id": artifact.get("id"), "artifact_type": artifact.get("type", "committee_opinion"),
                     "composite": round(r["score"] * dict((k, w) for k, w, _ in REVIEWERS)["evidence"], 4),
@@ -182,10 +185,18 @@ def review_artifact(artifact: dict) -> dict:
                     "scores": scores, "rationales": rationales, "veto": "evidence floor",
                     "posture": "standard", "publication_blocked": False, "gate": GATE_VERSION,
                     "short_circuit": True, "decision": "reject", "publish_bar": PUBLISH_BAR,
+                    "tiers": tiers, "provisional": "local" in tiers.values(),
                     "steer_bar": STEER_BAR, "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     gate = decide(scores)
+    # PROVISIONAL (2026-09-29, never-idle). A reviewer that answered on the LOCAL tier keeps the
+    # commission moving while the cloud tiers are down, but it may not open publication, and its
+    # adverse findings do not withdraw a card. The review is redone when a cloud reviewer is back.
+    provisional = "local" in tiers.values()
+    if provisional and gate["decision"] == "publish":
+        gate = {**gate, "decision": "steer_only"}
     return {
+        "tiers": tiers, "provisional": provisional,
         "artifact_id": artifact.get("id"),
         "artifact_type": artifact.get("type", "committee_opinion"),
         "composite": gate["composite"],
@@ -269,6 +280,12 @@ def _candidates(limit: int):
                 if r.get("artifact_type") == "verdict_card"
                 and isinstance(_loads(r.get("detail"), {}), dict)
                 and _loads(r.get("detail"), {}).get("requires_rereview") is True}
+    # Provisional (local-tier) reviews are redone as soon as a cloud reviewer can take them.
+    if frontier is not None and getattr(frontier, "available", lambda **k: False)(min_tokens=20000):
+        for r in reviews:
+            d = _loads(r.get("detail"), {})
+            if r.get("artifact_type") == "verdict_card" and isinstance(d, dict) and d.get("provisional") is True:
+                repaired.setdefault(r.get("artifact_id"), {**r, "_provisional": True})
     done = {r.get("artifact_id") for r in reviews if r.get("artifact_id") not in repaired}
     out = []
     cards = db.select("verdict_cards", {
@@ -276,6 +293,14 @@ def _candidates(limit: int):
                   "conditions,unsettled,confidence,publication_state,status,minted_at,process",
         "status": "eq.fresh", "publication_state": "eq.internal",
         "order": "minted_at.desc", "limit": str(limit * 3)}) or []
+    prov_ids = [k for k, v in repaired.items() if v.get("_provisional")]
+    if prov_ids:
+        extra = db.select("verdict_cards", {
+            "select": "id,vertical,question,verdict,position,citations,assumptions,dissent,flips_if,"
+                      "conditions,unsettled,confidence,publication_state,status,minted_at,process",
+            "id": f"in.({','.join(prov_ids[:50])})", "publication_state": "in.(internal,attorney_review)"}) or []
+        have = {c.get("id") for c in cards}
+        cards = [c for c in extra if c.get("id") not in have] + cards
     for c in cards:
         if c.get("id") in done:
             continue
@@ -287,7 +312,10 @@ def _candidates(limit: int):
         candidate = {"id": c.get("id"), "type": "verdict_card", "title": c.get("question"),
                     "verdict": c.get("verdict"), "content": content,
                     "citations": _loads(c.get("citations"), [])}
-        if c.get("id") in repaired:
+        if c.get("id") in repaired and repaired[c.get("id")].get("_provisional"):
+            prior = {k: v for k, v in repaired[c.get("id")].items() if k != "_provisional"}
+            candidate["prior_review"] = prior
+        elif c.get("id") in repaired:
             prior = repaired[c.get("id")]
             detail = _loads(prior.get("detail"), {})
             digest = hashlib.sha256(json.dumps(candidate["citations"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -330,6 +358,7 @@ def run(limit: int = BATCH) -> dict:
             break
         try:
             detail = {"scores": rec["scores"], "rationales": rec["rationales"], "veto": rec["veto"],
+                      "tiers": rec.get("tiers"), "provisional": bool(rec.get("provisional")),
                       "reviewed_at": rec["reviewed_at"], "gate": rec.get("gate"),
                       "steer_composite": rec.get("steer_composite"), "posture": rec.get("posture"),
                       "publication_blocked": rec.get("publication_blocked")}
@@ -361,8 +390,10 @@ def run(limit: int = BATCH) -> dict:
         tally[rec["decision"]] = tally.get(rec["decision"], 0) + 1
         if rec["artifact_type"] == "verdict_card":
             try:
-                db.update("verdict_cards", {"id": rec["artifact_id"]},
-                          {"publication_state": CARD_STATE.get(rec["decision"], "internal")})
+                state = CARD_STATE.get(rec["decision"], "internal")
+                if rec.get("provisional") and rec["decision"] in ("reject", "revise"):
+                    state = "internal"          # a local-tier verdict never withdraws a card
+                db.update("verdict_cards", {"id": rec["artifact_id"]}, {"publication_state": state})
             except Exception as e:
                 tally["persist_failed"] += 1
                 print(f"publication_commission: card state update failed for {rec['artifact_id']}: {e}")
