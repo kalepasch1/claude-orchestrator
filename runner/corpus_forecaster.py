@@ -136,6 +136,14 @@ def run():
     except Exception:
         backlog = 0
     max_pending = int(os.environ.get("ORCH_DOCKET_MAX_PENDING", "300"))
+    try:
+        import gap_intake
+        gaps_pending = len(gap_intake.pending_gap_rows(limit=50)) if os.environ.get(
+            "ORCH_DOCKET_GAP_FIRST", "true").lower() not in ("0", "false", "no", "off") else 0
+    except Exception:
+        gaps_pending = 0
+    if gaps_pending:
+        backlog = max(backlog, max_pending + 1)   # demand first: synthetic anticipation waits for the gaps
     if backlog > max_pending:
         for m in _pull_foulkon_misses():
             if added >= MAX_NEW_PER_RUN:

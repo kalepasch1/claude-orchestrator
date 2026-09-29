@@ -24,6 +24,8 @@ SCHEMAS = {
     "pathway_lab": (("pathways",), (), ("candidates", "runs")),
     "local_benchmark": ((), ("rows",), ("questions",)),
     "docket_triage": ((), ("keep", "rewrite", "retire"), ("batches", "pending_untriaged")),
+    "gap_intake": (("docketed",), (), ("open_gaps",)),
+    "gap_writeback": (("written",), ("answered",), ("candidates",)),
 }
 
 

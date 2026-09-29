@@ -186,3 +186,34 @@ and opens the holdings' authorities first. An issue that once needed a partner i
 **Status.** 197 tests pass. The first live matters run automatically once the teammate's benchmark
 releases the machine's heavy lock and a 20B+ local model fits; results go to
 `<home>/consilium/escalation_ledger.jsonl` (`python3 runner/escalation.py report`).
+
+## 10. Demand first: the law app's gaps become the docket (2026-09-29)
+
+**Why.** Triage found 93% of the synthetic docket needed rewriting or retiring. Meanwhile the law app
+held 5,380 open `advisory_inquiry_gaps`: questions its own advisory engine could not answer, each
+recording how many propositions it blocks. Answering a gap unblocks product.
+
+**Intake** (`runner/gap_intake.py`). Free rules route each gap to its cheapest resolver:
+
+| Class | Open gaps | Resolver |
+|---|---|---|
+| provision_reading | 3,562 | Clerk lane: docketed, capped at medium priority so it stays with the associates |
+| interpretive | 774 | The full firm; carries most of the value (top items: chance-vs-skill tests, tribal IGRA classification) |
+| unsorted | 795 | A local model sorts them (`--sort`); never the cloud (operator choice) |
+| operator_fact | 157 | The client answers; not docketed |
+| retrieval | 44 | A corpus acquisition task; not docketed |
+| off_topic | 28 | Skipped |
+| regulator_only | 20 | Outreach; not docketed |
+
+Value is propositions blocked (sentinels 99/999 capped at 10) plus priority, weighted 3x for the
+product engine's own gaps. The first 200 imported carry 17,308 of about 26,000 total value. While any
+gap question is pending, `legal_docket` answers gaps first by value and the synthetic matrix top-up
+and the forecaster's anticipation are paused.
+
+**Write-back** (`runner/gap_writeback.py`). An accepted card on a gap question becomes an
+`advisory_inquiry_answers` row linked to the gap: `internal_only`, informal, source "Apparently Law
+research (Consilium)", no invented responder. Operator policy: below medium risk, attorney review is
+optional and the gap is marked `answered`; at medium or high it stays `open`. A provisional
+(local-tier) acceptance, composite under 0.6, fewer than 3 fetched citations, or an answer found by
+precedent is at least medium. Gaps retired as duplicates of an answered card get that card's answer
+at zero model cost.
