@@ -222,6 +222,26 @@ def mint_card(row, agg):
         return False
 
 
+def _triaged_ids():
+    """Ids the docket clerk kept or rewrote (docket_triage ledger). Empty when triage never ran."""
+    path = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator")),
+                        "consilium", "docket_triage.jsonl")
+    ids = set()
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("dry_run") or rec.get("decision") == "retire":
+                    continue
+                ids.add(rec.get("id"))
+    except OSError:
+        pass
+    return ids
+
+
 def run(limit=BATCH):
     """Convene the Consilium on the next batch of docket questions."""
     seeded = _ensure_seeded()
@@ -235,7 +255,15 @@ def run(limit=BATCH):
         except Exception as e:
             print(f"legal_docket: matrix top-up skipped: {type(e).__name__}: {str(e)[:100]}")
     only = {p.strip().lower() for p in os.environ.get("ORCH_DOCKET_PRIORITIES", "").split(",") if p.strip()}
-    if only:
+    vetted = _triaged_ids() if os.environ.get("ORCH_DOCKET_TRIAGED_FIRST", "true").lower() not in ("0", "false", "no", "off") else set()
+    if vetted:
+        # Prefer questions the clerk has kept or rewritten; untriaged ones wait their turn.
+        pool = [r for r in _stale_or_unanswered(limit * 12) if r.get("id") in vetted
+                and (not only or str(r.get("priority") or "").lower() in only)]
+        rows = pool[:limit] if pool else []
+        if not rows and not only:
+            rows = _stale_or_unanswered(limit)
+    elif only:
         # Host-constrained run: only questions the frontier tier will take are convened; the rest
         # wait for a tick that can fund local inference rather than being skipped one by one.
         rows = [r for r in _stale_or_unanswered(limit * 6) if str(r.get("priority") or "").lower() in only][:limit]
