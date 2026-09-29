@@ -55,6 +55,9 @@ NEED = int(os.environ.get("ORCH_FAMILY_NEED", "7"))
 RETRY_DAYS = int(os.environ.get("ORCH_FAMILY_RETRY_DAYS", "14"))
 NO_SOURCE_RETRY_DAYS = int(os.environ.get("ORCH_FAMILY_NO_SOURCE_RETRY_DAYS", "3"))
 TRANSIENT_LIMIT = int(os.environ.get("ORCH_FAMILY_TRANSIENT_LIMIT", "3"))
+# Web research for members free research could not reach (operator: up to 6 calls a day, 2026-09-29).
+WEB_CALLS_PER_DAY = int(os.environ.get("ORCH_FAMILY_WEB_CALLS_PER_DAY", "6"))
+WEB_CHUNK = int(os.environ.get("ORCH_FAMILY_WEB_CHUNK", "4"))
 PASSAGES_PER_CELL = int(os.environ.get("ORCH_FAMILY_PASSAGES", "4"))
 FRAMEWORK_PASSAGES = 6
 PASSAGE_CHARS = 850
@@ -724,6 +727,106 @@ def card_agg(fam, row, v, framework_text, framework_quotes, board, meta):
                         "red_team_severity": "none", "priority": row.get("priority")}}
 
 
+WEB_SCHEMA = {"type": "object", "required": ["jurisdictions"], "properties": {"jurisdictions": {"type": "array", "items": {
+    "type": "object", "required": ["cell", "sources"], "properties": {
+        "cell": {"type": "integer"},
+        "sources": {"type": "array", "items": {"type": "object", "required": ["url", "quote", "says"], "properties": {
+            "url": {"type": "string"}, "quote": {"type": "string"}, "says": {"type": "string"}}}}}}}}}
+
+WEB_SYSTEM = """You find primary sources for a regulatory research desk. Your output is checked by software:
+every quote is fetched from its URL and searched for verbatim, and anything not found is discarded.
+ - Prefer the jurisdiction's own statute or regulation, a court of that jurisdiction, its attorney general
+   or gaming regulator; for a tribe, its tribal-state compact or NIGC/BIA documents naming that tribe.
+ - Each quote: at most 40 words, copied character for character from the page at that URL.
+ - A source about a different jurisdiction or a similarly named entity does not count.
+ - If you cannot find an official source for a jurisdiction, return an empty list for it.
+Return ONLY the JSON object."""
+
+
+def _web_calls_today(key=None, add=0):
+    path = os.path.join(STATE_DIR, "web_calls.json")
+    today = datetime.date.today().isoformat()
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        d = {}
+    n = int(d.get(today) or 0) + add
+    if add:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({today: n}, f)
+    return n
+
+
+def _default_web(prompt):
+    import frontier
+    r = frontier.complete(prompt, system=WEB_SYSTEM, need=8, tools=frontier.WEB_TOOLS, max_turns=14,
+                          json_schema=WEB_SCHEMA, tag="family.web", timeout=1500, min_tier="frontier")
+    j = r.get("json") if not r.get("error") else None
+    if j is None and r.get("text") and not r.get("error"):
+        j = frontier.extract_json(r["text"])
+    return j, r
+
+
+def web_fill(fam, cells, *, fetcher, web=None, limit_calls=None):
+    """Members with no passages after free research get one web-research call per WEB_CHUNK members.
+    A source is adopted only when our own fetch finds its quote on the page; the passage is then an
+    exact slice of that page around the quote, like every other passage. -> number of calls made."""
+    import local_tribunal as lt
+    empty = [c for c in cells if not c["passages"]]
+    if not empty:
+        return 0
+    budget = WEB_CALLS_PER_DAY - _web_calls_today() if limit_calls is None else limit_calls
+    if budget <= 0:
+        return 0
+    if web is None:
+        try:
+            import frontier
+            if not frontier.can_think(min_tokens=60000, min_tier="frontier"):
+                return 0
+        except Exception:
+            return 0
+    web = web or _default_web
+    calls = 0
+    q = fam["question"].replace("{X}", "<jurisdiction>")
+    for start in range(0, len(empty), WEB_CHUNK):
+        if calls >= budget:
+            break
+        chunk = empty[start:start + WEB_CHUNK]
+        listing = "\n".join(f"CELL {c['n']}: {c['row']['_member']}" for c in chunk)
+        j, _r = web(f"QUESTION (asked once per jurisdiction): {q}\n\nJURISDICTIONS:\n{listing}\n\n"
+                    "For each cell, find up to 3 official sources that answer the question for that jurisdiction.")
+        calls += 1
+        if limit_calls is None:
+            _web_calls_today(add=1)
+        by_n = {}
+        for it in ((j or {}).get("jurisdictions") or []):
+            try:
+                by_n[int(it.get("cell"))] = it.get("sources") or []
+            except Exception:
+                continue
+        for c in chunk:
+            for src in by_n.get(c["n"], [])[:3]:
+                url = _s(src.get("url")).strip()
+                if not url.startswith("http"):
+                    continue
+                page = fetcher(url) or ""
+                exact = lt.locate_quote(src.get("quote"), page) if page else ""
+                if not exact or exact not in page:
+                    continue
+                i = page.find(exact)
+                half = PASSAGE_CHARS // 2
+                s0, e0 = max(0, i - half), min(len(page), i + len(exact) + half)
+                if not names_entity(page, c["row"]["_member"]) and c["row"]["_member"].lower() not in page.lower():
+                    continue                     # a page that never names the jurisdiction is not its source
+                import authority_search as asrch
+                c["passages"].append({"text": page[s0:e0], "score": 5, "authority": asrch.label_for(url, "")
+                                      or url[:120], "url": url, "origin": "web",
+                                      "id": f"M{c['n']}.{len(c['passages']) + 1}"})
+    return calls
+
+
 def _default_searcher(query, courts, n):
     import authority_search as asrch
     return asrch.caselaw_opinions(query, courts, n)
@@ -740,7 +843,7 @@ def _chart_call(prompt):
 
 
 def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=None, max_cells=CELLS_PER_PASS,
-        write_doc=True):
+        write_doc=True, web=None, web_calls=None):
     """Chart up to `max_cells` uncharted members of `fam`. -> summary dict."""
     import local_research as lr
     fetcher = fetcher or lr.fetch
@@ -777,6 +880,10 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
         for k, p in enumerate(ps, 1):
             p["id"] = f"M{n}.{k}"
         cells.append({"n": n, "row": row, "passages": ps})
+    try:
+        out["web_calls"] = web_fill(fam, cells, fetcher=fetcher, web=web, limit_calls=web_calls)
+    except Exception as e:
+        out["web_error"] = f"{type(e).__name__}: {str(e)[:100]}"
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     for start in range(0, len(cells), CHUNK):
         chunk = cells[start:start + CHUNK]

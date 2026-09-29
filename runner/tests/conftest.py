@@ -959,4 +959,9 @@ def _frontier_tiers_offline(monkeypatch):
         monkeypatch.setattr(publication_commission, "PANEL", False, raising=False)   # panel tests turn it on
     except Exception:
         pass
+    try:
+        import family_matrix
+        monkeypatch.setattr(family_matrix, "WEB_CALLS_PER_DAY", 0, raising=False)   # web tests pass a fake
+    except Exception:
+        pass
     yield

@@ -513,3 +513,43 @@ def test_a_game_is_classified_only_from_the_cells_own_passages():
                                   {"item": 1, "choice": "Class III", "passages": []}]},
                        cell, [], its, opts)
     assert [i["choice"] for i in v["items"]] == ["undetermined", "undetermined", "Class III"]
+
+
+def test_web_fill_adopts_only_quotes_found_on_the_page(monkeypatch, tmp_path):
+    fm, fetcher, searcher = _fam_env(monkeypatch, tmp_path)
+    pages = {"https://x/oh.pdf": OH_TEXT, "https://vt.gov/opinion": (
+        "Vermont courts ask whether chance predominates over skill; under the dominant factor test a game is "
+        "gambling only where chance is the dominant factor in the outcome of the game in Vermont. ") * 3,
+        "https://elsewhere.gov/page": "Nothing about this jurisdiction at all, only chance and skill in general. " * 5}
+    fetch = pages.get
+    seen = []
+
+    def web(prompt):
+        seen.append(prompt)
+        return {"jurisdictions": [{"cell": 3, "sources": [
+            {"url": "https://vt.gov/opinion", "quote": "under the dominant factor test a game is gambling only where chance is the dominant factor", "says": "VT test"},
+            {"url": "https://vt.gov/opinion", "quote": "Vermont has adopted the any chance test for all promotions", "says": "fabricated"},
+            {"url": "https://elsewhere.gov/page", "quote": "Nothing about this jurisdiction at all, only chance and skill in general", "says": "wrong place"}]}]}, {}
+
+    rows = _fam_rows()
+    fam = fm.families(rows)[0]
+    cells = [{"n": 3, "row": fam["members"][2], "passages": []}]
+    assert fm.web_fill(fam, cells, fetcher=fetch, web=web, limit_calls=6) == 1
+    assert "CELL 3: Vermont" in seen[0]
+    assert len(cells[0]["passages"]) == 1 and cells[0]["passages"][0]["url"] == "https://vt.gov/opinion"
+    assert "dominant factor test" in cells[0]["passages"][0]["text"] and cells[0]["passages"][0]["id"] == "M3.1"
+
+
+def test_web_fill_respects_the_daily_cap(monkeypatch, tmp_path):
+    fm, fetcher, _ = _fam_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(fm, "WEB_CALLS_PER_DAY", 1)
+    monkeypatch.setattr(fm, "WEB_CHUNK", 1)
+    fam = fm.families(_fam_rows())[0]
+    calls = []
+    web = lambda p: calls.append(p) or ({"jurisdictions": []}, {})
+    cells = [{"n": i, "row": r, "passages": []} for i, r in enumerate(fam["members"], 1)]
+    fm._web_calls_today(add=0)
+    import frontier
+    monkeypatch.setattr(frontier, "can_think", lambda **k: True)
+    assert fm.web_fill(fam, cells, fetcher=fetcher, web=web) == 1 and len(calls) == 1
+    assert fm.web_fill(fam, cells, fetcher=fetcher, web=web) == 0      # the day's one call is spent
