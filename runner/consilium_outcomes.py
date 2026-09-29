@@ -22,6 +22,7 @@ SCHEMAS = {
     "benchmark_ingest": (("ingested",), (), ("considered",)),
     "corpus_index": (("added",), (), ("skipped",)),
     "pathway_lab": (("pathways",), (), ("candidates", "runs")),
+    "local_benchmark": ((), ("rows",), ("questions",)),
     "docket_triage": ((), ("keep", "rewrite", "retire"), ("batches", "pending_untriaged")),
 }
 

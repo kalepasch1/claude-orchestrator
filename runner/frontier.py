@@ -84,6 +84,15 @@ OUTPUT_WEIGHT = float(os.environ.get("ORCH_FRONTIER_OUTPUT_WEIGHT", "5"))
 WEB_TOOLS = ("WebSearch", "WebFetch")
 NEED_LABELS = {"seat": 6, "review": 7, "judge": 8, "research": 8, "evidence": 8,
                "chair": 9, "redteam": 9, "frontier": 9}
+# AUTH (2026-09-29). The CLI's OAuth session expired at 23:02 and every frontier job for the next
+# eleven hours launched, failed in three seconds, and tried again ten minutes later. A login failure
+# is not a rate limit and no amount of waiting fixes it: it opens its own cooldown, files ONE
+# operator alert, and lets no-tool calls fall through to the second vendor meanwhile.
+_AUTH_PATTERNS = ("failed to authenticate", "oauth session expired", "not logged in", "please run /login",
+                  "invalid api key", "authentication_error")
+AUTH_COOLDOWN_MIN = int(os.environ.get("ORCH_FRONTIER_AUTH_COOLDOWN_MIN", "30"))
+CODEX_FALLBACK = os.environ.get("ORCH_FRONTIER_CODEX_FALLBACK", "true").lower() not in ("0", "false", "no", "off")
+
 _RATE_PATTERNS = ("usage limit", "rate limit", "hit your", "weekly limit", "too many requests",
                   "overloaded", "\"429\"", "status 429", "quota")
 
@@ -188,6 +197,49 @@ def _mark_cooldown(reason, kind="claude"):
             s["cooldown_until"] = until
             s["cooldown_reason"] = (reason or "")[:200]
         _save(s)
+
+
+def is_auth_error(text):
+    t = str(text or "").lower()
+    return any(p in t for p in _AUTH_PATTERNS)
+
+
+def auth_down():
+    """True while the last Claude failure was a login failure and its cooldown has not passed."""
+    s = _load()
+    return time.time() < float(s.get("cooldown_until", 0) or 0) and is_auth_error(s.get("cooldown_reason"))
+
+
+def _mark_auth_failure(reason):
+    with _lock:
+        s = _load()
+        s["cooldown_until"] = time.time() + AUTH_COOLDOWN_MIN * 60
+        s["cooldown_reason"] = (reason or "")[:200]
+        first = not s.get("auth_alerted_on") or s.get("auth_alerted_on") != datetime.date.today().isoformat()
+        s["auth_alerted_on"] = datetime.date.today().isoformat()
+        _save(s)
+    if first:
+        try:
+            import db
+            db.insert("approvals", {
+                "project": "ORCHESTRATOR", "slug": f"consilium-auth:{datetime.date.today().isoformat()}", "kind": "self",
+                "title": "Consilium: Claude CLI login expired — frontier tier is down",
+                "why": "Every subscription call is failing with an authentication error. No-tool calls are "
+                       "falling back to GPT-5.5; research, papers and tournaments that need web tools are paused.",
+                "value": "Restores Fable/Opus/Sonnet for the tribunal.",
+                "risk": "None. Run `claude` in a terminal and use /login; the tribunal resumes on its own.",
+                "detail": json.dumps({"error": (reason or "")[:300], "cli": shutil.which(CLAUDE_BIN)})})
+        except Exception:
+            pass
+
+
+def _codex_as(out, r, reason):
+    """Shape a codex result as a complete() result, recording why the vendor changed."""
+    out.update(text=r.get("text") or "", json=r.get("json"), model=r.get("model"), provider="openai-codex",
+               tokens_in=r.get("tokens_in") or 0, tokens_out=r.get("tokens_out") or 0, rc=r.get("rc"),
+               error=r.get("error") or "", degraded=bool(r.get("error")), latency_s=r.get("latency_s") or 0.0,
+               fallback={"from": "claude", "to": "codex", "reason": reason[:160]})
+    return out
 
 
 def _paused():
@@ -339,6 +391,10 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
     out = {"text": "", "json": None, "model": model, "tokens_in": 0, "tokens_out": 0,
            "rc": None, "error": "", "degraded": False, "turns": 0, "latency_s": 0.0}
     if not available():
+        if CODEX_FALLBACK and auth_down() and not tools and not resume and codex_available():
+            return _codex_as(out, codex_complete(prompt, system=system, json_schema=json_schema,
+                                                 timeout=timeout, project=project, tag=f"{tag}.codex"),
+                             "claude login expired")
         out.update(error="frontier unavailable (disabled, paused, cooldown or budget)",
                    degraded=True, budget=budget())
         return out
@@ -398,6 +454,15 @@ def complete(prompt, *, system=None, model=None, need=9, tools=None, max_turns=N
     elif (rc not in (0, None)) or raw.get("is_error"):
         err = (text or stderr)[:300] or f"rc={rc}"
         blob = (text + " " + stderr).lower()
+        if is_auth_error(blob):
+            _mark_auth_failure(err)
+            _record("claude", 0, model, ok=False, err=err)
+            if CODEX_FALLBACK and not tools and not resume and codex_available():
+                return _codex_as(out, codex_complete(prompt, system=system, json_schema=json_schema,
+                                                     timeout=timeout, project=project, tag=f"{tag}.codex"),
+                                 "claude login expired")
+            out.update(text=text, error=err, degraded=True, rc=rc, auth_error=True)
+            return out
         if any(p in blob for p in _RATE_PATTERNS):
             _mark_cooldown(err)
     parsed = None

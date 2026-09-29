@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover
     frontier = None
 
 REVIEWER_TIER = {"rigor": 9, "evidence": 8, "novelty": 7, "utility": 6, "risk": 7}
+MECHANICAL_EVIDENCE = os.environ.get("PUBCOM_MECHANICAL_EVIDENCE", "true").lower() not in ("0", "false", "no", "off")
 SCORE_SCHEMA = {"type": "object", "properties": {"score": {"type": "number"}, "rationale": {"type": "string"}},
                 "required": ["score", "rationale"]}
 
@@ -78,6 +79,27 @@ REVIEWERS = [
 ]
 
 
+def check_citations(citations, fetcher=None, limit=40):
+    """Fetch every cited URL ourselves and look for the quote on the page. -> (table, counts).
+
+    The evidence reviewer used to be given web tools and asked to open the citations — the most
+    expensive call in the commission, and one that only a Claude model with tools could make. The
+    bytes are a better witness than a model: each citation comes back `confirmed` (quote found on
+    the page), `absent` (page opened, quote not on it), `unreachable`, or `no_quote`."""
+    import pathway_lab
+    if fetcher is None:
+        import local_research
+        fetcher = local_research.fetch
+    table, counts = [], {"confirmed": 0, "absent": 0, "unreachable": 0, "no_quote": 0, "no_url": 0}
+    for c in [c for c in (citations or []) if isinstance(c, dict)][:limit]:
+        r = pathway_lab.verify_citation({"url": c.get("url"), "quote": c.get("quote")}, fetcher)
+        status = "confirmed" if r["verified"] else (r.get("check") if r.get("check") in counts else "absent")
+        counts[status] = counts.get(status, 0) + 1
+        table.append({"source": str(c.get("source") or "")[:120], "url": c.get("url"), "check": status,
+                      "proposition": str(c.get("proposition") or "")[:200], "quote": str(c.get("quote") or "")[:300]})
+    return table, counts
+
+
 def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
     """Return {'score': 0..1, 'rationale': str}. Fail-closed on any error."""
     body = json.dumps({
@@ -86,6 +108,20 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
         "content": artifact.get("content") or "",
         "citations": artifact.get("citations") or [],
     })
+    mechanical = ""
+    if reviewer_key == "evidence" and MECHANICAL_EVIDENCE:
+        try:
+            if "_citation_check" not in artifact:
+                artifact["_citation_check"] = check_citations(artifact.get("citations"))
+            table, counts = artifact["_citation_check"]
+            mechanical = ("\n\nMECHANICAL CHECK — our system fetched every cited URL and searched the page for the quote. "
+                          "`confirmed` = the quote is on the page; `absent` = the page opened and the quote is NOT on it "
+                          "(treat as a failed citation); `unreachable` = the page could not be opened (unproven, not "
+                          f"failed). COUNTS: {json.dumps(counts)}\n" + json.dumps(table)[:24000]
+                          + "\nScore whether the CONFIRMED quotes actually support the propositions and the memo's "
+                            "material assertions, and how much of the memo rests on unconfirmed or missing authority.")
+        except Exception:
+            mechanical = ""
     # Never slice serialized evidence: that previously removed the citations and
     # left malformed JSON. A large record needs an explicit bounded review route.
     if len(body.encode("utf-8")) > 96000:
@@ -100,8 +136,10 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
                                         tag="pubcom.risk")
             data = r.get("json") if not r.get("error") else None
         if data is None:
-            tools = frontier.WEB_TOOLS if reviewer_key == "evidence" else None
-            r = frontier.complete("ARTIFACT:\n" + body, system=instr + (
+            tools = frontier.WEB_TOOLS if (reviewer_key == "evidence" and not mechanical) else None
+            # The artifact stays a single, complete JSON document; the check table rides in the
+            # instructions so nothing is ever appended to (or cut from) the evidence itself.
+            r = frontier.complete("ARTIFACT:\n" + body, system=instr + mechanical + (
                 "\nOpen the cited URLs with WebFetch and check that each actually supports its "
                 "proposition; a citation that does not resolve or does not say what is claimed is a "
                 "FAILED citation." if tools else ""),
