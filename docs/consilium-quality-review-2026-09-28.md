@@ -256,3 +256,17 @@ test.
 **Shared improvements.** `local_research.fetch` now reads PDFs (pdftotext, pypdf fallback), which every
 tribunal benefits from. `authority_search.caselaw_opinions` searches one jurisdiction's courts and
 returns each opinion's PDF; a failed search returns None, never an empty "no results".
+
+**Tribal questions now name the games (later on 2026-09-29).** The law app's tribal questions come
+from Smarter's membership generator. They used to ask how a tribe would classify "a game of this
+kind" with no game described. Each now lists the 15 catalogued game types with their defining
+features and asks for IGRA Class I, II, III or outside IGRA for each (Smarter migrations
+20261019000300 and 20261019000400; the letter redraft is in kalepasch1/smarter#995). Consilium
+refreshes pending docket rows when a gap's wording changes, and the family chart classifies each
+listed game only from that tribe's own sources.
+
+**Scheduler starvation fixed.** From about 14:00 every tick deferred: EXO reported 0.18 GiB available
+while macOS could reclaim 9.8 GiB at warn pressure. Cloud-only jobs are now admitted on the kernel's
+figure, and critical pressure still defers. Separately, manual runs of `gap_intake.py` had written
+the gap map to `~/.claude-orchestrator` because the module read its home before loading
+`runner/.env`. The tick uses `.runtime`, so the map was moved there.
