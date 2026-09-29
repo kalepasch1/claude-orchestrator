@@ -328,3 +328,10 @@ so there is never a break in effort.
   local-tier commission review is provisional (cannot publish, cannot withdraw a card, redone when
   a cloud reviewer returns). A local-tier docket clerk may re-prioritise but not retire or rewrite.
 - Label every artifact produced below the frontier tier with its tier.
+- The firm (runner/escalation.py): associate (local, fast 35B) -> senior associate (local, next rung,
+  e.g. 80B) -> counsel (largest local rung, e.g. 122B; else Sonnet; else GPT-5.5) -> partner (Fable;
+  GPT-5.5 when Claude is down). Low and medium priority may finish at the associate or senior level when
+  earned; high priority always reaches counsel. Counsel spot-checks a fixed 25% of lower-level finals, and
+  each level's agreement rate sets its local-final threshold. Senior and counsel review packets and write
+  from the evidence ledger; the partner opens the web only for gaps the associate could not fill locally.
+

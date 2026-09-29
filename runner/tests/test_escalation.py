@@ -17,6 +17,7 @@ def _iso(monkeypatch, tmp_path):
     monkeypatch.setattr(lt, "_other_models", lambda p: None)
     monkeypatch.setattr(es, "LEDGER", str(tmp_path / "esc.jsonl"))
     monkeypatch.setattr(es, "counsel_rung", lambda m: None)
+    monkeypatch.setattr(es, "firm_ladder", lambda m: (None, None))
     monkeypatch.setattr(es, "MEMORY", str(tmp_path / "memory.jsonl"))
     return lt, es
 
@@ -53,10 +54,10 @@ class Cloud:
                 "tier": "frontier", "tokens_in": 1000, "tokens_out": 300}
 
 
-def _run(es, priority="medium", cloud=None, docket_id="not-sampled-x", model=None, records=None):
+def _run(es, priority="medium", cloud=None, docket_id="not-sampled-x", model=None, records=None, counsel_chat=None):
     return es.run(QUESTION, context=f"PRIORITY: {priority}", vertical="finserv", priority=priority, panel=PANEL,
                   docket_id=docket_id, chat=model or FakeModel(), fetcher=fetcher, searcher=searcher, cloud=cloud or Cloud(),
-                  records=records if records is not None else [])
+                  records=records if records is not None else [], counsel_chat=counsel_chat)
 
 
 def _unsampled(es):
@@ -248,3 +249,82 @@ def test_no_associate_capacity_defers_medium_and_sends_high_to_the_partner(tmp_p
     assert r["abstain"] and not r["escalate_full"] and "associate capacity" in r["reason"] and not called
     r = es.run(QUESTION, priority="high", **kw)
     assert r["abstain"] and r["escalate_full"] is True
+
+
+class Senior:
+    """A local senior associate (e.g. the 80B) answering through local_llm.chat's signature."""
+    def __init__(self, assessment="amend", settled=True, needs_counsel=False):
+        self.calls, self.assessment, self.settled, self.needs_counsel = [], assessment, settled, needs_counsel
+
+    def __call__(self, prompt, **kw):
+        self.calls.append((kw.get("tag"), kw.get("models")))
+        ids = sorted(set(re.findall(r"\[(F\d+)\]", prompt)), key=lambda x: int(x[1:]))
+        body = " ".join(f"The regulation requires registration where value is transmitted [{i}]." for i in ids[:8]) * 2
+        status = "settled" if self.settled else "contested"
+        j = {"assessment": self.assessment,
+             "issues": [{"issue": "definition of money transmission", "status": status,
+                         "ruling": "Accepting and transmitting value is money transmission.", "findings": ids[:1]}],
+             "verdict": "Yes, registration is required.", "memo": "" if self.assessment == "agree" else "Senior answer: yes. " + body,
+             "needs_partner": self.needs_counsel, "partner_question": "", "gaps": [], "dissent": "d", "flips_if": "f",
+             "conditions": "c", "unsettled": False, "options": []}
+        return {"json": j, "text": json.dumps(j), "error": "", "model": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+                "provider": "exo", "tokens_in": 800, "tokens_out": 300}
+
+
+def test_senior_associate_closes_a_medium_matter_without_any_cloud_call(tmp_path, monkeypatch):
+    lt, es = _iso(monkeypatch, tmp_path)
+    monkeypatch.setattr(es, "firm_ladder", lambda m: ("exo:mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit", None))
+    monkeypatch.setattr(es, "spot_checked", lambda key, rate=None: False)
+    cloud, senior = Cloud(), Senior()
+    r = _run(es, cloud=cloud, counsel_chat=senior, model=FakeModel(name="mlx-community/Qwen3.5-9B-4bit"))
+    assert r["route"] == "senior", r["reason"]
+    assert cloud.calls == [] and senior.calls and senior.calls[0][1] == ["exo:mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit"]
+    assert all(c["verified"] for c in r["j"]["memo"]["citations"])
+
+
+def test_high_priority_goes_senior_then_counsel_with_the_seniors_rulings(tmp_path, monkeypatch):
+    lt, es = _iso(monkeypatch, tmp_path)
+    monkeypatch.setattr(es, "firm_ladder", lambda m: ("exo:mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit", None))
+    seen = []
+
+    class SeeingCloud(Cloud):
+        def __call__(self, prompt, **kw):
+            seen.append(prompt)
+            return super().__call__(prompt, **kw)
+    cloud = SeeingCloud(assessment="agree")
+    r = _run(es, priority="high", cloud=cloud, counsel_chat=Senior(assessment="amend"))
+    assert r["route"] == "counsel"
+    assert "THE SENIOR ASSOCIATE'S RULINGS" in seen[0] and "written by the senior" in seen[0]
+    revs = json.loads(open(es.LEDGER).readline())["reviews"]
+    assert [v["reviewer"] for v in revs] == ["senior", "counsel"] and revs[1]["author"] == "senior"
+
+
+def test_contested_senior_escalates_and_trust_is_per_level(tmp_path, monkeypatch):
+    lt, es = _iso(monkeypatch, tmp_path)
+    monkeypatch.setattr(es, "firm_ladder", lambda m: ("exo:mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit", None))
+    cloud = Cloud(assessment="amend")
+    r = _run(es, cloud=cloud, counsel_chat=Senior(settled=False))
+    assert r["route"] == "counsel" and [c[0] for c in cloud.calls] == ["firm.counsel"]
+    recs = [json.loads(l) for l in open(es.LEDGER)]
+    assert es.trust("finserv", recs, level="senior")["n"] == 0        # a contested senior draft is not senior-resolvable
+    rec = lambda lvl, a: {"vertical": "v", "reviews": [{"reviewer": "counsel", "author": lvl, "assessment": a, "author_resolvable": True}]}
+    assert es.trust("v", [rec("senior", "redo")] * 6, level="senior")["threshold"] > es.BASE_THRESHOLD
+    assert es.trust("v", [rec("senior", "redo")] * 6, level="associate")["n"] == 0
+
+
+def test_firm_ladder_assigns_roles_by_what_fits(monkeypatch):
+    import types
+    import escalation as es
+    models = ["exo:mlx-community/Qwen3.5-122B-A10B-4bit", "exo:mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+              "exo:mlx-community/Qwen3.5-35B-A3B-4bit", "exo:mlx-community/Qwen3.5-27B-4bit", "exo:mlx-community/Qwen3.5-9B-4bit"]
+
+    def lad(fit):
+        monkeypatch.setitem(sys.modules, "local_llm", types.SimpleNamespace(MODELS=models, fits=lambda p, m: (m in fit, "")))
+        return es.firm_ladder("mlx-community/Qwen3.5-35B-A3B-4bit")
+    cluster = {"mlx-community/Qwen3.5-122B-A10B-4bit", "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit", "mlx-community/Qwen3.5-35B-A3B-4bit"}
+    assert lad(cluster) == (models[1], models[0])                          # 80B senior, 122B counsel
+    assert lad({"mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit"}) == (models[1], None)   # counsel -> cloud
+    assert lad(set()) == (None, None)
+    import local_tribunal as lt
+    monkeypatch.setitem(sys.modules, "local_llm", types.SimpleNamespace(MODELS=models))
+    assert lt.strong_models()[0].endswith("Qwen3.5-35B-A3B-4bit")          # the associate prefers the fast 35B

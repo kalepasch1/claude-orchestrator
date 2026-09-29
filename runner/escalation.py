@@ -167,15 +167,27 @@ def _records():
     return out
 
 
-def trust(vertical, records=None):
-    """Counsel's agreement with associate work that PASSED the associate's own gate, recent first.
-    -> {n, agree, amend, redo, rate, threshold}. rate counts agree as 1 and amend as 0.5."""
-    recs = [r for r in (records if records is not None else _records())
-            if r.get("vertical") == vertical and r.get("associate_resolvable") and r.get("counsel_assessment")]
-    recent = recs[-TRUST_WINDOW:]
+def _reviews(r):
+    """Reviews recorded on a matter: [{reviewer, author, assessment, author_resolvable}]."""
+    revs = list(r.get("reviews") or [])
+    if not revs and r.get("counsel_assessment"):
+        revs = [{"reviewer": "counsel", "author": "associate", "assessment": r["counsel_assessment"],
+                 "author_resolvable": bool(r.get("associate_resolvable"))}]
+    return revs
+
+
+def trust(vertical, records=None, level="associate"):
+    """How often the level above agreed with `level`'s work that PASSED that level's own gate, recent
+    first. -> {n, agree, amend, redo, rate, threshold}. agree counts 1, amend 0.5, redo 0."""
+    revs = []
+    for r in (records if records is not None else _records()):
+        if r.get("vertical") != vertical:
+            continue
+        revs += [v for v in _reviews(r) if v.get("author") == level and v.get("author_resolvable") and v.get("assessment")]
+    recent = revs[-TRUST_WINDOW:]
     n = len(recent)
-    agree = sum(1 for r in recent if r["counsel_assessment"] == "agree")
-    amend = sum(1 for r in recent if r["counsel_assessment"] == "amend")
+    agree = sum(1 for v in recent if v["assessment"] == "agree")
+    amend = sum(1 for v in recent if v["assessment"] == "amend")
     redo = n - agree - amend
     rate = (agree + 0.5 * amend) / n if n else None
     th = BASE_THRESHOLD
@@ -186,7 +198,7 @@ def trust(vertical, records=None):
             th += 0.07
         elif rate >= 0.95 and n >= TRUST_WINDOW:
             th -= 0.05
-    return {"n": n, "agree": agree, "amend": amend, "redo": redo,
+    return {"level": level, "n": n, "agree": agree, "amend": amend, "redo": redo,
             "rate": round(rate, 3) if rate is not None else None, "threshold": round(min(0.85, th), 3)}
 
 
@@ -394,19 +406,35 @@ def associate_capacity():
     return False, "no local model can serve and Claude is unavailable"
 
 
-def counsel_rung(associate_model):
-    """The strongest local model that is stronger than the associate and fits right now, or None."""
+def firm_ladder(associate_model):
+    """Local rungs for the reviewing levels, given the model the associate actually used.
+    -> (senior_rung | None, counsel_rung | None). Rungs above the associate that fit right now:
+    two or more -> senior associate = the smallest, counsel = the largest (cluster: 35B associate,
+    80B senior, 122B counsel); exactly one -> it is the senior associate and counsel is the cloud
+    (Sonnet, then GPT-5.5); none -> no senior, counsel is the cloud."""
     try:
         import local_llm
         import local_tribunal as lt
         floor = max(lt.MIN_DEBATE_B, lt.size_b(associate_model or "") + 1)
-        for spec in local_llm.MODELS:                   # ladder is ordered strongest first
+        above = []
+        for spec in local_llm.MODELS:
             p, _, m = spec.partition(":")
-            if lt.size_b(m) >= floor and local_llm.fits(p, m)[0]:
-                return spec
+            b = lt.size_b(m)
+            if b >= floor and local_llm.fits(p, m)[0] and b not in [x[0] for x in above]:
+                above.append((b, spec))
+        above.sort()
+        if len(above) >= 2:
+            return above[0][1], above[-1][1]
+        if len(above) == 1:
+            return above[0][1], None
     except Exception:
         pass
-    return None
+    return None, None
+
+
+def counsel_rung(associate_model):
+    """Back-compatible: the local counsel rung, or None."""
+    return firm_ladder(associate_model)[1]
 
 
 def _call(prompt, schema, system, *, role, rung=None, tools=None, chat=None, cloud=None):
@@ -426,6 +454,8 @@ def _call(prompt, schema, system, *, role, rung=None, tools=None, chat=None, clo
     try:
         import frontier
         cloud = cloud or frontier.complete
+        if role == "senior":
+            return None, {"tier": None, "model": None, "error": "senior associate is local-only", "latency_s": 0.0}
         model = frontier.FABLE if role == "partner" else frontier.SONNET
         r = cloud(prompt, system=system, model=model, need=9 if role == "partner" else 7, json_schema=schema,
                   tools=tools, max_turns=(8 if tools else None), timeout=1500, tag=f"firm.{role}", min_tier="codex")
@@ -438,10 +468,18 @@ def _call(prompt, schema, system, *, role, rung=None, tools=None, chat=None, clo
     return j, info
 
 
-def _counsel_prompt(question, state, res, sig):
+SENIOR_SYSTEM = COUNSEL_SYSTEM.replace("You are COUNSEL reviewing an associate's work before it goes out.",
+                                      "You are the SENIOR ASSOCIATE reviewing a junior associate's work before counsel sees it.") \
+    .replace("needs_partner is true ONLY when", "needs_partner (here: needs COUNSEL) is true ONLY when") \
+    .replace("state the precise question for the partner", "state the precise question for counsel")
+
+
+def _counsel_prompt(question, state, res, sig, draft=None, author="associate", prior=None):
+    """The review packet for a reviewing level. `draft` is the memo under review (default: the
+    associate's); `prior` is the lower reviewer's issue rulings, when one exists."""
     import local_tribunal as lt
-    memo = ((res.get("j") or {}).get("memo")) or {}
-    draft = to_fids(memo.get("memo"), memo.get("citations")) if memo else ""
+    memo = draft if draft is not None else (((res.get("j") or {}).get("memo")) or {})
+    text = to_fids(memo.get("memo"), memo.get("citations")) if memo else ""
     imap = issue_map(state)
     attack = ((res.get("j") or {}).get("red_team") or {})
     return (f"QUESTION: {question[:1500]}\n"
@@ -451,9 +489,13 @@ def _counsel_prompt(question, state, res, sig):
             + "\n".join(f"{x['n'] + 1}. {x['issue']}\n   " + ("; ".join(f"({c['seat']}) {c['claim'][:180]} [{', '.join(c['findings'])}]"
                                                               for c in x["claims"][:4]) or "NOT COVERED BY ANY VERIFIED CLAIM")
                         for x in imap)
+            + (("\n\nTHE SENIOR ASSOCIATE'S RULINGS:\n" + "\n".join(
+                f"- [{_s(i.get('status'))}] {_s(i.get('issue'))[:160]}: {_s(i.get('ruling'))[:300]} [{', '.join(i.get('findings') or [])}]"
+                for i in (prior or {}).get("issues") or [])) if prior else "")
             + f"\n\nEVIDENCE LEDGER:\n{lt.render_ledger(state.get('findings') or [], 9000)}\n\n"
-            + (f"ASSOCIATE'S DRAFT (verdict: {memo.get('verdict')}):\n{draft[:7000]}\n\n" if draft else "ASSOCIATE'S DRAFT: none (it did not clear the associate's own gate)\n\n")
-            + f"ADVERSARY'S ATTACK ON THE DRAFT ({attack.get('severity')}): {_s(attack.get('attack'))[:1200]}\n"
+            + (f"DRAFT UNDER REVIEW (written by the {author}; verdict: {memo.get('verdict')}):\n{text[:7000]}\n\n" if text
+               else "DRAFT UNDER REVIEW: none (the associate's draft did not clear its own gate)\n\n")
+            + f"ADVERSARY'S ATTACK ON THE ASSOCIATE'S DRAFT ({attack.get('severity')}): {_s(attack.get('attack'))[:1200]}\n"
             + f"ASSOCIATE'S SIGNALS: {json.dumps({k: sig.get(k) for k in ('confidence', 'seat_spread', 'open_issues', 'unknown_authorities', 'unsettled', 'model')}, default=str)[:1500]}\n")
 
 
@@ -594,7 +636,8 @@ def run(question, context="", vertical=None, priority="medium", panel=None, dock
     def out(route, j=None, dossier=None, abstain=False, reason="", escalate_full=False, **meta):
         rec.update(route=route, abstain=abstain, reason=reason, latency_s=round(time.time() - t0, 1),
                    **{k: v for k, v in meta.items() if k in ("counsel_assessment", "associate_resolvable", "spot_check",
-                                                             "counsel", "partner", "signals", "tokens", "trust")})
+                                                             "counsel", "partner", "signals", "tokens", "trust",
+                                                             "reviews", "senior")})
         _append(rec)
         return {"route": route, "j": j, "dossier": dossier, "abstain": abstain, "reason": reason,
                 "escalate_full": escalate_full, "meta": {**meta, "route": route, "latency_s": rec["latency_s"]}}
@@ -619,43 +662,80 @@ def run(question, context="", vertical=None, priority="medium", panel=None, dock
                                              {"signals": sig, "trust": tr, "spot_check": False})[0],
                    dossier=res.get("dossier"), associate_resolvable=True, spot_check=False, signals=sig, trust=tr, tokens=tokens)
 
-    # COUNSEL
-    rung = counsel_rung((res.get("meta") or {}).get("model"))
-    cj, cinfo = _call(_counsel_prompt(question, state, res, sig), COUNSEL_SCHEMA, COUNSEL_SYSTEM, role="counsel",
-                      rung=rung, chat=counsel_chat, cloud=cloud)
-    tokens["counsel"] = {k: cinfo.get(k) for k in ("tier", "model", "tokens_in", "tokens_out", "tokens_weighted")}
-    if cj is None:
-        # Counsel unavailable on every tier. A locally final result stands (the spot check is owed);
-        # anything else stays pending rather than going out unreviewed.
-        if final:
-            return out("associate", j=_package(state, res, res["j"]["memo"], "associate",
-                                                 {"signals": sig, "trust": tr, "spot_check": "owed"})[0],
-                       dossier=res.get("dossier"), associate_resolvable=True, spot_check="owed", signals=sig, trust=tr, tokens=tokens)
-        return out("none", abstain=True, reason=f"counsel unavailable: {cinfo.get('error')}", escalate_full=False,
-                   signals=sig, tokens=tokens)
-    assessment = _s(cj.get("assessment")).lower()
-    assessment = "agree" if assessment.startswith("agree") else ("amend" if assessment.startswith("amend") else "redo")
-    if not res.get("j"):
-        assessment = "redo"
+    # REVIEW LADDER: senior associate (local) -> counsel (local largest, else Sonnet, else GPT-5.5)
+    senior_rung, counsel_local = firm_ladder((res.get("meta") or {}).get("model"))
     severity = (res.get("meta") or {}).get("adversary_severity") or "none"
     revised = bool((res.get("meta") or {}).get("revised"))
-    counsel_b = lt.size_b(cinfo.get("model") or "") if cinfo.get("tier") == "local" else 100.0
-    if assessment == "agree":
-        memo, conf, mint, gwhy = res["j"]["memo"], (res.get("meta") or {}).get("confidence"), True, "counsel agreed"
-        stats = (res.get("meta") or {}).get("grounding") or {}
-    else:
-        memo, stats, conf, parts, mint, gwhy, _ = _finish(state, _chair_from(cj, (res.get("j") or {}).get("memo")),
-                                                          counsel_b, severity if assessment == "amend" else "none", revised)
-    common = {"associate_resolvable": resolvable, "counsel_assessment": assessment if res.get("j") else None,
-              "spot_check": spot, "signals": sig, "trust": tr,
-              "counsel": {"tier": cinfo.get("tier"), "model": cinfo.get("model"), "rung": rung,
+    draft, author, author_ok, prior = ((res.get("j") or {}).get("memo") if res.get("j") else None), "associate", resolvable, None
+    draft_conf = (res.get("meta") or {}).get("confidence")
+    reviews = []
+    cj = cinfo = None
+    memo, mint, gwhy = draft, bool(final), "associate gate"
+    for role, rung in (("senior", senior_rung), ("counsel", counsel_local)):
+        if role == "senior" and not rung:
+            continue
+        system = SENIOR_SYSTEM if role == "senior" else COUNSEL_SYSTEM
+        rj, rinfo = _call(_counsel_prompt(question, state, res, sig, draft=draft or {}, author=author, prior=prior),
+                          COUNSEL_SCHEMA, system, role=role, rung=rung, chat=counsel_chat, cloud=cloud)
+        tokens[role] = {k: rinfo.get(k) for k in ("tier", "model", "tokens_in", "tokens_out", "tokens_weighted")}
+        if rj is None:
+            if role == "senior":
+                continue                                  # counsel reviews the associate directly
+            cj, cinfo = None, rinfo
+            break
+        a_ = _s(rj.get("assessment")).lower()
+        a_ = "agree" if a_.startswith("agree") else ("amend" if a_.startswith("amend") else "redo")
+        if not draft:
+            a_ = "redo"
+        reviews.append({"reviewer": role, "author": author, "assessment": a_ if draft else None,
+                        "author_resolvable": bool(author_ok and draft), "model": rinfo.get("model"), "tier": rinfo.get("tier")})
+        writer_b = lt.size_b(rinfo.get("model") or "") if rinfo.get("tier") == "local" else 100.0
+        if a_ == "agree":
+            new_memo, new_mint, new_why, new_conf = draft, True, f"{role} agreed", draft_conf
+        else:
+            new_memo, _st, new_conf, _pp, new_mint, new_why, _ = _finish(
+                state, _chair_from(rj, draft), writer_b, severity if a_ == "amend" else "none", revised)
+        remember(state, vertical, role, counsel=rj, associate_verdict=(draft or {}).get("verdict", ""))
+        settled_all = all(_s(i.get("status")).lower().startswith("settled") for i in rj.get("issues") or []) and bool(rj.get("issues"))
+        if role == "senior":
+            # The senior associate may close a low or medium matter it has settled, subject to its own
+            # earned threshold and to counsel's 25% spot check of senior work.
+            st = trust(vertical, records, level="senior")
+            if (priority in LOCAL_FINAL_PRIORITIES and new_mint and settled_all and not rj.get("needs_partner")
+                    and (new_conf or 0) >= st["threshold"] and not spot_checked(f"{key}:senior")):
+                common = {"associate_resolvable": resolvable, "spot_check": spot, "signals": sig, "trust": tr,
+                          "reviews": reviews, "senior": {"model": rinfo.get("model"), "assessment": a_, "gate": new_why}}
+                j, dossier = _package(state, res, new_memo, "senior", {**common, "tokens": tokens})
+                return out("senior", j=j, dossier=dossier, tokens=tokens, **common)
+            draft, author, author_ok, prior = new_memo, "senior", bool(new_mint and settled_all), rj
+            draft_conf, memo, mint, gwhy = new_conf, new_memo, new_mint, new_why
+            continue
+        cj, cinfo = rj, rinfo
+        memo, mint, gwhy = new_memo, new_mint, new_why
+        assessment = a_
+    if cj is None:
+        # Counsel unavailable on every tier. A finished associate or senior result stands (its spot
+        # check is owed); anything else stays pending rather than going out unreviewed.
+        if final or (author == "senior" and mint and priority in LOCAL_FINAL_PRIORITIES):
+            route = "associate" if author == "associate" else "senior"
+            memo_ = res["j"]["memo"] if route == "associate" else draft
+            j, _d = _package(state, res, memo_, route, {"signals": sig, "trust": tr, "spot_check": "owed", "reviews": reviews})
+            return out(route, j=j, dossier=(res.get("dossier") if route == "associate" else _d), associate_resolvable=resolvable,
+                       spot_check="owed", signals=sig, trust=tr, tokens=tokens, reviews=reviews)
+        return out("none", abstain=True, reason=f"counsel unavailable: {(cinfo or {}).get('error')}", escalate_full=False,
+                   signals=sig, tokens=tokens, reviews=reviews)
+    counsel_first = next((v for v in reviews if v["reviewer"] == "counsel"), {})
+    common = {"associate_resolvable": resolvable,
+              "counsel_assessment": counsel_first.get("assessment") if counsel_first.get("author") == "associate" else None,
+              "spot_check": spot, "signals": sig, "trust": tr, "reviews": reviews,
+              "counsel": {"tier": cinfo.get("tier"), "model": cinfo.get("model"), "rung": counsel_local,
+                          "senior_rung": senior_rung,
                           "issues": [{"issue": _s(i.get("issue"))[:160], "status": _s(i.get("status"))} for i in cj.get("issues") or []],
                           "needs_partner": bool(cj.get("needs_partner")), "gate": gwhy}}
-    remember(state, vertical, "counsel", counsel=cj, associate_verdict=((res.get("j") or {}).get("memo") or {}).get("verdict", ""))
     need_partner = bool(cj.get("needs_partner")) or (priority == "high" and any(
         not _s(i.get("status")).lower().startswith("settled") for i in cj.get("issues") or []))
     if not need_partner:
-        if not mint and assessment != "agree":
+        if not mint:
             return out("none", abstain=True, reason=f"counsel's memo did not clear the gate: {gwhy}", tokens=tokens, **common)
         route = "counsel"
         j, dossier = _package(state, res, memo, route, {**common, "tokens": tokens})

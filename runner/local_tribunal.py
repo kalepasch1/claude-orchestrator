@@ -208,7 +208,12 @@ def strong_models():
     prefers whatever is resident — on a busy host, the 9B."""
     try:
         import local_llm
-        return sorted([m for m in local_llm.MODELS if size_b(m) >= MIN_DEBATE_B], key=size_b)
+        # Fast mixture-of-experts mid rungs first (Qwen3.5-35B-A3B: 3B active), then the rest by size.
+        # With the EXO cluster up the ladder is 35B associate -> 80B senior associate -> 122B counsel.
+        def order(m):
+            b = size_b(m)
+            return (0 if ("a3b" in m.lower() and b < 50) else 1, b)
+        return sorted([m for m in local_llm.MODELS if size_b(m) >= MIN_DEBATE_B], key=order)
     except Exception:
         return []
 
