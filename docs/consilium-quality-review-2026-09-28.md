@@ -151,3 +151,38 @@ re-prioritise. A login failure is re-probed every five minutes.
 **Host memory.** The Ollama app's default context was 262,144 tokens, so a 12B model took about
 17 GB. It is now 32,768. Other workloads on this Mac still regularly leave under 5 GB free, which
 keeps the 27B/35B rungs out of reach for much of the day.
+
+## 9. The firm: associate -> senior associate -> counsel -> partner (2026-09-29)
+
+**Why.** A frontier tournament cost about 72K input and 23K output tokens per question, and 60K of
+that input was research the local tier can now do for free. Most docket questions do not need a
+partner's judgement at all.
+
+| Level | Model | Does | May finish |
+|---|---|---|---|
+| Associate | Fast local mid rung (Qwen3.5-35B-A3B; today whatever fits) | Research, evidence ledger, verified claims, draft, computed confidence | Low and medium, when earned |
+| Senior associate | Next local rung up (Qwen3-Next-80B) | Reviews the associate's packet: agree, amend or redo; rules each issue settled, contested or open | Low and medium, when earned and every issue is settled |
+| Counsel | Largest local rung (Qwen3.5-122B), else Sonnet, else GPT-5.5 | Reviews the senior's memo and rulings, writes from the ledger, decides whether a partner is needed | Any priority |
+| Partner | Fable, GPT-5.5 when Claude is down | Rules only on contested issues from a brief; named gaps researched locally first, web tools only for what remains | Any priority |
+
+**Earned trust.** Counsel spot-checks a fixed 25% of lower-level finals. Every review is recorded
+as agree, amend or redo against the level that wrote the draft. Each level's local-final threshold
+rises when the level above keeps amending it and falls when it keeps agreeing.
+
+**Firm memory.** Settled issues become holdings with their verbatim authority, and counsel's
+corrections are kept. The associate reads the nearest holdings and corrections on every new matter
+and opens the holdings' authorities first. An issue that once needed a partner is then settled lower.
+
+**Other levers.**
+- **Precedent.** A docket question matching an answered one is retired with zero model calls.
+- **Commission.** It rejects on the bytes when no cited quote is on its page. Associate-finished
+  cards are reviewed at the associate's level and sampled by spot checks.
+- **Packets.** The pathway tribunal and the paper drafter receive their authorities already opened,
+  and get fewer research turns.
+- **Capacity rule.** Associate work runs only on a local model or lean Claude calls. A GPT-5.5 call
+  carries about 18K tokens of fixed overhead, so with neither available, medium and low matters wait
+  and high ones go straight to one partner call.
+
+**Status.** 197 tests pass. The first live matters run automatically once the teammate's benchmark
+releases the machine's heavy lock and a 20B+ local model fits; results go to
+`<home>/consilium/escalation_ledger.jsonl` (`python3 runner/escalation.py report`).
