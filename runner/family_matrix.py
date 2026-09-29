@@ -572,6 +572,8 @@ def cell_research(row, fam, opts, *, fetcher, searcher, compacts=None):
         except Exception:
             pass
     try:
+        if os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").lower() in ("1", "true", "yes", "on"):
+            raise RuntimeError("local inference off for this launch")   # embeddings are local inference
         import local_llm
         free = local_llm.free_gb()
         if free is None or free >= 5:
