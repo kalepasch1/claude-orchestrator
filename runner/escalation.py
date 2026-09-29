@@ -300,8 +300,24 @@ def spot_checked(key, rate=None):
 
 
 # ── precedent ────────────────────────────────────────────────────────────────────────────────────
+_PROPER_SKIP = {"What", "Which", "Does", "Do", "Is", "Are", "Can", "May", "Must", "How", "Under", "When", "Where",
+                "Who", "Whether", "If", "The", "A", "An", "In", "For", "Has", "Have", "Would", "Should", "Context"}
+
+
+def _names(question):
+    """Jurisdiction codes and proper names in the question itself (not its context)."""
+    q = re.split(r"\(Context:", question or "", maxsplit=1)[0]
+    codes = set(re.findall(r"\[([A-Z]{2}(?:-[A-Z]{2,4})?)\]", q))
+    words = set(re.findall(r"\b[A-Z][A-Za-z.'-]+", re.sub(r"\[[^\]]*\]", " ", q))) - _PROPER_SKIP
+    return codes | words
+
+
 def precedent(question, vertical, cards=None):
-    """-> (card, similarity) for a fresh card answering the same question, else (None, best)."""
+    """-> (card, similarity) for a fresh card answering the same question, else (None, best).
+
+    SAME PLACE, SAME PARTIES (2026-09-29). Gap intake brings template families: "which chance/skill
+    test does Ohio apply" and the same for New York differ by one word, so word overlap alone called
+    them duplicates. A precedent must also name the same jurisdictions and entities."""
     try:
         import docket_matrix
         if cards is None:
@@ -311,7 +327,10 @@ def precedent(question, vertical, cards=None):
                                                 "publication_state": "neq.withdrawn", "limit": "1000"}) or []
         mine = docket_matrix.content_words(question)
         best, score = None, 0.0
+        names = _names(question)
         for c in cards:
+            if _names(c.get("question") or "") != names:
+                continue
             s = docket_matrix.similarity(mine, c.get("question") or "")
             if s > score:
                 best, score = c, s
