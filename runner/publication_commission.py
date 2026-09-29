@@ -179,6 +179,23 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
 def review_artifact(artifact: dict) -> dict:
     """Run the full commission over one artifact. Returns the decision record."""
     scores, rationales, tiers = {}, {}, {}
+    # MECHANICAL PRE-SCREEN (associate level). If not one cited quote is on its page and at least two
+    # pages opened without the quote, the evidence has failed on the bytes; no reviewer is paid to say so.
+    if MECHANICAL_EVIDENCE and artifact.get("citations"):
+        try:
+            if "_citation_check" not in artifact:
+                artifact["_citation_check"] = check_citations(artifact.get("citations"))
+            _, counts = artifact["_citation_check"]
+            if counts.get("confirmed", 0) == 0 and counts.get("absent", 0) >= 2:
+                return {"artifact_id": artifact.get("id"), "artifact_type": artifact.get("type", "committee_opinion"),
+                        "composite": 0.0, "steer_composite": 0.0, "scores": {"evidence": 0.0},
+                        "rationales": {"evidence": f"mechanical: no cited quote found on its page ({json.dumps(counts)})"},
+                        "veto": "evidence floor", "posture": "standard", "publication_blocked": False,
+                        "gate": GATE_VERSION, "short_circuit": True, "mechanical": True, "tiers": {"evidence": "mechanical"},
+                        "provisional": False, "decision": "reject", "publish_bar": PUBLISH_BAR, "steer_bar": STEER_BAR,
+                        "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        except Exception:
+            pass
     # EVIDENCE FIRST (2026-09-28). Grounding is the one floor that rejects on every track, so it is
     # scored first and an ungrounded card stops there. The commission had been spending five
     # frontier reviewers on each of 50 cards that the evidence reviewer alone would have rejected.

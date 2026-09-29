@@ -680,6 +680,41 @@ def run(question, context="", vertical=None, priority="medium", panel=None, dock
     return out("partner", j=j, dossier=dossier, tokens=tokens, partner=partner_meta, **common)
 
 
+def associate_packet(urls_and_labels, focus_text, max_sources=10, per_source=2, max_chars=9000, fetcher=None):
+    """The associate's prep for a senior tier: open the known authorities OURSELVES and hand over the
+    passages that bear on the task, each an exact slice of the fetched page. The senior model then
+    spends its tokens on judgement and opens the web only for what the packet lacks.
+    -> (text_block, {"opened": n, "confirmed_urls": [...]})"""
+    try:
+        import authority_search as asrch
+        import local_research
+    except Exception:
+        return "", {"opened": 0, "confirmed_urls": []}
+    fetch = fetcher or local_research.fetch
+    want = asrch.terms(focus_text, limit=24)
+    blocks, opened, seen = [], [], set()
+    for item in urls_and_labels:
+        u = _s(item.get("url")).strip()
+        if not u or u in seen or len(opened) >= max_sources:
+            continue
+        seen.add(u)
+        page = fetch(u) or ""
+        if len(page) < 200:
+            continue
+        ps = asrch.passages(page, want, k=per_source, width=650)
+        if not ps:
+            continue
+        opened.append(u)
+        label = asrch.label_for(u, _s(item.get("source") or item.get("authority"))[:120])
+        blocks.append(f"[{label}] <{u}>\n" + "\n".join(p["text"] for p in ps))
+    if not blocks:
+        return "", {"opened": 0, "confirmed_urls": []}
+    text = ("\n\nASSOCIATE'S PACKET — authorities the system has ALREADY opened for you, with the passages that bear "
+            "on this task (exact text of the page). Quote from these without re-opening them; use web tools only for "
+            "authorities or jurisdictions the packet does not cover.\n\n" + "\n\n".join(blocks))[:max_chars]
+    return text, {"opened": len(opened), "confirmed_urls": opened}
+
+
 def report(records=None):
     recs = records if records is not None else _records()
     from collections import Counter
