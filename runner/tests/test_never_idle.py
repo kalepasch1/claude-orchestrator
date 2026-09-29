@@ -102,3 +102,28 @@ def test_commission_local_reviewer_is_provisional(monkeypatch):
     assert rec["provisional"] is True and rec["decision"] == "steer_only"      # would have been publish
     monkeypatch.setattr(pc, "_score_one", lambda k, p, a: {**fake(k, p, a), "tier": "frontier"})
     assert pc.review_artifact({"id": "a", "type": "verdict_card"})["decision"] == "publish"
+
+
+def test_local_models_yield_to_the_machine_heavy_lock(tmp_path, monkeypatch):
+    import importlib, os as _os
+    monkeypatch.delitem(sys.modules, "local_llm", raising=False)
+    import local_llm
+    importlib.reload(local_llm)
+    lock = tmp_path / "heavy.lock"
+    monkeypatch.setattr(local_llm, "HEAVY_LOCK", str(lock))
+    monkeypatch.setattr(local_llm, "resident", lambda p, m: m == "gemma3:12b")
+    monkeypatch.setattr(local_llm, "free_gb", lambda: 40.0)
+    assert local_llm.heavy_lock_active() is None
+    assert local_llm.fits("ollama", "qwen3.5:27b-mlx")[0] is True
+    lock.mkdir()
+    (lock / "owner").write_text(f"bench-local-llm {_os.getpid()} 2026-09-29T15:09:32Z strong\nbenchmark\n")
+    assert local_llm.heavy_lock_active() == "bench-local-llm"
+    assert local_llm.fits("ollama", "qwen3.5:27b-mlx")[0] is False       # never load a new model
+    assert local_llm.fits("ollama", "gemma3:12b")[0] is True              # resident models still serve
+    assert local_llm.exo_ensure("mlx-community/Qwen3.5-9B-4bit") is False
+    (lock / "owner").write_text("consilium 1 2026-09-29T15:09:32Z strong\nours\n")
+    assert local_llm.heavy_lock_active() is None                          # our own lane does not block us
+    waiters = tmp_path / "heavy.lock.waiters"
+    waiters.mkdir()
+    (waiters / "bench-local-llm").write_text("x 2026-09-29T15:25:00Z\n")
+    assert local_llm.heavy_lock_active() == "bench-local-llm"              # a queued lane counts too
