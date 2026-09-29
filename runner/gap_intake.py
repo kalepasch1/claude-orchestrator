@@ -190,12 +190,41 @@ def _append_map(rows):
             f.write(json.dumps(r, default=str) + "\n")
 
 
-def run(limit=IMPORT_PER_RUN, dry_run=False, gaps=None, db_insert=None):
+def refresh(gaps, known, dry_run=False, db_update=None):
+    """A gap whose question the law app has since rewritten (2026-09-29: the tribal membership questions
+    gained the list of game types) gets the new wording on its docket row while that row is still pending.
+    An answered row keeps the words it was answered under."""
+    import db
+    rows, n = [], 0
+    for g in gaps:
+        prev = known.get(g["id"])
+        if not prev or not prev.get("question"):
+            continue
+        q = docket_question(g)
+        if q == prev["question"]:
+            continue
+        n += 1
+        if not dry_run:
+            try:
+                (db_update or db.update)("legal_docket", {"origin": f"advisory_gap:{g['id']}", "status": "pending"},
+                                         {"question": q})
+            except Exception as e:
+                print(f"gap_intake: refresh failed for {g['id']}: {type(e).__name__}: {str(e)[:100]}")
+                continue
+            rows.append({**prev, "question": q, "value": value(g), "refreshed": True,
+                         "at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+    if rows:
+        _append_map(rows)
+    return n
+
+
+def run(limit=IMPORT_PER_RUN, dry_run=False, gaps=None, db_insert=None, db_update=None):
     import db
     gaps = gaps if gaps is not None else open_gaps()
     known = _map_rows()
     out = {"open_gaps": len(gaps), "new": 0, "classes": {c: 0 for c in CLASSES}, "docketed": 0, "already": 0,
            "value_docketed": 0.0, "dry_run": dry_run}
+    out["refreshed"] = refresh(gaps, known, dry_run=dry_run, db_update=db_update)
     fresh = []
     for g in gaps:
         cls, why = classify(g)

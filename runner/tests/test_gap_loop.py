@@ -462,3 +462,52 @@ def test_a_search_that_keeps_failing_stops_holding_the_queue(monkeypatch, tmp_pa
     for _ in range(fm.TRANSIENT_LIMIT):
         fm.run(fam, mint=None, fetcher=fetcher, searcher=down, chart=lambda p: (None, {}), compacts=[], write_doc=False)
     assert fm.todo(fam) == [] and fm.next_family(_fam_rows()) is None
+
+
+def test_rewritten_gap_questions_refresh_pending_docket_rows(monkeypatch, tmp_path):
+    monkeypatch.setattr(gi, "MAP", str(tmp_path / "map.jsonl"))
+    ins = lambda t, r, upsert=False: [r]
+    gi.run(limit=10, gaps=GAPS, db_insert=ins)
+    rewritten = [dict(g) for g in GAPS]
+    rewritten[1]["question"] += " (1) Pick-em against the house: Player selects athlete outcomes against fixed odds."
+    updates = []
+    out = gi.run(limit=10, gaps=rewritten, db_insert=ins, db_update=lambda t, m, p: updates.append((m, p)) or [p])
+    assert out["refreshed"] == 1 and updates[0][0] == {"origin": "advisory_gap:g2", "status": "pending"}
+    assert "Pick-em" in updates[0][1]["question"] and "Pick-em" in gi._map_rows()["g2"]["question"]
+    assert gi.run(limit=10, gaps=rewritten, db_insert=ins, db_update=lambda *a: updates.append(a))["refreshed"] == 0
+
+
+TRIBALQ = ("Under the tribe's gaming ordinance and its compact, how would {t} classify each of the following game types "
+           "-- IGRA Class I, Class II, Class III, or outside IGRA -- and does the compact address electronic or "
+           "internet-delivered play? (1) Pick-em against the house: Player selects athlete outcomes against fixed odds "
+           "set by the operator. (2) Sports event contract: Binary or scalar contract on the outcome of a sporting event, "
+           "listed on or claimed under a CFTC-designated contract market. (3) Fixed-odds sports betting: Operator acts "
+           "as counterparty at posted odds.")
+
+
+def test_tribal_question_items_options_and_family():
+    import family_matrix as fm
+    q = TRIBALQ.format(t="Laguna Pueblo")
+    assert [i["name"] for i in fm.items(q)] == ["Pick-em against the house", "Sports event contract", "Fixed-odds sports betting"]
+    assert fm.items(q)[1]["desc"].startswith("Binary or scalar contract")
+    assert fm.options(q) == ["IGRA Class I", "Class II", "Class III", "outside IGRA"]
+    rows = [{"id": f"t{i}", "vertical": "gaming", "question": TRIBALQ.format(t=t), "_value": 200.0}
+            for i, t in enumerate(["Laguna Pueblo", "Muscogee (Creek) Nation", "Oneida Indian Nation"])]
+    fams = fm.families(rows)
+    assert len(fams) == 1 and [r["_member"] for r in fams[0]["members"]] == ["Laguna Pueblo", "Muscogee (Creek) Nation",
+                                                                              "Oneida Indian Nation"]
+
+
+def test_a_game_is_classified_only_from_the_cells_own_passages():
+    import family_matrix as fm
+    q = TRIBALQ.format(t="Laguna Pueblo")
+    its, opts = fm.items(q), fm.options(q)
+    cell = {"n": 2, "passages": [{"id": "M2.1", "authority": "Laguna compact", "url": "u",
+                                  "text": "The Tribe may conduct any or all forms of Class III Gaming, including sports wagering at posted odds on its Indian lands."}]}
+    v = fm.verify_cell({"entity_ok": True, "status": "settled", "choice": "Class III", "answer": "Class III [M2.1].",
+                        "quotes": [{"passage": "M2.1", "quote": "The Tribe may conduct any or all forms of Class III Gaming"}],
+                        "items": [{"item": 3, "choice": "Class III", "passages": ["M2.1"]},
+                                  {"item": 2, "choice": "outside IGRA", "passages": ["G1"]},        # general law only
+                                  {"item": 1, "choice": "Class III", "passages": []}]},
+                       cell, [], its, opts)
+    assert [i["choice"] for i in v["items"]] == ["undetermined", "undetermined", "Class III"]
