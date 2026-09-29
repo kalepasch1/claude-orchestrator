@@ -217,3 +217,9 @@ optional and the gap is marked `answered`; at medium or high it stays `open`. A 
 (local-tier) acceptance, composite under 0.6, fewer than 3 fetched citations, or an answer found by
 precedent is at least medium. Gaps retired as duplicates of an answered card get that card's answer
 at zero model cost.
+
+**Commission ladder.** Mechanical citation check, then the evidence reviewer, then one panel call
+scoring rigor, novelty, utility and exposure together. Only a card whose panel composite comes within
+0.06 of the publication bar gets the separate reviewers, including the cross-vendor exposure check.
+Steering and revise decisions come from the panel: about four reviewer calls become one for most
+cards. A failed panel falls back to the separate reviewers (`PUBCOM_PANEL=false` turns it off).

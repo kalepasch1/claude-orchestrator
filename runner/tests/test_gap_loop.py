@@ -183,3 +183,40 @@ def test_docket_takes_gaps_first_and_pauses_the_matrix(monkeypatch):
     out = ld.run(limit=1)
     assert called == []                      # no synthetic top-up while gap questions wait
     assert out is None or out.get("convened", 0) == 0
+
+
+# ── commission panel ladder ──────────────────────────────────────────────────────────────────────
+def _pc(monkeypatch, panel_scores, separate=0.9):
+    import publication_commission as pc
+    calls = []
+    monkeypatch.setattr(pc, "MECHANICAL_EVIDENCE", False)
+    monkeypatch.setattr(pc, "PANEL", True)
+
+    def one(key, prompt, art):
+        calls.append(key)
+        return {"score": 0.8 if key == "evidence" else separate, "rationale": key, "tier": "frontier"}
+
+    monkeypatch.setattr(pc, "_score_one", one)
+    monkeypatch.setattr(pc, "_panel", lambda art: (calls.append("panel") or (panel_scores, "weak point", "frontier"))
+                        if panel_scores else (calls.append("panel") or None))
+    return pc, calls
+
+
+def test_panel_decides_steering_in_one_call(monkeypatch):
+    pc, calls = _pc(monkeypatch, {"rigor": 0.7, "novelty": 0.4, "utility": 0.7, "risk": 0.6})
+    rec = pc.review_artifact({"id": "c1", "citations": [{"url": "u"}]})
+    assert calls == ["evidence", "panel"] and rec["ladder"] == "panel"
+    assert rec["decision"] == "steer_only" and rec["scores"]["novelty"] == 0.4
+
+
+def test_publication_candidates_get_separate_reviewers(monkeypatch):
+    pc, calls = _pc(monkeypatch, {"rigor": 0.9, "novelty": 0.8, "utility": 0.9, "risk": 0.9})
+    rec = pc.review_artifact({"id": "c1", "citations": [{"url": "u"}]})
+    assert calls[:2] == ["evidence", "panel"] and set(calls[2:]) == {"rigor", "novelty", "utility", "risk"}
+    assert rec["ladder"] == "panel_then_separate" and rec["scores"]["rigor"] == 0.9
+
+
+def test_panel_failure_falls_back_to_separate_reviewers(monkeypatch):
+    pc, calls = _pc(monkeypatch, None)
+    rec = pc.review_artifact({"id": "c1", "citations": [{"url": "u"}]})
+    assert calls[:2] == ["evidence", "panel"] and len(calls) == 6 and rec["ladder"] == "separate"
