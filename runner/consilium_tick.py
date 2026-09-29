@@ -115,22 +115,28 @@ def _light_admission(name, admission):
         return None
     if admission.get("pressure") == 4:
         return None
-    free = admission.get("free_gb")
-    if not isinstance(free, (int, float)):
-        # The host gate could not read its telemetry (it shells out, and fails under load). A job
-        # that needs no local model only needs to know there is a little RAM; ask a second way.
-        try:
-            import local_llm
-            free = local_llm.free_gb()
-        except Exception:
-            free = None
-    if not isinstance(free, (int, float)) or free < LIGHT_MIN_FREE_GB:
-        return None
+    # A cloud tier first: without one there is nothing to admit, and no reason to shell out for telemetry.
     try:
         import frontier
         if not frontier.can_think(min_tier="codex"):
             return None
     except Exception:
+        return None
+    free = admission.get("free_gb")
+    # A job that needs no local model only needs to know macOS can start a small process. 2026-09-29:
+    # EXO reported 0.18 GiB 'available' while vm_stat showed 9.8 GiB free+inactive at pressure level 2
+    # (warn), and every cloud-only job was deferred for hours. EXO's figure is the right one for loading
+    # a model; for this question the kernel's reclaimable pages are. Critical pressure still defers.
+    try:
+        import local_llm
+        host = local_llm.host_available_gb()
+        if not isinstance(free, (int, float)):
+            free = local_llm.free_gb()
+        if isinstance(host, (int, float)):
+            free = max(free if isinstance(free, (int, float)) else 0.0, host)
+    except Exception:
+        pass
+    if not isinstance(free, (int, float)) or free < LIGHT_MIN_FREE_GB:
         return None
     env = {"ORCH_CONSILIUM_LOCAL_DISABLED": "1", "ORCH_CONSILIUM_HOST_CONSTRAINED": admission.get("reason")}
     if name == "legal_docket":

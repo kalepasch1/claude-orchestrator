@@ -18,6 +18,7 @@ ORCH_LOCAL_MODELS order; every failure is soft and recorded in the result.
 from __future__ import annotations
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -83,6 +84,23 @@ def strip_thinking(text):
         a, b = t.index("<think>"), t.index("</think>") + len("</think>")
         t = t[:a] + t[b:]
     return t.strip()
+
+
+def host_available_gb():
+    """What macOS can hand a new process right now, GiB: free + inactive + speculative pages (vm_stat).
+    None when unknown. For admitting a small cloud-only job, not for loading a model."""
+    try:
+        import subprocess
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+        page = 16384
+        m = re.search(r"page size of (\d+) bytes", out)
+        if m:
+            page = int(m.group(1))
+        pages = sum(int(l.split(":")[1].strip().rstrip(".")) for l in out.splitlines()
+                    if l.startswith(("Pages free", "Pages inactive", "Pages speculative")))
+        return pages * page / 2 ** 30
+    except Exception:
+        return None
 
 
 def free_gb():

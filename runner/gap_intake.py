@@ -41,6 +41,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common_utils
+import db  # noqa: F401  loads runner/.env first, so HOME below is the scheduler's (2026-09-29: a manual run
+           # without it wrote the gap map to ~/.claude-orchestrator while the tick read .runtime)
 
 _s = common_utils.safe_string_coerce
 

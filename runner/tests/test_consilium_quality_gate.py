@@ -134,6 +134,8 @@ def test_tick_light_admission_rules(monkeypatch):
     import consilium_tick as k
     import frontier
     monkeypatch.setattr(frontier, "available", lambda *a, **kw: True)
+    import local_llm
+    monkeypatch.setattr(local_llm, "host_available_gb", lambda: None)   # no second reading unless a case sets one
     busy = {"admitted": False, "reason": "memory_pressure", "pressure": 2, "free_gb": 6.0}
     env = k._light_admission("legal_docket", busy)
     assert env and env["ORCH_CONSILIUM_LOCAL_DISABLED"] == "1" and "ORCH_DOCKET_PRIORITIES" in env
@@ -146,6 +148,13 @@ def test_tick_light_admission_rules(monkeypatch):
     assert k._light_admission("pathway_lab", {"admitted": False, "reason": "telemetry_unknown"}) is None
     monkeypatch.setattr(local_llm, "free_gb", lambda: 9.0)      # the second reading says there is room
     assert k._light_admission("pathway_lab", {"admitted": False, "reason": "telemetry_unknown"})
+    # EXO under-reports (0.18 GiB) while macOS can reclaim 9.8 GiB at warn pressure: a cloud-only job runs.
+    monkeypatch.setattr(local_llm, "host_available_gb", lambda: 9.8)
+    assert k._light_admission("pathway_lab", {**busy, "free_gb": 0.18})
+    assert k._light_admission("pathway_lab", {**busy, "free_gb": 0.18, "pressure": 4}) is None   # critical still defers
+    monkeypatch.setattr(local_llm, "host_available_gb", lambda: 0.4)
+    assert k._light_admission("pathway_lab", {**busy, "free_gb": 0.18}) is None
+    monkeypatch.setattr(local_llm, "host_available_gb", lambda: 9.8)
     monkeypatch.setattr(frontier, "available", lambda *a, **kw: False)
     assert k._light_admission("pathway_lab", busy) is None
     names = [j[0] for j in k.JOBS]

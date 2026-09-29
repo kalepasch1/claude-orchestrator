@@ -40,6 +40,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common_utils
+import db  # noqa: F401  loads runner/.env first, so HOME below is the scheduler's
 
 _s = common_utils.safe_string_coerce
 
