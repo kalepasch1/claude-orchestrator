@@ -76,6 +76,7 @@ GATE_MIN_CLAIMS = int(os.environ.get("ORCH_LOCAL_GATE_MIN_CLAIMS", "5"))
 GATE_MIN_COVERAGE = float(os.environ.get("ORCH_LOCAL_GATE_MIN_COVERAGE", "0.65"))
 GATE_MIN_ISSUE_COVERAGE = float(os.environ.get("ORCH_LOCAL_GATE_MIN_ISSUE_COVERAGE", "0.6"))
 USE_CORPUS = os.environ.get("ORCH_LOCAL_TRIBUNAL_CORPUS", "true").lower() not in ("0", "false", "no", "off")
+CLOUD_FALLBACK = os.environ.get("ORCH_LOCAL_TRIBUNAL_CLOUD_FALLBACK", "true").lower() not in ("0", "false", "no", "off")
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 LEDGERS = os.path.join(HOME, "consilium", "ledgers")
 
@@ -209,9 +210,10 @@ def strong_models():
 
 
 class Calls:
-    def __init__(self, chat, prefer=None):
+    def __init__(self, chat, prefer=None, cloud_fallback=False):
         self.chat, self.n, self.failed, self.models, self.by = chat, 0, 0, [], {}
         self.prefer = list(prefer or [])
+        self.cloud_fallback, self.cloud_steps = cloud_fallback, 0
 
     def ask(self, prompt, schema, *, tag, max_tokens=1200, temperature=0.2, models=None, system=BASE):
         kw = {"system": system, "json_schema": schema, "max_tokens": max_tokens, "temperature": temperature,
@@ -230,6 +232,19 @@ class Calls:
                 r = self.chat(prompt, **kw)
             except Exception as e:
                 r = {"json": None, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+        if self.cloud_fallback and (not isinstance(r, dict) or not isinstance(r.get("json"), dict) or r.get("error")):
+            # NEVER IDLE: no local model could take the step (the host had 0.6 GiB free on 2026-09-29).
+            # The same narrow step runs on the cheapest cloud tier instead of stopping the tribunal.
+            try:
+                import frontier
+                fr = frontier.complete(prompt, system=system, json_schema=schema, need=6, timeout=TIMEOUT,
+                                       tag=tag + ".cloud", min_tier="codex")
+                if isinstance(fr.get("json"), dict) and not fr.get("error"):
+                    r = {"json": fr["json"], "text": fr.get("text"), "model": fr.get("model"), "error": "",
+                         "tier": fr.get("tier")}
+                    self.cloud_steps += 1
+            except Exception:
+                pass
         self.n += 1
         self.by[tag] = self.by.get(tag, 0) + 1
         j = r.get("json") if isinstance(r, dict) else None
@@ -922,7 +937,8 @@ def prepare(question, context="", vertical=None, priority="medium", panel=None, 
         fetcher = local_research.fetch
     searcher = searcher or authority_search.search
     panel = list(panel or [])
-    calls = Calls(chat, prefer=None if injected else strong_models())
+    calls = Calls(chat, prefer=None if injected else strong_models(),
+                  cloud_fallback=(not injected) and CLOUD_FALLBACK)
     meta = {"engine": "local_tribunal", "version": 3, "phases": {}}
     state = {"question": question, "context": context, "vertical": vertical, "priority": priority,
              "docket_id": docket_id, "calls": calls, "meta": meta, "t0": t0, "abstain": None, "dossier": None}
@@ -1021,6 +1037,7 @@ def write(state, pen=None, force=False):
 
     def done(abstain, reason, j=None, dossier=None, **extra):
         meta.update({"calls": calls.n, "calls_failed": calls.failed, "calls_by": dict(calls.by), "models": list(calls.models),
+                     "cloud_steps": calls.cloud_steps,
                      "model": (pen_models[0] if pen_models else (calls.models[0] if calls.models else "local")),
                      "pen": pen, "pen_models": pen_models, "pen_calls": pen_state.get("pen_calls", 0),
                      "pen_tokens": pen_state.get("pen_tokens", 0),

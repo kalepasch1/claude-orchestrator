@@ -89,6 +89,17 @@ def run(n=3, force=True, score=True, pens=("local", "sonnet"), decide=True):
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, datetime.date.today().isoformat() + ".jsonl")
     rows = []
+    # The comparison is only meaningful when a local model at or above the debate floor can run.
+    try:
+        import local_llm
+        strong = [m for m in lt.strong_models() if local_llm.fits(*m.partition(":")[::2])[0]]
+    except Exception:
+        strong = []
+    if not strong and "local" in pens:
+        out = {"questions": 0, "rows": 0, "status": "noop", "skipped": "no local model at or above "
+               f"{lt.MIN_DEBATE_B:g}B fits in free RAM right now; benchmark stays due"}
+        print("local_benchmark summary: " + json.dumps(out), flush=True)
+        return out
     for q in questions(n):
         t0 = time.time()
         state = lt.prepare(q["question"], context="PRIORITY: medium", vertical=q["vertical"], priority="medium",
