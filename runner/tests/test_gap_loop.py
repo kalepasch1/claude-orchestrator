@@ -220,3 +220,14 @@ def test_panel_failure_falls_back_to_separate_reviewers(monkeypatch):
     pc, calls = _pc(monkeypatch, None)
     rec = pc.review_artifact({"id": "c1", "citations": [{"url": "u"}]})
     assert calls[:2] == ["evidence", "panel"] and len(calls) == 6 and rec["ladder"] == "separate"
+
+
+def test_precedent_never_crosses_jurisdictions_or_tribes():
+    import escalation as es
+    oh = "[US-OH] Which formulation of the chance/skill test does Ohio apply to a promotion?"
+    ny = "[US-NY] Which formulation of the chance/skill test does New York apply to a promotion?"
+    t1 = "Under its compact, how would Laguna Pueblo classify a game of this kind under IGRA?"
+    t2 = "Under its compact, how would Oneida Indian Nation classify a game of this kind under IGRA?"
+    assert es.precedent(ny, "gaming", cards=[{"id": "c", "question": oh}])[0] is None
+    assert es.precedent(t2, "gaming", cards=[{"id": "c", "question": t1}])[0] is None
+    assert es.precedent(oh + " (Context: a sweepstakes)", "gaming", cards=[{"id": "c", "question": oh}])[0]["id"] == "c"
