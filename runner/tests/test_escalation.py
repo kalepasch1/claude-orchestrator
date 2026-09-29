@@ -236,3 +236,15 @@ def test_commission_rejects_on_the_bytes_without_calling_a_reviewer(monkeypatch)
     monkeypatch.setattr(pc, "check_citations", lambda cites, **k: ([], {"confirmed": 0, "absent": 0, "unreachable": 4}))
     monkeypatch.setattr(pc, "_score_one", lambda k, p, a: {"score": 0.8, "rationale": "r", "tier": "frontier"})
     assert pc.review_artifact({"id": "b", "type": "verdict_card", "citations": [{"url": "u", "quote": "q"}]})["decision"] != "reject"
+
+
+def test_no_associate_capacity_defers_medium_and_sends_high_to_the_partner(tmp_path, monkeypatch):
+    lt, es = _iso(monkeypatch, tmp_path)
+    monkeypatch.setattr(es, "associate_capacity", lambda: (False, "no local model can serve and Claude is unavailable"))
+    called = []
+    monkeypatch.setattr(lt, "prepare", lambda *a, **k: called.append(1))
+    kw = dict(context="", vertical="finserv", panel=PANEL, fetcher=fetcher, searcher=searcher, cloud=Cloud(), records=[])
+    r = es.run(QUESTION, priority="medium", **kw)
+    assert r["abstain"] and not r["escalate_full"] and "associate capacity" in r["reason"] and not called
+    r = es.run(QUESTION, priority="high", **kw)
+    assert r["abstain"] and r["escalate_full"] is True
