@@ -89,9 +89,23 @@ Return ONLY JSON: {{"results":[{{"id":"...","status":"verified|refuted|unverifia
 
 
 def _unresolved_groups(limit_groups):
-    rows = db.select("expert_positions", {
+    # DUE FIRST (2026-09-28). A forecast whose date has passed is the one kind of position that can
+    # be scored today; the resolver used to take the oldest 24-month stakes and find every one of
+    # them indeterminate, four groups a run, at full research cost.
+    today = datetime.date.today().isoformat()
+    due = db.select("expert_positions", {
         "select": "id,expert_id,docket_id,question,thesis,probability,created_at,resolves_by",
-        "resolved": "eq.false", "order": "created_at.asc", "limit": "400"}) or []
+        "resolved": "eq.false", "resolves_by": f"lte.{today}", "order": "resolves_by.asc", "limit": "200"}) or []
+    rows = due + (db.select("expert_positions", {
+        "select": "id,expert_id,docket_id,question,thesis,probability,created_at,resolves_by",
+        "resolved": "eq.false", "order": "created_at.desc", "limit": "400"}) or [])
+    seen_ids, deduped = set(), []
+    for r in rows:
+        if r.get("id") not in seen_ids:
+            seen_ids.add(r.get("id"))
+            deduped.append(r)
+    rows = deduped
+    due_keys = {(r.get("docket_id") or (r.get("question") or "")[:160]) for r in due}
     groups, order = {}, []
     for r in rows:
         key = r.get("docket_id") or (r.get("question") or "")[:160]
@@ -103,8 +117,91 @@ def _unresolved_groups(limit_groups):
     def spread(g):
         ps = [float(x.get("probability") or 0.5) for x in g]
         return (max(ps) - min(ps)) if ps else 0
-    keys = sorted(order, key=lambda k: (-spread(groups[k]), k))
+    keys = sorted(order, key=lambda k: (0 if k in due_keys else 1, -spread(groups[k]), str(k)))
     return [(k, groups[k]) for k in keys[:limit_groups]]
+
+
+CARD_RESOLVE_SCHEMA = {"type": "object", "properties": {
+    "resolutions": {"type": "array", "items": {"type": "object", "properties": {
+        "position_id": {"type": "string"}, "outcome": {"type": "string"}, "why": {"type": "string"}},
+        "required": ["position_id", "outcome", "why"]}}},
+    "required": ["resolutions"]}
+
+CARD_RESOLVE = """You are scoring experts against a question that turned out to have a determinate answer. The
+tribunal's final memo below is grounded: its citations were opened and verified, it declared the question
+SETTLED, and an independent commission accepted its evidence. For each staked thesis decide whether it
+agrees with the settled answer ("true"), contradicts it ("false"), or addresses something the memo does not
+decide ("indeterminate"). Judge the holding, not the wording. When in doubt, indeterminate.
+
+QUESTION: {question}
+SETTLED ANSWER: {verdict}
+KEY REASONING (excerpt): {position}
+
+THESES:
+{theses}
+
+Return ONLY JSON: {{"resolutions":[{{"position_id":"...","outcome":"true|false|indeterminate","why":"..."}}]}}"""
+
+CARDS_PER_RUN = int(os.environ.get("ORCH_THEORY_LAB_CARDS", "6"))
+
+
+def resolve_against_cards(limit=CARDS_PER_RUN):
+    """Score seats on questions the tribunal SETTLED with verified authority. No web research: the
+    card is the answer key. The caveat is recorded with every outcome — this measures who was
+    right before the evidence was read, against the conclusion reached after it was."""
+    out = {"cards": 0, "resolved": 0, "indeterminate": 0, "skipped": 0}
+    if not frontier.available(min_tokens=10000):
+        out["skipped"] = "frontier unavailable"
+        return out
+    cards = db.select("verdict_cards", {
+        "select": "id,docket_id,question,verdict,position,confidence,unsettled,process,publication_state",
+        "unsettled": "eq.false", "status": "eq.fresh", "publication_state": "in.(attorney_review,published)",
+        "order": "minted_at.desc", "limit": "120"}) or []
+    revs = {r.get("artifact_id"): r for r in (db.select("publication_reviews", {
+        "select": "artifact_id,detail", "artifact_type": "eq.verdict_card", "limit": "2000"}) or [])}
+    for c in cards:
+        if out["cards"] >= limit:
+            break
+        try:
+            proc = json.loads(c.get("process") or "{}")
+        except Exception:
+            proc = {}
+        det = (revs.get(c["id"]) or {}).get("detail") or {}
+        det = json.loads(det) if isinstance(det, str) else det
+        evidence = float(((det or {}).get("scores") or {}).get("evidence") or 0)
+        if int(proc.get("verified_citations") or 0) < 6 or evidence < 0.7 or not c.get("docket_id"):
+            continue
+        group = [g for g in (db.select("expert_positions", {
+            "select": "id,expert_id,thesis,probability", "docket_id": f"eq.{c['docket_id']}",
+            "resolved": "eq.false", "limit": "12"}) or []) if not _s(g.get("thesis")).startswith("[FORECAST]")]
+        if not group:
+            continue
+        theses = "\n".join(f"- position_id={g['id']} (p={g.get('probability')}): {_s(g.get('thesis'))[:400]}" for g in group)
+        r = frontier.complete(CARD_RESOLVE.format(question=_s(c.get("question"))[:1500], verdict=_s(c.get("verdict"))[:1200],
+                                                  position=_s(c.get("position"))[:3500], theses=theses),
+                              need=7, json_schema=CARD_RESOLVE_SCHEMA, timeout=600, tag="theory_lab.card_resolve")
+        j = r.get("json")
+        if r.get("error") or not isinstance(j, dict):
+            continue
+        out["cards"] += 1
+        by_id = {g["id"]: g for g in group}
+        for res in j.get("resolutions") or []:
+            pid, oc = str(res.get("position_id") or ""), str(res.get("outcome") or "").lower()
+            if pid not in by_id or oc not in ("true", "false"):
+                out["indeterminate"] += 1
+                continue
+            if corps.resolve_position(pid, oc == "true") is None:
+                continue
+            out["resolved"] += 1
+            try:
+                db.insert("expert_memory", {
+                    "expert_id": by_id[pid]["expert_id"], "kind": "outcome",
+                    "claim": (f"Scored {oc.upper()} against the tribunal's settled, citation-verified answer on "
+                              f"'{_s(c.get('question'))[:120]}': {_s(res.get('why'))[:300]}")[:2000],
+                    "source": f"verdict card {c['id']}", "salience": 0.85, "generation": 1})
+            except Exception:
+                pass
+    return out
 
 
 def resolve_positions(limit_groups=GROUPS_PER_RUN):
@@ -201,7 +298,7 @@ def verify_claims(limit=CLAIMS_PER_RUN):
 
 
 def run():
-    res = {"positions": resolve_positions(), "claims": verify_claims(),
+    res = {"cards": resolve_against_cards(), "positions": resolve_positions(), "claims": verify_claims(),
            "at": datetime.datetime.utcnow().isoformat()}
     try:
         import consilium_controls

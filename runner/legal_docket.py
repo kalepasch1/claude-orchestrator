@@ -99,6 +99,7 @@ def _ensure_seeded():
 
 VALUE_RANK = os.environ.get("ORCH_DOCKET_VALUE_RANK", "true").lower() not in ("0", "false", "no", "off")
 MATRIX_TOPUP = int(os.environ.get("ORCH_DOCKET_MATRIX_TOPUP", "4"))
+MAX_PENDING = int(os.environ.get("ORCH_DOCKET_MAX_PENDING", "300"))
 
 
 def _stale_or_unanswered(limit):
@@ -245,7 +246,15 @@ def _triaged_ids():
 def run(limit=BATCH):
     """Convene the Consilium on the next batch of docket questions."""
     seeded = _ensure_seeded()
-    if MATRIX_TOPUP > 0:
+    # BACKLOG GATE (2026-09-28). 1,643 questions were pending while every run generated four more.
+    # Generation resumes when the vetted backlog is short enough that new questions would be reached.
+    try:
+        backlog = db.count("legal_docket", {"status": "eq.pending"}) or 0
+    except Exception:
+        backlog = 0
+    if MATRIX_TOPUP > 0 and backlog > MAX_PENDING:
+        print(f"legal_docket: matrix top-up skipped: {backlog} questions pending (> {MAX_PENDING})")
+    elif MATRIX_TOPUP > 0:
         # Fill the emptiest lens x risk x vertical cells before choosing what to answer, so
         # innovation pathways and cross-industry analogs are on the docket at all.
         try:

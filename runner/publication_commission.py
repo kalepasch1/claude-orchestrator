@@ -127,13 +127,24 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
 def review_artifact(artifact: dict) -> dict:
     """Run the full commission over one artifact. Returns the decision record."""
     scores, rationales = {}, {}
-    for key, _w, prompt in REVIEWERS:
+    # EVIDENCE FIRST (2026-09-28). Grounding is the one floor that rejects on every track, so it is
+    # scored first and an ungrounded card stops there. The commission had been spending five
+    # frontier reviewers on each of 50 cards that the evidence reviewer alone would have rejected.
+    for key, _w, prompt in sorted(REVIEWERS, key=lambda r: 0 if r[0] == "evidence" else 1):
         r = _score_one(key, prompt, artifact)
         if r.get("error"):
             return {"artifact_id": artifact.get("id"), "artifact_type": artifact.get("type", "committee_opinion"),
                     "decision": "deferred", "reason": r["error"]}
         scores[key] = r["score"]
         rationales[key] = r["rationale"]
+        if key == "evidence" and r["score"] < EVIDENCE_FLOOR:
+            return {"artifact_id": artifact.get("id"), "artifact_type": artifact.get("type", "committee_opinion"),
+                    "composite": round(r["score"] * dict((k, w) for k, w, _ in REVIEWERS)["evidence"], 4),
+                    "steer_composite": round(r["score"] * STEER_WEIGHTS["evidence"], 4),
+                    "scores": scores, "rationales": rationales, "veto": "evidence floor",
+                    "posture": "standard", "publication_blocked": False, "gate": GATE_VERSION,
+                    "short_circuit": True, "decision": "reject", "publish_bar": PUBLISH_BAR,
+                    "steer_bar": STEER_BAR, "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     gate = decide(scores)
     return {

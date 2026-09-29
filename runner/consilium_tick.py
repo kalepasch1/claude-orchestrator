@@ -92,7 +92,8 @@ JOBS = [
 # and very low free RAM still defer everything.
 FRONTIER_JOBS = {"legal_docket", "publication_commission", "paper_drafter", "theory_lab",
                  "reg_opportunity_scan", "pathway_lab", "docket_triage", "consilium_export",
-                 "card_freshness", "ambiguity_miner"}
+                 "card_freshness", "ambiguity_miner", "expert_corps", "corpus_forecaster",
+                 "benchmark_ingest"}
 LIGHT_MIN_FREE_GB = float(os.environ.get("ORCH_CONSILIUM_LIGHT_MIN_FREE_GB", "2"))
 
 

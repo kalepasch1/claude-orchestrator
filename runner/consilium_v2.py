@@ -123,7 +123,15 @@ MEMO = {"type": "object", "properties": {
     "assumptions": {"type": "array", "items": {"type": "string"}},
     "confidence": {"type": "number"}, "dissent": {"type": "string"},
     "flips_if": {"type": "string"}, "conditions": {"type": "string"},
-    "unsettled": {"type": "boolean"}},
+    "unsettled": {"type": "boolean"},
+    # SHORT-HORIZON FORECASTS (2026-09-28). Every staked position resolved "within 24 months", so
+    # after 17,813 stakes only 17 had ever been scored. A forecast that resolves in weeks — a comment
+    # deadline passing, a rule being finalised, a court ruling on a scheduled motion — gives Brier
+    # something to score this quarter. Optional, so older callers and the local tier are unaffected.
+    "forecasts": {"type": "array", "items": {"type": "object", "properties": {
+        "statement": {"type": "string"}, "probability": {"type": "number"},
+        "resolves_by": {"type": "string"}, "how_to_check": {"type": "string"}, "seat": {"type": "string"}},
+        "required": ["statement", "probability", "resolves_by", "how_to_check", "seat"]}}},
     "required": ["verdict", "memo", "citations", "assumptions", "confidence", "dissent",
                  "flips_if", "conditions", "unsettled"]}
 
@@ -282,6 +290,11 @@ GROUNDING RULES (these are the product):
  * Probabilities are forecasts of where a regulator or court lands within 24 months. They will be
    scored (Brier) against real outcomes. An honest 0.55 beats a performative 0.95.
  * Seats are DISTINCT schools of thought. Do not homogenize them into one voice.
+
+ * memo.forecasts: two or three CHECKABLE forecasts that resolve within 120 days of today — an event
+   with a date and a public record (a comment period closing, a rule finalised, a scheduled ruling,
+   an agency action). Each names the seat that would stake it, a probability, the resolves_by date
+   (YYYY-MM-DD) and exactly how a clerk would check it. Omit the field if nothing resolves that soon.
 
 Return ONLY the JSON object. No prose outside it."""
 
@@ -988,6 +1001,28 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
         except Exception:
             pass
 
+    forecasts = 0
+    for f in (memo.get("forecasts") or [])[:4]:
+        if not isinstance(f, dict) or not _s(f.get("statement")).strip():
+            continue
+        try:
+            due = datetime.date.fromisoformat(_s(f.get("resolves_by"))[:10])
+        except Exception:
+            continue
+        horizon = (due - datetime.date.today()).days
+        if not (3 <= horizon <= 200):
+            continue
+        e = _match_seat(f.get("seat"), panel) or panel[0]
+        try:
+            db.insert("expert_positions", {
+                "expert_id": e["id"], "docket_id": docket_id, "question": (question or "")[:2000],
+                "thesis": ("[FORECAST] " + _s(f.get("statement")) + " | check: " + _s(f.get("how_to_check")))[:2000],
+                "probability": max(0.0, min(1.0, float(f.get("probability")))),
+                "generation": int(e.get("generation") or 1), "resolves_by": due.isoformat()})
+            forecasts += 1
+        except Exception:
+            pass
+
     # Independent adversary. A local tournament keeps its adversary local too: a DIFFERENT model from
     # the one that chaired the debate, so the second opinion is genuinely independent without paying
     # a cloud provider. Only a frontier-tier tournament uses the cross-vendor (GPT-5.5) adversary.
@@ -1042,7 +1077,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     process = {"engine": "consilium_v2", "model": r.get("model"), "research": bool(tools),
                "seats": [corps.publication_view(e) for e in panel], "rounds": 5,
                "positions_flipped_by_steelman": flipped, "concessions": conceded,
-               "bouts_judged": judged, "positions_staked": staked,
+               "bouts_judged": judged, "positions_staked": staked, "forecasts_staked": forecasts,
                "red_team_severity": _sev(red.get("severity")), "red_team_severity_raw": _s(red.get("severity"))[:80],
                "citation_count": len(cites), "verified_citations": len(verified),
                "sources_opened": ((j.get("research") or {}).get("sources_opened") or [])[:25],
