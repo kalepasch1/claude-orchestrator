@@ -212,3 +212,27 @@ def test_counsel_rulings_become_holdings_the_next_associate_uses(tmp_path, monke
     assert state["meta"]["firm_memory"]["holdings"] >= 1
     assert any(s["origin"] == "holding" for s in state["d"]["sources"])      # the associate opened the holding's authority
     assert es.memory("aidata", QUESTION)["block"] == ""                       # memory is per vertical
+
+
+def test_associate_packet_hands_over_exact_passages():
+    import escalation as es
+    text, info = es.associate_packet([{"url": u, "source": "x"} for u in PAGES] + [{"url": "https://gone.gov/x"}],
+                                     "money services business registration FinCEN anti-money laundering program",
+                                     fetcher=lambda u: PAGES.get(u, ""))
+    assert info["opened"] == len(PAGES) and "ASSOCIATE'S PACKET" in text
+    assert "[31 CFR 1022.380]" in text                                   # labelled from the URL
+    body = text.split("\n\n", 2)[-1]
+    for block in body.split("\n\n["):
+        passage = block.split("\n", 1)[-1]
+        assert any(passage.split("\n")[0][:60] in p for p in PAGES.values())
+
+
+def test_commission_rejects_on_the_bytes_without_calling_a_reviewer(monkeypatch):
+    import publication_commission as pc
+    monkeypatch.setattr(pc, "check_citations", lambda cites, **k: ([], {"confirmed": 0, "absent": 3, "unreachable": 1}))
+    monkeypatch.setattr(pc, "_score_one", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no reviewer should run")))
+    rec = pc.review_artifact({"id": "a", "type": "verdict_card", "citations": [{"url": "u", "quote": "q"}]})
+    assert rec["decision"] == "reject" and rec["mechanical"] is True
+    monkeypatch.setattr(pc, "check_citations", lambda cites, **k: ([], {"confirmed": 0, "absent": 0, "unreachable": 4}))
+    monkeypatch.setattr(pc, "_score_one", lambda k, p, a: {"score": 0.8, "rationale": "r", "tier": "frontier"})
+    assert pc.review_artifact({"id": "b", "type": "verdict_card", "citations": [{"url": "u", "quote": "q"}]})["decision"] != "reject"

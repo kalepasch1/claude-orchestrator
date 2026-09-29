@@ -63,6 +63,7 @@ ENABLED = os.environ.get("ORCH_PATHWAY_LAB", "true").lower() not in ("0", "false
 RUNS_PER_TICK = int(os.environ.get("ORCH_PATHWAY_RUNS", "1"))
 MIN_TOKENS = int(os.environ.get("ORCH_PATHWAY_MIN_TOKENS", "200000"))
 MAX_TURNS = int(os.environ.get("ORCH_PATHWAY_MAX_TURNS", "16"))
+PACKET_MAX_TURNS = int(os.environ.get("ORCH_PATHWAY_PACKET_MAX_TURNS", "10"))
 PROJECT = os.environ.get("ORCH_PATHWAY_PROJECT", "apparently-law")
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "consilium", "pathways")
 
@@ -370,14 +371,28 @@ def structure(objective, vertical, card=None):
     card = card or {}
     cites = _loads(card.get("citations"), [])
     lead = [{"source": c.get("source"), "url": c.get("url")} for c in cites if isinstance(c, dict) and c.get("url")][:20]
+    # Associate prep (the firm model): the card's authorities are opened locally and handed over as
+    # passages, so the partner-grade call spends its turns on the jurisdictions and structures the
+    # packet does not already cover.
+    packet, pinfo = "", {"opened": 0}
+    try:
+        import escalation
+        packet, pinfo = escalation.associate_packet(lead, objective + " " + _s(card.get("verdict")))
+    except Exception:
+        pass
+    structure.last_packet = pinfo
     return frontier.complete(STRUCTURE_USER.format(
         objective=objective[:2000], vertical=vertical or "n/a", today=datetime.date.today().isoformat(),
         card_id=card.get("id") or "none", verdict=_s(card.get("verdict"))[:900] or "(no prior card)",
         position=_s(card.get("position"))[:6000] or "(none)", conditions=_s(card.get("conditions"))[:900],
         flips_if=_s(card.get("flips_if"))[:900], dissent=_s(card.get("dissent"))[:900],
-        citations=json.dumps(lead)[:3500]),
-        system=STRUCTURE_SYSTEM, need=9, tools=frontier.WEB_TOOLS, max_turns=MAX_TURNS,
+        citations=json.dumps(lead)[:3500]) + packet,
+        system=STRUCTURE_SYSTEM, need=9, tools=frontier.WEB_TOOLS,
+        max_turns=(PACKET_MAX_TURNS if pinfo.get("opened") else MAX_TURNS),
         json_schema=STRUCTURE_SCHEMA, timeout=1800, tag="pathway.structure")
+
+
+structure.last_packet = {"opened": 0}
 
 
 def attack(objective, j):
@@ -510,6 +525,7 @@ def run_one(objective, vertical, card=None, docket_id=None, fetcher=None):
     adj = d.get("json") if isinstance(d.get("json"), dict) and not d.get("error") else {}
     final, killed = assemble(j, attacks, adj)
     process = {"engine": "pathway_lab", "model": s.get("model"), "tier": s.get("tier") or "frontier",
+               "associate_packet": getattr(structure, "last_packet", {}),
                "adversary_model": a.get("model"), "adversary_tier": a.get("tier"),
                "adversary_error": a.get("error") or "", "adjudicated": bool(adj),
                "citations_total": total, "citations_verified": ok,

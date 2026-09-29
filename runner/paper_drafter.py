@@ -129,6 +129,15 @@ def _candidates(limit):
 def draft(card, review, scores):
     cites = _loads(card.get("citations"), [])
     proc = _loads(card.get("process"), {})
+    # Associate prep: re-verify the card's citations locally (fetch + quote check) and hand the writer
+    # the confirmed passages, so it re-opens only what failed or what the packet lacks.
+    packet = ""
+    try:
+        import escalation
+        packet, _ = escalation.associate_packet([c for c in cites if isinstance(c, dict)] if isinstance(cites, list) else [],
+                                                _s(card.get("question")) + " " + _s(card.get("verdict")))
+    except Exception:
+        packet = ""
     r = frontier.complete(USER.format(
         citations_n=len(cites) if isinstance(cites, list) else 0,
         red=(proc or {}).get("red_team_severity"),
@@ -137,8 +146,8 @@ def draft(card, review, scores):
         flips_if=_s(card.get("flips_if"))[:1200], conditions=_s(card.get("conditions"))[:1200],
         unsettled=card.get("unsettled"), assumptions=json.dumps(_loads(card.get("assumptions"), []))[:2000],
         citations=json.dumps(cites)[:7000], scores=json.dumps(scores),
-        today=datetime.date.today().isoformat()),
-        system=SYSTEM, need=9, tools=frontier.WEB_TOOLS, max_turns=18, json_schema=SCHEMA,
+        today=datetime.date.today().isoformat()) + packet,
+        system=SYSTEM, need=9, tools=frontier.WEB_TOOLS, max_turns=(8 if packet else 18), json_schema=SCHEMA,
         timeout=1500, tag="paper_drafter.draft")
     j = r.get("json")
     if r.get("error") or not isinstance(j, dict) or not j.get("body_markdown"):
