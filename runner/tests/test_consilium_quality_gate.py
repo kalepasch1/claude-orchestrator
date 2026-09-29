@@ -139,7 +139,8 @@ def test_tick_light_admission_rules(monkeypatch):
     assert env and env["ORCH_CONSILIUM_LOCAL_DISABLED"] == "1" and "ORCH_DOCKET_PRIORITIES" in env
     assert k._light_admission("corpus_index", busy) is None                       # embeddings need local inference
     assert k._light_admission("pathway_lab", {**busy, "pressure": 4}) is None     # critical pressure
-    assert k._light_admission("pathway_lab", {**busy, "free_gb": 1.0}) is None    # no RAM at all
+    assert k._light_admission("pathway_lab", {**busy, "free_gb": 0.5}) is None    # no RAM at all
+    assert k._light_admission("pathway_lab", {**busy, "free_gb": 1.2})             # a cloud-only job fits in 1 GiB
     import local_llm
     monkeypatch.setattr(local_llm, "free_gb", lambda: None)
     assert k._light_admission("pathway_lab", {"admitted": False, "reason": "telemetry_unknown"}) is None
