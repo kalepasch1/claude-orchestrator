@@ -106,6 +106,17 @@ MAX_PENDING = int(os.environ.get("ORCH_DOCKET_MAX_PENDING", "300"))
 GAP_FIRST = os.environ.get("ORCH_DOCKET_GAP_FIRST", "true").lower() not in ("0", "false", "no", "off")
 
 
+FAMILY_FIRST = os.environ.get("ORCH_DOCKET_FAMILY_FIRST", "true").lower() not in ("0", "false", "no", "off")
+
+
+def _family_ready():
+    try:
+        import frontier
+        return frontier.can_think(min_tokens=20000)
+    except Exception:
+        return False
+
+
 def _gap_rows(limit):
     if not GAP_FIRST:
         return []
@@ -268,8 +279,31 @@ def run(limit=BATCH):
     except Exception:
         backlog = 0
     only = {p.strip().lower() for p in os.environ.get("ORCH_DOCKET_PRIORITIES", "").split(",") if p.strip()}
-    gap_rows = [r for r in _gap_rows(limit * 12) if not only or str(r.get("priority") or "").lower() in only]
-    if gap_rows:
+    all_gaps = _gap_rows(500)
+    # QUESTION FAMILIES (2026-09-29). Gap questions asked once per jurisdiction are charted together by
+    # family_matrix (one framework, free per-jurisdiction research, one chart call per few members)
+    # instead of one tournament each. While a family has uncharted members, a tick charts them; those
+    # members are held back from the one-at-a-time route. Open cells come back to it afterwards.
+    if all_gaps and FAMILY_FIRST:
+        try:
+            import family_matrix
+            fam = family_matrix.next_family(all_gaps) if family_matrix.ENABLED else None
+            if fam and _family_ready():
+                res = family_matrix.run(fam, mint=mint_card)
+                summary = {"seeded": seeded, "convened": res["cells"], "cards_minted": res["minted"],
+                           "family": {k: res.get(k) for k in ("family", "members", "settled", "contested", "open",
+                                                              "chart_calls", "tiers", "doc")}}
+                print(json.dumps(summary), flush=True)
+                return summary
+            if family_matrix.ENABLED:
+                held = family_matrix.held_for_family(all_gaps)
+                if held:
+                    print(f"legal_docket: {len(held)} gap question(s) held for a family pass")
+                all_gaps = [r for r in all_gaps if r["id"] not in held]
+        except Exception as e:
+            print(f"legal_docket: family pass skipped: {type(e).__name__}: {str(e)[:120]}")
+    gap_rows = [r for r in all_gaps if not only or str(r.get("priority") or "").lower() in only][:limit * 12]
+    if gap_rows or all_gaps:
         print(f"legal_docket: {len(gap_rows)} law-app gap question(s) queued first; synthetic top-up paused")
     elif MATRIX_TOPUP > 0 and backlog > MAX_PENDING:
         print(f"legal_docket: matrix top-up skipped: {backlog} questions pending (> {MAX_PENDING})")

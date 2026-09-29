@@ -94,6 +94,8 @@ def risk_band(card, review):
 
     if review.get("_via_precedent"):
         at_least("medium", f"answer by precedent (similarity {review.get('_similarity')})")
+    if str(proc.get("tier") or "").lower() == "local":
+        at_least("medium", "answered on the local tier")
     if detail.get("provisional"):
         at_least("medium", "provisional (local-tier) review")
     if float(review.get("composite") or 0) < ACCEPT_LOW_COMPOSITE:

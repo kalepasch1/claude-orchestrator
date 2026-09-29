@@ -207,13 +207,33 @@ def run(limit=IMPORT_PER_RUN, dry_run=False, gaps=None, db_insert=None):
             out["already"] += 1                                     # docketed, or settled as not docket work
             continue
         fresh.append((value(g), cls, why, g))
-    fresh.sort(key=lambda x: -x[0])
-    rows, docketed = [], 0
+    # FAMILIES TOGETHER (2026-09-29). Questions asked once per jurisdiction are charted as a family
+    # (family_matrix.py), so a family is ranked by its combined value and imported whole.
+    fam_of, fam_value = {}, {}
+    try:
+        import family_matrix
+        for v, cls, why, g in fresh:
+            if cls in DOCKETED:
+                t = family_matrix.template(g.get("question"))
+                if "{x}" in t:
+                    fam_of[g["id"]] = t
+                    fam_value[t] = fam_value.get(t, 0.0) + v
+        sizes = {}
+        for t in fam_of.values():
+            sizes[t] = sizes.get(t, 0) + 1
+        fam_of = {k: t for k, t in fam_of.items() if sizes[t] >= family_matrix.MIN_FAMILY}
+    except Exception:
+        fam_of = {}
+    fresh.sort(key=lambda x: (-(fam_value[fam_of[x[3]["id"]]] if x[3]["id"] in fam_of else x[0]),
+                              fam_of.get(x[3]["id"], ""), -x[0]))
+    rows, docketed, open_family = [], 0, None
     for v, cls, why, g in fresh:
         rec = {"gap_id": g["id"], "class": cls, "why": why, "value": v, "source_system": g.get("source_system"),
                "jurisdiction": g.get("jurisdiction_code"), "pb": g.get("propositions_blocked"),
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-        if cls in DOCKETED and docketed < limit:
+        in_family = fam_of.get(g["id"])
+        if cls in DOCKETED and (docketed < limit or (in_family and in_family == open_family)):
+            open_family = in_family
             vert, q = vertical_for(g), docket_question(g)
             rec.update(vertical=vert, question=q, priority=priority_for(v, cls), lane=("clerk" if cls == "provision_reading" else "firm"))
             if not dry_run:
@@ -336,6 +356,7 @@ def pending_gap_rows(limit=500):
     for r in rows:
         rec = m.get(_s(r.get("origin")).split(":", 1)[-1]) or {}
         r["_value"], r["_lane"] = float(rec.get("value") or 0), rec.get("lane") or "firm"
+        r["_jurisdiction"] = rec.get("jurisdiction")
     rows.sort(key=lambda r: -r["_value"])
     return rows
 

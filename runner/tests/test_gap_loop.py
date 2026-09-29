@@ -231,3 +231,225 @@ def test_precedent_never_crosses_jurisdictions_or_tribes():
     assert es.precedent(ny, "gaming", cards=[{"id": "c", "question": oh}])[0] is None
     assert es.precedent(t2, "gaming", cards=[{"id": "c", "question": t1}])[0] is None
     assert es.precedent(oh + " (Context: a sweepstakes)", "gaming", cards=[{"id": "c", "question": oh}])[0]["id"] == "c"
+
+
+# ── question families ────────────────────────────────────────────────────────────────────────────
+FAMQ = ("Which formulation of the chance/skill test does {s} apply when determining whether a game or promotion "
+        "constitutes gambling -- predominant purpose (dominant factor), material element, any chance, or the "
+        "gambling instinct test?")
+OH_TEXT = ("The Ohio Supreme Court has long applied the dominant factor test to decide whether a game is a game of "
+           "chance or a game of skill. Under that test a scheme is a game of chance when chance predominates over "
+           "skill in determining the outcome of the game. The court rejected the any chance test for skill games. ") * 3
+FW_TEXT = ("Courts apply three principal tests to decide whether a game of skill is gambling: the dominant factor or "
+           "predominant purpose test, the material element test, and the any chance test. Under the material element "
+           "test a game is gambling if chance is a material element in determining the outcome. ") * 3
+NOWHERE_TEXT = ("The parties dispute whether the dominant factor test or the material element test decides whether "
+                "these games of skill and chance are gambling, but the court resolves the appeal on procedural grounds "
+                "and expresses no view on which test governs. ") * 3
+
+
+def _fam_rows():
+    return [{"id": f"d{i}", "vertical": "gaming", "question": FAMQ.format(s=s), "priority": "high",
+             "status": "pending", "origin": f"advisory_gap:g{i}", "_value": 200.0, "_jurisdiction": code}
+            for i, (s, code) in enumerate([("Ohio", "OH"), ("Maine", "ME"), ("Vermont", "VT")])]
+
+
+def _fam_env(monkeypatch, tmp_path):
+    import family_matrix as fm
+    import corpus_retrieval
+    import escalation as es
+    monkeypatch.setattr(fm, "STATE_DIR", str(tmp_path / "families"))
+    monkeypatch.setattr(fm, "OUT_DIR", str(tmp_path / "docs"))
+    monkeypatch.setattr(es, "MEMORY", str(tmp_path / "memory.jsonl"))
+    monkeypatch.setattr(corpus_retrieval, "top_passages", lambda *a, **k: [])
+    pages = {"https://x/fw.pdf": FW_TEXT, "https://x/oh.pdf": OH_TEXT, "https://x/me.pdf": NOWHERE_TEXT}
+
+    def searcher(query, courts, n):
+        if not courts:
+            return [{"authority": "State v. Framework (2001)", "url": "https://x/fw.pdf"}]
+        if courts.startswith("ohio"):
+            return [{"authority": "Pickaway County Skilled Gaming v. Cordray (ohio, 2010)", "url": "https://x/oh.pdf"}]
+        if courts.startswith("me"):
+            return [{"authority": "Maine bingo statute case", "url": "https://x/me.pdf"}]
+        return []
+    return fm, pages.get, searcher
+
+
+def test_families_group_by_template_and_name_the_member():
+    import family_matrix as fm
+    fams = fm.families(_fam_rows() + [{"id": "z", "vertical": "gaming", "question": "Is a raffle a lottery in Ohio?",
+                                       "_value": 5}])
+    assert len(fams) == 1 and len(fams[0]["members"]) == 3
+    assert [r["_member"] for r in fams[0]["members"]] == ["Ohio", "Maine", "Vermont"]
+    assert fm.options(FAMQ.format(s="Ohio"))[:2] == ["predominant purpose (dominant factor)", "material element"]
+
+
+def test_family_pass_mints_only_cells_resting_on_their_own_sources(monkeypatch, tmp_path):
+    fm, fetcher, searcher = _fam_env(monkeypatch, tmp_path)
+    fam = fm.families(_fam_rows())[0]
+    prompts = []
+
+    def chart(prompt):
+        prompts.append(prompt)
+        return {"framework": "Three tests compete [G1].",
+                "framework_quotes": [{"passage": "G1", "quote": "Courts apply three principal tests to decide whether a game of skill is gambling"}],
+                "cells": [
+                    {"cell": 1, "choice": "predominant purpose", "status": "settled", "flips_if": "a statute adopts any chance",
+                     "answer": "Ohio applies the dominant factor test [M1.1].",
+                     "quotes": [{"passage": "M1.1", "quote": "Under that test a scheme is a game of chance when chance predominates over skill"}]},
+                    {"cell": 2, "choice": "material element", "status": "settled", "flips_if": "",
+                     "answer": "Maine follows the material element test [G1].",       # framework only: must not stand
+                     "quotes": [{"passage": "G1", "quote": "Under the material element test a game is gambling if chance is a material element"}]},
+                ]}, {"tier": "frontier", "model": "fake-opus", "tokens_in": 5000, "tokens_out": 900}
+
+    minted = []
+    out = fm.run(fam, mint=lambda row, agg: minted.append((row, agg)) or True, fetcher=fetcher, searcher=searcher,
+                 chart=chart, compacts=[])
+    assert out["chart_calls"] == 1 and "CELL 1: Ohio" in prompts[0] and "CELL 3" not in prompts[0]   # Vermont: no sources
+    assert out["settled"] == 1 and out["open"] == 2 and out["minted"] == 1
+    row, agg = minted[0]
+    assert row["_member"] == "Ohio" and agg["verdict"] == "Ohio: predominant purpose (dominant factor)"
+    assert all(c["verified"] and c["quote"] for c in agg["citations"])
+    assert "[1]" in agg["opinion"] and "ACROSS THE FAMILY" in agg["opinion"] and len(agg["opinion"]) >= 200
+    assert agg["process"]["engine"] == "consilium_v2" and agg["process"]["route"] == "family_matrix"
+    st = fm.load_state(fam["key"])
+    assert st["cells"]["d1"]["why"].startswith("no verified quote") and st["cells"]["d2"]["why"].startswith("no sources")
+    assert fm.todo(fam) == [] and fm.next_family(_fam_rows()) is None          # charted: not re-run for RETRY_DAYS
+    assert os.path.exists(os.path.join(tmp_path, "docs")) and os.listdir(os.path.join(tmp_path, "docs"))
+
+
+def test_fabricated_quotes_do_not_verify(monkeypatch, tmp_path):
+    fm, fetcher, searcher = _fam_env(monkeypatch, tmp_path)
+    fam = fm.families(_fam_rows())[0]
+    chart = lambda p: ({"framework": "", "cells": [{"cell": 1, "choice": "any chance", "status": "settled", "flips_if": "",
+                                                   "answer": "Ohio applies any chance [M1.1].",
+                                                   "quotes": [{"passage": "M1.1", "quote": "Ohio has adopted the any chance test for all promotions statewide"}]}]},
+                       {"tier": "frontier"})
+    out = fm.run(fam, mint=lambda r, a: True, fetcher=fetcher, searcher=searcher, chart=chart, compacts=[])
+    assert out["minted"] == 0 and out["settled"] == 0
+
+
+def test_failed_chart_leaves_members_for_the_next_pass(monkeypatch, tmp_path):
+    fm, fetcher, searcher = _fam_env(monkeypatch, tmp_path)
+    fam = fm.families(_fam_rows())[0]
+    out = fm.run(fam, mint=lambda r, a: True, fetcher=fetcher, searcher=searcher, chart=lambda p: (None, {"error": "x"}),
+                 compacts=[])
+    assert out["minted"] == 0
+    assert {r["_member"] for r in fm.todo(fam)} == {"Ohio", "Maine"}          # Vermont had no sources: recorded open
+
+
+def test_tribal_members_find_their_compacts():
+    import family_matrix as fm
+    index = [{"title": "508_compliant_2022.06.14_sault_ste._marie_tribe_of_chippewa_indians_compact.pdf",
+              "url": "https://www.bia.gov/a/2022.06.14_sault_ste._marie_tribe_of_chippewa_indians_compact.pdf"},
+             {"title": "508_compliant_1998.01.01_sault_ste._marie_tribe_of_chippewa_indians_compact.pdf",
+              "url": "https://www.bia.gov/a/1998.01.01_sault_ste._marie_tribe_of_chippewa_indians_compact.pdf"},
+             {"title": "2019 Pala Band compact", "url": "https://www.bia.gov/a/pala.pdf"}]
+    hits = fm.compacts_for("Sault Ste. Marie Chippewa", index=index)
+    assert len(hits) == 2 and "2022" in hits[0]["url"]
+    assert fm.compacts_for("Oneida Indian Nation", index=index) == []
+
+
+def test_docket_runs_the_family_pass_first(monkeypatch):
+    import legal_docket as ld
+    import family_matrix as fm
+    rows = _fam_rows()
+    monkeypatch.setattr(ld, "_gap_rows", lambda limit: rows)
+    monkeypatch.setattr(ld, "_ensure_seeded", lambda: 0)
+    monkeypatch.setattr(ld.db, "count", lambda *a, **k: 5)
+    monkeypatch.setattr(ld, "_family_ready", lambda: True)
+    monkeypatch.setattr(fm, "todo", lambda fam: fam["members"])
+    ran = []
+    monkeypatch.setattr(fm, "run", lambda fam, mint=None: ran.append(fam["key"]) or
+                        {"cells": 3, "minted": 1, "family": fam["key"], "members": 3})
+    out = ld.run(limit=1)
+    assert ran and out["cards_minted"] == 1 and out["convened"] == 3
+
+
+def test_family_members_wait_when_the_pass_cannot_run(monkeypatch):
+    import legal_docket as ld
+    import family_matrix as fm
+    rows = _fam_rows() + [{"id": "solo", "vertical": "gaming", "question": "Is a raffle a lottery?", "priority": "high",
+                           "status": "pending", "origin": "advisory_gap:s", "_value": 1.0}]
+    monkeypatch.setattr(ld, "_gap_rows", lambda limit: rows)
+    monkeypatch.setattr(ld, "_ensure_seeded", lambda: 0)
+    monkeypatch.setattr(ld.db, "count", lambda *a, **k: 5)
+    monkeypatch.setattr(ld, "_family_ready", lambda: False)
+    monkeypatch.setattr(fm, "todo", lambda fam: fam["members"])
+    seen = []
+    monkeypatch.setattr(ld, "FRONTIER_ONLY", True)
+    monkeypatch.setattr(ld, "_frontier_ready", lambda: seen.append(1) or False)
+    ld.run(limit=5)
+    assert seen                                  # the solo question reached the one-at-a-time route
+
+
+def test_local_tier_cards_are_at_least_medium_risk():
+    c = _card()
+    proc = json.loads(c["process"])
+    proc["tier"] = "local"
+    c["process"] = json.dumps(proc)
+    assert gw.risk_band(c, _review())[0] == "medium"
+
+
+def test_intake_keeps_families_together(monkeypatch, tmp_path):
+    monkeypatch.setattr(gi, "MAP", str(tmp_path / "map.jsonl"))
+    fam = [_gap(100 + i, FAMQ.format(s=s), j=code, pb=5) for i, (s, code) in
+           enumerate([("Ohio", "OH"), ("Maine", "ME"), ("Vermont", "VT")])]
+    big = _gap(200, "Does the definition of 'wager' in N.J.S.A. 5:12-1 include free-to-play games?", pb=12)
+    inserted = []
+    gi.run(limit=2, gaps=[big] + fam, db_insert=lambda t, r, upsert=False: inserted.append(r["origin"]) or [r])
+    assert inserted[:3] == ["advisory_gap:g100", "advisory_gap:g101", "advisory_gap:g102"]   # family value 15 > 12
+
+
+def test_search_outage_is_not_recorded_as_no_law(monkeypatch, tmp_path):
+    fm, fetcher, _ = _fam_env(monkeypatch, tmp_path)
+    fam = fm.families(_fam_rows())[0]
+    down = lambda query, courts, n: None                      # every search times out
+    out = fm.run(fam, mint=lambda r, a: True, fetcher=fetcher, searcher=down,
+                 chart=lambda p: (_ for _ in ()).throw(AssertionError("no chart without evidence")), compacts=[])
+    assert out["transient"] == 3 and out["cells"] == 0 and len(fm.todo(fam)) == 3
+
+
+def test_compact_must_name_the_same_entity():
+    import family_matrix as fm
+    wi = "The Oneida Nation and the State of Wisconsin submitted the Third Amendment to the Oneida Nation Gaming Compact."
+    ny = "This compact is entered into by the Oneida Indian Nation of New York and the State of New York."
+    sault = "The Sault Ste. Marie Tribe of Chippewa Indians and the State of Michigan agree as follows."
+    assert not fm.names_entity(wi, "Oneida Indian Nation") and fm.names_entity(ny, "Oneida Indian Nation")
+    assert fm.names_entity(sault, "Sault Ste. Marie Chippewa")
+
+
+def test_choice_mapping_never_confuses_class_ii_and_iii():
+    import family_matrix as fm
+    opts = ["IGRA Class I", "Class II", "Class III"]
+    assert fm._match_choice("Class III", opts) == "Class III"
+    assert fm._match_choice("class iii gaming", opts) == "Class III"
+    assert fm._match_choice("Class II", opts) == "Class II"
+    assert fm._match_choice("Class I", opts) == "IGRA Class I"
+    cs = ["predominant purpose (dominant factor)", "material element", "any chance", "gambling instinct test"]
+    assert fm._match_choice("dominant factor", cs) == cs[0] and fm._match_choice("predominant purpose", cs) == cs[0]
+    assert fm._match_choice("other: pure chance", cs) == "other: pure chance"
+
+
+def test_entity_names_in_order_or_reversed_pair():
+    import family_matrix as fm
+    wi = "Chairman, Oneida Nation. The Oneida Nation and the State submitted it under the Indian Gaming Regulatory Act."
+    assert not fm.names_entity(wi, "Oneida Indian Nation")
+    assert fm.names_entity("between the Pueblo of Laguna and the State of New Mexico", "Laguna Pueblo")
+
+
+def test_sovereign_nation_phrase_is_not_the_oneida_indian_nation():
+    import family_matrix as fm
+    wi = 'entered into by and between the Oneida Nation, a sovereign Indian nation, (the "Nation") and the State of Wisconsin'
+    assert not fm.names_entity(wi, "Oneida Indian Nation")
+    assert fm.names_entity("the Sault Ste. Marie Tribe of Chippewa Indians", "Sault Ste. Marie Chippewa")
+
+
+def test_model_flagged_wrong_entity_opens_the_cell():
+    import family_matrix as fm
+    cell = {"n": 1, "passages": [{"id": "M1.1", "text": "The Oneida Nation and the State of Wisconsin agree that class III gaming is regulated by the Tribe.",
+                                  "authority": "x", "url": "u"}]}
+    v = fm.verify_cell({"entity_ok": False, "status": "settled", "choice": "Class III", "answer": "a [M1.1]",
+                        "quotes": [{"passage": "M1.1", "quote": "The Oneida Nation and the State of Wisconsin agree that class III gaming"}]},
+                       cell, [])
+    assert v["status"] == "open" and "different entity" in v["why"]
