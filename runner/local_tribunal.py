@@ -200,11 +200,13 @@ def norm_severity(s):
 
 
 def strong_models():
-    """Local rungs at or above the debate floor, best first. local_llm prefers whatever is already
-    resident — which on a busy host is the 9B — so the tribunal names the rungs it wants."""
+    """Local rungs at or above the debate floor for the ASSOCIATE, smallest first. The associate makes
+    ~25 narrow calls, so the fastest capable model does them; the largest rung that fits is kept for
+    counsel (escalation.counsel_rung), mirroring associate and counsel in a firm. local_llm otherwise
+    prefers whatever is resident — on a busy host, the 9B."""
     try:
         import local_llm
-        return [m for m in local_llm.MODELS if size_b(m) >= MIN_DEBATE_B]
+        return sorted([m for m in local_llm.MODELS if size_b(m) >= MIN_DEBATE_B], key=size_b)
     except Exception:
         return []
 
@@ -270,6 +272,9 @@ def research(question, context, vertical, plan, *, fetcher, searcher, extra_quer
     issues = d["issues"] or [question]
     cands = []
     if not have:
+        for a in plan.get("_holding_urls") or []:
+            cands.append({"url": a["url"], "authority": a.get("authority") or "", "title": "", "jurisdiction": "",
+                          "origin": "holding"})
         for a in playbooks.authorities(vertical, question):
             cands.append({"url": a["url"], "authority": a.get("cite") or "", "title": a.get("decides") or "",
                           "jurisdiction": "", "origin": "playbook"})
@@ -331,7 +336,7 @@ def research(question, context, vertical, plan, *, fetcher, searcher, extra_quer
             d["unresolved"].append(f"{c.get('authority') or u} (could not open)")
             continue
         rel = asrch.relevance(page[:60000], qterms)
-        bonus = 3.0 if c.get("origin") in ("playbook", "resolved") else 0.0
+        bonus = 3.0 if c.get("origin") in ("playbook", "resolved", "holding") else 0.0
         scored.append((rel + bonus, c, page))
     scored.sort(key=lambda x: -x[0])
     room = max(0, MAX_SOURCES - len(d["sources"]))
@@ -955,6 +960,14 @@ def prepare(question, context="", vertical=None, priority="medium", panel=None, 
     exemplar = playbooks.exemplar(vertical, question)
     meta["playbook"] = bool(playbook)
     meta["exemplar"] = (exemplar or {}).get("id")
+    try:
+        import escalation
+        mem = escalation.memory(vertical, question)
+    except Exception:
+        mem = {"block": "", "urls": [], "holdings": []}
+    if mem.get("block"):
+        playbook = (playbook + "\n\n" + mem["block"]).strip()
+    meta["firm_memory"] = {"holdings": len(mem.get("holdings") or []), "corrections": len(mem.get("corrections") or [])}
 
     plan, r = calls.ask(
         f"QUESTION: {question[:1500]}\nCONTEXT: {(context or '')[:800]}\nVERTICAL: {vertical}\n\n"
@@ -972,6 +985,7 @@ def prepare(question, context="", vertical=None, priority="medium", panel=None, 
     if not plan or not plan.get("issues"):
         return stop(f"planning failed: {(r or {}).get('error') or 'no issues returned'}"[:200])
     plan["issues"] = [_ws(i)[:300] for i in plan["issues"] if _ws(i)][:5]
+    plan["_holding_urls"] = mem.get("urls") or []
     model_b = size_b(calls.models[0] if calls.models else "")
     meta["model_b"] = model_b
     meta["premise_ok"] = bool(plan.get("premise_ok", True))

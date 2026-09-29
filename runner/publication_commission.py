@@ -100,6 +100,16 @@ def check_citations(citations, fetcher=None, limit=40):
     return table, counts
 
 
+def _score_local(reviewer_key, instr, body):
+    """An associate-finished card is reviewed at the associate's level (operator direction 2026-09-29:
+    simple matters never escalate). Local model when one fits; the spot checks in escalation.py are
+    what measure whether that trust is earned."""
+    import local_llm
+    r = local_llm.chat("ARTIFACT:\n" + body, system=instr, json_schema=SCORE_SCHEMA, max_tokens=400, temperature=0.0,
+                       timeout=600, tag=f"pubcom.{reviewer_key}.local")
+    return r.get("json") if isinstance(r.get("json"), dict) and not r.get("error") else None
+
+
 def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
     """Return {'score': 0..1, 'rationale': str}. Fail-closed on any error."""
     body = json.dumps({
@@ -131,7 +141,9 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
     instr = system_prompt + "\n\nReturn ONLY JSON: {\"score\": <0.0-1.0>, \"rationale\": \"<=200 chars\"}"
     try:
         data, tier = None, "frontier"
-        if reviewer_key == "risk" and frontier.codex_available():
+        if artifact.get("route") == "associate":
+            data, tier = _score_local(reviewer_key, instr + mechanical, body), "local"
+        if data is None and reviewer_key == "risk" and frontier.codex_available():
             r = frontier.codex_complete("ARTIFACT:\n" + body, system=instr, json_schema=SCORE_SCHEMA,
                                         tag="pubcom.risk")
             data = r.get("json") if not r.get("error") else None
@@ -189,14 +201,17 @@ def review_artifact(artifact: dict) -> dict:
                     "steer_bar": STEER_BAR, "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     gate = decide(scores)
+    associate_final = artifact.get("route") == "associate"
+    if associate_final:
+        tiers = {k: "local" for k in tiers} if not tiers else tiers
     # PROVISIONAL (2026-09-29, never-idle). A reviewer that answered on the LOCAL tier keeps the
     # commission moving while the cloud tiers are down, but it may not open publication, and its
     # adverse findings do not withdraw a card. The review is redone when a cloud reviewer is back.
-    provisional = "local" in tiers.values()
+    provisional = "local" in tiers.values() or associate_final
     if provisional and gate["decision"] == "publish":
         gate = {**gate, "decision": "steer_only"}
     return {
-        "tiers": tiers, "provisional": provisional,
+        "tiers": tiers, "provisional": provisional, "associate_final": associate_final,
         "artifact_id": artifact.get("id"),
         "artifact_type": artifact.get("type", "committee_opinion"),
         "composite": gate["composite"],
@@ -284,7 +299,8 @@ def _candidates(limit: int):
     if frontier is not None and getattr(frontier, "available", lambda **k: False)(min_tokens=20000):
         for r in reviews:
             d = _loads(r.get("detail"), {})
-            if r.get("artifact_type") == "verdict_card" and isinstance(d, dict) and d.get("provisional") is True:
+            if (r.get("artifact_type") == "verdict_card" and isinstance(d, dict) and d.get("provisional") is True
+                    and not d.get("associate_final")):          # associate finals are sampled by spot checks instead
                 repaired.setdefault(r.get("artifact_id"), {**r, "_provisional": True})
     done = {r.get("artifact_id") for r in reviews if r.get("artifact_id") not in repaired}
     out = []
@@ -311,7 +327,8 @@ def _candidates(limit: int):
                    f"UNSETTLED: {c.get('unsettled')}\nASSUMPTIONS: {_loads(c.get('assumptions'), [])}")
         candidate = {"id": c.get("id"), "type": "verdict_card", "title": c.get("question"),
                     "verdict": c.get("verdict"), "content": content,
-                    "citations": _loads(c.get("citations"), [])}
+                    "citations": _loads(c.get("citations"), []),
+                    "route": (_loads(c.get("process"), {}) or {}).get("route")}
         if c.get("id") in repaired and repaired[c.get("id")].get("_provisional"):
             prior = {k: v for k, v in repaired[c.get("id")].items() if k != "_provisional"}
             candidate["prior_review"] = prior
@@ -359,6 +376,7 @@ def run(limit: int = BATCH) -> dict:
         try:
             detail = {"scores": rec["scores"], "rationales": rec["rationales"], "veto": rec["veto"],
                       "tiers": rec.get("tiers"), "provisional": bool(rec.get("provisional")),
+                      "associate_final": bool(rec.get("associate_final")),
                       "reviewed_at": rec["reviewed_at"], "gate": rec.get("gate"),
                       "steer_composite": rec.get("steer_composite"), "posture": rec.get("posture"),
                       "publication_blocked": rec.get("publication_blocked")}
