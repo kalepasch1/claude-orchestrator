@@ -206,10 +206,11 @@ def test_high_priority_is_debated_on_the_frontier_tier(monkeypatch, tmp_path):
     assert out["conviction"] == 7.5 and out["process"]["confidence_stated"] == 0.9   # unsettled cap
 
 
-def test_medium_priority_stays_pending_when_host_cannot_fund_local(monkeypatch, tmp_path):
+def test_medium_priority_stays_pending_when_host_cannot_fund_local_and_no_cloud_tier(monkeypatch, tmp_path):
     import consilium_v2 as c
     _route_setup(monkeypatch, tmp_path, c)
     monkeypatch.setattr(c, "LOCAL_DISABLED", True)
+    monkeypatch.setattr(c.frontier, "can_think", lambda *a, **k: False)   # 2026-09-29: with a cloud tier it now runs there
 
     def boom(*a, **k):
         raise AssertionError("no model should be called")

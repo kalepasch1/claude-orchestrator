@@ -244,7 +244,7 @@ def run(n=DOCS_PER_RUN):
             ledger[doc_id] = {"at": today, "result": "no_findings"}
             out["reviewed"] += 1
             continue
-        if not frontier.available(min_tokens=40000):
+        if not (getattr(frontier, "can_think", None) or frontier.available)(min_tokens=40000):
             out["skipped"] = "frontier unavailable (findings mined, judgment deferred)"
             out["deferred_docs"] += 1
             _record_retry(ledger, doc_id, "judgment_deferred", "frontier_unavailable")

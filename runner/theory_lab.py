@@ -150,8 +150,9 @@ def resolve_against_cards(limit=CARDS_PER_RUN):
     card is the answer key. The caveat is recorded with every outcome — this measures who was
     right before the evidence was read, against the conclusion reached after it was."""
     out = {"cards": 0, "resolved": 0, "indeterminate": 0, "skipped": 0}
-    if not frontier.available(min_tokens=10000):
-        out["skipped"] = "frontier unavailable"
+    # Scoring an expert moves it toward probation; that judgement needs a cloud tier.
+    if not frontier.can_think(min_tokens=10000, min_tier="codex"):
+        out["skipped"] = "no cloud tier available"
         return out
     cards = db.select("verdict_cards", {
         "select": "id,docket_id,question,verdict,position,confidence,unsettled,process,publication_state",
@@ -179,7 +180,7 @@ def resolve_against_cards(limit=CARDS_PER_RUN):
         theses = "\n".join(f"- position_id={g['id']} (p={g.get('probability')}): {_s(g.get('thesis'))[:400]}" for g in group)
         r = frontier.complete(CARD_RESOLVE.format(question=_s(c.get("question"))[:1500], verdict=_s(c.get("verdict"))[:1200],
                                                   position=_s(c.get("position"))[:3500], theses=theses),
-                              need=7, json_schema=CARD_RESOLVE_SCHEMA, timeout=600, tag="theory_lab.card_resolve")
+                              need=7, json_schema=CARD_RESOLVE_SCHEMA, timeout=600, tag="theory_lab.card_resolve", min_tier="codex")
         j = r.get("json")
         if r.get("error") or not isinstance(j, dict):
             continue
@@ -206,8 +207,8 @@ def resolve_against_cards(limit=CARDS_PER_RUN):
 
 def resolve_positions(limit_groups=GROUPS_PER_RUN):
     out = {"groups": 0, "settled": 0, "resolved": 0, "indeterminate": 0, "skipped": 0}
-    if not frontier.available(min_tokens=15000):
-        out["skipped"] = "frontier unavailable"
+    if not frontier.can_think(min_tokens=15000, min_tier="codex"):
+        out["skipped"] = "no cloud tier available"
         return out
     for key, group in _unresolved_groups(limit_groups):
         q = group[0].get("question") or ""
@@ -216,7 +217,7 @@ def resolve_positions(limit_groups=GROUPS_PER_RUN):
         r = frontier.complete(RESOLVE.format(question=q[:2000], today=datetime.date.today().isoformat(),
                                              theses=theses),
                               need=8, tools=frontier.WEB_TOOLS, max_turns=10, json_schema=RESOLVE_SCHEMA,
-                              tag="theory_lab.resolve")
+                              tag="theory_lab.resolve", min_tier="codex")
         j = r.get("json")
         out["groups"] += 1
         if r.get("error") or not isinstance(j, dict):
@@ -250,8 +251,8 @@ def resolve_positions(limit_groups=GROUPS_PER_RUN):
 
 def verify_claims(limit=CLAIMS_PER_RUN):
     out = {"checked": 0, "verified": 0, "refuted": 0, "unverifiable": 0, "skipped": 0}
-    if not frontier.available(min_tokens=15000):
-        out["skipped"] = "frontier unavailable"
+    if not frontier.can_think(min_tokens=15000):
+        out["skipped"] = "no model tier available"
         return out
     rows = db.select("expert_memory", {
         "select": "id,expert_id,claim,source,salience", "kind": "eq.research",
@@ -279,6 +280,9 @@ def verify_claims(limit=CLAIMS_PER_RUN):
             patch = {"source_url": url[:500],
                      "salience": min(1.0, float(by_id[rid].get("salience") or 0.5) + 0.1)}
             out["verified"] += 1
+        elif st == "refuted" and r.get("tier") == "local":
+            patch = {"salience": round(float(by_id[rid].get("salience") or 0.5) * 0.7, 3)}
+            out["unverifiable"] += 1
         elif st == "refuted":
             # expert_memory.kind is constrained (research|bout_*|outcome|correction|reading). 'refuted'
             # violated the check, the PATCH was rejected, and 8 refutations per run were reported

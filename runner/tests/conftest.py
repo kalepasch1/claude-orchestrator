@@ -934,3 +934,19 @@ def _the_suite_never_writes_into_the_live_runtime_dir(tmp_path_factory):
             os.environ.pop("CLAUDE_ORCH_HOME", None)
         else:
             os.environ["CLAUDE_ORCH_HOME"] = old
+
+
+@pytest.fixture(autouse=True)
+def _frontier_tiers_offline(monkeypatch):
+    """The never-idle chain (2026-09-29) reaches Codex, local models and the network when Claude is
+    stubbed out. Tests written for Claude-only behaviour keep that behaviour, and no test may run the
+    real login re-probe. Tests of the chain set frontier.NEVER_IDLE = True themselves."""
+    try:
+        import frontier
+    except Exception:
+        yield
+        return
+    monkeypatch.setattr(frontier, "NEVER_IDLE", False, raising=False)
+    monkeypatch.setattr(frontier, "_reprobe_auth", lambda: False, raising=False)
+    monkeypatch.setattr(frontier, "research_context", lambda prompt, **k: "", raising=False)
+    yield

@@ -145,6 +145,7 @@ def draft(card, review, scores):
         print(f"paper_drafter: draft failed for {card.get('id')}: {r.get('error') or 'malformed'}", flush=True)
         return None
     j["_model"] = r.get("model"); j["_tokens"] = (r.get("tokens_in"), r.get("tokens_out"))
+    j["_tier"] = r.get("tier") or "frontier"
     return j
 
 
@@ -178,7 +179,7 @@ def _markdown(card, review, j):
 
 def run(limit=BATCH):
     out = {"candidates": 0, "drafted": 0, "skipped": None}
-    if not frontier.available(min_tokens=40000):
+    if not frontier.can_think(min_tokens=40000):
         out["skipped"] = "frontier unavailable"
         print("paper_drafter: " + json.dumps(out), flush=True)
         return out
@@ -201,7 +202,8 @@ def run(limit=BATCH):
         try:
             db.insert("approvals", {
                 "project": PROJECT, "slug": slug, "kind": "material",
-                "title": f"Review draft paper — {_s(j.get('title'))[:120]}",
+                "title": f"Review draft paper — {_s(j.get('title'))[:120]}"
+                         + ("" if j.get("_tier") == "frontier" else f" [drafted on the {j.get('_tier')} tier]"),
                 "why": (f"Consilium verdict card passed the publication commission "
                         f"(composite {review.get('composite')}, {review.get('decision')}). "
                         f"{verified}/{len(j.get('citations') or [])} citations re-verified by URL."),

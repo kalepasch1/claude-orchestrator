@@ -310,3 +310,21 @@ Here are the extracted **CONVENTIONS** and **DO/AVOID rules**:
 * DO use `cProfile` to measure execution time and identify performance bottlenecks.
 * AVOID making changes to production code that are not explicitly documented in the commit message.
 * AVOID making changes that break existing functionality without a clear justification.
+
+
+## Consilium model policy (operator direction, 2026-09-29)
+
+Use local super-intelligent models as much as possible. When cloud models (Fable, Opus, Sonnet,
+GPT-5.5) are unavailable or stop working, always run lower-intelligence work instead of stopping,
+so there is never a break in effort.
+
+- Every model call goes through `runner/frontier.py::complete`, which walks
+  Claude -> GPT-5.5 (Codex) -> the strongest local model and records the answering tier in
+  `result["tier"]`. Routine no-tool work (need <= 6) goes to a resident 20B+ local model first.
+- Jobs gate on `frontier.can_think(...)`, never on `frontier.available(...)` alone.
+  `available()` means "Claude specifically", used only to prefer Claude when it is up.
+- A lower tier keeps work moving but may not make judgements that need a stronger one: pass
+  `min_tier="codex"` for scoring experts (theory_lab resolutions) and building playbooks. A
+  local-tier commission review is provisional (cannot publish, cannot withdraw a card, redone when
+  a cloud reviewer returns). A local-tier docket clerk may re-prioritise but not retire or rewrite.
+- Label every artifact produced below the frontier tier with its tier.

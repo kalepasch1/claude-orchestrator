@@ -627,8 +627,8 @@ def ready():
                 return True
         except Exception:
             pass
-        return (ESCALATE != "never" or bool(FRONTIER_PRIORITIES)) and frontier.available(min_tokens=MIN_TOKENS)
-    return frontier.available(min_tokens=MIN_TOKENS)
+        return frontier.can_think(min_tokens=MIN_TOKENS, min_tier="codex")
+    return frontier.can_think(min_tokens=MIN_TOKENS)
 
 
 def _local_research(question, context, vertical, docket_id):
@@ -889,9 +889,12 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     if priority in FRONTIER_PRIORITIES and frontier.available(min_tokens=MIN_TOKENS):
         engine = "frontier"
     if engine == "local" and LOCAL_DISABLED:
-        print(f"consilium_v2: host cannot fund local inference; '{(question or '')[:60]}' "
-              f"(priority {priority}) stays pending", flush=True)
-        return None
+        if frontier.can_think(min_tokens=MIN_TOKENS, min_tier="codex"):
+            engine = "frontier"          # the host cannot run a model; a cloud tier keeps effort going
+        else:
+            print(f"consilium_v2: host cannot fund local inference and no cloud tier is available; "
+                  f"'{(question or '')[:60]}' (priority {priority}) stays pending", flush=True)
+            return None
     if engine == "local" and LOCAL_PIPELINE == "v3":
         may_escalate = ESCALATE == "always" or (ESCALATE == "high" and priority == "high")
         try:
@@ -959,7 +962,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
             mode = "single"
             print(f"consilium_v2: research phase unusable ({phases['research'].get('error') or 'no dossier'}); "
                   f"single-call tournament instead", flush=True)
-            if not frontier.available(min_tokens=ENVELOPE["single"]):
+            if not frontier.can_think(min_tokens=ENVELOPE["single"], min_tier="codex"):
                 print("consilium_v2: budget cannot fund a single-call tournament; legacy gauntlet will run", flush=True)
                 _note_failure(fkey, phases["research"].get("error") or "research unusable")
                 return None
@@ -1264,7 +1267,7 @@ def run_code(title, body="", diff="", *, project=None, blast_radius=0.0, need=No
         return None
     diff = diff or body
     need = need or (9 if float(blast_radius or 0) >= 0.7 else 8)
-    if not frontier.available(min_tokens=int(os.environ.get("ORCH_CONSILIUM_CODE_MIN_TOKENS", "40000"))):
+    if not frontier.can_think(min_tokens=int(os.environ.get("ORCH_CONSILIUM_CODE_MIN_TOKENS", "40000")), min_tier="codex"):
         return None
     t0 = time.time()
     seats_txt = "\n".join(f"- SEAT \"{n}\": {d}" for n, d in CODE_SEATS)

@@ -122,7 +122,7 @@ def _light_admission(name, admission):
         return None
     try:
         import frontier
-        if not frontier.available():
+        if not frontier.can_think(min_tier="codex"):
             return None
     except Exception:
         return None

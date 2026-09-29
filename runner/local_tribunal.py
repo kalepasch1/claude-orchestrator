@@ -325,6 +325,7 @@ def research(question, context, vertical, plan, *, fetcher, searcher, extra_quer
             continue
         sid = f"S{len(d['sources']) + 1}"
         d["_pages"][c["url"]] = page
+        c["authority"] = asrch.label_for(c["url"], _s(c.get("authority")))
         d["sources"].append({"id": sid, "url": c["url"], "display_url": c.get("display_url") or c["url"],
                              "authority": _s(c.get("authority"))[:200], "title": _s(c.get("title"))[:200],
                              "jurisdiction": _s(c.get("jurisdiction")), "origin": c.get("origin"),
@@ -404,7 +405,7 @@ def extract(calls, question, d, findings, only_passages=None):
                 if not p:
                     continue
                 quote = locate_quote(f.get("quote"), p["text"])
-                if not quote or not _ws(f.get("says")):
+                if not quote or not _ws(f.get("says")) or asrch_is_chrome(quote):
                     continue
                 if any(x["quote"] == quote and x["url"] == p["url"] for x in findings):
                     continue
@@ -436,7 +437,7 @@ def backfill(d, findings, question, per_issue=2):
                 if sc > score:
                     best, score = sent, sc
             quote = " ".join(best.split()[:45])
-            if score < 4 or len(quote) < 40 or quote not in p["text"]:
+            if score < 4 or len(quote) < 40 or quote not in p["text"] or asrch_is_chrome(quote):
                 continue
             findings.append({"id": f"F{len(findings) + 1}", "passage": p["id"], "source": p["source"], "url": p["url"],
                              "authority": p["authority"], "issue": i, "quote": quote,
@@ -628,7 +629,8 @@ def _chair_prompt(question, plan, seats, findings, playbook, exemplar, attack=No
           "EVERY sentence that states what the law is or requires must end with the finding ids it rests on, in "
           "brackets, like [F3] or [F3, F7]. A legal statement with no finding id is not allowed in the memo — put it "
           "under `assumptions` instead. `dissent` is the strongest surviving objection from the seats, in their words. "
-          "`unsettled` is true when the ledger does not decide the question. `options` are 2-4 lawful ways the company "
+          "Refer to each authority by the label shown in the ledger; do not name any rule, part or section that "
+          "is not in the ledger. `unsettled` is true when the ledger does not decide the question. `options` are 2-4 lawful ways the company "
           "could proceed, each with a posture (conservative | defensible | aggressive_arguable), the findings it rests "
           "on, and the event that means abandon it. An option is a change to the facts — product, partner, entity, "
           "licence, jurisdiction — never concealment or a misstatement to anyone.")
@@ -700,6 +702,50 @@ def ground_pass(calls, chair, findings, verifier_models=None):
     return chair, {"uncited": len(uncited), "grounded": grounded_n, "struck": struck, "ratio_before": stats["ratio"]}
 
 
+def asrch_is_chrome(text):
+    try:
+        import authority_search
+        return authority_search.is_chrome(text)
+    except Exception:
+        return False
+
+
+def _cite_key(label):
+    """'31 CFR 1022.380(a)(3)' -> ('cfr', '31', '1022.380'); used to compare named authorities."""
+    t = _s(label)
+    m = re.search(r"(\d+)\s*C\.?F\.?R\.?\s*(?:Part\s*|§\s*)?(\d+(?:\.\d+)?)", t, re.I)
+    if m:
+        return ("cfr", m.group(1), m.group(2))
+    m = re.search(r"(\d+)\s*U\.?S\.?C\.?\s*§*\s*(\d+[a-z]?)", t, re.I)
+    if m:
+        return ("usc", m.group(1), m.group(2).lower())
+    return None
+
+
+def audit_citations(memo_text, findings):
+    """Authorities the memo NAMES that are not in the evidence record. A CFR part matches any
+    section inside it and a section matches its part, so '31 CFR 1022' and '31 CFR 1022.210' agree;
+    '31 CFR 103' (recodified in 2011) matches nothing current and is reported."""
+    held = set()
+    for f in findings:
+        k = _cite_key(f.get("authority"))
+        if k:
+            held.add(k)
+            if k[0] == "cfr":
+                held.add(("cfr", k[1], k[2].split(".")[0]))
+    named, unknown = [], []
+    for m in re.finditer(r"\d+\s*C\.?F\.?R\.?\s*(?:Part\s*|§\s*)?\d+(?:\.\d+)?|\d+\s*U\.?S\.?C\.?\s*§*\s*\d+[a-z]?",
+                         _s(memo_text), re.I):
+        k = _cite_key(m.group(0))
+        if not k or k in named:
+            continue
+        named.append(k)
+        ok = k in held or (k[0] == "cfr" and ("cfr", k[1], k[2].split(".")[0]) in held)
+        if not ok:
+            unknown.append(m.group(0).strip())
+    return unknown
+
+
 def finalize(chair, findings):
     """Citations are BUILT from the findings the memo used; the model never writes a citation."""
     by_id = {f["id"]: f for f in findings}
@@ -722,6 +768,10 @@ def finalize(chair, findings):
                         "abandon_if": _ws(o.get("abandon_if"))[:300]})
     assumptions = [_ws(a)[:300] for a in (chair.get("assumptions") or []) if _ws(a)][:12]
     assumptions += [f"Stated without a supporting finding: {u}" for u in stats["uncited"][:4]]
+    unknown = audit_citations(_s(chair.get("memo")), findings)
+    stats["unknown_authorities"] = unknown
+    assumptions += [f"The memo names {u}, which is not in the evidence record — verify before relying on it "
+                    f"(it may be superseded or renumbered)." for u in unknown[:6]]
     return {"verdict": _ws(chair.get("verdict"))[:1500], "memo": memo, "citations": cites, "assumptions": assumptions,
             "dissent": _ws(chair.get("dissent"))[:3000], "flips_if": _ws(chair.get("flips_if"))[:1500],
             "conditions": _ws(chair.get("conditions"))[:1500], "unsettled": bool(chair.get("unsettled")),
@@ -739,7 +789,7 @@ def confidence(seats, findings, stats, issues, severity, revised, model_b, unset
     agree = 1.0 - min(1.0, (statistics.pstdev(probs) * 2.5 if len(probs) > 1 else 0.4))
     penalty = {"fatal": 0.25, "material": 0.10 if revised else 0.18, "marginal": 0.03}.get(severity, 0.0)
     c = 0.20 + 0.30 * coverage * min(1.0, issue_cov + 0.2) + 0.20 * stats.get("ratio", 0.0) \
-        + 0.12 * min(1.0, sources / 8.0) + 0.10 * agree - penalty
+        + 0.12 * min(1.0, sources / 8.0) + 0.10 * agree - penalty - 0.05 * min(3, len(stats.get("unknown_authorities") or []))
     cap = 0.85
     if unsettled:
         cap = min(cap, 0.75)
@@ -819,7 +869,7 @@ def choose_pen(model_b):
     if recorded == "sonnet":
         try:
             import frontier
-            if frontier.available(min_tokens=20000) or (frontier.auth_down() and frontier.codex_available()):
+            if frontier.can_think(min_tokens=20000, min_tier="codex"):
                 return "sonnet"
         except Exception:
             pass
@@ -830,7 +880,7 @@ def choose_pen(model_b):
         return "local"
     try:
         import frontier
-        if frontier.available(min_tokens=20000) or (frontier.auth_down() and frontier.codex_available()):
+        if frontier.can_think(min_tokens=20000, min_tier="codex"):
             return "sonnet"
     except Exception:
         pass
@@ -843,7 +893,7 @@ def _pen_ask(state, pen, prompt, schema, *, tag, max_tokens, temperature):
         try:
             import frontier
             r = frontier.complete(prompt, system=BASE, model=frontier.SONNET, json_schema=schema, timeout=900,
-                                  tag="local.pen." + tag.split(".")[-1])
+                                  tag="local.pen." + tag.split(".")[-1], min_tier="codex")
             j = r.get("json")
             if isinstance(j, dict) and not r.get("error"):
                 state["pen_calls"] = state.get("pen_calls", 0) + 1

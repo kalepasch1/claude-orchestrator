@@ -279,7 +279,7 @@ def _complete(prompt) -> str:
     # budget allows, and the local tier is the fallback.
     try:
         import frontier
-        if frontier.ENABLED and frontier.available(min_tokens=20000):
+        if frontier.ENABLED and frontier.can_think(min_tokens=20000, min_tier="codex"):
             r = frontier.complete(prompt, need=7, timeout=300, tag="docket_matrix.generate")
             if r.get("text") and not r.get("error"):
                 return str(r["text"])

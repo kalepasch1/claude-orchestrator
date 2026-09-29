@@ -186,6 +186,42 @@ def relevance(text, want):
     return score
 
 
+_CHROME = re.compile(r"(\s>\s.*\s>\s)|(^|\s)(Subtitle|CHAPTER|PART|SUBCHAPTER)\s+[A-Z0-9]+\s*[—-]|skip to|breadcrumb|"
+                     r"print this page|table of contents|site map|\bmenu\b", re.I)
+
+
+def is_chrome(text):
+    """Breadcrumbs, heading chains and page furniture: never evidence."""
+    t = text or ""
+    if _CHROME.search(t):
+        return True
+    words = t.split()
+    return bool(words) and sum(1 for w in words if w.isupper() and len(w) > 2) / len(words) > 0.4
+
+
+def label_for(url, fallback=""):
+    """A precise authority label derived from the URL, so the writer sees "31 CFR 1022.210", not
+    "Treasury/FinCEN regulation" (2026-09-29: a generic label let a 9B model call the AML-program
+    rule by its pre-2011 name, 31 CFR 103, while citing the current section)."""
+    u = url or ""
+    m = re.search(r"law\.cornell\.edu/cfr/text/(\d+)/(part-)?([\w.\-]+)", u)
+    if m:
+        return f"{m.group(1)} CFR {'Part ' if m.group(2) else ''}{m.group(3)}"
+    m = re.search(r"law\.cornell\.edu/uscode/text/(\d+)/([\w\-]+)", u)
+    if m:
+        return f"{m.group(1)} U.S.C. § {m.group(2)}"
+    m = re.search(r"ecfr\.gov/current/title-(\d+)/.*section-([\w.\-]+)", u)
+    if m:
+        return f"{m.group(1)} CFR {m.group(2)}"
+    m = re.search(r"regulations/new-york/(\d+)-NYCRR-([\w.\-]+)", u)
+    if m:
+        return f"{m.group(1)} NYCRR {m.group(2)}"
+    m = re.search(r"federalregister\.gov/.*?/(\d{4}-\d{4,6})", u)
+    if m and not fallback:
+        return f"FR Doc. {m.group(1)}"
+    return fallback or u
+
+
 def passages(page_text, want, k=3, width=900):
     """Top-k non-overlapping windows of consecutive sentences, each an EXACT slice of page_text."""
     if not page_text or not want:
@@ -201,6 +237,8 @@ def passages(page_text, want, k=3, width=900):
             j += 1
             e = spans[j][1]
         chunk = page_text[s:min(e, s + width)]
+        if is_chrome(chunk[:240]):
+            continue
         sc = relevance(chunk, want)
         if sc > 0:
             windows.append((sc, s, s + len(chunk)))
