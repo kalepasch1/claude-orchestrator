@@ -954,4 +954,9 @@ def _frontier_tiers_offline(monkeypatch):
         monkeypatch.setattr(consilium_v2, "FIRM", False, raising=False)   # firm tests turn it on
     except Exception:
         pass
+    try:
+        import publication_commission
+        monkeypatch.setattr(publication_commission, "PANEL", False, raising=False)   # panel tests turn it on
+    except Exception:
+        pass
     yield

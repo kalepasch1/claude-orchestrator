@@ -176,6 +176,58 @@ def _score_one(reviewer_key: str, system_prompt: str, artifact: dict) -> dict:
         return {"score": 0.0, "rationale": f"scoring error (fail-closed): {type(e).__name__}", "error": "reviewer_unavailable"}
 
 
+# PANEL LADDER (2026-09-29). After evidence clears its floor, ONE call scores rigor, novelty, utility and
+# exposure against the same four rubrics. Only a card whose panel composite puts it within
+# PANEL_MARGIN of the publication bar goes on to the separate reviewers (independent judgements and the
+# cross-vendor exposure check are what publication needs). Steering and revise decisions come from the
+# panel: about four reviewer calls become one for most cards. Any panel failure falls back to the
+# separate reviewers, so nothing is decided on a partial answer.
+PANEL = os.environ.get("PUBCOM_PANEL", "true").lower() not in ("0", "false", "no", "off")
+PANEL_MARGIN = float(os.environ.get("PUBCOM_PANEL_MARGIN", "0.06"))
+PANEL_KEYS = ("rigor", "novelty", "utility", "risk")
+PANEL_SCHEMA = {"type": "object", "required": list(PANEL_KEYS) + ["rationale"], "properties": {
+    **{k: {"type": "number"} for k in PANEL_KEYS}, "rationale": {"type": "string"}}}
+
+
+def _panel(artifact: dict):
+    """-> ({key: score}, rationale, tier) or None. One call, four rubrics."""
+    if frontier is None:
+        return None
+    rubrics = "\n".join(f"- {k}: {p}" for k, _w, p in REVIEWERS if k in PANEL_KEYS)
+    instr = ("You are a review panel. Score the artifact independently on each rubric, 0.0-1.0, each as if "
+             "it were the only question you were asked:\n" + rubrics +
+             "\nReturn ONLY JSON: {\"rigor\": n, \"novelty\": n, \"utility\": n, \"risk\": n, "
+             "\"rationale\": \"<=300 chars, the weakest point first\"}")
+    body = json.dumps({"title": artifact.get("title"), "verdict": artifact.get("verdict"),
+                       "content": artifact.get("content") or "", "citations": artifact.get("citations") or []})
+    if len(body.encode("utf-8")) > 96000:
+        return None
+    try:
+        if artifact.get("route") == "associate":
+            import local_llm
+            r = local_llm.chat("ARTIFACT:\n" + body, system=instr, json_schema=PANEL_SCHEMA, max_tokens=600,
+                               temperature=0.0, timeout=900, tag="pubcom.panel.local")
+            tier = "local"
+        else:
+            r = frontier.complete("ARTIFACT:\n" + body, system=instr, need=8, max_turns=1, json_schema=PANEL_SCHEMA,
+                                  tag="pubcom.panel")
+            tier = r.get("tier") or "frontier"
+        data = r.get("json") if not r.get("error") else None
+        if data is None and r.get("text") and not r.get("error"):
+            data = frontier.extract_json(r["text"])
+        if not isinstance(data, dict):
+            return None
+        out = {}
+        for k in PANEL_KEYS:
+            v = data.get(k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1:
+                return None
+            out[k] = float(v)
+        return out, str(data.get("rationale", ""))[:300], tier
+    except Exception:
+        return None
+
+
 def review_artifact(artifact: dict) -> dict:
     """Run the full commission over one artifact. Returns the decision record."""
     scores, rationales, tiers = {}, {}, {}
@@ -199,7 +251,21 @@ def review_artifact(artifact: dict) -> dict:
     # EVIDENCE FIRST (2026-09-28). Grounding is the one floor that rejects on every track, so it is
     # scored first and an ungrounded card stops there. The commission had been spending five
     # frontier reviewers on each of 50 cards that the evidence reviewer alone would have rejected.
-    for key, _w, prompt in sorted(REVIEWERS, key=lambda r: 0 if r[0] == "evidence" else 1):
+    order = sorted(REVIEWERS, key=lambda r: 0 if r[0] == "evidence" else 1)
+    ladder, panel_tried = "separate", False
+    for key, _w, prompt in order:
+        if key != "evidence" and PANEL and not panel_tried and "evidence" in scores:
+            panel_tried = True
+            p = _panel(artifact)
+            if p is not None:
+                pscores, prat, ptier = p
+                trial = decide({**scores, **pscores})
+                if trial["composite"] < PUBLISH_BAR - PANEL_MARGIN or trial["publication_blocked"]:
+                    for k in PANEL_KEYS:
+                        scores[k], rationales[k], tiers[k] = pscores[k], "panel: " + prat, ptier
+                    ladder = "panel"
+                    break
+                ladder = "panel_then_separate"       # a publication candidate: independent reviewers decide
         r = _score_one(key, prompt, artifact)
         if r.get("error"):
             return {"artifact_id": artifact.get("id"), "artifact_type": artifact.get("type", "committee_opinion"),
@@ -228,7 +294,7 @@ def review_artifact(artifact: dict) -> dict:
     if provisional and gate["decision"] == "publish":
         gate = {**gate, "decision": "steer_only"}
     return {
-        "tiers": tiers, "provisional": provisional, "associate_final": associate_final,
+        "tiers": tiers, "provisional": provisional, "associate_final": associate_final, "ladder": ladder,
         "artifact_id": artifact.get("id"),
         "artifact_type": artifact.get("type", "committee_opinion"),
         "composite": gate["composite"],
@@ -393,7 +459,7 @@ def run(limit: int = BATCH) -> dict:
         try:
             detail = {"scores": rec["scores"], "rationales": rec["rationales"], "veto": rec["veto"],
                       "tiers": rec.get("tiers"), "provisional": bool(rec.get("provisional")),
-                      "associate_final": bool(rec.get("associate_final")),
+                      "associate_final": bool(rec.get("associate_final")), "ladder": rec.get("ladder"),
                       "reviewed_at": rec["reviewed_at"], "gate": rec.get("gate"),
                       "steer_composite": rec.get("steer_composite"), "posture": rec.get("posture"),
                       "publication_blocked": rec.get("publication_blocked")}
