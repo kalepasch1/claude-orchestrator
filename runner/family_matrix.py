@@ -61,7 +61,8 @@ STATUSES = ("settled", "contested", "open")
 
 _SKIP = {"What", "Which", "Does", "Do", "Is", "Are", "Can", "May", "Must", "How", "Under", "When", "Where", "Who",
          "Whether", "If", "The", "A", "An", "In", "For", "Has", "Have", "Would", "Should", "Context"}
-_RUN = re.compile(r"\b[A-Z][A-Za-z.'-]+(?:\s+(?:of\s+(?:the\s+)?)?[A-Z][A-Za-z.'-]+)*")
+# A parenthesised word stays inside a name ('Muscogee (Creek) Nation'), or that member drops out of its family.
+_RUN = re.compile(r"\b[A-Z][A-Za-z.'-]+(?:\s+(?:of\s+(?:the\s+)?)?\(?[A-Z][A-Za-z.'-]+\)?)*")
 _GENERIC = {"tribe", "tribes", "indian", "indians", "nation", "band", "bands", "community", "the", "of", "and",
             "tribal", "reservation", "rancheria", "pueblo", "confederated", "people", "group"}
 
@@ -126,6 +127,16 @@ def families(rows):
                     "value": round(sum(float(r.get("_value") or 0) for r in rs), 1)})
     out.sort(key=lambda f: -f["value"])
     return out
+
+
+def items(question):
+    """Numbered sub-items the question asks about: '(1) Pick-em against the house: Player selects ... (2) ...'
+    -> [{n, name, desc}]. 2026-09-29: the tribal membership question lists every catalogued game type."""
+    core = _core(question)
+    out = []
+    for m in re.finditer(r"\((\d{1,2})\)\s*([^:()]{2,80}):\s*(.+?)(?=\s*\(\d{1,2}\)\s|$)", core):
+        out.append({"n": int(m.group(1)), "name": m.group(2).strip(), "desc": m.group(3).strip()[:300]})
+    return out if len(out) >= 2 else []
 
 
 def options(question):
@@ -512,6 +523,9 @@ CHART_SCHEMA = {"type": "object", "required": ["framework", "cells"], "propertie
         "cell": {"type": "integer"}, "entity_ok": {"type": "boolean"},
         "choice": {"type": "string"}, "answer": {"type": "string"},
         "status": {"type": "string", "enum": list(STATUSES)},
+        "items": {"type": "array", "items": {"type": "object", "required": ["item", "choice", "passages"], "properties": {
+            "item": {"type": "integer"}, "choice": {"type": "string"},
+            "passages": {"type": "array", "items": {"type": "string"}}}}},
         "quotes": {"type": "array", "items": {"type": "object", "required": ["passage", "quote"], "properties": {
             "passage": {"type": "string"}, "quote": {"type": "string"}}}},
         "flips_if": {"type": "string"}}}}}}
@@ -536,7 +550,7 @@ research desk whose output is checked by software:
 Return ONLY the JSON object."""
 
 
-def chart_prompt(fam, opts, framework, framework_text, cells):
+def chart_prompt(fam, opts, framework, framework_text, cells, its=None):
     lines = [f"QUESTION (asked once per jurisdiction): {fam['question'].replace('{X}', '<jurisdiction>')}"]
     lines.append("OPTIONS: " + ("; ".join(opts) + " — choose one per jurisdiction, or 'other: <name>' if its own "
                                 "passages apply a different test" if opts else "free answer (one short phrase as the choice)"))
@@ -553,6 +567,11 @@ def chart_prompt(fam, opts, framework, framework_text, cells):
                  + (" (keep it consistent with the settled framework above)" if framework_text else "")
                  + ", and its quotes. For EVERY cell above: choice, a 2-5 sentence answer citing passage ids, status, "
                    "the verbatim quotes you relied on (passage id + quote of at most 40 words), and what would flip it.")
+    if its:
+        lines.append(f"\nThe question lists {len(its)} numbered game types. For EVERY cell also give `items`: one entry per "
+                     "numbered game type with its choice from the options (or 'undetermined') and the ids of that cell's OWN "
+                     "passages that support it. A game type its own passages do not reach is 'undetermined' -- do not "
+                     "classify a game from general law alone. The cell's `choice` summarises what its sources authorize.")
     return "\n".join(lines)
 
 
@@ -577,8 +596,8 @@ def _match_choice(choice, opts):
     return best[1] if best else c[:80]
 
 
-def verify_cell(cell_json, cell, framework):
-    """-> {choice, answer, status, quotes (verified), own, flips_if, why}"""
+def verify_cell(cell_json, cell, framework, its=None, opts=None):
+    """-> {choice, answer, status, quotes (verified), own, flips_if, why, items}"""
     import local_tribunal as lt
     texts = {p["id"]: p for p in framework + cell["passages"]}
     quotes = []
@@ -598,8 +617,24 @@ def verify_cell(cell_json, cell, framework):
         status, why = "open", "its sources concern a different entity"
     elif status != "open" and not own:
         status, why = "open", "no verified quote from the jurisdiction's own sources"
+    own_ids = {q["id"] for q in own}
+    got = {}
+    for it in cell_json.get("items") or []:
+        try:
+            got[int(it.get("item"))] = it
+        except Exception:
+            continue
+    checked = []
+    for i in its or []:
+        it = got.get(i["n"]) or {}
+        ids = {_s(p).strip().strip("[]") for p in it.get("passages") or []}
+        choice = _match_choice(it.get("choice"), opts or []) if (ids & own_ids and status != "open") else "undetermined"
+        if _s(choice).lower().startswith("undetermined"):
+            choice = "undetermined"
+        checked.append({"n": i["n"], "name": i["name"], "choice": choice})
     return {"choice": _s(cell_json.get("choice")), "answer": _s(cell_json.get("answer")).strip(), "status": status,
-            "quotes": quotes, "own": len(own), "flips_if": _s(cell_json.get("flips_if")).strip()[:600], "why": why}
+            "quotes": quotes, "own": len(own), "flips_if": _s(cell_json.get("flips_if")).strip()[:600], "why": why,
+            "items": checked}
 
 
 def _numbered(text, quotes):
@@ -628,9 +663,15 @@ def card_agg(fam, row, v, framework_text, framework_quotes, board, meta):
     member = row["_member"]
     others = [f"- {m}: {c} ({s})" for m, c, s in board if m != member][:60]
     choice = _match_choice(v["choice"], meta.get("options") or [])
+    by_game = []
+    if v.get("items"):
+        k = sum(1 for i in v["items"] if i["choice"] != "undetermined")
+        by_game = [f"BY GAME TYPE ({k} of {len(v['items'])} classified from this jurisdiction's own sources):"] + \
+                  [f"- ({i['n']}) {i['name']}: {i['choice']}" for i in v["items"]] + [""]
     opinion = "\n".join([
         f"{member} — {_core(row.get('question'))}", "",
         f"ANSWER ({v['status']}): {answer}", "",
+        *by_game,
         f"GENERAL FRAMEWORK: {fw}" if fw else "", "",
         f"ACROSS THE FAMILY ({len(board)} jurisdictions charted together; open cells are still being researched):",
         *others, "",
@@ -645,7 +686,9 @@ def card_agg(fam, row, v, framework_text, framework_quotes, board, meta):
                       or ("general framework" if q["id"].startswith("G") else f"{member}: {choice}")})
     conf = confidence_for(v)
     return {"question": row.get("question"),
-            "verdict": f"{member}: {choice}" + (" (contested)" if v["status"] == "contested" else ""),
+            "verdict": f"{member}: {choice}" + (" (contested)" if v["status"] == "contested" else "")
+                       + (f"; {sum(1 for i in v['items'] if i['choice'] != 'undetermined')} of {len(v['items'])} game types classified"
+                          if v.get("items") else ""),
             "opinion": opinion, "citations": cites,
             "assumptions": ["Charted from the passages opened; later or unopened authority may change the answer."],
             "conviction": round(conf * 10, 1), "dissent": "none", "flips_if": v["flips_if"],
@@ -654,6 +697,7 @@ def card_agg(fam, row, v, framework_text, framework_quotes, board, meta):
                         "tier": meta.get("tier"), "model": meta.get("model"), "family": fam["key"],
                         "template": fam["template"][:300], "members": len(fam["members"]), "cell_status": v["status"],
                         "own_quotes": v["own"], "citation_count": len(cites), "verified_citations": len(cites),
+                        "items": v.get("items") or None,
                         "red_team_severity": "none", "priority": row.get("priority")}}
 
 
@@ -684,6 +728,7 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
                                      "question": fam["question"], "cells": {}}
     opts = st.get("options") or options(fam["members"][0].get("question"))
     st["options"] = opts
+    its = items(fam["members"][0].get("question"))
     if not st.get("framework_passages"):
         st["framework_passages"] = framework_research(fam, opts, fetcher=fetcher, searcher=searcher)
     framework = st["framework_passages"]
@@ -722,7 +767,7 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
                 out["open"] += 1
         if not researched:
             continue
-        j, r = chart(chart_prompt(fam, opts, framework, st.get("framework_text") or "", researched))
+        j, r = chart(chart_prompt(fam, opts, framework, st.get("framework_text") or "", researched, its))
         out["chart_calls"] += 1
         out["tokens_in"] += int((r or {}).get("tokens_in") or 0)
         out["tokens_out"] += int((r or {}).get("tokens_out") or 0)
@@ -743,13 +788,13 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
                 st["framework_text"], st["framework_quotes"] = _s(j["framework"]).strip()[:2000], fq
         by_n = {int(c.get("cell") or 0): c for c in j.get("cells") or [] if isinstance(c, dict)}
         for c in researched:
-            v = verify_cell(by_n.get(c["n"]) or {}, c, framework)
+            v = verify_cell(by_n.get(c["n"]) or {}, c, framework, its, opts)
             if c["n"] not in by_n:
                 v["why"] = "the chart did not answer this cell"
             rec = {"member": c["row"]["_member"], "status": v["status"],
                    "choice": _match_choice(v["choice"], opts) if v["status"] != "open" else "undetermined",
                    "own": v["own"], "at": now, "why": v["why"], "tier": tier, "model": (r or {}).get("model"),
-                   "docket_id": c["row"]["id"]}
+                   "docket_id": c["row"]["id"], "items": {str(i["n"]): i["choice"] for i in v.get("items") or []}}
             c["v"], c["rec"], c["tier"], c["model"] = v, rec, tier, (r or {}).get("model")
             st["cells"][str(c["row"]["id"])] = rec
             out["cells"] += 1
@@ -823,6 +868,19 @@ def write_matrix(fam, st):
     for c in rows:
         note = c.get("why") or (f"{c.get('own')} own source quote(s)" if c.get("own") else "")
         lines.append(f"| {c['member']} | {c.get('choice') or 'undetermined'} | {c['status']} | {note} |")
+    its = items(fam["members"][0].get("question")) if fam.get("members") else []
+    if its and any(c.get("items") for c in rows):
+        def short(ch):
+            if not ch or ch == "undetermined":
+                return "·"
+            last = ch.split()[-1]
+            return last if re.fullmatch(r"[IVX]+", last) else ch.split()[0][:5]
+        lines += ["", "## By game type", "", "| Jurisdiction | " + " | ".join(str(i["n"]) for i in its) + " |",
+                  "|---|" + "---|" * len(its)]
+        for c in rows:
+            if c.get("items"):
+                lines.append(f"| {c['member']} | " + " | ".join(short(c["items"].get(str(i["n"]))) for i in its) + " |")
+        lines += [""] + [f"{i['n']}. {i['name']}" for i in its]
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
     return os.path.relpath(path, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
