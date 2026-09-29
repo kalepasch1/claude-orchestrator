@@ -230,6 +230,10 @@ def mint_card(row, agg):
         # Minting is not publishing; nothing reaches a customer on the strength of a model alone.
         "publication_state": "internal",
     }
+    if agg.get("_existing_card_id"):
+        # A re-chart after the commission's critique (family_matrix) replaces the card in place: the table
+        # is unique per docket row, and the review history stays attached to the same card id.
+        card["id"] = agg["_existing_card_id"]
     # CITATION-DEPTH FLOOR (2026-07-30): <10 sourced citations may still mint (internal steering
     # beats nothing) but is flagged below-floor — the commission auto-fails it for publication and
     # the question re-queues for a deeper pass instead of letting a thin card ossify as truth.
@@ -287,6 +291,11 @@ def run(limit=BATCH):
     if all_gaps and FAMILY_FIRST:
         try:
             import family_matrix
+            if family_matrix.ENABLED:
+                reopened = family_matrix.revisit_all()      # the commission's critiques come back to the chart
+                if reopened:
+                    print(f"legal_docket: {reopened} family cell(s) reopened after the commission's review")
+                    all_gaps = _gap_rows(500)
             fam = family_matrix.next_family(all_gaps) if family_matrix.ENABLED else None
             if fam and _family_ready():
                 res = family_matrix.run(fam, mint=mint_card)

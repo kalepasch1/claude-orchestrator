@@ -937,7 +937,7 @@ def _the_suite_never_writes_into_the_live_runtime_dir(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _frontier_tiers_offline(monkeypatch):
+def _frontier_tiers_offline(monkeypatch, tmp_path):
     """The never-idle chain (2026-09-29) reaches Codex, local models and the network when Claude is
     stubbed out. Tests written for Claude-only behaviour keep that behaviour, and no test may run the
     real login re-probe. Tests of the chain set frontier.NEVER_IDLE = True themselves."""
@@ -962,6 +962,8 @@ def _frontier_tiers_offline(monkeypatch):
     try:
         import family_matrix
         monkeypatch.setattr(family_matrix, "WEB_CALLS_PER_DAY", 0, raising=False)   # web tests pass a fake
+        # Family state is per test: the real .runtime state would send revisit_all to the live database.
+        monkeypatch.setattr(family_matrix, "STATE_DIR", str(tmp_path / "families"), raising=False)
     except Exception:
         pass
     yield

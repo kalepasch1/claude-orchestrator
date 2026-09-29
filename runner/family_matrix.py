@@ -62,6 +62,13 @@ PASSAGES_PER_CELL = int(os.environ.get("ORCH_FAMILY_PASSAGES", "4"))
 FRAMEWORK_PASSAGES = 6
 PASSAGE_CHARS = 850
 STATUSES = ("settled", "contested", "open")
+# What a cell's answer rests on. Only a direct statement of the test settles a jurisdiction (2026-09-29: the
+# commission sent back Florida, settled on an amusement-machine exemption definition, and New York, settled
+# on advocacy quoted in a decision later reversed).
+BASES = ("statute", "court_holding", "attorney_general", "regulator", "compact", "dicta", "advocacy_or_record",
+         "reversed_or_superseded", "narrower_provision", "other_jurisdiction", "none")
+DIRECT = {"statute", "court_holding", "attorney_general", "regulator", "compact"}
+MAX_REVISIONS = int(os.environ.get("ORCH_FAMILY_MAX_REVISIONS", "2"))
 
 _SKIP = {"What", "Which", "Does", "Do", "Is", "Are", "Can", "May", "Must", "How", "Under", "When", "Where", "Who",
          "Whether", "If", "The", "A", "An", "In", "For", "Has", "Have", "Would", "Should", "Context"}
@@ -188,9 +195,67 @@ def todo(fam):
     st = load_state(fam["key"])
     cells = st.get("cells") or {}
     def due(rec):
+        if rec.get("needs_rechart"):
+            return True
         days = NO_SOURCE_RETRY_DAYS if rec.get("no_sources") else RETRY_DAYS
         return not _recent(rec.get("at"), days)
     return [r for r in fam["members"] if due(cells.get(str(r["id"])) or {})]
+
+
+def _review_for(card_id):
+    import db
+    rows = db.select("publication_reviews", {"select": "id,decision,detail,created_at", "artifact_id": f"eq.{card_id}",
+                                             "artifact_type": "eq.verdict_card", "order": "created_at.desc",
+                                             "limit": "1"}) or []
+    return rows[0] if rows else None
+
+
+def revisit_all():
+    """The commission's verdict comes back to the chart. A family card sent back ('revise'/'reject') gets its
+    critique recorded on the cell, its docket row returned to 'stale', and a re-chart on the next pass --
+    at most MAX_REVISIONS times per member. -> number of cells reopened."""
+    import db
+    reopened = 0
+    try:
+        names = [n for n in os.listdir(STATE_DIR) if n.endswith(".json") and n != "web_calls.json"]
+    except OSError:
+        return 0
+    for name in names:
+        key = name[:-5]
+        st = load_state(key)
+        changed = False
+        for did, rec in (st.get("cells") or {}).items():
+            if not rec.get("minted") or rec.get("needs_rechart") or int(rec.get("revisions") or 0) >= MAX_REVISIONS:
+                continue
+            cards = db.select("verdict_cards", {"select": "id", "docket_id": f"eq.{did}", "limit": "1"}) or []
+            if not cards:
+                continue
+            rv = _review_for(cards[0]["id"])
+            if not rv or rv.get("decision") not in ("revise", "reject") or rv.get("id") == rec.get("reviewed_by"):
+                continue
+            d = rv.get("detail") if isinstance(rv.get("detail"), dict) else {}
+            rat = d.get("rationales") if isinstance(d.get("rationales"), dict) else {}
+            rec.update(critique="; ".join(f"{k}: {v}" for k, v in rat.items() if v)[:1500] or rv.get("decision"),
+                       needs_rechart=True, card_id=cards[0]["id"], reviewed_by=rv.get("id"))
+            try:
+                db.update("legal_docket", {"id": did}, {"status": "stale"})
+            except Exception:
+                pass
+            changed = True
+            reopened += 1
+        if changed:
+            save_state(key, st)
+    return reopened
+
+
+def _flag_rereview(card_id, reason):
+    import db
+    rv = _review_for(card_id)
+    if not rv:
+        return
+    d = rv.get("detail") if isinstance(rv.get("detail"), dict) else {}
+    d = {**d, "requires_rereview": True, "rereview_reason": reason}
+    db.update("publication_reviews", {"id": rv["id"]}, {"detail": d})
 
 
 def next_family(gap_rows):
@@ -547,6 +612,7 @@ CHART_SCHEMA = {"type": "object", "required": ["framework", "cells"], "propertie
                                                       "flips_if"],
                                          "properties": {
         "cell": {"type": "integer"}, "entity_ok": {"type": "boolean"},
+        "basis": {"type": "string", "enum": list(BASES)},
         "choice": {"type": "string"}, "answer": {"type": "string"},
         "status": {"type": "string", "enum": list(STATUSES)},
         "items": {"type": "array", "items": {"type": "object", "required": ["item", "choice", "passages"], "properties": {
@@ -572,6 +638,11 @@ research desk whose output is checked by software:
  - If the question depends on facts it does not give (e.g. "a game of this kind" with no game described),
    answer what the jurisdiction's own sources establish (which classes or activities are authorized, which
    devices or channels are covered) and say that the result for a specific game turns on its mechanics.
+ - "settled" needs a DIRECT statement of the jurisdiction's test: its statute, a holding of its court, its
+   attorney general, its regulator, or (for a tribe) its compact. Set `basis` to what the answer rests on.
+   Party argument, legislative record, dicta, a decision later reversed or superseded, a provision narrower
+   than the question (one exemption, one device), or another jurisdiction's law is at most "contested".
+   Where a passage shows subsequent history (reversed, overruled, amended), say so.
  - In each answer, put the supporting passage ids in brackets after the sentence they support, e.g. [M3.1][G2].
 Return ONLY the JSON object."""
 
@@ -586,6 +657,9 @@ def chart_prompt(fam, opts, framework, framework_text, cells, its=None):
     lines += [f"[{p['id']}] {p['authority']}\n{p['text']}" for p in framework]
     for c in cells:
         lines.append(f"\n== CELL {c['n']}: {c['row']['_member']} ==")
+        if c.get("critique"):
+            lines.append("PRIOR REVIEW OF THIS CELL (the commission sent it back; fix these points or mark it "
+                         "contested/open): " + c["critique"][:900])
         if not c["passages"]:
             lines.append("(no passages were found for this jurisdiction)")
         lines += [f"[{p['id']}] {p['authority']}\n{p['text']}" for p in c["passages"]]
@@ -639,10 +713,13 @@ def verify_cell(cell_json, cell, framework, its=None, opts=None):
     status = _s(cell_json.get("status")).lower()
     status = status if status in STATUSES else "open"
     why = ""
+    basis = _s(cell_json.get("basis")).lower()
     if cell_json.get("entity_ok") is False:
         status, why = "open", "its sources concern a different entity"
     elif status != "open" and not own:
         status, why = "open", "no verified quote from the jurisdiction's own sources"
+    elif status == "settled" and basis not in DIRECT:
+        status, why = "contested", f"basis '{basis or 'unstated'}' is not a direct statement of the test"
     own_ids = {q["id"] for q in own}
     got = {}
     for it in cell_json.get("items") or []:
@@ -658,7 +735,7 @@ def verify_cell(cell_json, cell, framework, its=None, opts=None):
         if _s(choice).lower().startswith("undetermined"):
             choice = "undetermined"
         checked.append({"n": i["n"], "name": i["name"], "choice": choice})
-    return {"choice": _s(cell_json.get("choice")), "answer": _s(cell_json.get("answer")).strip(), "status": status,
+    return {"basis": basis, "choice": _s(cell_json.get("choice")), "answer": _s(cell_json.get("answer")).strip(), "status": status,
             "quotes": quotes, "own": len(own), "flips_if": _s(cell_json.get("flips_if")).strip()[:600], "why": why,
             "items": checked}
 
@@ -879,7 +956,10 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
             continue
         for k, p in enumerate(ps, 1):
             p["id"] = f"M{n}.{k}"
-        cells.append({"n": n, "row": row, "passages": ps})
+        prev = (st.get("cells") or {}).get(str(row["id"])) or {}
+        cells.append({"n": n, "row": row, "passages": ps, "critique": prev.get("critique") if prev.get("needs_rechart") else None,
+                      "card_id": prev.get("card_id") if prev.get("needs_rechart") else None,
+                      "revisions": int(prev.get("revisions") or 0)})
     try:
         out["web_calls"] = web_fill(fam, cells, fetcher=fetcher, web=web, limit_calls=web_calls)
     except Exception as e:
@@ -924,7 +1004,9 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
             rec = {"member": c["row"]["_member"], "status": v["status"],
                    "choice": _match_choice(v["choice"], opts) if v["status"] != "open" else "undetermined",
                    "own": v["own"], "at": now, "why": v["why"], "tier": tier, "model": (r or {}).get("model"),
-                   "docket_id": c["row"]["id"], "items": {str(i["n"]): i["choice"] for i in v.get("items") or []}}
+                   "docket_id": c["row"]["id"], "items": {str(i["n"]): i["choice"] for i in v.get("items") or []},
+                   "basis": v.get("basis"), "revisions": c.get("revisions", 0) + (1 if c.get("card_id") else 0),
+                   "reviewed_by": ((st.get("cells") or {}).get(str(c["row"]["id"])) or {}).get("reviewed_by")}
             c["v"], c["rec"], c["tier"], c["model"] = v, rec, tier, (r or {}).get("model")
             st["cells"][str(c["row"]["id"])] = rec
             out["cells"] += 1
@@ -936,6 +1018,9 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
             continue
         agg = card_agg(fam, c["row"], v, st.get("framework_text") or "", st.get("framework_quotes") or [], board,
                        {"options": opts, "tier": c["tier"], "model": c["model"]})
+        if c.get("card_id"):
+            agg["_existing_card_id"] = c["card_id"]
+            agg["process"]["revision_of_review"] = c["rec"].get("reviewed_by")
         if mint is not None:
             try:
                 ok = mint(c["row"], agg)
@@ -944,6 +1029,11 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
                 c["rec"]["mint_error"] = f"{type(e).__name__}: {str(e)[:120]}"
             c["rec"]["minted"] = bool(ok)
             out["minted"] += 1 if ok else 0
+            if ok and c.get("card_id"):
+                try:
+                    _flag_rereview(c["card_id"], "family re-chart after the commission's critique")
+                except Exception:
+                    pass
         remember(fam, c["row"], v, agg)
     save_state(fam["key"], st)
     if write_doc:
