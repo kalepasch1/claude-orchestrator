@@ -77,6 +77,8 @@ GATE_MIN_COVERAGE = float(os.environ.get("ORCH_LOCAL_GATE_MIN_COVERAGE", "0.65")
 GATE_MIN_ISSUE_COVERAGE = float(os.environ.get("ORCH_LOCAL_GATE_MIN_ISSUE_COVERAGE", "0.6"))
 USE_CORPUS = os.environ.get("ORCH_LOCAL_TRIBUNAL_CORPUS", "true").lower() not in ("0", "false", "no", "off")
 CLOUD_FALLBACK = os.environ.get("ORCH_LOCAL_TRIBUNAL_CLOUD_FALLBACK", "true").lower() not in ("0", "false", "no", "off")
+# A matter whose local model dies midway may finish its narrow steps in the cloud, up to this many.
+CLOUD_STEP_CAP = int(os.environ.get("ORCH_LOCAL_TRIBUNAL_CLOUD_STEP_CAP", "30"))
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 LEDGERS = os.path.join(HOME, "consilium", "ledgers")
 
@@ -234,7 +236,8 @@ class Calls:
                 r = self.chat(prompt, **kw)
             except Exception as e:
                 r = {"json": None, "error": f"{type(e).__name__}: {str(e)[:120]}"}
-        if self.cloud_fallback and (not isinstance(r, dict) or not isinstance(r.get("json"), dict) or r.get("error")):
+        if (self.cloud_fallback and self.cloud_steps < CLOUD_STEP_CAP
+                and (not isinstance(r, dict) or not isinstance(r.get("json"), dict) or r.get("error"))):
             # NEVER IDLE: no local model could take the step (the host had 0.6 GiB free on 2026-09-29).
             # The same narrow step runs on the cheapest cloud tier instead of stopping the tribunal.
             try:

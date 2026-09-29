@@ -372,6 +372,28 @@ def assess(state, res, priority, vertical, th):
 
 
 # ── counsel and partner calls ────────────────────────────────────────────────────────────────────
+def associate_capacity():
+    """Can the associate's ~25 narrow steps run at a sane cost? Yes when a local model can serve, or when
+    lean Claude calls (about 1K tokens of overhead each) are available. GPT-5.5 alone is NOT associate
+    capacity: every Codex call carries about 18K tokens of fixed overhead (measured 2026-09-29), so a
+    matter's associate work would cost ~500K tokens there. -> (ok, why)."""
+    if os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+        try:
+            import local_llm
+            for spec in local_llm.MODELS:
+                if local_llm.fits(*spec.partition(":")[::2])[0]:
+                    return True, f"local {spec}"
+        except Exception:
+            pass
+    try:
+        import frontier
+        if frontier.available(min_tokens=40000):
+            return True, "lean Claude steps"
+    except Exception:
+        pass
+    return False, "no local model can serve and Claude is unavailable"
+
+
 def counsel_rung(associate_model):
     """The strongest local model that is stronger than the associate and fits right now, or None."""
     try:
@@ -577,7 +599,11 @@ def run(question, context="", vertical=None, priority="medium", panel=None, dock
         return {"route": route, "j": j, "dossier": dossier, "abstain": abstain, "reason": reason,
                 "escalate_full": escalate_full, "meta": {**meta, "route": route, "latency_s": rec["latency_s"]}}
 
-    # ASSOCIATE
+    # ASSOCIATE — only when it can work at associate cost
+    if chat is None:
+        ok, why_cap = associate_capacity()
+        if not ok:
+            return out("none", abstain=True, reason=f"associate capacity: {why_cap}", escalate_full=(priority == "high"))
     state = lt.prepare(question, context, vertical, priority, panel, docket_id, chat=chat, fetcher=fetcher, searcher=searcher)
     if state.get("abstain"):
         # No usable record. A high-priority matter goes to the partner with full research; the rest wait.
