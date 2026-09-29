@@ -153,11 +153,50 @@ def cluster():
         return {"error": str(e)[:120]}
 
 
+HEAVY_LOCK = os.environ.get("CONSOLIDATION_HEAVY_LOCK", "/tmp/consolidation-heavy.lock")
+HEAVY_WAITER_FRESH_S = int(os.environ.get("ORCH_HEAVY_WAITER_FRESH_S", "7200"))
+HEAVY_LOCK_LANE = os.environ.get("ORCH_HEAVY_LOCK_LANE", "consilium")
+
+
+def heavy_lock_active():
+    """-> the lane holding or queued for the machine's heavy-job lock, or None.
+
+    The machine shares one heavy lock (docs/consolidation/heavy-lock.sh in the smarter repo):
+    benchmarks, corpus audits and builds take it so they are not starved of RAM. While another lane
+    holds it — or is waiting for it — this tier uses only models ALREADY in memory and never places
+    or loads a new one (2026-09-29: a local-model benchmark needed the RAM and this module re-placed
+    a 9B on EXO). Nothing is written to the lock; this only reads it."""
+    try:
+        with open(os.path.join(HEAVY_LOCK, "owner")) as f:
+            parts = (f.readline() or "").split()
+        if parts and parts[0] != HEAVY_LOCK_LANE:
+            pid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    return parts[0]
+                except OSError:
+                    pass
+    except (OSError, ValueError):
+        pass
+    try:
+        waiters = HEAVY_LOCK + ".waiters"
+        for lane in os.listdir(waiters):
+            if lane != HEAVY_LOCK_LANE and time.time() - os.path.getmtime(os.path.join(waiters, lane)) < HEAVY_WAITER_FRESH_S:
+                return lane
+    except OSError:
+        pass
+    return None
+
+
 def fits(provider, model, free=None):
     """(ok, reason). Resident models always fit; EXO rungs ask EXO's planner; Ollama rungs need
     their weights plus a margin in RAM that is free on this host."""
     if resident(provider, model):
         return True, "resident"
+    lane = heavy_lock_active()
+    if lane:
+        return False, f"heavy lock held or awaited by {lane}; using resident models only"
     if provider == "exo" and free is None:
         return exo_placeable(model)
     free = free_gb() if free is None else free
@@ -205,6 +244,8 @@ def exo_instance_ready(model, state=None):
 
 
 def exo_ensure(model, wait_s=EXO_PLACE_WAIT_S):
+    if heavy_lock_active():
+        return False
     if exo_instance_ready(model):
         return True
     try:
