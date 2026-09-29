@@ -98,7 +98,9 @@ FRONTIER_JOBS = {"legal_docket", "publication_commission", "paper_drafter", "the
                  "reg_opportunity_scan", "pathway_lab", "docket_triage", "consilium_export",
                  "card_freshness", "ambiguity_miner", "expert_corps", "corpus_forecaster",
                  "benchmark_ingest", "playbooks"}
-LIGHT_MIN_FREE_GB = float(os.environ.get("ORCH_CONSILIUM_LIGHT_MIN_FREE_GB", "2"))
+# A cloud-only job is a Python process plus a CLI: a few hundred MB. 2 GiB deferred three of four
+# ticks on 2026-09-29 while memory pressure was only at "warn"; critical pressure still defers.
+LIGHT_MIN_FREE_GB = float(os.environ.get("ORCH_CONSILIUM_LIGHT_MIN_FREE_GB", "1"))
 
 
 def _light_admission(name, admission):
