@@ -104,3 +104,50 @@ probability.
   is the fallback, which is a second model but not a second vendor.
 - **Frontier safeguards.** One wagering tournament was refused by the frontier model's content
   classifier and retried on the mid tier. Prompts framed as lawful structuring avoid this.
+
+## 8. Follow-up, 2026-09-29: local tribunal v3 and never-idle
+
+**Why the first local tier failed.** It asked a small model to do a large model's job in one
+breath per round and to recall citations from memory. The commission rejected 51 of 52 of its
+cards at a stated confidence of 0.95.
+
+**What replaced it** (`runner/local_tribunal.py`). Narrow tasks a mid-size model does reliably,
+and bytes wherever bytes can decide:
+
+| Step | Who decides |
+|---|---|
+| Discovery | Official search APIs (eCFR, Federal Register, CourtListener leads), rule-resolved citations, playbook authorities, the corpus |
+| Passages | Exact slices of pages the system fetched; breadcrumbs and page chrome excluded |
+| Findings | The model picks quotes; each is re-checked as a substring, repaired from the passage or dropped. Strong passages the model skipped enter mechanically |
+| Claims | Three seats answer claim by claim, each naming its findings |
+| Verification | Each claim checked against only its own quotes: supported, narrowed, or struck |
+| Memo | Written from verified claims; every legal sentence must carry a finding or it is tied to one (and checked) or struck |
+| Citations | Built from the findings the memo used. A model never writes a citation |
+| Citation audit | Authorities the memo names that are not in the record are listed and lower confidence |
+| Confidence | Computed from claim coverage, issue coverage, sources, seat agreement, adversary severity. The model is never asked |
+| Gate | Abstains, keeping the ledger, when evidence does not support a memo |
+
+**Live result on the 9B model** (the only local model that fit): 12 of 12 legal sentences carried
+a finding (was 9 of 20 on the first run), 10 findings, 8 citations each a verbatim slice of a
+fetched page, computed confidence 0.55, a fatal adversary attack answered by revision. Remaining
+errors were mechanical and are now caught: a pre-2011 citation name ("31 CFR 103"), generic source
+labels, one breadcrumb quoted as evidence.
+
+**Playbooks** (`runner/playbooks.py`) distil the frontier memos once per vertical into what to
+check, which authorities decide it, common false premises and decision rules. The local tier reads
+them at zero cost.
+
+**Memo writer.** Research, extraction and verification stay local. The memo can be written by the
+strongest local model or by Sonnet from the verified ledger; `local_benchmark.py` writes both from
+the same evidence, scores both with the commission, and records the winner in `pen_policy.json`.
+It runs weekly once a 20B+ local model fits.
+
+**Never idle** (operator direction). Every call walks Claude -> GPT-5.5 -> the strongest local model
+(`frontier.complete`), and jobs gate on `frontier.can_think`. Routine no-tool work goes to a
+resident 20B+ local model first. Lower tiers have limited authority: expert scoring and playbooks
+need a cloud tier; a local-tier commission review is provisional; a local-tier docket clerk may only
+re-prioritise. A login failure is re-probed every five minutes.
+
+**Host memory.** The Ollama app's default context was 262,144 tokens, so a 12B model took about
+17 GB. It is now 32,768. Other workloads on this Mac still regularly leave under 5 GB free, which
+keeps the 27B/35B rungs out of reach for much of the day.
