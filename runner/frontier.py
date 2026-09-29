@@ -73,6 +73,7 @@ TOK_HOUR = int(os.environ.get("ORCH_FRONTIER_TOKENS_PER_HOUR", "600000"))
 TOK_DAY = int(os.environ.get("ORCH_FRONTIER_TOKENS_PER_DAY", "3000000"))
 CODEX_TOK_DAY = int(os.environ.get("ORCH_CODEX_TOKENS_PER_DAY", "2000000"))
 COOLDOWN_MIN = int(os.environ.get("ORCH_FRONTIER_COOLDOWN_MIN", "30"))
+CODEX_LIMIT_COOLDOWN_MIN = int(os.environ.get("ORCH_CODEX_LIMIT_COOLDOWN_MIN", "360"))
 NIGHT_MULT = float(os.environ.get("ORCH_FRONTIER_NIGHT_MULT", "2"))
 # Budget weights relative to a fresh input token (API price ratios: cache write 1.25x, cache
 # read 0.1x, output 5x). The budget is a rate-limit proxy, so it uses the same proportions.
@@ -177,6 +178,10 @@ def _mark_cooldown(reason, kind="claude"):
     with _lock:
         s = _load()
         until = time.time() + COOLDOWN_MIN * 60
+        # A plan-level usage limit does not clear in half an hour. Retrying every 30 minutes cost
+        # 13 failed adversary calls in two weeks; back off for hours and let the fallback serve.
+        if kind == "codex" and "usage limit" in str(reason or "").lower():
+            until = time.time() + CODEX_LIMIT_COOLDOWN_MIN * 60
         if kind == "codex":
             s["codex_cooldown_until"] = until
         else:
@@ -543,6 +548,20 @@ def local_complete(prompt, model=None, timeout=600, project="consilium", tag="lo
     if os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
         return {"text": "", "json": None, "model": model, "provider": "local",
                 "error": "local inference disabled for this run (host constrained)", "degraded": True}
+    # THE MODERN LOCAL PATH FIRST (2026-09-28). model_gateway's local route rejects any prompt longer
+    # than num_ctx - num_predict - 256 BYTES, and the scheduler pins ORCH_OLLAMA_NUM_CTX=4096, so
+    # every expert prompt over ~3K bytes was refused as "context_budget" — which is why expert_corps
+    # had not completed a tick since Sep 12. local_llm.chat speaks to EXO/Ollama with a real context
+    # window and prefers whatever model is already resident.
+    try:
+        import local_llm
+        r = local_llm.chat(prompt, max_tokens=int(os.environ.get("ORCH_LOCAL_COMPLETE_MAX_TOKENS", "2500")),
+                           timeout=timeout, tag=tag, project=project)
+        if r.get("text") and not r.get("error"):
+            return {"text": r["text"], "json": None, "model": r.get("model") or model,
+                    "provider": r.get("provider") or "local", "error": "", "degraded": False}
+    except Exception:
+        pass
     try:
         import model_gateway
         r = model_gateway.complete("local", model, prompt, project=project, timeout=timeout,

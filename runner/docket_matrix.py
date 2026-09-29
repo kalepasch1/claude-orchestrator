@@ -274,6 +274,17 @@ def _parse_questions(text) -> list:
 
 
 def _complete(prompt) -> str:
+    # Question WRITING decides what the tribunal spends its effort on. Written by small local models,
+    # 27 of 30 sampled questions carried a false premise; the mid frontier tier writes them when the
+    # budget allows, and the local tier is the fallback.
+    try:
+        import frontier
+        if frontier.ENABLED and frontier.available(min_tokens=20000):
+            r = frontier.complete(prompt, need=7, timeout=300, tag="docket_matrix.generate")
+            if r.get("text") and not r.get("error"):
+                return str(r["text"])
+    except Exception:
+        pass
     import model_gateway
     import model_policy
     prov, model, _ = model_policy.choose("review", agentic=False, need=6)

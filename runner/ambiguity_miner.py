@@ -222,7 +222,7 @@ def run(n=DOCS_PER_RUN):
     for doc in documents:
         doc_id = doc.get("doc_id")
         try:
-            text = corpus_db.document_text(doc_id, max_chars=60000, strict=True)
+            text = corpus_db.clean_text(corpus_db.document_text(doc_id, max_chars=60000, strict=True))
         except corpus_db.CorpusReadError as error:
             out["errors"].append(error.reason)
             _record_retry(ledger, doc_id, "corpus_read_failed", error.reason)

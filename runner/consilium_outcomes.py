@@ -15,12 +15,14 @@ SCHEMAS = {
     "paper_drafter": (("drafted",), (), ("candidates",)),
     "expert_corps": (("claims", "spawned"), ("evolved", "retired"), ("researched",)),
     "corpus_forecaster": (("added",), (), ()),
-    "theory_lab": ((), ("positions.resolved", "claims.checked"), ("positions.groups",)),
+    "theory_lab": ((), ("positions.resolved", "claims.checked", "cards.resolved"), ("positions.groups", "cards.cards")),
     "ambiguity_miner": (("docketed", "mined_findings"), ("reviewed",), ("docs",)),
     "reg_opportunity_scan": (("opportunities", "docketed"), (), ()),
     "card_freshness": ((), ("stale_marked",), ("scanned_cards", "would_stale")),
     "benchmark_ingest": (("ingested",), (), ("considered",)),
     "corpus_index": (("added",), (), ("skipped",)),
+    "pathway_lab": (("pathways",), (), ("candidates", "runs")),
+    "docket_triage": ((), ("keep", "rewrite", "retire"), ("batches", "pending_untriaged")),
 }
 
 

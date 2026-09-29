@@ -17,6 +17,7 @@ strict callers distinguish an unavailable corpus from a successful empty read.
 """
 from __future__ import annotations
 import json
+import re
 import os
 import math
 import urllib.error
@@ -136,6 +137,57 @@ def document_text(doc_id, max_chars=60000, *, strict=False):
         if strict:
             raise
         return ""
+
+
+# ── boilerplate removal ─────────────────────────────────────────────────────────────────────────
+# Scraped pages carry the site's navigation into the document body. On WAC 260-12-010 the
+# ambiguity scanner's fifteen top-weighted "undefined terms" were all menu entries ("District
+# Finder", "Page Program", "House/Senate Class Photos"). Ingest should strip these; until it does,
+# readers that ANALYSE the text call clean_text(). It only ever removes whole segments, so every
+# sentence that survives is still a verbatim substring of the source.
+_NAV_WORDS = re.compile(
+    r"\b(skip to (main )?content|site ?map|contact us|privacy (policy|notice)|terms of use|accessibility|"
+    r"log ?in|sign in|sign up|subscribe|rss|follow us|breadcrumb|toggle navigation|main menu|search (this )?site|"
+    r"website search|print (this )?page|share this|back to top|district finder|find your (legislator|district)|"
+    r"class photos|page program|internship program|bill information|cookie(s)? (policy|settings)|all rights reserved)\b",
+    re.I)
+_LEGAL_SIGNAL = re.compile(
+    r"(\bshall\b|\bmust\b|\bmay not\b|\bmeans\b|\bincludes?\b|\bprohibit|\brequire|\bunlawful\b|\blicens|"
+    r"\bpursuant\b|\bsubsection\b|\bsection\b|\bperson\b|§|\(\w{1,4}\)|\d)", re.I)
+
+
+def _is_boilerplate(segment):
+    t = segment.strip()
+    if not t:
+        return True
+    words = t.split()
+    if _NAV_WORDS.search(t) and len(words) < 40 and not re.search(r"\bshall\b|\bmeans\b|§", t, re.I):
+        return True
+    if len(words) <= 8 and not _LEGAL_SIGNAL.search(t) and not re.search(r"[.;:]$", t):
+        return True
+    # a run of Title Case labels with no verbs or punctuation is a menu, not a rule
+    caps = sum(1 for w in words if w[:1].isupper())
+    if len(words) >= 6 and caps / len(words) > 0.75 and not re.search(r"[.;:,]", t) and not _LEGAL_SIGNAL.search(t):
+        return True
+    return False
+
+
+def clean_text(text):
+    """Drop navigation and page chrome. Segments are removed whole; nothing is rewritten."""
+    if not isinstance(text, str) or not text.strip():
+        return text or ""
+    out = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [ln for ln in block.split("\n") if not _is_boilerplate(ln)]
+        kept = "\n".join(lines).strip()
+        if kept and not _is_boilerplate(kept):
+            out.append(kept)
+    cleaned = "\n\n".join(out)
+    # Page chrome is a minority of a real document. If "cleaning" would remove most of the text,
+    # the heuristics have misread the document and the original is returned untouched.
+    if len(cleaned) < 0.5 * len(text.strip()):
+        return text
+    return cleaned
 
 
 def recent_feed(days=45, limit=40):

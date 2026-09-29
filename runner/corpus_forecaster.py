@@ -128,7 +128,25 @@ def _pull_foulkon_misses(limit=10):
 def run():
     import random
     added = 0
-    out = {"combinatorial": 0, "founder_redteam": 0, "foulkon_misses": 0, "grid_extended": 0}
+    out = {"combinatorial": 0, "founder_redteam": 0, "foulkon_misses": 0, "grid_extended": 0, "added": 0}
+    # BACKLOG GATE (2026-09-28): anticipation is pointless while the docket cannot reach what it
+    # already holds. Real demand (Foulkon misses) is still admitted below the gate.
+    try:
+        backlog = db.count("legal_docket", {"status": "eq.pending"}) or 0
+    except Exception:
+        backlog = 0
+    max_pending = int(os.environ.get("ORCH_DOCKET_MAX_PENDING", "300"))
+    if backlog > max_pending:
+        for m in _pull_foulkon_misses():
+            if added >= MAX_NEW_PER_RUN:
+                break
+            if _insert_question(m.get("vertical") or "gaming", m.get("question"), "high", "foulkon_miss"):
+                added += 1
+                out["foulkon_misses"] += 1
+        out.update(added=added, status="noop" if not added else "ok",
+                   note=f"{backlog} questions pending (> {max_pending}); anticipation paused")
+        print("corpus_forecaster: " + json.dumps(out))
+        return out
 
     # Feed 2 first — real demand outranks anticipation.
     for m in _pull_foulkon_misses():

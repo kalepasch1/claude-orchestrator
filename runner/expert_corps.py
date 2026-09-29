@@ -132,6 +132,14 @@ def _complete(prompt, kind="review", need=None):
             r = frontier.local_complete(prompt, tag=f"corps.{need or kind}")
             if r.get("text"):
                 return r["text"]
+            if os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+                # Host cannot fund local inference: the low frontier tier keeps the corps moving, and
+                # the legacy local routes below are not tried behind the scheduler's back.
+                if frontier.available():
+                    r = frontier.complete(prompt, need=6, tag=f"corps.{need or kind}.low")
+                    if r.get("text") and not r.get("error"):
+                        return r["text"]
+                return ""
     except Exception:
         pass
     try:
