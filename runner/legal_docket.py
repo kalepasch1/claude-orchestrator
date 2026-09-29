@@ -100,6 +100,21 @@ def _ensure_seeded():
 VALUE_RANK = os.environ.get("ORCH_DOCKET_VALUE_RANK", "true").lower() not in ("0", "false", "no", "off")
 MATRIX_TOPUP = int(os.environ.get("ORCH_DOCKET_MATRIX_TOPUP", "4"))
 MAX_PENDING = int(os.environ.get("ORCH_DOCKET_MAX_PENDING", "300"))
+# DEMAND FIRST (2026-09-29, operator). The law app's open advisory gaps are the docket's primary source
+# (gap_intake.py): while any gap-origin question is pending it is answered first, by value, and the
+# synthetic matrix top-up is paused.
+GAP_FIRST = os.environ.get("ORCH_DOCKET_GAP_FIRST", "true").lower() not in ("0", "false", "no", "off")
+
+
+def _gap_rows(limit):
+    if not GAP_FIRST:
+        return []
+    try:
+        import gap_intake
+        return gap_intake.pending_gap_rows()[:limit]
+    except Exception as e:
+        print(f"legal_docket: gap queue unavailable: {type(e).__name__}: {str(e)[:100]}")
+        return []
 
 
 def _stale_or_unanswered(limit):
@@ -252,7 +267,11 @@ def run(limit=BATCH):
         backlog = db.count("legal_docket", {"status": "eq.pending"}) or 0
     except Exception:
         backlog = 0
-    if MATRIX_TOPUP > 0 and backlog > MAX_PENDING:
+    only = {p.strip().lower() for p in os.environ.get("ORCH_DOCKET_PRIORITIES", "").split(",") if p.strip()}
+    gap_rows = [r for r in _gap_rows(limit * 12) if not only or str(r.get("priority") or "").lower() in only]
+    if gap_rows:
+        print(f"legal_docket: {len(gap_rows)} law-app gap question(s) queued first; synthetic top-up paused")
+    elif MATRIX_TOPUP > 0 and backlog > MAX_PENDING:
         print(f"legal_docket: matrix top-up skipped: {backlog} questions pending (> {MAX_PENDING})")
     elif MATRIX_TOPUP > 0:
         # Fill the emptiest lens x risk x vertical cells before choosing what to answer, so
@@ -263,9 +282,10 @@ def run(limit=BATCH):
             print("legal_docket: matrix top-up " + json.dumps({k: topped[k] for k in ("proposed", "admitted", "rejected")}))
         except Exception as e:
             print(f"legal_docket: matrix top-up skipped: {type(e).__name__}: {str(e)[:100]}")
-    only = {p.strip().lower() for p in os.environ.get("ORCH_DOCKET_PRIORITIES", "").split(",") if p.strip()}
     vetted = _triaged_ids() if os.environ.get("ORCH_DOCKET_TRIAGED_FIRST", "true").lower() not in ("0", "false", "no", "off") else set()
-    if vetted:
+    if gap_rows:
+        rows = gap_rows[:limit]
+    elif vetted:
         # Prefer questions the clerk has kept or rewritten; untriaged ones wait their turn.
         pool = [r for r in _stale_or_unanswered(limit * 12) if r.get("id") in vetted
                 and (not only or str(r.get("priority") or "").lower() in only)]
