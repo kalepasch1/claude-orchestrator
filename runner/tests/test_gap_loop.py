@@ -296,7 +296,8 @@ def test_family_pass_mints_only_cells_resting_on_their_own_sources(monkeypatch, 
         return {"framework": "Three tests compete [G1].",
                 "framework_quotes": [{"passage": "G1", "quote": "Courts apply three principal tests to decide whether a game of skill is gambling"}],
                 "cells": [
-                    {"cell": 1, "choice": "predominant purpose", "status": "settled", "flips_if": "a statute adopts any chance",
+                    {"cell": 1, "choice": "predominant purpose", "status": "settled", "basis": "court_holding",
+                     "flips_if": "a statute adopts any chance",
                      "answer": "Ohio applies the dominant factor test [M1.1].",
                      "quotes": [{"passage": "M1.1", "quote": "Under that test a scheme is a game of chance when chance predominates over skill"}]},
                     {"cell": 2, "choice": "material element", "status": "settled", "flips_if": "",
@@ -361,6 +362,7 @@ def test_docket_runs_the_family_pass_first(monkeypatch):
     monkeypatch.setattr(ld.db, "count", lambda *a, **k: 5)
     monkeypatch.setattr(ld, "_family_ready", lambda: True)
     monkeypatch.setattr(fm, "todo", lambda fam: fam["members"])
+    monkeypatch.setattr(fm, "revisit_all", lambda: 0)
     ran = []
     monkeypatch.setattr(fm, "run", lambda fam, mint=None: ran.append(fam["key"]) or
                         {"cells": 3, "minted": 1, "family": fam["key"], "members": 3})
@@ -378,6 +380,7 @@ def test_family_members_wait_when_the_pass_cannot_run(monkeypatch):
     monkeypatch.setattr(ld.db, "count", lambda *a, **k: 5)
     monkeypatch.setattr(ld, "_family_ready", lambda: False)
     monkeypatch.setattr(fm, "todo", lambda fam: fam["members"])
+    monkeypatch.setattr(fm, "revisit_all", lambda: 0)
     seen = []
     monkeypatch.setattr(ld, "FRONTIER_ONLY", True)
     monkeypatch.setattr(ld, "_frontier_ready", lambda: seen.append(1) or False)
@@ -553,3 +556,39 @@ def test_web_fill_respects_the_daily_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(frontier, "can_think", lambda **k: True)
     assert fm.web_fill(fam, cells, fetcher=fetcher, web=web) == 1 and len(calls) == 1
     assert fm.web_fill(fam, cells, fetcher=fetcher, web=web) == 0      # the day's one call is spent
+
+
+
+def test_settled_needs_a_direct_statement_of_the_test():
+    import family_matrix as fm
+    cell = {"n": 1, "passages": [{"id": "M1.1", "authority": "White v. Cuomo", "url": "u",
+                                  "text": "Petitioners argued that chance is a material element in determining the outcome of these contests."}]}
+    base = {"entity_ok": True, "status": "settled", "choice": "material element", "answer": "x [M1.1]",
+            "quotes": [{"passage": "M1.1", "quote": "Petitioners argued that chance is a material element in determining"}]}
+    assert fm.verify_cell({**base, "basis": "advocacy_or_record"}, cell, [])["status"] == "contested"
+    assert fm.verify_cell({**base, "basis": "reversed_or_superseded"}, cell, [])["status"] == "contested"
+    assert fm.verify_cell({**base, "basis": "statute"}, cell, [])["status"] == "settled"
+
+
+def test_commission_critique_reopens_a_family_cell(monkeypatch, tmp_path):
+    import family_matrix as fm
+    import db
+    monkeypatch.setattr(fm, "STATE_DIR", str(tmp_path / "families"))
+    fm.save_state("k1", {"cells": {"d1": {"member": "Florida", "status": "settled", "minted": True, "at": "2026-09-29T20:37:00+00:00"}}})
+    updates = []
+    def select(table, params):
+        if table == "verdict_cards":
+            return [{"id": "card1"}]
+        if table == "publication_reviews":
+            return [{"id": "rv1", "decision": "revise", "created_at": "x",
+                     "detail": {"rationales": {"evidence": "over-extends an amusement-machine exemption"}}}]
+        return []
+    monkeypatch.setattr(db, "select", select)
+    monkeypatch.setattr(db, "update", lambda t, m, p: updates.append((t, m, p)) or [p])
+    assert fm.revisit_all() == 1
+    rec = fm.load_state("k1")["cells"]["d1"]
+    assert rec["needs_rechart"] and "amusement-machine" in rec["critique"] and rec["card_id"] == "card1"
+    assert ("legal_docket", {"id": "d1"}, {"status": "stale"}) in updates
+    assert fm.revisit_all() == 0                          # the same review never reopens it twice
+    fam = {"key": "k1", "members": [{"id": "d1", "_member": "Florida"}]}
+    assert [r["id"] for r in fm.todo(fam)] == ["d1"]
