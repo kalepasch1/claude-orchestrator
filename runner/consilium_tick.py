@@ -76,7 +76,44 @@ JOBS = [
     ("corpus_index",     "corpus_retrieval.py",     ["build"], 86400, 3000),
     # 2026-09-21 — commission-accepted, citation-verified cards -> the law app's advisory intel.
     ("consilium_export", "consilium_export.py",     ["--apply"], 3600, 600),
+    # 2026-09-28 — the structuring tribunal (ranked lawful pathways) and the docket clerk.
+    ("pathway_lab",      "pathway_lab.py",          [],        10800, 3000),
+    ("docket_triage",    "docket_triage.py",        ["--max-batches=6"], 86400, 3000),
 ]
+
+# FRONTIER-CAPABLE JOBS (2026-09-28). The host gate deferred 1,366 launches in two weeks: this Mac
+# also runs builds, other agent sessions and a local model cluster, and it is rarely idle. But these
+# jobs do their thinking on the subscription tier — locally they are a Python process and a CLI. When
+# the host cannot fund LOCAL inference they still run, with local inference switched off for the
+# child, so a busy machine slows the tribunal down instead of stopping it. Critical memory pressure
+# and very low free RAM still defer everything.
+FRONTIER_JOBS = {"legal_docket", "publication_commission", "paper_drafter", "theory_lab",
+                 "reg_opportunity_scan", "pathway_lab", "docket_triage", "consilium_export",
+                 "card_freshness", "ambiguity_miner"}
+LIGHT_MIN_FREE_GB = float(os.environ.get("ORCH_CONSILIUM_LIGHT_MIN_FREE_GB", "2"))
+
+
+def _light_admission(name, admission):
+    """Env overrides for a frontier-only launch on a constrained host, or None to defer."""
+    if name not in FRONTIER_JOBS or not isinstance(admission, dict):
+        return None
+    if admission.get("reason") not in ("memory_pressure", "host_headroom", "host_load"):
+        return None
+    if admission.get("pressure") == 4:
+        return None
+    free = admission.get("free_gb")
+    if not isinstance(free, (int, float)) or free < LIGHT_MIN_FREE_GB:
+        return None
+    try:
+        import frontier
+        if not frontier.available():
+            return None
+    except Exception:
+        return None
+    env = {"ORCH_CONSILIUM_LOCAL_DISABLED": "1", "ORCH_CONSILIUM_HOST_CONSTRAINED": admission.get("reason")}
+    if name == "legal_docket":
+        env["ORCH_DOCKET_PRIORITIES"] = os.environ.get("ORCH_CONSILIUM_FRONTIER_PRIORITIES", "high")
+    return env
 
 
 def _load():
@@ -157,12 +194,16 @@ def run_job(name, script, args, timeout_s):
         admission = host_admission_status()
     except Exception:
         admission = {"admitted": False, "reason": "host_telemetry_unavailable"}
+    light_env = {}
     if not isinstance(admission, dict) or admission.get("admitted") is not True:
         reason = admission.get("reason") if isinstance(admission, dict) else None
         reason = _reason_code(reason, "host_telemetry_unavailable")
-        _log(f"{name} deferred: {reason}; remains due")
-        return {"status": "deferred", "deferred": True, "reason": reason,
-                "rc": None, "secs": 0, "tail": []}
+        light_env = _light_admission(name, admission)
+        if light_env is None:
+            _log(f"{name} deferred: {reason}; remains due")
+            return {"status": "deferred", "deferred": True, "reason": reason,
+                    "rc": None, "secs": 0, "tail": []}
+        _log(f"{name} host constrained ({reason}); running frontier-only with local inference off")
     cmd = [sys.executable, os.path.join(HERE, script)] + [str(a) for a in args]
     t0 = time.time()
     try:
@@ -172,7 +213,7 @@ def run_job(name, script, args, timeout_s):
             fd, receipt_path = tempfile.mkstemp(prefix="orch-local-capacity-", suffix=".json", dir=receipt_dir)
             with os.fdopen(fd, "w") as f:
                 json.dump({"deferred": False}, f)
-            child_env = dict(os.environ, ORCH_LOCAL_CAPACITY_RECEIPT=receipt_path)
+            child_env = dict(os.environ, ORCH_LOCAL_CAPACITY_RECEIPT=receipt_path, **light_env)
             failure = None
             try:
                 proc = subprocess.run(cmd, cwd=HERE, capture_output=True, text=True, timeout=timeout_s, env=child_env)
@@ -251,7 +292,8 @@ def heartbeat(state):
                                                    "in_cooldown", "cooldown_reason", "calls_24h",
                                                    "codex_day_used", "codex_calls_24h")}}
     try:
-        db.upsert("controls", {"key": "consilium_heartbeat", "value": json.dumps(payload, default=str)})
+        import consilium_controls
+        consilium_controls.put("consilium_heartbeat", payload)
     except Exception:
         pass
     return payload

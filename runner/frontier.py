@@ -540,6 +540,9 @@ def codex_complete(prompt, *, system=None, model=None, json_schema=None, timeout
 # ── local strong model (free, always-on fallback) ────────────────────────────────────────────────
 def local_complete(prompt, model=None, timeout=600, project="consilium", tag="local"):
     model = model or LOCAL_STRONG
+    if os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+        return {"text": "", "json": None, "model": model, "provider": "local",
+                "error": "local inference disabled for this run (host constrained)", "degraded": True}
     try:
         import model_gateway
         r = model_gateway.complete("local", model, prompt, project=project, timeout=timeout,

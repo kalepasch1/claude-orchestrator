@@ -1,0 +1,106 @@
+# Tribunal quality review — 2026-09-28
+
+_Sixteen days after Consilium v2 was scheduled. Every number below was read from the control
+plane, the tournament transcripts, or an independent fetch of the cited sources on the day of
+the review._
+
+## 1. What the tribunal produced
+
+| | Frontier era (Sep 12-21) | Local era (Sep 22-28) |
+|---|---|---|
+| Engine | Fable 5.1 / Opus 5, two-phase | local models only, "never escalate" |
+| Cards minted | 33 | 52 |
+| Citations per card (median) | 15, of which 12 verified | 4, of which 2.5 verified |
+| Memo length (median) | 7,800 characters | 5,100 characters |
+| Stated confidence (median) | 0.78 | 0.95 |
+| Commission composite (median) | 0.70 | 0.29 |
+| Accepted for steering | 27 | 0 |
+| Rejected or sent back | 6 | 51 |
+
+Other outputs: 4 regulatory opportunity briefs, 13 guidance ambiguity reviews, 0 papers.
+
+## 2. Are the citations real?
+
+Independent check: 140 citations marked verified were re-fetched and the quoted text searched for
+on the live page.
+
+| | Sampled | Quote found verbatim or near-verbatim | Quote absent | Source unreachable |
+|---|---|---|---|---|
+| Frontier cards | 90 | 72 (90% of fetchable) | 8 | 10 |
+| Local cards | 50 | 45 (96% of fetchable) | 0 | 3 |
+
+Grounding works. The local tier's rate is higher because its quotes are cut mechanically from the
+page; its weakness is reasoning, not citation. The 8 absent frontier quotes cluster on
+law.cornell.edu pages where the model paraphrased while marking the quote verbatim.
+
+## 3. Quality against the uses that matter
+
+| Use | Finding |
+|---|---|
+| Stating the law and what flips it | Strong on the frontier tier. Reviewers scored evidence 0.78-0.89 and utility 0.78-0.90. The cross-vendor attack adds real value: on the best card GPT-5.5 found a missed licence condition (SR Code 3.9.1) and the memo was rewritten around it. |
+| Pathways and creative structures | Absent by design. 1 of 33 frontier cards presented alternatives. The output schema had nowhere to put a pathway. |
+| Jurisdictional arbitrage | Absent. 0 of 33 frontier cards compared jurisdictions. |
+| Regime weaknesses | Partial. The ambiguity miner works, but corpus text includes scraped site navigation, so the deterministic scanner's top findings on the sampled document were all false positives. Fable caught this and reviewed the real text. |
+| Opportunities | Good. The opportunity scan is the strongest offensive component: dated, sourced, with deadlines and what to sell. |
+| Novelty | Low. The novelty reviewer scored frontier cards 0.20-0.58: "settled and familiar to any practitioner". The questions ask for settled law. |
+| Calibration | Inert. 17 of 17,813 staked positions resolved. Seven experts have any Brier record. |
+
+## 4. Root causes
+
+1. **Engine policy.** Local-only ran for a week and produced 52 cards of which 51 failed review,
+   at a stated confidence of 0.95.
+2. **Question quality.** The docket was written by small local models filling a grid. In a random
+   sample of 30 pending questions, 27 had a false premise or a misattributed provision.
+3. **No offensive structure.** The tournament defends an answer. Nothing generated options.
+4. **One gate for two uses.** A low publication-exposure score withdrew cards from internal
+   steering. Six well-grounded frontier cards were withdrawn for being too directive to publish.
+5. **Silent write failures.** The heartbeat and theory-lab statistics had never been written
+   (`controls.scope` is required). Refutations and resolutions were rejected by a check constraint
+   on `expert_memory.kind` and swallowed.
+6. **Host contention.** 1,366 launches were deferred in two weeks for memory pressure, headroom or
+   load, including jobs that do all their reasoning on the subscription tier.
+7. **Severity vocabulary.** Adversaries wrote "medium", "moderate", "high" and full sentences; only
+   the literal words "fatal" and "material" triggered a revision.
+8. **Orphaned worktree.** The worktree's git admin directory had been pruned, so nothing could be
+   committed from the directory the scheduler runs from.
+
+## 5. What changed on 2026-09-28
+
+| Change | Where |
+|---|---|
+| High-priority questions are debated on the frontier tier; medium and low stay local | `consilium_v2.py` (`ORCH_CONSILIUM_FRONTIER_PRIORITIES`, default `high`) |
+| Structuring tribunal: regime map, weak points, jurisdiction matrix, 4-7 ranked pathways, each attacked by a second model family, adjudicated, scored, with kill criteria | `pathway_lab.py`, tables `pathway_runs` and `verdict_pathways` |
+| Citations in pathway runs are verified by our own fetch; the model's flag is discarded | `pathway_lab.verify_all` |
+| Two-track gate: exposure blocks publication only; an exploratory posture keeps novel, grounded positions; the evidence floor is unchanged | `publication_commission.decide` |
+| Stored reviews re-decided under the new gate, no model calls: 5 cards restored to steering, 7 moved from rejected to revise | `publication_commission.py regate --apply` |
+| Docket triage: keep, rewrite or retire; calibrated priority; a lens per question; reversible ledger | `docket_triage.py` |
+| Paper drafter accepts well-grounded steering cards with a modest new angle | `paper_drafter.py` |
+| Heartbeat and statistics are written with the required scope | `consilium_controls.py` |
+| Refutations stored as `correction`, resolutions as `outcome` | `theory_lab.py` |
+| Severity normalised to fatal, material, marginal, none | `consilium_v2._sev` |
+| A memo that calls a question unsettled has its confidence capped at 0.75 | `consilium_v2.run` |
+| Frontier-capable jobs run on a constrained host with local inference switched off | `consilium_tick._light_admission` |
+| Worktree git link rebuilt and locked against pruning | `.git/worktrees/consilium-v2` |
+
+## 6. The line the structuring tribunal does not cross
+
+A pathway changes the facts so that a rule is satisfied or does not apply: product mechanics, a
+licensed partner, an entity or jurisdiction, an exemption whose conditions are met, a sequenced
+entry, a no-action or comment request. It does not propose concealment, a misstatement to a
+regulator, bank or partner, a sham without economic substance, or structuring to defeat a
+threshold. The adversary is instructed to mark any pathway that drifts toward those as fatal.
+Aggressive-but-arguable routes are allowed, labelled, and priced with durability and enforcement
+probability.
+
+## 7. Still open
+
+- **Calibration** needs resolvable forecasts. Staking only 24-month predictions means Brier stays
+  empty. Short-horizon, checkable claims should be staked alongside.
+- **Corpus hygiene.** Navigation text in `corpus_clauses` should be stripped at ingest.
+- **Host capacity.** Local-tier jobs (`expert_corps`, `corpus_forecaster`, `corpus_index`) still
+  defer when the machine is busy. `expert_corps` last completed on Sep 12.
+- **Corps bloat.** `expert_memory` holds 146,560 rows, 499 with a source URL.
+- **Codex limits.** The cross-vendor adversary hit the ChatGPT plan's usage limit 13 times; Opus 5
+  is the fallback, which is a second model but not a second vendor.
+- **Frontier safeguards.** One wagering tournament was refused by the frontier model's content
+  classifier and retried on the mid tier. Prompts framed as lawful structuring avoid this.

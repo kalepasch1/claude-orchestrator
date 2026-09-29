@@ -139,7 +139,7 @@ def resolve_positions(limit_groups=GROUPS_PER_RUN):
                 out["resolved"] += 1
                 try:
                     db.insert("expert_memory", {
-                        "expert_id": by_id[pid]["expert_id"], "kind": "resolution",
+                        "expert_id": by_id[pid]["expert_id"], "kind": "outcome",
                         "claim": (f"Resolved {oc.upper()} on '{q[:120]}': {_s(j.get('basis'))[:300]} "
                                   f"— {_s(res.get('why'))[:200]}")[:2000],
                         "source": _s(j.get("basis"))[:500] or None,
@@ -183,7 +183,11 @@ def verify_claims(limit=CLAIMS_PER_RUN):
                      "salience": min(1.0, float(by_id[rid].get("salience") or 0.5) + 0.1)}
             out["verified"] += 1
         elif st == "refuted":
-            patch = {"kind": "refuted", "salience": 0.05, "source_url": url[:500] or None}
+            # expert_memory.kind is constrained (research|bout_*|outcome|correction|reading). 'refuted'
+            # violated the check, the PATCH was rejected, and 8 refutations per run were reported
+            # and never stored. A refuted claim is a 'correction': kept, floored, and sourced.
+            patch = {"kind": "correction", "salience": 0.05, "source_url": url[:500] or None,
+                     "claim": ("[REFUTED] " + _s(by_id[rid].get("claim")))[:2000]}
             out["refuted"] += 1
         else:
             patch = {"salience": round(float(by_id[rid].get("salience") or 0.5) * 0.5, 3)}
@@ -200,7 +204,8 @@ def run():
     res = {"positions": resolve_positions(), "claims": verify_claims(),
            "at": datetime.datetime.utcnow().isoformat()}
     try:
-        db.upsert("controls", {"key": "theory_lab_stats", "value": json.dumps(res, default=str)})
+        import consilium_controls
+        consilium_controls.put("theory_lab_stats", res)
     except Exception:
         pass
     print("theory_lab: " + json.dumps(res, default=str), flush=True)

@@ -135,36 +135,71 @@ def review_artifact(artifact: dict) -> dict:
         scores[key] = r["score"]
         rationales[key] = r["rationale"]
 
-    composite = sum(scores[k] * w for k, w, _ in REVIEWERS)
-    # A single catastrophic dimension vetoes regardless of composite: an artifact with no evidence
-    # or a serious exposure problem must never publish on the strength of its other scores.
-    veto = None
-    if scores.get("evidence", 0) < 0.40:
-        veto = "evidence floor"
-    elif scores.get("risk", 0) < 0.40:
-        veto = "exposure floor"
-
-    if veto:
-        decision = "reject"
-    elif composite >= PUBLISH_BAR:
-        decision = "publish"
-    elif composite >= STEER_BAR:
-        decision = "steer_only"   # good enough to guide internally, not to publish
-    else:
-        decision = "revise"
-
+    gate = decide(scores)
     return {
         "artifact_id": artifact.get("id"),
         "artifact_type": artifact.get("type", "committee_opinion"),
-        "composite": round(composite, 4),
+        "composite": gate["composite"],
+        "steer_composite": gate["steer_composite"],
         "scores": scores,
         "rationales": rationales,
-        "veto": veto,
-        "decision": decision,
+        "veto": gate["veto"],
+        "posture": gate["posture"],
+        "publication_blocked": gate["publication_blocked"],
+        "gate": GATE_VERSION,
+        "decision": gate["decision"],
         "publish_bar": PUBLISH_BAR,
         "steer_bar": STEER_BAR,
         "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+
+# ── the gate ─────────────────────────────────────────────────────────────────────────────────────
+# TWO TRACKS (operator direction 2026-09-28: "allow for more flexibility and creative risk taking").
+# The first gate used ONE composite and TWO vetoes for two different uses. The exposure reviewer asks
+# "would PUBLISHING this embarrass or endanger the publisher?" — and a low answer withdrew the card
+# from INTERNAL STEERING as well. Six frontier cards with evidence 0.78-0.87 and utility 0.78-0.90
+# were withdrawn for being "too directive to publish", which is precisely what an internal steering
+# memo is supposed to be.
+#
+#   STEERING track   rigor, evidence, utility, novelty. Exposure does not enter. A card that is
+#                    grounded and reasoned steers, however directive it is.
+#   PUBLICATION track the full five-reviewer composite, and exposure must clear its floor.
+#   EXPLORATORY      a genuinely novel position (novelty >= EXPLORE_NOVELTY) with sound evidence but
+#                    a lower overall score is kept for steering, labelled exploratory, instead of
+#                    being sent back — creative, untested reasoning is the point of a tribunal, and
+#                    an attorney still reviews it before anything leaves the building.
+#
+# What did NOT loosen: the evidence floor. A card whose citations do not resolve or do not say what is
+# claimed is rejected on either track. Risk-taking is about the position, never about the grounding.
+GATE_VERSION = "two_track/2026-09-28"
+STEER_WEIGHTS = {"rigor": 0.30, "evidence": 0.30, "utility": 0.25, "novelty": 0.15}
+EVIDENCE_FLOOR = float(os.environ.get("PUBCOM_EVIDENCE_FLOOR", "0.40"))
+RIGOR_FLOOR = float(os.environ.get("PUBCOM_RIGOR_FLOOR", "0.30"))
+EXPOSURE_FLOOR = float(os.environ.get("PUBCOM_EXPOSURE_FLOOR", "0.40"))
+EXPLORE_NOVELTY = float(os.environ.get("PUBCOM_EXPLORE_NOVELTY", "0.60"))
+EXPLORE_EVIDENCE = float(os.environ.get("PUBCOM_EXPLORE_EVIDENCE", "0.50"))
+
+
+def decide(scores: dict) -> dict:
+    """Pure: reviewer scores -> decision. Used for new reviews and for re-gating stored ones."""
+    g = lambda k: float(scores.get(k, 0) or 0)   # noqa: E731
+    composite = round(sum(g(k) * w for k, w, _ in REVIEWERS), 4)
+    steer = round(sum(g(k) * w for k, w in STEER_WEIGHTS.items()), 4)
+    publication_blocked = g("risk") < EXPOSURE_FLOOR
+    veto, posture = None, "standard"
+    if g("evidence") < EVIDENCE_FLOOR:
+        veto, decision = "evidence floor", "reject"
+    elif composite >= PUBLISH_BAR and not publication_blocked:
+        decision = "publish"
+    elif steer >= STEER_BAR and g("rigor") >= RIGOR_FLOOR:
+        decision = "steer_only"
+    elif g("novelty") >= EXPLORE_NOVELTY and g("rigor") >= RIGOR_FLOOR and g("evidence") >= EXPLORE_EVIDENCE:
+        decision, posture = "steer_only", "exploratory"
+    else:
+        decision = "revise"
+    return {"decision": decision, "composite": composite, "steer_composite": steer, "veto": veto,
+            "posture": posture, "publication_blocked": bool(publication_blocked and decision != "reject")}
 
 
 def _loads(v, default):
@@ -246,7 +281,9 @@ def run(limit: int = BATCH) -> dict:
             break
         try:
             detail = {"scores": rec["scores"], "rationales": rec["rationales"], "veto": rec["veto"],
-                      "reviewed_at": rec["reviewed_at"]}
+                      "reviewed_at": rec["reviewed_at"], "gate": rec.get("gate"),
+                      "steer_composite": rec.get("steer_composite"), "posture": rec.get("posture"),
+                      "publication_blocked": rec.get("publication_blocked")}
             prior = art.get("prior_review")
             if prior:
                 # Preserve the exact prior verdict and repair provenance; do not
@@ -286,5 +323,56 @@ def run(limit: int = BATCH) -> dict:
     return tally
 
 
+def regate(apply=False, limit=2000) -> dict:
+    """Re-decide STORED reviews under the current gate, from their stored scores. No model calls.
+
+    A card moves only when its decision changes AND its publication_state is still the one the old
+    decision put it in — a card a human has since published or moved is never touched."""
+    rows = db.select("publication_reviews", {
+        "select": "id,created_at,artifact_id,artifact_type,decision,composite,detail",
+        "artifact_type": "eq.verdict_card", "order": "created_at.desc", "limit": str(limit)}) or []
+    tally = {"examined": 0, "changed": 0, "restored_to_steering": 0, "unchanged": 0, "skipped_state": 0,
+             "applied": bool(apply), "changes": []}
+    for r in rows:
+        det = _loads(r.get("detail"), {}) or {}
+        scores = det.get("scores") or {}
+        if not scores:
+            continue
+        tally["examined"] += 1
+        new = decide(scores)
+        if new["decision"] == r.get("decision"):
+            tally["unchanged"] += 1
+            continue
+        cards = db.select("verdict_cards", {"select": "id,publication_state,status", "id": f"eq.{r['artifact_id']}",
+                                            "limit": "1"}) or []
+        if not cards or cards[0].get("publication_state") != CARD_STATE.get(r.get("decision")):
+            tally["skipped_state"] += 1
+            continue
+        tally["changed"] += 1
+        change = {"card": str(r["artifact_id"])[:8], "from": r.get("decision"), "to": new["decision"],
+                  "steer_composite": new["steer_composite"], "posture": new["posture"],
+                  "publication_blocked": new["publication_blocked"]}
+        tally["changes"].append(change)
+        if new["decision"] in ("steer_only", "publish") and r.get("decision") in ("reject", "revise"):
+            tally["restored_to_steering"] += 1
+        if not apply:
+            continue
+        det.update({"gate": GATE_VERSION, "steer_composite": new["steer_composite"], "posture": new["posture"],
+                    "publication_blocked": new["publication_blocked"], "veto": new["veto"],
+                    "regated": {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                "previous_decision": r.get("decision"), "previous_veto": det.get("veto")}})
+        try:
+            db.update("publication_reviews", {"id": r["id"]}, {"decision": new["decision"], "detail": det})
+            db.update("verdict_cards", {"id": r["artifact_id"]},
+                      {"publication_state": CARD_STATE.get(new["decision"], "internal")})
+        except Exception as e:
+            print(f"publication_commission: regate failed for {r['artifact_id']}: {e}")
+    print("publication_commission regate: " + json.dumps({k: v for k, v in tally.items() if k != "changes"}))
+    return tally
+
+
 if __name__ == "__main__":
-    print(json.dumps(run(int(sys.argv[1]) if len(sys.argv) > 1 else BATCH), indent=2))
+    if len(sys.argv) > 1 and sys.argv[1] == "regate":
+        print(json.dumps(regate(apply="--apply" in sys.argv), indent=2))
+    else:
+        print(json.dumps(run(int(sys.argv[1]) if len(sys.argv) > 1 else BATCH), indent=2))

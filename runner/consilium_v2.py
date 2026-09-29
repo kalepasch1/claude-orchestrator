@@ -74,6 +74,18 @@ ENGINE = os.environ.get("ORCH_CONSILIUM_ENGINE", "local").strip().lower()       
 # cluster can hold, and no tournament spends paid cloud capacity. Set ORCH_CONSILIUM_ESCALATE=high
 # to let high-priority questions fall back to the subscription tier when the local tier cannot finish.
 ESCALATE = os.environ.get("ORCH_CONSILIUM_ESCALATE", "never").strip().lower()      # never | high | always
+# PRIORITY-TIERED ENGINE (operator decision 2026-09-28, after the quality review). Local-only ran for
+# a week: 47 of 52 local cards were rejected by the commission (median composite 0.29, median stated
+# confidence 0.95), against 27 of 33 frontier cards accepted for steering (median 0.70). Questions
+# whose priority is listed here are debated on the subscription frontier tier inside the token
+# budget; everything else stays on ENGINE. Empty string restores the single-engine behaviour.
+FRONTIER_PRIORITIES = {p.strip().lower() for p in os.environ.get(
+    "ORCH_CONSILIUM_FRONTIER_PRIORITIES", "high").split(",") if p.strip()}
+# Set by the scheduler when the host cannot fund local inference: frontier-tier questions still run,
+# local-tier questions stay pending instead of loading a model into a machine under memory pressure.
+LOCAL_DISABLED = os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").strip().lower() in ("1", "true", "yes", "on")
+# A memo that calls the question unsettled cannot also claim near-certainty in its holding.
+UNSETTLED_CONFIDENCE_CAP = float(os.environ.get("ORCH_CONSILIUM_UNSETTLED_CAP", "0.75"))
 LOCAL_MIN_VERIFIED = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MIN_VERIFIED", "3"))
 LOCAL_MAX_TOKENS = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MAX_TOKENS", "9000"))
 MODE = os.environ.get("ORCH_CONSILIUM_MODE", "two_phase").strip().lower()
@@ -574,6 +586,20 @@ def _enforce_dossier(cites, dossier):
 
 
 # ── local engine ─────────────────────────────────────────────────────────────────────────────────
+def _sev(value):
+    """One vocabulary for adversary severity: fatal | material | marginal | none. The models wrote
+    'medium', 'moderate', 'high' and whole sentences; only the literal words 'fatal' and 'material'
+    triggered a revision, so 33 attacks the adversary considered real were never answered."""
+    t = str(value or "").strip().lower()
+    if "fatal" in t:
+        return "fatal"
+    if any(k in t for k in ("material", "high", "major", "severe", "serious", "significant", "medium", "moderate")):
+        return "material"
+    if any(k in t for k in ("marginal", "minor", "low")):
+        return "marginal"
+    return "none"
+
+
 def ready():
     """Can a tournament start right now on the configured engine (or its escalation)?"""
     if not ENABLED:
@@ -581,11 +607,11 @@ def ready():
     if ENGINE == "local":
         try:
             import local_llm
-            if local_llm.available():
+            if not LOCAL_DISABLED and local_llm.available():
                 return True
         except Exception:
             pass
-        return ESCALATE != "never" and frontier.available(min_tokens=MIN_TOKENS)
+        return (ESCALATE != "never" or bool(FRONTIER_PRIORITIES)) and frontier.available(min_tokens=MIN_TOKENS)
     return frontier.available(min_tokens=MIN_TOKENS)
 
 
@@ -843,7 +869,14 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     dossier, phases, fallback = None, {}, None
     tools = frontier.WEB_TOOLS if RESEARCH else None
     tier, r = "frontier", None
-    if ENGINE == "local":
+    engine = ENGINE
+    if priority in FRONTIER_PRIORITIES and frontier.available(min_tokens=MIN_TOKENS):
+        engine = "frontier"
+    if engine == "local" and LOCAL_DISABLED:
+        print(f"consilium_v2: host cannot fund local inference; '{(question or '')[:60]}' "
+              f"(priority {priority}) stays pending", flush=True)
+        return None
+    if engine == "local":
         may_escalate = ESCALATE == "always" or (ESCALATE == "high" and priority == "high")
         try:
             dossier, phases["research"] = _local_research(question, context, vertical, docket_id)
@@ -963,9 +996,9 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
         att = _local_adversary(question, memo, dossier, exclude=(phases.get("local_debate") or {}).get("model"))
         aj = att.get("json") if isinstance(att.get("json"), dict) else None
         cross = {"ran": not att.get("error"), "model": att.get("model"), "error": att.get("error") or "",
-                 "severity": (aj or {}).get("severity"), "breaks": (aj or {}).get("breaks"),
+                 "severity": _sev((aj or {}).get("severity")) if aj else None, "breaks": (aj or {}).get("breaks"),
                  "attack": _s((aj or {}).get("attack"))[:1500], "local": True}
-        if aj and str(aj.get("severity", "")).lower() in ("fatal", "material"):
+        if aj and _sev(aj.get("severity")) in ("fatal", "material"):
             rev = _lchat(REVISE.format(question=(question or "")[:1500], memo=json.dumps(memo)[:9000],
                                        attack=json.dumps(aj)[:3000])
                          + "\n\nAUTHORITY DOSSIER (the only citable record):\n" + _render_dossier(dossier),
@@ -982,9 +1015,9 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
             json_schema=ATTACK_SCHEMA, tag="consilium.crossvendor")
         aj = att.get("json") if isinstance(att.get("json"), dict) else None
         cross = {"ran": not att.get("error"), "model": att.get("model"), "error": att.get("error") or "",
-                 "severity": (aj or {}).get("severity"), "breaks": (aj or {}).get("breaks"),
+                 "severity": _sev((aj or {}).get("severity")) if aj else None, "breaks": (aj or {}).get("breaks"),
                  "attack": _s((aj or {}).get("attack"))[:1500]}
-        material = aj and str(aj.get("severity", "")).lower() in ("fatal", "material")
+        material = aj and _sev(aj.get("severity")) in ("fatal", "material")
         rev = {}
         if material and frontier.available(min_tokens=15000):
             rev = frontier.complete(REVISE.format(question=(question or "")[:1500],
@@ -1010,7 +1043,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                "seats": [corps.publication_view(e) for e in panel], "rounds": 5,
                "positions_flipped_by_steelman": flipped, "concessions": conceded,
                "bouts_judged": judged, "positions_staked": staked,
-               "red_team_severity": red.get("severity"),
+               "red_team_severity": _sev(red.get("severity")), "red_team_severity_raw": _s(red.get("severity"))[:80],
                "citation_count": len(cites), "verified_citations": len(verified),
                "sources_opened": ((j.get("research") or {}).get("sources_opened") or [])[:25],
                "tokens_in": int(r.get("tokens_in") or 0) + rin, "tokens_out": int(r.get("tokens_out") or 0) + rout,
@@ -1018,13 +1051,17 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                "latency_s": round(time.time() - t0, 1),
                "mode": mode, "tier": tier, "cost_weighted": 0 if tier == "local" else None, "phases": phases,
                "dossier_sources": len((dossier or {}).get("sources") or []), "citations_demoted": demoted,
-               "fallback": fallback, "cross_vendor": cross}
+               "fallback": fallback, "cross_vendor": cross, "engine_choice": engine, "priority": priority}
+    confidence = max(0.0, min(1.0, float(memo.get("confidence") or 0.5)))
+    if bool(memo.get("unsettled")) and confidence > UNSETTLED_CONFIDENCE_CAP:
+        process["confidence_stated"] = confidence
+        confidence = UNSETTLED_CONFIDENCE_CAP
     agg = {"question": question,
            "verdict": _s(memo.get("verdict")),
            "opinion": _s(memo.get("memo")),
            "citations": cites,
            "assumptions": memo.get("assumptions") or [],
-           "conviction": round(max(0.0, min(1.0, float(memo.get("confidence") or 0.5))) * 10, 1),
+           "conviction": round(confidence * 10, 1),
            "dissent": _s(memo.get("dissent")) or "none",
            "flips_if": _s(memo.get("flips_if")),
            "conditions": _s(memo.get("conditions")),
