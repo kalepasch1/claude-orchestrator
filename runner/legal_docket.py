@@ -281,15 +281,33 @@ def run(limit=BATCH):
     if not rows:
         print(json.dumps({"seeded": seeded, "convened": 0, "note": "docket empty or fully answered"}))
         return {"seeded": seeded, "convened": 0}
-    minted, skipped, convened = 0, 0, 0
+    minted, skipped, convened, precedents = 0, 0, 0, 0
     for row in rows:
         if FRONTIER_ONLY and not _frontier_ready():
             skipped = len(rows) - convened
             print(f"legal_docket: frontier budget cannot fund a tournament; {skipped} question(s) stay pending "
                   f"for the next cycle (ORCH_DOCKET_FRONTIER_ONLY)", flush=True)
             break
-        convened += 1
         q = row.get("question") or ""
+        try:
+            import escalation
+            card, sim = escalation.precedent(q, row.get("vertical"))
+        except Exception:
+            card, sim = None, 0.0
+        if card and card.get("docket_id") != row.get("id"):
+            # Already answered: retire as a duplicate of the card, reversibly, with zero model calls.
+            try:
+                db.update("legal_docket", {"id": row["id"]}, {"status": "retired"})
+                escalation._append({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "docket_id": row.get("id"),
+                                    "vertical": row.get("vertical"), "priority": row.get("priority"), "question": q[:300],
+                                    "route": "precedent", "precedent_card": card.get("id"), "similarity": sim,
+                                    "original_status": row.get("status")})
+                print(f"legal_docket: {row.get('id')} resolved by precedent (card {str(card.get('id'))[:8]}, similarity {sim})", flush=True)
+                precedents += 1
+                continue
+            except Exception:
+                pass
+        convened += 1
         ctx = (f"VERTICAL: {row.get('vertical')}\nPRIORITY: {row.get('priority')}\n\n"
                f"Answer as a memo a GC will act on this week. Cite the operative authority for "
                f"every material assertion; state explicitly what would change the conclusion.")
@@ -330,7 +348,7 @@ def run(limit=BATCH):
         insights = steering_insights.sync()
     except Exception as e:
         print(f"legal_docket: insight sync skipped: {type(e).__name__}: {str(e)[:100]}")
-    out = {"seeded": seeded, "convened": convened, "cards_minted": minted, "left_pending": skipped,
+    out = {"seeded": seeded, "precedents": precedents, "convened": convened, "cards_minted": minted, "left_pending": skipped,
            "frontier_only": FRONTIER_ONLY, "insights": insights}
     print("legal_docket: " + json.dumps(out))
     return out

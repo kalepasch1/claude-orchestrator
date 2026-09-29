@@ -89,6 +89,7 @@ UNSETTLED_CONFIDENCE_CAP = float(os.environ.get("ORCH_CONSILIUM_UNSETTLED_CAP", 
 # v3 = local_tribunal.py (evidence ledger, claim verification, mechanical confidence, abstention).
 # v2 = the original five-round local tournament below, kept as a fallback.
 LOCAL_PIPELINE = os.environ.get("ORCH_CONSILIUM_LOCAL_PIPELINE", "v3").strip().lower()
+FIRM = os.environ.get("ORCH_CONSILIUM_FIRM", "true").lower() not in ("0", "false", "no", "off")
 LOCAL_MIN_VERIFIED = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MIN_VERIFIED", "3"))
 LOCAL_MAX_TOKENS = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MAX_TOKENS", "9000"))
 MODE = os.environ.get("ORCH_CONSILIUM_MODE", "two_phase").strip().lower()
@@ -886,16 +887,45 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     tools = frontier.WEB_TOOLS if RESEARCH else None
     tier, r = "frontier", None
     engine = ENGINE
-    if priority in FRONTIER_PRIORITIES and frontier.available(min_tokens=MIN_TOKENS):
+    # THE FIRM (2026-09-29): associate -> counsel -> partner. The local associate researches and drafts;
+    # simple matters finish there, the rest reach counsel and, only if contested, the partner — with the
+    # research already done. When the associate cannot build a record at all, a high-priority matter
+    # falls through to the full frontier tournament below (partner with its own research).
+    if FIRM:
+        try:
+            import escalation
+            fres = escalation.run(question, context, vertical, priority, panel, docket_id=docket_id)
+        except Exception as e:
+            fres = {"abstain": True, "reason": f"{type(e).__name__}: {str(e)[:160]}", "escalate_full": priority == "high",
+                    "j": None, "meta": {}}
+        phases["firm"] = {k: v for k, v in (fres.get("meta") or {}).items() if k not in ("signals",)}
+        phases["firm"]["signals"] = (fres.get("meta") or {}).get("signals")
+        if isinstance(fres.get("j"), dict):
+            dossier = fres.get("dossier")
+            tier, mode, tools = "firm", "firm:" + str(fres.get("route")), None
+            r = {"json": fres["j"], "error": "", "model": str(fres.get("route")), "tokens_in": 0, "tokens_out": 0,
+                 "turns": 0}
+        elif not fres.get("escalate_full"):
+            print(f"consilium_v2[firm]: '{(question or '')[:60]}' stays pending — {fres.get('reason')}", flush=True)
+            _note_failure(fkey, f"firm: {fres.get('reason')}")
+            return None
+        else:
+            print(f"consilium_v2[firm]: associate could not build a record ({fres.get('reason')}); "
+                  f"partner runs the full tournament", flush=True)
+            fallback = {"from": "firm", "to": "frontier", "reason": str(fres.get("reason"))[:200]}
+            engine = "frontier"
+    if r is None and not FIRM and priority in FRONTIER_PRIORITIES and frontier.available(min_tokens=MIN_TOKENS):
         engine = "frontier"
-    if engine == "local" and LOCAL_DISABLED:
+    if r is None and engine == "local" and LOCAL_DISABLED:
         if frontier.can_think(min_tokens=MIN_TOKENS, min_tier="codex"):
             engine = "frontier"          # the host cannot run a model; a cloud tier keeps effort going
         else:
             print(f"consilium_v2: host cannot fund local inference and no cloud tier is available; "
                   f"'{(question or '')[:60]}' (priority {priority}) stays pending", flush=True)
             return None
-    if engine == "local" and LOCAL_PIPELINE == "v3":
+    if r is not None:
+        pass
+    elif engine == "local" and LOCAL_PIPELINE == "v3":
         may_escalate = ESCALATE == "always" or (ESCALATE == "high" and priority == "high")
         try:
             import local_tribunal
@@ -1061,7 +1091,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     # the one that chaired the debate, so the second opinion is genuinely independent without paying
     # a cloud provider. Only a frontier-tier tournament uses the cross-vendor (GPT-5.5) adversary.
     cross = {"ran": False}
-    if tier == "local" and isinstance(j.get("adversary_done"), dict):
+    if tier in ("local", "firm") and isinstance(j.get("adversary_done"), dict):
         cross = j["adversary_done"]          # local_tribunal ran its own adversary and revision
     elif CROSS_VENDOR and tier == "local":
         att = _local_adversary(question, memo, dossier, exclude=(phases.get("local_debate") or {}).get("model"))
@@ -1123,7 +1153,8 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                "mode": mode, "tier": tier, "cost_weighted": 0 if tier == "local" else None, "phases": phases,
                "dossier_sources": len((dossier or {}).get("sources") or []), "citations_demoted": demoted,
                "fallback": fallback, "cross_vendor": cross, "engine_choice": engine, "priority": priority,
-               "options": (memo.get("options") or [])[:4]}
+               "options": (memo.get("options") or [])[:4], "firm": j.get("firm"),
+               "route": (j.get("firm") or {}).get("route")}
     confidence = max(0.0, min(1.0, float(memo.get("confidence") or 0.5)))
     if bool(memo.get("unsettled")) and confidence > UNSETTLED_CONFIDENCE_CAP:
         process["confidence_stated"] = confidence

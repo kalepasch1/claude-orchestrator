@@ -949,4 +949,9 @@ def _frontier_tiers_offline(monkeypatch):
     monkeypatch.setattr(frontier, "NEVER_IDLE", False, raising=False)
     monkeypatch.setattr(frontier, "_reprobe_auth", lambda: False, raising=False)
     monkeypatch.setattr(frontier, "research_context", lambda prompt, **k: "", raising=False)
+    try:
+        import consilium_v2
+        monkeypatch.setattr(consilium_v2, "FIRM", False, raising=False)   # firm tests turn it on
+    except Exception:
+        pass
     yield
