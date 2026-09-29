@@ -104,6 +104,45 @@ def select(table, params=None, timeout=40, *, strict=False):
     return []
 
 
+def rpc(fn, args, timeout=40):
+    """POST a read-only corpus function (e.g. search_corpus_passages_scoped). None on failure, so a
+    caller can tell an outage from an empty answer."""
+    url, key = _creds()
+    if not (url and key):
+        return None
+    req = urllib.request.Request(f"{url}/rest/v1/rpc/{fn}", data=json.dumps(args).encode(),
+                                 headers={"apikey": key, "Authorization": f"Bearer {key}",
+                                          "Accept": "application/json", "Content-Type": "application/json"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=min(40, max(1, float(timeout)))) as r:
+            raw = r.read(MAX_READ_BYTES + 1)
+        if len(raw) > MAX_READ_BYTES:
+            return None
+        rows = json.loads(raw.decode("utf-8"))
+        return rows if isinstance(rows, list) else None
+    except Exception:
+        return None
+
+
+def passages_scoped(query, jurisdictions, limit=6):
+    """Jurisdiction-scoped full-text passages (no embeddings, so it works when the host cannot run a
+    local embedding model). Each row carries the clause's full text when it can be read. None on outage."""
+    rows = rpc("search_corpus_passages_scoped", {"query_text": query, "p_jurisdictions": list(jurisdictions),
+                                                 "p_include_federal": False, "p_limit": int(limit)})
+    if rows is None:
+        return None
+    ids = [r.get("clause_id") for r in rows if r.get("clause_id")]
+    full = {}
+    if ids:
+        for c in select("corpus_clauses", {"select": "clause_id,text",
+                                           "clause_id": "in.(" + ",".join('"%s"' % i.replace('"', '') for i in ids) + ")"}):
+            full[c.get("clause_id")] = c.get("text") or ""
+    for r in rows:
+        r["text"] = full.get(r.get("clause_id")) or r.get("snippet") or ""
+    return rows
+
+
 def document_text(doc_id, max_chars=60000, *, strict=False):
     """Ordered clause source text, then the original document text if no usable clauses.
 

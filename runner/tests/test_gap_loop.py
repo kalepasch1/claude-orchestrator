@@ -262,6 +262,8 @@ def _fam_env(monkeypatch, tmp_path):
     monkeypatch.setattr(fm, "OUT_DIR", str(tmp_path / "docs"))
     monkeypatch.setattr(es, "MEMORY", str(tmp_path / "memory.jsonl"))
     monkeypatch.setattr(corpus_retrieval, "top_passages", lambda *a, **k: [])
+    import corpus_db
+    monkeypatch.setattr(corpus_db, "passages_scoped", lambda *a, **k: [])
     pages = {"https://x/fw.pdf": FW_TEXT, "https://x/oh.pdf": OH_TEXT, "https://x/me.pdf": NOWHERE_TEXT}
 
     def searcher(query, courts, n):
