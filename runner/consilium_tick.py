@@ -62,6 +62,9 @@ SCHED = os.path.join(HOME, "consilium", "schedule.json")
 
 #: name -> (script, args, interval_s, timeout_s). Order = priority when several are due.
 JOBS = [
+    # The clerk goes first while untriaged questions remain: a tournament on a false-premise question
+    # is the most expensive way to find the premise was false. It costs nothing once the backlog is done.
+    ("docket_triage",    "docket_triage.py",        ["--max-batches=6"], 10800, 3000),
     ("legal_docket",     "legal_docket.py",         [os.environ["LEGAL_DOCKET_BATCH"]], 1200, 3000),
     ("publication_commission", "publication_commission.py", [os.environ["PUBCOM_BATCH"]], 1800, 2400),
     ("paper_drafter",    "paper_drafter.py",        [],        3600, 3000),
@@ -78,7 +81,6 @@ JOBS = [
     ("consilium_export", "consilium_export.py",     ["--apply"], 3600, 600),
     # 2026-09-28 — the structuring tribunal (ranked lawful pathways) and the docket clerk.
     ("pathway_lab",      "pathway_lab.py",          [],        10800, 3000),
-    ("docket_triage",    "docket_triage.py",        ["--max-batches=6"], 86400, 3000),
 ]
 
 # FRONTIER-CAPABLE JOBS (2026-09-28). The host gate deferred 1,366 launches in two weeks: this Mac

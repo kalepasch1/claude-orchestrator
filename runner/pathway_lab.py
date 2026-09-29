@@ -69,6 +69,13 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs",
 KINDS = ("licensing_pathway", "structural_redesign", "jurisdictional_sequencing", "partner_or_sponsor",
          "exemption_or_safe_harbor", "regulatory_engagement", "product_boundary", "other")
 POSTURES = ("conservative", "defensible", "aggressive_arguable")
+KIND_HINTS = (("partner_or_sponsor", ("partner", "sponsor", "b2b", "supply", "white_label", "vendor")),
+              ("licensing_pathway", ("licen", "registr", "authoris", "authoriz")),
+              ("jurisdictional_sequencing", ("jurisdiction", "sequenc", "market_entry", "phased")),
+              ("exemption_or_safe_harbor", ("exempt", "safe_harbo", "carve")),
+              ("regulatory_engagement", ("engage", "no_action", "interpretive", "comment", "sandbox")),
+              ("product_boundary", ("product", "boundary", "feature", "mechanic")),
+              ("structural_redesign", ("structur", "redesign", "entity", "reorgan")))
 
 CITE = {"type": "object", "properties": {
     "source": {"type": "string"}, "url": {"type": "string"}, "quote": {"type": "string"},
@@ -422,8 +429,10 @@ def assemble(j, attacks, adj):
             p["durability"] = _clamp(d.get("durability"), _clamp(p.get("durability")))
             p["enforcement_probability"] = _clamp(d.get("enforcement_probability"), _clamp(p.get("enforcement_probability"), 0.3))
             p["kill_criteria"] = _s(d.get("kill_criteria")) or p.get("kill_criteria")
-        kind = str(p.get("kind") or "other").strip().lower()
-        p["kind"] = kind if kind in KINDS else "other"
+        kind = str(p.get("kind") or "other").strip().lower().replace("-", "_").replace(" ", "_")
+        if kind not in KINDS:
+            kind = next((k for k, words in KIND_HINTS if any(w in kind for w in words)), "other")
+        p["kind"] = kind
         posture = str(p.get("risk_posture") or "defensible").strip().lower().replace("-", "_").replace(" ", "_")
         p["risk_posture"] = posture if posture in POSTURES else "defensible"
         p["score"] = score(p)
