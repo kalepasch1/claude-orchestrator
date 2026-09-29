@@ -483,6 +483,7 @@ def test_local_engine_runs_the_tournament_free_and_verifies_against_the_page(mon
     monkeypatch.setattr(c, "ENABLED", True)
     monkeypatch.setattr(c, "ENGINE", "local")
     monkeypatch.setattr(c, "FRONTIER_PRIORITIES", set())   # these tests exercise the LOCAL tier
+    monkeypatch.setattr(c, "LOCAL_PIPELINE", "v2")          # ...and its original five-round tournament
     monkeypatch.setattr(c, "CROSS_VENDOR", False)
     monkeypatch.setattr(c, "DOSSIER_DIR", str(tmp_path / "d"))
     monkeypatch.setattr(c, "AUTHORITY_CACHE", str(tmp_path / "a.jsonl"))
@@ -541,6 +542,7 @@ def test_local_failure_escalates_only_when_allowed(monkeypatch, tmp_path):
     monkeypatch.setattr(c, "ENABLED", True)
     monkeypatch.setattr(c, "ENGINE", "local")
     monkeypatch.setattr(c, "FRONTIER_PRIORITIES", set())   # these tests exercise the LOCAL tier
+    monkeypatch.setattr(c, "LOCAL_PIPELINE", "v2")          # ...and its original five-round tournament
     monkeypatch.setattr(c, "CROSS_VENDOR", False)
     monkeypatch.setattr(c, "DOSSIER_DIR", str(tmp_path / "d"))
     monkeypatch.setattr(c, "AUTHORITY_CACHE", str(tmp_path / "a.jsonl"))
@@ -580,6 +582,7 @@ def test_ready_prefers_local_and_does_not_require_subscription_budget(monkeypatc
     monkeypatch.setattr(c, "ENABLED", True)
     monkeypatch.setattr(c, "ENGINE", "local")
     monkeypatch.setattr(c, "FRONTIER_PRIORITIES", set())   # these tests exercise the LOCAL tier
+    monkeypatch.setattr(c, "LOCAL_PIPELINE", "v2")          # ...and its original five-round tournament
     monkeypatch.setattr(local_llm, "available", lambda: True)
     monkeypatch.setattr(frontier, "available", lambda min_tokens=4000: False)
     assert c.ready() is True                       # local tier needs no budget
@@ -665,6 +668,7 @@ def test_local_tier_never_spends_cloud_capacity_and_uses_a_second_local_model(mo
     monkeypatch.setattr(c, "ENABLED", True)
     monkeypatch.setattr(c, "ENGINE", "local")
     monkeypatch.setattr(c, "FRONTIER_PRIORITIES", set())   # these tests exercise the LOCAL tier
+    monkeypatch.setattr(c, "LOCAL_PIPELINE", "v2")          # ...and its original five-round tournament
     monkeypatch.setattr(c, "CROSS_VENDOR", True)
     monkeypatch.setattr(c, "DOSSIER_DIR", str(tmp_path / "d"))
     monkeypatch.setattr(c, "AUTHORITY_CACHE", str(tmp_path / "a.jsonl"))

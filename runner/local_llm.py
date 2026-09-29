@@ -31,7 +31,12 @@ if not OLLAMA.startswith("http"):
 MODELS = [m.strip() for m in os.environ.get(
     "ORCH_LOCAL_MODELS", "exo:mlx-community/Qwen3.5-122B-A10B-4bit,exo:mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit,"
                          "exo:mlx-community/Qwen3.5-35B-A3B-4bit,exo:mlx-community/Qwen3.5-27B-4bit,"
-                         "ollama:qwen3.5:27b-mlx,exo:mlx-community/Qwen3.5-9B-4bit").split(",") if m.strip()]
+                         "ollama:qwen3.5:27b-mlx,exo:mlx-community/Qwen3.5-9B-4bit,"
+                         # LAST RESORTS (2026-09-29): whatever small model another job already has resident.
+                         # Measured this morning: no EXO instance up, 4 GiB free, gemma3:12b loaded by the
+                         # corpus worker — and the tribunal could not make a single local call. A resident
+                         # model costs no RAM; below the debate floor it does research and checks only.
+                         "ollama:gemma3:12b,ollama:qwen3.5:4b-mlx").split(",") if m.strip()]
 # The cluster has its own placement owner (~/cluster-control/exo-health-watchdog.sh keeps the 80B and
 # the 27B up when all three nodes are healthy). This client therefore PREFERS whatever is already
 # resident, places a model only when no rung is resident (ORCH_EXO_PLACE=false forbids even that),

@@ -82,6 +82,10 @@ JOBS = [
     # ratio, not list order) and costs nothing once the backlog is done. legal_docket convenes
     # questions the clerk kept or rewrote before untriaged ones.
     ("docket_triage",    "docket_triage.py",        ["--max-batches=6"], 10800, 3000),
+    # Distil frontier memos into per-vertical playbooks for the local tier (no-op while current).
+    ("playbooks",        "playbooks.py",            ["build"], 86400, 1800),
+    # Weekly: the local tribunal against the frontier tier on the same questions, same commission.
+    ("local_benchmark",  "local_benchmark.py",      ["2"],     604800, 3300),
 ]
 
 # FRONTIER-CAPABLE JOBS (2026-09-28). The host gate deferred 1,366 launches in two weeks: this Mac
@@ -93,7 +97,7 @@ JOBS = [
 FRONTIER_JOBS = {"legal_docket", "publication_commission", "paper_drafter", "theory_lab",
                  "reg_opportunity_scan", "pathway_lab", "docket_triage", "consilium_export",
                  "card_freshness", "ambiguity_miner", "expert_corps", "corpus_forecaster",
-                 "benchmark_ingest"}
+                 "benchmark_ingest", "playbooks"}
 LIGHT_MIN_FREE_GB = float(os.environ.get("ORCH_CONSILIUM_LIGHT_MIN_FREE_GB", "2"))
 
 
@@ -101,11 +105,19 @@ def _light_admission(name, admission):
     """Env overrides for a frontier-only launch on a constrained host, or None to defer."""
     if name not in FRONTIER_JOBS or not isinstance(admission, dict):
         return None
-    if admission.get("reason") not in ("memory_pressure", "host_headroom", "host_load"):
+    if admission.get("reason") not in ("memory_pressure", "host_headroom", "host_load", "telemetry_unknown"):
         return None
     if admission.get("pressure") == 4:
         return None
     free = admission.get("free_gb")
+    if not isinstance(free, (int, float)):
+        # The host gate could not read its telemetry (it shells out, and fails under load). A job
+        # that needs no local model only needs to know there is a little RAM; ask a second way.
+        try:
+            import local_llm
+            free = local_llm.free_gb()
+        except Exception:
+            free = None
     if not isinstance(free, (int, float)) or free < LIGHT_MIN_FREE_GB:
         return None
     try:

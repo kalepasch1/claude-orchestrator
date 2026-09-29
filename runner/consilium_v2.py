@@ -86,6 +86,9 @@ FRONTIER_PRIORITIES = {p.strip().lower() for p in os.environ.get(
 LOCAL_DISABLED = os.environ.get("ORCH_CONSILIUM_LOCAL_DISABLED", "").strip().lower() in ("1", "true", "yes", "on")
 # A memo that calls the question unsettled cannot also claim near-certainty in its holding.
 UNSETTLED_CONFIDENCE_CAP = float(os.environ.get("ORCH_CONSILIUM_UNSETTLED_CAP", "0.75"))
+# v3 = local_tribunal.py (evidence ledger, claim verification, mechanical confidence, abstention).
+# v2 = the original five-round local tournament below, kept as a fallback.
+LOCAL_PIPELINE = os.environ.get("ORCH_CONSILIUM_LOCAL_PIPELINE", "v3").strip().lower()
 LOCAL_MIN_VERIFIED = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MIN_VERIFIED", "3"))
 LOCAL_MAX_TOKENS = int(os.environ.get("ORCH_CONSILIUM_LOCAL_MAX_TOKENS", "9000"))
 MODE = os.environ.get("ORCH_CONSILIUM_MODE", "two_phase").strip().lower()
@@ -889,7 +892,35 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
         print(f"consilium_v2: host cannot fund local inference; '{(question or '')[:60]}' "
               f"(priority {priority}) stays pending", flush=True)
         return None
-    if engine == "local":
+    if engine == "local" and LOCAL_PIPELINE == "v3":
+        may_escalate = ESCALATE == "always" or (ESCALATE == "high" and priority == "high")
+        try:
+            import local_tribunal
+            res = local_tribunal.run(question, context, vertical, priority, panel, docket_id=docket_id)
+        except Exception as e:
+            res = {"abstain": True, "reason": f"{type(e).__name__}: {str(e)[:160]}", "j": None, "meta": {}}
+        lmeta = res.get("meta") or {}
+        phases["local_v3"] = {k: lmeta.get(k) for k in ("calls", "calls_failed", "models", "model_b", "latency_s",
+                                                         "findings", "citations", "options", "confidence",
+                                                         "confidence_parts", "grounding", "adversary_severity",
+                                                         "revised", "premise_ok", "playbook", "exemplar", "phases",
+                                                         "abstain", "reason", "ledger")}
+        if res.get("abstain") or not isinstance(res.get("j"), dict):
+            why = res.get("reason") or "no result"
+            if not (may_escalate and frontier.available(min_tokens=MIN_TOKENS)):
+                # Abstention is a result: the research and the verified ledger are kept for reuse, and
+                # no card is minted from evidence that does not support one.
+                print(f"consilium_v2[local_v3]: abstained on '{(question or '')[:60]}' — {why}", flush=True)
+                _note_failure(fkey, f"local_v3 abstain: {why}")
+                return None
+            print(f"consilium_v2[local_v3]: abstained ({why}); escalating to the frontier tier", flush=True)
+            fallback = {"from": "local_v3", "to": "frontier", "reason": str(why)[:200]}
+        else:
+            dossier = res.get("dossier")
+            tier, mode, tools = "local", "local_v3", None
+            r = {"json": res["j"], "error": "", "model": lmeta.get("model") or "local", "tokens_in": 0,
+                 "tokens_out": 0, "turns": lmeta.get("calls")}
+    elif engine == "local":
         may_escalate = ESCALATE == "always" or (ESCALATE == "high" and priority == "high")
         try:
             dossier, phases["research"] = _local_research(question, context, vertical, docket_id)
@@ -1027,7 +1058,9 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
     # the one that chaired the debate, so the second opinion is genuinely independent without paying
     # a cloud provider. Only a frontier-tier tournament uses the cross-vendor (GPT-5.5) adversary.
     cross = {"ran": False}
-    if CROSS_VENDOR and tier == "local":
+    if tier == "local" and isinstance(j.get("adversary_done"), dict):
+        cross = j["adversary_done"]          # local_tribunal ran its own adversary and revision
+    elif CROSS_VENDOR and tier == "local":
         att = _local_adversary(question, memo, dossier, exclude=(phases.get("local_debate") or {}).get("model"))
         aj = att.get("json") if isinstance(att.get("json"), dict) else None
         cross = {"ran": not att.get("error"), "model": att.get("model"), "error": att.get("error") or "",
@@ -1086,7 +1119,8 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS, priori
                "latency_s": round(time.time() - t0, 1),
                "mode": mode, "tier": tier, "cost_weighted": 0 if tier == "local" else None, "phases": phases,
                "dossier_sources": len((dossier or {}).get("sources") or []), "citations_demoted": demoted,
-               "fallback": fallback, "cross_vendor": cross, "engine_choice": engine, "priority": priority}
+               "fallback": fallback, "cross_vendor": cross, "engine_choice": engine, "priority": priority,
+               "options": (memo.get("options") or [])[:4]}
     confidence = max(0.0, min(1.0, float(memo.get("confidence") or 0.5)))
     if bool(memo.get("unsettled")) and confidence > UNSETTLED_CONFIDENCE_CAP:
         process["confidence_stated"] = confidence

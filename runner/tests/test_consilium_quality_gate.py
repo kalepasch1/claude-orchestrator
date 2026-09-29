@@ -140,7 +140,11 @@ def test_tick_light_admission_rules(monkeypatch):
     assert k._light_admission("corpus_index", busy) is None                       # embeddings need local inference
     assert k._light_admission("pathway_lab", {**busy, "pressure": 4}) is None     # critical pressure
     assert k._light_admission("pathway_lab", {**busy, "free_gb": 1.0}) is None    # no RAM at all
+    import local_llm
+    monkeypatch.setattr(local_llm, "free_gb", lambda: None)
     assert k._light_admission("pathway_lab", {"admitted": False, "reason": "telemetry_unknown"}) is None
+    monkeypatch.setattr(local_llm, "free_gb", lambda: 9.0)      # the second reading says there is room
+    assert k._light_admission("pathway_lab", {"admitted": False, "reason": "telemetry_unknown"})
     monkeypatch.setattr(frontier, "available", lambda *a, **kw: False)
     assert k._light_admission("pathway_lab", busy) is None
     names = [j[0] for j in k.JOBS]
@@ -213,3 +217,44 @@ def test_medium_priority_stays_pending_when_host_cannot_fund_local(monkeypatch, 
     monkeypatch.setattr(c, "_tournament_call", boom)
     monkeypatch.setattr(c, "_research_phase", boom)
     assert c.run("Is Y lawful?", context="PRIORITY: medium", vertical="gaming", priority="medium") is None
+
+
+def test_login_failure_is_not_a_rate_limit_and_falls_back_to_the_second_vendor(tmp_path, monkeypatch):
+    import frontier
+    monkeypatch.setattr(frontier, "STATE", str(tmp_path / "b.json"))
+    monkeypatch.setattr(frontier, "HOME", str(tmp_path))
+    monkeypatch.setattr(frontier, "EMPTY_MCP", str(tmp_path / "e.json"))
+    monkeypatch.setattr(frontier, "_paused", lambda: False)
+    monkeypatch.setattr(frontier.shutil, "which", lambda b: "/bin/" + str(b))
+    assert frontier.is_auth_error("Failed to authenticate: OAuth session expired and could not be refreshed")
+    assert not frontier.is_auth_error("You have hit your usage limit")
+    alerts = []
+    import types, sys as _sys
+    monkeypatch.setitem(_sys.modules, "db", types.SimpleNamespace(insert=lambda t, row: alerts.append((t, row["slug"]))))
+    monkeypatch.setitem(_sys.modules, "claude_cli", types.SimpleNamespace(run=lambda *a, **k: {
+        "text": "Failed to authenticate: OAuth session expired and could not be refreshed", "returncode": 1,
+        "raw": {"is_error": True}, "stderr": ""}))
+    calls = []
+    monkeypatch.setattr(frontier, "codex_available", lambda *a, **k: True)
+    monkeypatch.setattr(frontier, "codex_complete", lambda prompt, **k: (calls.append(k.get("tag")) or {
+        "text": "{\"ok\": true}", "json": {"ok": True}, "model": "gpt-5.5", "error": "", "tokens_in": 5, "tokens_out": 2}))
+    monkeypatch.setattr(frontier, "_telemetry", lambda *a, **k: None)
+    r = frontier.complete("q", need=7, json_schema={"type": "object"}, tag="t")
+    assert r["json"] == {"ok": True} and r["fallback"]["to"] == "codex" and not r["error"]
+    assert frontier.auth_down() and alerts and alerts[0][1].startswith("consilium-auth:")
+    frontier.complete("q2", need=7, tag="t2")            # while down: straight to the second vendor, one alert only
+    assert calls == ["t.codex", "t2.codex"] and len(alerts) == 1
+    r3 = frontier.complete("needs the web", need=7, tools=frontier.WEB_TOOLS, tag="t3")
+    assert r3["degraded"] and len(calls) == 2            # tool calls are not sent to a vendor without the tools
+
+
+def test_commission_checks_citations_by_fetching_them():
+    import publication_commission as pc
+    page = "Each money services business, whether or not licensed by any State, must register with FinCEN. " * 5
+    table, counts = pc.check_citations(
+        [{"source": "31 CFR 1022.380", "url": "https://x.gov/a", "quote": "must register with FinCEN", "proposition": "p"},
+         {"source": "made up", "url": "https://x.gov/a", "quote": "sweepstakes operators are exempt from all federal law", "proposition": "p"},
+         {"source": "gone", "url": "https://x.gov/gone", "quote": "some quoted words that matter here", "proposition": "p"}],
+        fetcher=lambda u: page if u.endswith("/a") else "")
+    assert [t["check"] for t in table] == ["confirmed", "absent", "unreachable"]
+    assert counts["confirmed"] == 1 and counts["absent"] == 1 and counts["unreachable"] == 1
