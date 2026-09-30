@@ -320,6 +320,19 @@ def _relevant(page, question):
     return sum(1 for t in a if t[:6] in low) >= max(1, len(a) - 1)
 
 
+def kb_topics(fam):
+    """statute_definitions topics that answer this family's question."""
+    t = fam.get("template") or ""
+    out = []
+    if re.search(r"chance|skill|gambl", t):
+        out += ["gambling", "lottery"]
+    if re.search(r"sweepstake|promotion|amoe|free.?entry", t):
+        out.append("sweepstakes")
+    if re.search(r"money transmi|transmitter|msb", t):
+        out.append("money_transmission")
+    return out
+
+
 def _want(question, opts):
     import authority_search as asrch
     extra = []
@@ -552,6 +565,17 @@ def cell_research(row, fam, opts, *, fetcher, searcher, compacts=None):
                               "origin": "caselaw_excerpt", "_held": _s(c["snippet"])})
     if re.search(r"tribe|tribal|igra|compact", fam["template"]):
         cands += compacts_for(member, index=compacts)
+    # The jurisdiction's own statutes on file (statute_definitions), verbatim: a lookup, not a search.
+    kb_jur = f"US-{st[0]}" if st else _s(row.get("_jurisdiction"))
+    if kb_jur:
+        try:
+            import statute_kb
+            for topic in kb_topics(fam):
+                for r in statute_kb.lookup(kb_jur, topic, limit=3):
+                    cands.append({"authority": (_s(r.get("citation")) or _s(r.get("heading")))[:160] + " (statute)",
+                                  "url": r["url"], "origin": "corpus", "_held": _s(r.get("text"))})
+        except Exception:
+            pass
     # The corpus by full-text search, scoped to the jurisdiction (2026-09-29: the embedding route below is
     # skipped whenever the host cannot run a local embedding model, which is most of the day; this one
     # needs none, and found the Ohio Supreme Court's skill-game decision CourtListener had no PDF for).
@@ -900,9 +924,20 @@ def web_fill(fam, cells, *, fetcher, web=None, limit_calls=None):
                 if not names_entity(page, c["row"]["_member"]) and c["row"]["_member"].lower() not in page.lower():
                     continue                     # a page that never names the jurisdiction is not its source
                 import authority_search as asrch
-                c["passages"].append({"text": page[s0:e0], "score": 5, "authority": asrch.label_for(url, "")
-                                      or url[:120], "url": url, "origin": "web",
+                label = asrch.label_for(url, "") or url[:120]
+                c["passages"].append({"text": page[s0:e0], "score": 5, "authority": label, "url": url, "origin": "web",
                                       "id": f"M{c['n']}.{len(c['passages']) + 1}"})
+                # An official page found once is kept for every later family and matter (statute_definitions).
+                try:
+                    import statute_kb
+                    import authority_search as asrch2
+                    st2 = asrch2.state(c["row"].get("_jurisdiction")) or asrch2.state(c["row"]["_member"])
+                    jur = f"US-{st2[0]}" if st2 else _s(c["row"].get("_jurisdiction"))
+                    for topic in kb_topics(fam)[:1]:
+                        if jur:
+                            statute_kb.record(jur, topic, label, url, page[s0:e0], "web_research")
+                except Exception:
+                    pass
     return calls
 
 

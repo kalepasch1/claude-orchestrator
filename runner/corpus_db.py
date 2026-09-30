@@ -125,11 +125,12 @@ def rpc(fn, args, timeout=40):
         return None
 
 
-def passages_scoped(query, jurisdictions, limit=6):
+def passages_scoped(query, jurisdictions, limit=6, doc_types=None):
     """Jurisdiction-scoped full-text passages (no embeddings, so it works when the host cannot run a
     local embedding model). Each row carries the clause's full text when it can be read. None on outage."""
     rows = rpc("search_corpus_passages_scoped", {"query_text": query, "p_jurisdictions": list(jurisdictions),
-                                                 "p_include_federal": False, "p_limit": int(limit)})
+                                                 "p_include_federal": False, "p_limit": int(limit),
+                                                 **({"p_doc_types": list(doc_types)} if doc_types else {})})
     if rows is None:
         return None
     ids = [r.get("clause_id") for r in rows if r.get("clause_id")]

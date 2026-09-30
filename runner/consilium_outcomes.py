@@ -26,6 +26,7 @@ SCHEMAS = {
     "docket_triage": ((), ("keep", "rewrite", "retire"), ("batches", "pending_untriaged")),
     "gap_intake": (("docketed",), (), ("open_gaps",)),
     "gap_writeback": (("written",), ("answered",), ("candidates",)),
+    "statute_kb": (("stored",), (), ("searched",)),
 }
 
 
