@@ -59,6 +59,7 @@ BASE_THRESHOLD = float(os.environ.get("ORCH_LOCAL_FINAL_THRESHOLD", "0.58"))
 MAX_SEAT_SPREAD = float(os.environ.get("ORCH_LOCAL_FINAL_MAX_SPREAD", "0.25"))
 TRUST_WINDOW = int(os.environ.get("ORCH_TRUST_WINDOW", "12"))
 PRECEDENT_SIMILARITY = float(os.environ.get("ORCH_PRECEDENT_SIMILARITY", "0.72"))
+PARTNER_MIN_FINDINGS = int(os.environ.get("ORCH_FIRM_PARTNER_MIN_FINDINGS", "3"))
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 LEDGER = os.path.join(HOME, "consilium", "escalation_ledger.jsonl")
 # FIRM MEMORY. Every issue counsel or a partner settles becomes a HOLDING (issue, ruling, the verbatim
@@ -759,6 +760,20 @@ def run(question, context="", vertical=None, priority="medium", panel=None, dock
         route = "counsel"
         j, dossier = _package(state, res, memo, route, {**common, "tokens": tokens})
         return out(route, j=j, dossier=dossier, tokens=tokens, **common)
+
+    # NOTHING TO RULE ON (2026-09-30). The first live matter (Northern Mariana Islands, chance/skill) reached the
+    # partner with 2 verified findings; two Fable calls (the second 130K tokens of web research) produced a memo
+    # that still failed the gate. Below PARTNER_MIN_FINDINGS the authority simply is not on file: counsel's memo
+    # stands if it cleared the gate, otherwise the matter abstains and names the remedy.
+    nfind = len(state.get("findings") or [])
+    if nfind < PARTNER_MIN_FINDINGS:
+        tokens["partner"] = [{"skipped": f"{nfind} verified findings < {PARTNER_MIN_FINDINGS}"}]
+        if mint:
+            j, dossier = _package(state, res, memo, "counsel", {**common, "partner_skipped": "thin record", "tokens": tokens})
+            return out("counsel", j=j, dossier=dossier, tokens=tokens, partner={"skipped": "thin record"}, **common)
+        return out("none", abstain=True, reason=(f"only {nfind} verified findings: too little authority on file for a "
+                                                 "partner to rule on; the jurisdiction needs outreach or corpus acquisition"),
+                   tokens=tokens, **common)
 
     # PARTNER — brief first, local gap research second, web tools only for what remains
     pj, pinfo = _call(_partner_prompt(question, state, cj), PARTNER_SCHEMA, PARTNER_SYSTEM, role="partner", cloud=cloud)

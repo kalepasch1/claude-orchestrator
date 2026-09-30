@@ -328,3 +328,14 @@ def test_firm_ladder_assigns_roles_by_what_fits(monkeypatch):
     import local_tribunal as lt
     monkeypatch.setitem(sys.modules, "local_llm", types.SimpleNamespace(MODELS=models))
     assert lt.strong_models()[0].endswith("Qwen3.5-35B-A3B-4bit")          # the associate prefers the fast 35B
+
+
+def test_thin_record_never_reaches_the_partner(tmp_path, monkeypatch):
+    lt, es = _iso(monkeypatch, tmp_path)
+    monkeypatch.setattr(es, "PARTNER_MIN_FINDINGS", 999)       # the record is always thinner than this
+    cloud = Cloud(assessment="amend", needs_partner=True)
+    r = _run(es, priority="high", cloud=cloud)
+    assert [c[0] for c in cloud.calls] == ["firm.counsel"]     # no partner call at all
+    assert r["route"] in ("counsel", "none")
+    if r["route"] == "none":
+        assert "too little authority on file" in r["reason"]
