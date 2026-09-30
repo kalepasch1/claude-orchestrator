@@ -720,3 +720,32 @@ def test_statute_kb_web_fill_verifies_quotes_and_respects_caps(monkeypatch, tmp_
     assert out["calls"] == 1 and out["stored"] == 1
     assert stored[0]["jurisdiction"] == "US-OH" and stored[0]["source"] == "official_web"
     assert kb.fill_from_web(web=web, fetcher=fetch, insert=lambda *a, **k: None)["calls"] == 0   # day's cap spent
+
+
+def test_run_child_timeout_kills_grandchildren_and_returns(tmp_path):
+    import os
+    import sys
+    import time
+    import consilium_tick as k
+    pidfile = tmp_path / "grandchild.pid"
+    # The job starts a grandchild that records its pid, holds the inherited stdout, and would outlive the job.
+    script = (f"import subprocess,sys,time\n"
+              f"subprocess.Popen([sys.executable,'-c','import os,time,pathlib; pathlib.Path(r\"{pidfile}\").write_text(str(os.getpid())); time.sleep(60)'])\n"
+              f"print('started', flush=True); time.sleep(60)\n")
+    t0 = time.time()
+    try:
+        k._run_child([sys.executable, "-c", script], cwd=str(tmp_path), env=None, timeout=3)
+        raise AssertionError("expected a timeout")
+    except k.subprocess.TimeoutExpired:
+        pass
+    assert time.time() - t0 < 30                     # returned promptly; did not wait on the grandchild's pipe
+    gpid = int(pidfile.read_text())
+    time.sleep(0.5)
+    try:
+        os.kill(gpid, 0)
+        alive = True
+    except ProcessLookupError:
+        alive = False
+    assert not alive                                  # the whole process group was killed
+    ok = k._run_child([sys.executable, "-c", "print('hi')"], cwd=str(tmp_path), env=None, timeout=10)
+    assert ok.returncode == 0 and ok.stdout.strip() == "hi"
