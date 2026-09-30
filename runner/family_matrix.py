@@ -320,6 +320,37 @@ def _relevant(page, question):
     return sum(1 for t in a if t[:6] in low) >= max(1, len(a) - 1)
 
 
+DERIVED_LABELS = {"test-any-chance": "any chance", "test-material-element": "material element",
+                  "test-predominant-purpose": "predominant purpose (dominant factor)",
+                  "test-gambling-instinct": "gambling instinct test"}
+
+
+def derived_prior(codes, select=None):
+    """Smarter's statute-derived chance/skill memberships for a jurisdiction (cade_derive_family_members):
+    [(label, citation)]. A lead and a hint, never evidence -- a state often carries two tests for different
+    activities (2026-09-29: Florida, Kansas, Kentucky, Massachusetts)."""
+    try:
+        if select is None:
+            import corpus_db
+            select = corpus_db.select
+        rows = select("intel_jurisdiction_family_members", {
+            "select": "family_id,basis_citation", "jurisdiction_id": f"in.({','.join(codes)})",
+            "established_by": "neq.unestablished", "family_id": "like.test-*", "limit": "40"}) or []
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        lab, cit = DERIVED_LABELS.get(r.get("family_id")), _s(r.get("basis_citation")).strip()
+        if lab and (lab, cit) not in out:
+            out.append((lab, cit))
+    return out
+
+
+def section_tokens(citation):
+    """'Fla. Stat. § 849.25(1)(a)' -> ['849.25']; 'K.S.A. 21-6403(e)' -> ['21-6403']; full-text search matches these."""
+    return list(dict.fromkeys(re.findall(r"\b\d{1,4}[A-Z]?[.\-]\d{1,5}(?:\.\d+)?\b", _s(citation))))[:2]
+
+
 def kb_topics(fam):
     """statute_definitions topics that answer this family's question."""
     t = fam.get("template") or ""
@@ -565,6 +596,29 @@ def cell_research(row, fam, opts, *, fetcher, searcher, compacts=None):
                               "origin": "caselaw_excerpt", "_held": _s(c["snippet"])})
     if re.search(r"tribe|tribal|igra|compact", fam["template"]):
         cands += compacts_for(member, index=compacts)
+    # Statutes another pipeline derived this jurisdiction's test from: open them as leads (and keep them).
+    prior = []
+    if st and re.search(r"chance|skill", fam.get("template") or ""):
+        codes2 = [f"US-{st[0]}", st[0]]
+        prior = derived_prior(codes2)
+        try:
+            import corpus_db
+            import statute_kb
+            seen_tok = set()
+            for _lab, cit in prior:
+                for tok in section_tokens(cit):
+                    if tok in seen_tok:
+                        continue
+                    seen_tok.add(tok)
+                    for p in corpus_db.passages_scoped(tok, codes2, limit=2, doc_types=["statute", "regulation"]) or []:
+                        if p.get("source_url") and len(_s(p.get("text"))) >= 100:
+                            cands.append({"authority": f"{cit} ({_s(p.get('title') or p.get('heading'))[:80]})",
+                                          "url": p["source_url"], "origin": "corpus", "_held": _s(p["text"])})
+                            statute_kb.record(f"US-{st[0]}", "gambling", cit, p["source_url"], p["text"], "corpus",
+                                              heading=p.get("heading"), doc_id=p.get("doc_id"))
+        except Exception:
+            pass
+    row["_prior"] = prior
     # The jurisdiction's own statutes on file (statute_definitions), verbatim: a lookup, not a search.
     kb_jur = f"US-{st[0]}" if st else _s(row.get("_jurisdiction"))
     if kb_jur:
@@ -683,6 +737,10 @@ def chart_prompt(fam, opts, framework, framework_text, cells, its=None):
     lines += [f"[{p['id']}] {p['authority']}\n{p['text']}" for p in framework]
     for c in cells:
         lines.append(f"\n== CELL {c['n']}: {c['row']['_member']} ==")
+        if c["row"].get("_prior"):
+            lines.append("DERIVED ELSEWHERE FROM STATUTES (a hint, NOT evidence; different statutes can apply different "
+                         "tests to different activities, which makes a cell contested): "
+                         + "; ".join(f"{lab} ({cit})" for lab, cit in c["row"]["_prior"][:6]))
         if c.get("critique"):
             lines.append("PRIOR REVIEW OF THIS CELL (the commission sent it back; fix these points or mark it "
                          "contested/open): " + c["critique"][:900])

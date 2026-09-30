@@ -266,6 +266,7 @@ def _fam_env(monkeypatch, tmp_path):
     monkeypatch.setattr(corpus_db, "passages_scoped", lambda *a, **k: [])
     import statute_kb
     monkeypatch.setattr(statute_kb, "lookup", lambda *a, **k: [])
+    monkeypatch.setattr(fm, "derived_prior", lambda *a, **k: [])
     monkeypatch.setattr(statute_kb, "record", lambda *a, **k: True)
     pages = {"https://x/fw.pdf": FW_TEXT, "https://x/oh.pdf": OH_TEXT, "https://x/me.pdf": NOWHERE_TEXT}
 
@@ -628,3 +629,18 @@ def test_family_topics_route_to_statutes():
     import family_matrix as fm
     assert fm.kb_topics({"template": "which formulation of the chance/skill test does {x} apply"}) == ["gambling", "lottery"]
     assert fm.kb_topics({"template": "how would {x} classify each of the following game types"}) == []
+
+
+
+def test_derived_memberships_are_a_labelled_hint_not_evidence(monkeypatch, tmp_path):
+    fm, fetcher, searcher = _fam_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(fm, "derived_prior", lambda codes, select=None:
+                        [("any chance", "Fla. Stat. § 849.25(1)(a)"), ("predominant purpose (dominant factor)", "Fla. Stat. § 849.08")]
+                        if "US-OH" in codes else [])
+    fam = fm.families(_fam_rows())[0]
+    prompts = []
+    fm.run(fam, mint=None, fetcher=fetcher, searcher=searcher, chart=lambda p: prompts.append(p) or (None, {}),
+           compacts=[], write_doc=False)
+    assert "DERIVED ELSEWHERE FROM STATUTES (a hint, NOT evidence" in prompts[0]
+    assert "Fla. Stat. § 849.08" in prompts[0]
+    assert fm.section_tokens("Fla. Stat. § 849.25(1)(a)") == ["849.25"]
