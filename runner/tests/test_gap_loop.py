@@ -264,6 +264,9 @@ def _fam_env(monkeypatch, tmp_path):
     monkeypatch.setattr(corpus_retrieval, "top_passages", lambda *a, **k: [])
     import corpus_db
     monkeypatch.setattr(corpus_db, "passages_scoped", lambda *a, **k: [])
+    import statute_kb
+    monkeypatch.setattr(statute_kb, "lookup", lambda *a, **k: [])
+    monkeypatch.setattr(statute_kb, "record", lambda *a, **k: True)
     pages = {"https://x/fw.pdf": FW_TEXT, "https://x/oh.pdf": OH_TEXT, "https://x/me.pdf": NOWHERE_TEXT}
 
     def searcher(query, courts, n):
@@ -600,3 +603,28 @@ def test_docket_batch_ramps_at_night_and_with_exo():
     assert k.docket_batch(3, hour=2, exo_free=0.2) == 6
     assert k.docket_batch(3, hour=14, exo_free=90) == 6
     assert k.docket_batch(3, hour=3, exo_free=90) == 12
+
+
+def test_statute_kb_fill_keeps_only_topic_statutes():
+    import statute_kb as kb
+    stored = []
+    def search(q, codes, limit=6, doc_types=None):
+        if codes[0] != "US-OH":
+            return []
+        return [{"doc_type": "statute", "text": "As used in this chapter, gambling means betting or wagering on a game of chance for a prize " * 2,
+                 "source_url": "https://codes.ohio.gov/2915.01", "title": "R.C. 2915.01", "doc_id": "d1"},
+                {"doc_type": "court_opinion", "text": "gambling " * 30, "source_url": "https://x", "title": "case"},
+                {"doc_type": "statute", "text": "The department shall publish an annual report of its expenditures " * 3,
+                 "source_url": "https://y", "title": "unrelated"}]
+    out = kb.fill_from_corpus(limit=500, search=search, insert=lambda t, r, upsert=False: stored.append(r) or [r],
+                              select=lambda *a, **k: [])
+    assert out["searched"] == 5 * len(kb.jurisdictions()) or out["searched"] == 500
+    ohio = [r for r in stored if r["jurisdiction"] == "US-OH"]
+    assert ohio and all(r["url"] == "https://codes.ohio.gov/2915.01" for r in ohio)
+    assert {r["topic"] for r in ohio} >= {"gambling"}
+
+
+def test_family_topics_route_to_statutes():
+    import family_matrix as fm
+    assert fm.kb_topics({"template": "which formulation of the chance/skill test does {x} apply"}) == ["gambling", "lottery"]
+    assert fm.kb_topics({"template": "how would {x} classify each of the following game types"}) == []
