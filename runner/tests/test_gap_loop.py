@@ -701,3 +701,22 @@ def test_spine_assist_charts_stuck_cells_and_publishes_verified_sources(monkeypa
     assert out["published"] == 1 and rows[0]["spine_id"] == 6 and rows[0]["mechanic_slug"] == "skill-game-cash-prize"
     assert rows[0]["sources"] and rows[0]["sources"][0]["url"] == "https://x/oh.pdf"
 
+
+
+def test_statute_kb_web_fill_verifies_quotes_and_respects_caps(monkeypatch, tmp_path):
+    import statute_kb as kb
+    monkeypatch.setattr(kb, "_WEB_STATE", str(tmp_path / "web.json"))
+    monkeypatch.setattr(kb, "coverage", lambda select=None: {t: {"missing": ["US-OH", "US-TX"], "have": 0, "of": 2}
+                                                            for t in kb.TOPICS})
+    page = "Sec. 2915.01. As used in this chapter, gambling means a scheme in which a prize is won by chance for consideration. " * 3
+    stored = []
+    web = lambda p: {"pairs": [{"n": 1, "citation": "R.C. 2915.01", "url": "https://codes.ohio.gov/2915.01",
+                                "quote": "gambling means a scheme in which a prize is won by chance for consideration"},
+                               {"n": 2, "citation": "Tex. Pen. Code 47.01", "url": "https://statutes.capitol.texas.gov/47.01",
+                                "quote": "Texas defines gambling as anything at all"}]}
+    fetch = lambda u: page if "ohio" in u else "unrelated page text " * 20
+    monkeypatch.setattr(kb, "WEB_CALLS_PER_DAY", 1)
+    out = kb.fill_from_web(web=web, fetcher=fetch, insert=lambda t, r, upsert=False: stored.append(r) or [r])
+    assert out["calls"] == 1 and out["stored"] == 1
+    assert stored[0]["jurisdiction"] == "US-OH" and stored[0]["source"] == "official_web"
+    assert kb.fill_from_web(web=web, fetcher=fetch, insert=lambda *a, **k: None)["calls"] == 0   # day's cap spent
