@@ -644,3 +644,27 @@ def test_derived_memberships_are_a_labelled_hint_not_evidence(monkeypatch, tmp_p
     assert "DERIVED ELSEWHERE FROM STATUTES (a hint, NOT evidence" in prompts[0]
     assert "Fla. Stat. § 849.08" in prompts[0]
     assert fm.section_tokens("Fla. Stat. § 849.25(1)(a)") == ["849.25"]
+
+
+def test_gold_eval_scores_family_cells_and_reopens_disagreements(monkeypatch, tmp_path):
+    import gold_eval as ge
+    import family_matrix as fm
+    import db
+    monkeypatch.setattr(fm, "STATE_DIR", str(tmp_path / "families"))
+    fm.save_state("k", {"template": "which formulation of the chance/skill test does {x} apply", "cells": {
+        "d1": {"member": "New York", "status": "settled", "choice": "material element"},
+        "d2": {"member": "Delaware", "status": "settled", "choice": "predominant purpose (dominant factor)", "minted": True},
+        "d3": {"member": "Kansas", "status": "contested", "choice": "any chance"},
+        "d4": {"member": "Ohio", "status": "open", "choice": "undetermined"}}})
+    gold = {"NY": {"material element"}, "DE": {"any chance"}, "KS": {"any chance", "predominant purpose (dominant factor)"}}
+    res = ge.score_family(gold)
+    assert (res["cells"], res["single_label"], res["exact"], res["multi_label"], res["consistent"]) == (3, 2, 1, 1, 1)
+    assert [d["member"] for d in res["disagreements"]] == ["Delaware"]
+    monkeypatch.setattr(ge, "labels", lambda select=None: gold)
+    monkeypatch.setattr(db, "select", lambda *a, **k: [{"id": "card-de"}])
+    updates = []
+    assert ge.reopen_disagreements(update=lambda t, m, p: updates.append((t, m, p))) == 1
+    rec = fm.load_state("k")["cells"]["d2"]
+    assert rec["needs_rechart"] and "any chance" in rec["critique"] and rec["card_id"] == "card-de"
+    assert ("legal_docket", {"id": "d2"}, {"status": "stale"}) in updates
+    assert ge.reopen_disagreements(update=lambda *a: None) == 0          # once per cell

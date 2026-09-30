@@ -27,6 +27,7 @@ SCHEMAS = {
     "gap_intake": (("docketed",), (), ("open_gaps",)),
     "gap_writeback": (("written",), ("answered",), ("candidates",)),
     "statute_kb": (("stored",), (), ("searched",)),
+    "gold_eval": ((), ("reopened",), ("scored",)),
 }
 
 
