@@ -45,7 +45,8 @@ class ConsiliumResourceAdmissionTest(unittest.TestCase):
         }))
         self.t = self.load_tick()
         self.process = types.SimpleNamespace(returncode=0, stdout="completed\n", stderr="")
-        self.run = self.stack.enter_context(patch.object(self.t.subprocess, "run", return_value=self.process))
+        # 2026-09-29: jobs launch through _run_child (own process group, group-killed on timeout).
+        self.run = self.stack.enter_context(patch.object(self.t, "_run_child", return_value=self.process))
         self.output = self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         self.t.JOBS = [("expert_corps", "expert_corps.py", ["tick"], 3600, 2400)]
 

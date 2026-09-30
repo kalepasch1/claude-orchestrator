@@ -242,6 +242,34 @@ def _capacity_receipt(path):
         return "local_capacity_receipt_invalid"
 
 
+def _run_child(cmd, *, cwd, env, timeout):
+    """subprocess.run semantics with a timeout that holds. The job gets its own process group and writes to
+    temporary files, not pipes. On timeout the whole group (the job and every claude/codex/ollama child it
+    started) gets SIGTERM, then SIGKILL, and nothing waits on a pipe a grandchild still holds.
+    2026-09-29: paper_drafter ran 12,394 s against a 3,000 s limit -- subprocess.run killed the job itself,
+    then blocked reading pipes its children kept open, and the tick (one job at a time) stood still."""
+    import signal
+    with tempfile.TemporaryFile(mode="w+") as out, tempfile.TemporaryFile(mode="w+") as err:
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=out, stderr=err, text=True, start_new_session=True)
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(p.pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    break
+                try:
+                    p.wait(timeout=15)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            raise
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(cmd, p.returncode, out.read(), err.read())
+
+
 def run_job(name, script, args, timeout_s):
     # Gate the host, not the strong local model: a healthy job may use frontier/cloud.
     # Per-model admission belongs to the model gateway at the time of the actual call.
@@ -272,7 +300,7 @@ def run_job(name, script, args, timeout_s):
             child_env = dict(os.environ, ORCH_LOCAL_CAPACITY_RECEIPT=receipt_path, **light_env)
             failure = None
             try:
-                proc = subprocess.run(cmd, cwd=HERE, capture_output=True, text=True, timeout=timeout_s, env=child_env)
+                proc = _run_child(cmd, cwd=HERE, env=child_env, timeout=timeout_s)
             except subprocess.TimeoutExpired:
                 _log(f"{name} TIMEOUT after {timeout_s}s")
                 failure = {"rc": -1, "secs": timeout_s, "tail": ["timeout"]}
