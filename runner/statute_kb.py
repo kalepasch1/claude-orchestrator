@@ -141,6 +141,8 @@ WEB_SCHEMA = {"type": "object", "required": ["pairs"], "properties": {"pairs": {
 WEB_SYSTEM = """You find a state's own statutory definition for a research desk. Output is checked by software: each
 quote is fetched from its URL and searched for verbatim; anything not found is discarded.
  - Prefer the official legislature or code site; otherwise a faithful full-text host of the code.
+ - The URL must serve the statute text as plain HTML or PDF without running JavaScript (a direct section
+   page or PDF, not a search page or an app shell); our fetcher cannot run scripts.
  - The quote: the operative definition, copied character for character, at most 60 words.
  - If the state has no such statutory definition, return nothing for that pair.
 Return ONLY the JSON object."""
@@ -179,7 +181,8 @@ def fill_from_web(web=None, fetcher=None, select=None, insert=None):
     import local_tribunal as lt
     total, today = _web_state()
     budget = min(WEB_CALLS_PER_DAY - today, WEB_CALLS_TOTAL - total)
-    out = {"calls": 0, "stored": 0, "budget_left_total": max(0, WEB_CALLS_TOTAL - total)}
+    out = {"calls": 0, "stored": 0, "budget_left_total": max(0, WEB_CALLS_TOTAL - total),
+           "rejected": {"no_url": 0, "fetch_failed": 0, "quote_not_on_page": 0}}
     if budget <= 0:
         return out
     if web is None:
@@ -210,9 +213,16 @@ def fill_from_web(web=None, fetcher=None, select=None, insert=None):
             except Exception:
                 continue
             url = _s(it.get("url")).strip()
-            page = (fetcher(url) or "") if url.startswith("http") else ""
-            exact = lt.locate_quote(it.get("quote"), page) if page else ""
+            if not url.startswith("http"):
+                out["rejected"]["no_url"] += 1
+                continue
+            page = fetcher(url) or ""
+            if not page:
+                out["rejected"]["fetch_failed"] += 1
+                continue
+            exact = lt.locate_quote(it.get("quote"), page)
             if not exact or exact not in page:
+                out["rejected"]["quote_not_on_page"] += 1
                 continue
             i = page.find(exact)
             text = page[max(0, i - 600): i + len(exact) + 600]
