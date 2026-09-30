@@ -513,7 +513,7 @@ def test_a_game_is_classified_only_from_the_cells_own_passages():
     its, opts = fm.items(q), fm.options(q)
     cell = {"n": 2, "passages": [{"id": "M2.1", "authority": "Laguna compact", "url": "u",
                                   "text": "The Tribe may conduct any or all forms of Class III Gaming, including sports wagering at posted odds on its Indian lands."}]}
-    v = fm.verify_cell({"entity_ok": True, "status": "settled", "choice": "Class III", "answer": "Class III [M2.1].",
+    v = fm.verify_cell({"entity_ok": True, "status": "settled", "basis": "compact", "choice": "Class III", "answer": "Class III [M2.1].",
                         "quotes": [{"passage": "M2.1", "quote": "The Tribe may conduct any or all forms of Class III Gaming"}],
                         "items": [{"item": 3, "choice": "Class III", "passages": ["M2.1"]},
                                   {"item": 2, "choice": "outside IGRA", "passages": ["G1"]},        # general law only
@@ -569,8 +569,9 @@ def test_settled_needs_a_direct_statement_of_the_test():
                                   "text": "Petitioners argued that chance is a material element in determining the outcome of these contests."}]}
     base = {"entity_ok": True, "status": "settled", "choice": "material element", "answer": "x [M1.1]",
             "quotes": [{"passage": "M1.1", "quote": "Petitioners argued that chance is a material element in determining"}]}
-    assert fm.verify_cell({**base, "basis": "advocacy_or_record"}, cell, [])["status"] == "contested"
-    assert fm.verify_cell({**base, "basis": "reversed_or_superseded"}, cell, [])["status"] == "contested"
+    # Not a direct statement, and only one of the jurisdiction's passages: not settled, and too thin to be a split.
+    assert fm.verify_cell({**base, "basis": "advocacy_or_record"}, cell, [])["status"] == "open"
+    assert fm.verify_cell({**base, "basis": "reversed_or_superseded"}, cell, [])["status"] == "open"
     assert fm.verify_cell({**base, "basis": "statute"}, cell, [])["status"] == "settled"
 
 
