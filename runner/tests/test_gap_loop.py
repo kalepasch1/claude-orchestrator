@@ -668,3 +668,36 @@ def test_gold_eval_scores_family_cells_and_reopens_disagreements(monkeypatch, tm
     assert rec["needs_rechart"] and "any chance" in rec["critique"] and rec["card_id"] == "card-de"
     assert ("legal_docket", {"id": "d2"}, {"status": "stale"}) in updates
     assert ge.reopen_disagreements(update=lambda *a: None) == 0          # once per cell
+
+
+def test_spine_assist_charts_stuck_cells_and_publishes_verified_sources(monkeypatch, tmp_path):
+    import spine_assist as sa
+    fm, fetcher, searcher = _fam_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(sa, "OUT", str(tmp_path / "spine.jsonl"))
+    def select(table, params):
+        if table == "intel_spine_queue":
+            return [{"id": 6, "jurisdiction_id": "US-OH", "mechanic_slug": "skill-game-cash-prize", "status": "failed"},
+                    {"id": 7, "jurisdiction_id": "US-ME", "mechanic_slug": "skill-game-cash-prize", "status": "blocked"},
+                    {"id": 8, "jurisdiction_id": "US-VT", "mechanic_slug": "skill-game-cash-prize", "status": "empty"}]
+        if table == "intel_mechanics":
+            return [{"slug": "skill-game-cash-prize", "name": "Skill game for cash prize", "category": "gaming",
+                     "description": "Head-to-head or tournament play for cash where skill is asserted to predominate."}]
+        return []
+    fams = sa.families(select)
+    assert len(fams) == 1 and len(fams[0]["members"]) == 3
+    q = fams[0]["members"][0]["question"]
+    assert q.startswith("Under Ohio law, is skill game for cash prize") and fm.options(q)[-1] == "prohibited"
+    chart = lambda p: ({"framework": "", "cells": [{"cell": 1, "entity_ok": True, "basis": "court_holding", "status": "settled",
+                        "choice": "permitted only on conditions", "answer": "Skill games are lawful where skill predominates [M1.1].",
+                        "flips_if": "", "quotes": [{"passage": "M1.1", "quote": "Under that test a scheme is a game of chance when chance predominates over skill"}]}]},
+                       {"tier": "frontier"})
+    monkeypatch.setattr(sa, "families", lambda select=None: fams)
+    skill_page = ("Ohio courts hold that a skill game for a cash prize is lawful where skill predominates. Under that test "
+                  "a scheme is a game of chance when chance predominates over skill in determining the outcome, and a cash "
+                  "prize contest decided by skill is not gambling. ") * 3
+    fetch2 = lambda u: skill_page if u == "https://x/oh.pdf" else fetcher(u)
+    out = sa.run(limit=8, chart=chart, fetcher=fetch2, searcher=searcher, compacts=[], write_doc=False)
+    rows = [json.loads(l) for l in open(tmp_path / "spine.jsonl")]
+    assert out["published"] == 1 and rows[0]["spine_id"] == 6 and rows[0]["mechanic_slug"] == "skill-game-cash-prize"
+    assert rows[0]["sources"] and rows[0]["sources"][0]["url"] == "https://x/oh.pdf"
+

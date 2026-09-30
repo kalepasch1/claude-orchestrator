@@ -303,12 +303,7 @@ def case_query(question, opts):
     2026-09-29: a bag of words ('formulation chance skill test apply') returned Daubert and custody opinions."""
     a = anchors(question)
     q = " AND ".join(a)
-    phrases = []
-    for o in opts:
-        for part in re.split(r"\s*\(|\)\s*", o):
-            part = re.sub(r"\s+test$", "", part.strip(), flags=re.I)
-            if len(part.split()) >= 2 and part.lower() not in (p.lower() for p in phrases):
-                phrases.append(part)
+    phrases = [p for p in _phrases(opts)]
     if phrases:
         q += " AND (" + " OR ".join(f'"{p}"' for p in phrases[:6]) + ")"
     return q
@@ -372,12 +367,16 @@ def _want(question, opts):
     return asrch.terms(question, limit=18) + extra
 
 
+_OUTCOME_WORDS = {"permitted", "prohibited", "conditions", "condition", "lawful", "unlawful", "allowed", "illegal"}
+
+
 def _phrases(opts):
+    """Doctrinal phrases among the options ('dominant factor', 'Class III'); outcome words are not doctrine."""
     out = []
     for o in opts:
         for part in re.split(r"\s*\(|\)\s*", o):
             part = re.sub(r"\s+test$", "", part.strip(), flags=re.I).lower()
-            if len(part.split()) >= 2 and part not in out:
+            if len(part.split()) >= 2 and part not in out and not (set(part.split()) & _OUTCOME_WORDS):
                 out.append(part)
     return out
 
@@ -1101,6 +1100,8 @@ def run(fam, *, mint=None, fetcher=None, searcher=None, chart=None, compacts=Non
                    "own": v["own"], "at": now, "why": v["why"], "tier": tier, "model": (r or {}).get("model"),
                    "docket_id": c["row"]["id"], "items": {str(i["n"]): i["choice"] for i in v.get("items") or []},
                    "basis": v.get("basis"), "revisions": c.get("revisions", 0) + (1 if c.get("card_id") else 0),
+                   "sources": [{"authority": q["authority"], "url": q["url"], "quote": q["quote"]}
+                               for q in v.get("quotes") or [] if q["id"].startswith("M")][:6],
                    "reviewed_by": ((st.get("cells") or {}).get(str(c["row"]["id"])) or {}).get("reviewed_by")}
             c["v"], c["rec"], c["tier"], c["model"] = v, rec, tier, (r or {}).get("model")
             st["cells"][str(c["row"]["id"])] = rec
