@@ -722,6 +722,17 @@ research desk whose output is checked by software:
    Party argument, legislative record, dicta, a decision later reversed or superseded, a provision narrower
    than the question (one exemption, one device), or another jurisdiction's law is at most "contested".
    Where a passage shows subsequent history (reversed, overruled, amended), say so.
+ - The passage must STATE the rule the question asks about. A definition that merely uses the same words
+   (e.g. "a chance to win a prize") does not say which test applies; language about the DEGREE of chance
+   (any / material / predominant) or a court's statement of the test does. (2026-09-30 commission: Iowa.)
+ - Your choice must follow the passage's own words. If the passage says "predominantly", the choice is not
+   "any chance". If the passages point both ways, the cell is contested and the answer says so. (Indiana.)
+ - "contested" means the jurisdiction's OWN sources conflict, split, or apply different tests to different
+   activities. Missing or thin evidence is "open", never "contested". (North Carolina.)
+ - Attribute a passage to the document it comes from; if that document quotes or recounts another court or
+   an agency, say so ("the Supreme Court, recounting the Commonwealth Court's order ..."). (Pennsylvania.)
+ - Framework passages are general law, often from OTHER jurisdictions: never cite them as this jurisdiction's
+   authority.
  - In each answer, put the supporting passage ids in brackets after the sentence they support, e.g. [M3.1][G2].
 Return ONLY the JSON object."""
 
@@ -803,6 +814,9 @@ def verify_cell(cell_json, cell, framework, its=None, opts=None):
         status, why = "open", "no verified quote from the jurisdiction's own sources"
     elif status == "settled" and basis not in DIRECT:
         status, why = "contested", f"basis '{basis or 'unstated'}' is not a direct statement of the test"
+    if status == "contested" and len({q["id"] for q in own}) < 2:
+        # A split needs two of the jurisdiction's own passages; thin evidence is open (2026-09-30: North Carolina).
+        status, why = "open", "contested needs two of the jurisdiction's own passages"
     own_ids = {q["id"] for q in own}
     got = {}
     for it in cell_json.get("items") or []:
@@ -858,7 +872,8 @@ def card_agg(fam, row, v, framework_text, framework_quotes, board, meta):
         f"{member} — {_core(row.get('question'))}", "",
         f"ANSWER ({v['status']}): {answer}", "",
         *by_game,
-        f"GENERAL FRAMEWORK: {fw}" if fw else "", "",
+        (f"GENERAL FRAMEWORK (general law, often from other jurisdictions; not authority for {member}'s rule): {fw}"
+         if fw else ""), "",
         f"ACROSS THE FAMILY ({len(board)} jurisdictions charted together; open cells are still being researched):",
         *others, "",
         "METHOD: charted in one pass with its sibling jurisdictions from exact passages of sources our system "
@@ -868,8 +883,9 @@ def card_agg(fam, row, v, framework_text, framework_quotes, board, meta):
     for q in quotes:
         prop = next((s for s in re.split(r"(?<=[.;])\s+", v["answer"] + " " + framework_text) if q["id"] in s), "")
         cites.append({"source": q["authority"], "url": q["url"], "quote": q["quote"], "verified": True,
-                      "finding": q["id"], "proposition": re.sub(r"\[[^\]]*\]", "", prop).strip()[:300]
-                      or ("general framework" if q["id"].startswith("G") else f"{member}: {choice}")})
+                      "finding": q["id"],
+                      "proposition": (("General framework, not authority for " + member + ": ") if q["id"].startswith("G") else "")
+                      + (re.sub(r"\[[^\]]*\]", "", prop).strip()[:280] or ("general law" if q["id"].startswith("G") else f"{member}: {choice}"))})
     conf = confidence_for(v)
     return {"question": row.get("question"),
             "verdict": f"{member}: {choice}" + (" (contested)" if v["status"] == "contested" else "")

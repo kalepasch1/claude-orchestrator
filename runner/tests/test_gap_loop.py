@@ -749,3 +749,15 @@ def test_run_child_timeout_kills_grandchildren_and_returns(tmp_path):
     assert not alive                                  # the whole process group was killed
     ok = k._run_child([sys.executable, "-c", "print('hi')"], cwd=str(tmp_path), env=None, timeout=10)
     assert ok.returncode == 0 and ok.stdout.strip() == "hi"
+
+
+def test_contested_needs_two_own_passages():
+    import family_matrix as fm
+    cell = {"n": 1, "passages": [
+        {"id": "M1.1", "authority": "a", "url": "u", "text": "Courts in this state apply the predominance test to games of skill and chance."},
+        {"id": "M1.2", "authority": "b", "url": "v", "text": "The statute treats any element of chance in a wager as sufficient for gambling."}]}
+    one = {"entity_ok": True, "status": "contested", "basis": "court_holding", "choice": "x", "answer": "a [M1.1]",
+           "quotes": [{"passage": "M1.1", "quote": "Courts in this state apply the predominance test to games"}]}
+    assert fm.verify_cell(one, cell, [])["status"] == "open"
+    two = dict(one, quotes=one["quotes"] + [{"passage": "M1.2", "quote": "The statute treats any element of chance in a wager as sufficient"}])
+    assert fm.verify_cell(two, cell, [])["status"] == "contested"
