@@ -60,6 +60,28 @@ for _k, _v in _DEFAULTS.items():
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 SCHED = os.path.join(HOME, "consilium", "schedule.json")
 
+# CAPACITY RAMP (operator, 2026-09-29: "night window + lean Claude + ramp up when EXO is reconnected"). The
+# docket batch doubles in the 01:00-06:00 window, when this Mac's other workloads usually idle, and again
+# when the EXO cluster reports room for the large rungs. Admission still decides whether anything runs.
+NIGHT_HOURS = range(1, 6)
+EXO_RAMP_GB = float(os.environ.get("ORCH_CONSILIUM_EXO_RAMP_GB", "60"))
+
+
+def docket_batch(base=None, hour=None, exo_free=None):
+    b = int(base if base is not None else os.environ["LEGAL_DOCKET_BATCH"])
+    hour = datetime.datetime.now().hour if hour is None else hour
+    if hour in NIGHT_HOURS:
+        b *= 2
+    if exo_free is None:
+        try:
+            import local_llm
+            exo_free = local_llm.free_gb()
+        except Exception:
+            exo_free = None
+    if isinstance(exo_free, (int, float)) and exo_free >= EXO_RAMP_GB:
+        b *= 2
+    return b
+
 #: name -> (script, args, interval_s, timeout_s). Order = priority when several are due.
 JOBS = [
     ("legal_docket",     "legal_docket.py",         [os.environ["LEGAL_DOCKET_BATCH"]], 1200, 3000),
@@ -336,6 +358,11 @@ def tick():
     job = next_due(state)
     if job:
         name, script, args, interval, timeout_s = job
+        if name == "legal_docket":
+            try:
+                args = [str(docket_batch(int(args[0])))]
+            except Exception:
+                pass
         res = run_job(name, script, args, timeout_s)
         _record_result(state, name, res)
         return None if res.get("deferred") else name

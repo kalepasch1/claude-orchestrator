@@ -284,6 +284,7 @@ def run(limit=BATCH):
         backlog = 0
     only = {p.strip().lower() for p in os.environ.get("ORCH_DOCKET_PRIORITIES", "").split(",") if p.strip()}
     all_gaps = _gap_rows(500)
+    family_summary = None
     # QUESTION FAMILIES (2026-09-29). Gap questions asked once per jurisdiction are charted together by
     # family_matrix (one framework, free per-jurisdiction research, one chart call per few members)
     # instead of one tournament each. While a family has uncharted members, a tick charts them; those
@@ -299,11 +300,11 @@ def run(limit=BATCH):
             fam = family_matrix.next_family(all_gaps) if family_matrix.ENABLED else None
             if fam and _family_ready():
                 res = family_matrix.run(fam, mint=mint_card)
-                summary = {"seeded": seeded, "convened": res["cells"], "cards_minted": res["minted"],
-                           "family": {k: res.get(k) for k in ("family", "members", "settled", "contested", "open",
-                                                              "chart_calls", "tiers", "doc")}}
-                print(json.dumps(summary), flush=True)
-                return summary
+                family_summary = {"cells": res["cells"], "minted": res["minted"],
+                                  **{k: res.get(k) for k in ("family", "members", "settled", "contested", "open",
+                                                             "chart_calls", "web_calls", "tiers", "doc")}}
+                # 2026-09-29: returning here starved the firm -- with ~70 family members at 12 a pass, no
+                # individual gap question reached it for hours. The same tick now goes on to them.
             if family_matrix.ENABLED:
                 held = family_matrix.held_for_family(all_gaps)
                 if held:
@@ -342,8 +343,12 @@ def run(limit=BATCH):
     else:
         rows = _stale_or_unanswered(limit)
     if not rows:
-        print(json.dumps({"seeded": seeded, "convened": 0, "note": "docket empty or fully answered"}))
-        return {"seeded": seeded, "convened": 0}
+        out0 = {"seeded": seeded, "convened": (family_summary or {}).get("cells", 0),
+                "cards_minted": (family_summary or {}).get("minted", 0), "note": "no individual question due"}
+        if family_summary:
+            out0["family"] = family_summary
+        print(json.dumps(out0))
+        return out0
     minted, skipped, convened, precedents = 0, 0, 0, 0
     for row in rows:
         if FRONTIER_ONLY and not _frontier_ready():
@@ -413,6 +418,10 @@ def run(limit=BATCH):
         print(f"legal_docket: insight sync skipped: {type(e).__name__}: {str(e)[:100]}")
     out = {"seeded": seeded, "precedents": precedents, "convened": convened, "cards_minted": minted, "left_pending": skipped,
            "frontier_only": FRONTIER_ONLY, "insights": insights}
+    if family_summary:
+        out["family"] = family_summary
+        out["convened"] += family_summary.get("cells", 0)
+        out["cards_minted"] += family_summary.get("minted", 0)
     print("legal_docket: " + json.dumps(out))
     return out
 
