@@ -592,3 +592,11 @@ def test_commission_critique_reopens_a_family_cell(monkeypatch, tmp_path):
     assert fm.revisit_all() == 0                          # the same review never reopens it twice
     fam = {"key": "k1", "members": [{"id": "d1", "_member": "Florida"}]}
     assert [r["id"] for r in fm.todo(fam)] == ["d1"]
+
+
+def test_docket_batch_ramps_at_night_and_with_exo():
+    import consilium_tick as k
+    assert k.docket_batch(3, hour=14, exo_free=0.2) == 3
+    assert k.docket_batch(3, hour=2, exo_free=0.2) == 6
+    assert k.docket_batch(3, hour=14, exo_free=90) == 6
+    assert k.docket_batch(3, hour=3, exo_free=90) == 12
