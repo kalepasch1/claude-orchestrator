@@ -113,7 +113,7 @@ JOBS = [
     ("gap_intake",       "gap_intake.py",           ["--sort"], 21600, 1200),
     ("gap_writeback",    "gap_writeback.py",        [],        3600, 600),
     # Each jurisdiction's statutory definitions, copied verbatim from the corpus (free, daily).
-    ("statute_kb",       "statute_kb.py",           [],        86400, 1200),
+    ("statute_kb",       "statute_kb.py",           [],        86400, 3000),
     # Weekly: every route scored against labels it did not produce (no model calls).
     ("gold_eval",        "gold_eval.py",            [],        604800, 600),
     # Daily: chart the Smarter spine cells its pipeline could not capture; results published, spine untouched.

@@ -130,6 +130,100 @@ def fill_from_corpus(limit=PER_RUN, search=None, insert=None, select=None):
     return out
 
 
+WEB_CALLS_PER_DAY = int(os.environ.get("ORCH_STATUTE_KB_WEB_PER_DAY", "7"))
+WEB_CALLS_TOTAL = int(os.environ.get("ORCH_STATUTE_KB_WEB_TOTAL", "50"))     # operator: one-time, ~50 over a week
+WEB_PAIRS_PER_CALL = 4
+WEB_TOPIC_ORDER = ("gambling", "lottery", "sweepstakes", "money_transmission", "skill_contest")
+WEB_SCHEMA = {"type": "object", "required": ["pairs"], "properties": {"pairs": {"type": "array", "items": {
+    "type": "object", "required": ["n", "citation", "url", "quote"], "properties": {
+        "n": {"type": "integer"}, "citation": {"type": "string"}, "url": {"type": "string"},
+        "quote": {"type": "string"}}}}}}
+WEB_SYSTEM = """You find a state's own statutory definition for a research desk. Output is checked by software: each
+quote is fetched from its URL and searched for verbatim; anything not found is discarded.
+ - Prefer the official legislature or code site; otherwise a faithful full-text host of the code.
+ - The quote: the operative definition, copied character for character, at most 60 words.
+ - If the state has no such statutory definition, return nothing for that pair.
+Return ONLY the JSON object."""
+_WEB_STATE = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator")),
+                          "consilium", "statute_kb_web.json")
+_TOPIC_WORDS = {"gambling": "definition of gambling (or gaming/wagering)", "lottery": "definition of a lottery",
+                "sweepstakes": "rules for game promotions / sweepstakes (registration, bonding, free entry)",
+                "money_transmission": "definition of money transmission", "skill_contest": "treatment of contests of skill"}
+
+
+def _web_state(add=0):
+    try:
+        with open(_WEB_STATE) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        d = {}
+    today = datetime.date.today().isoformat()
+    if add:
+        d["total"] = int(d.get("total") or 0) + add
+        d[today] = int(d.get(today) or 0) + add
+        os.makedirs(os.path.dirname(_WEB_STATE), exist_ok=True)
+        with open(_WEB_STATE, "w") as f:
+            json.dump({"total": d["total"], today: d[today]}, f)
+    return int(d.get("total") or 0), int(d.get(today) or 0)
+
+
+def _official(url):
+    host = re.sub(r"^https?://", "", _s(url)).split("/")[0].lower()
+    return host.endswith(".gov") or host.endswith(".us") or "legislature" in host or "legis" in host
+
+
+def fill_from_web(web=None, fetcher=None, select=None, insert=None):
+    """One-time, capped web research for pairs the corpus could not fill. -> summary."""
+    import authority_search as asrch
+    import local_research as lr
+    import local_tribunal as lt
+    total, today = _web_state()
+    budget = min(WEB_CALLS_PER_DAY - today, WEB_CALLS_TOTAL - total)
+    out = {"calls": 0, "stored": 0, "budget_left_total": max(0, WEB_CALLS_TOTAL - total)}
+    if budget <= 0:
+        return out
+    if web is None:
+        import frontier
+        if not frontier.can_think(min_tokens=60000, min_tier="frontier"):
+            return out
+
+        def web(prompt):
+            r = frontier.complete(prompt, system=WEB_SYSTEM, need=8, tools=frontier.WEB_TOOLS, max_turns=14,
+                                  json_schema=WEB_SCHEMA, tag="statute_kb.web", timeout=1500, min_tier="frontier")
+            j = r.get("json") if not r.get("error") else None
+            return j if j is not None or not r.get("text") else frontier.extract_json(r["text"])
+    fetcher = fetcher or lr.fetch
+    cov = coverage(select)
+    names = {f"US-{c}": n for c, n, _ids in asrch.STATES}
+    missing = [(j, t) for t in WEB_TOPIC_ORDER for j in cov[t]["missing"] if j in names]
+    for start in range(0, len(missing), WEB_PAIRS_PER_CALL):
+        if out["calls"] >= budget:
+            break
+        chunk = missing[start:start + WEB_PAIRS_PER_CALL]
+        listing = "\n".join(f"{i}. {names[j]}: {_TOPIC_WORDS[t]}" for i, (j, t) in enumerate(chunk, 1))
+        j = web("For each numbered pair, find the state's statutory provision and quote it.\n\n" + listing) or {}
+        out["calls"] += 1
+        _web_state(add=1)
+        for it in j.get("pairs") or []:
+            try:
+                jur, topic = chunk[int(it.get("n")) - 1]
+            except Exception:
+                continue
+            url = _s(it.get("url")).strip()
+            page = (fetcher(url) or "") if url.startswith("http") else ""
+            exact = lt.locate_quote(it.get("quote"), page) if page else ""
+            if not exact or exact not in page:
+                continue
+            i = page.find(exact)
+            text = page[max(0, i - 600): i + len(exact) + 600]
+            if record(jur, topic, it.get("citation"), url, text, "official_web" if _official(url) else "web_research",
+                      insert=insert):
+                out["stored"] += 1
+    out["budget_left_total"] = max(0, WEB_CALLS_TOTAL - _web_state()[0])
+    print("statute_kb: web " + json.dumps(out), flush=True)
+    return out
+
+
 def coverage(select=None):
     seen = _on_file(select)
     jurs = jurisdictions()
@@ -151,7 +245,14 @@ if __name__ == "__main__":
             print(json.dumps({"skipped": "statute_kb already running"}))
             raise SystemExit(0)
         try:
-            fill_from_corpus()
+            res = fill_from_corpus()
+            try:
+                w = fill_from_web()
+                res["stored"] += w.get("stored", 0)
+                res["web_calls"] = w.get("calls", 0)
+            except Exception as e:
+                print(f"statute_kb: web fill skipped: {type(e).__name__}: {str(e)[:100]}")
+            print("statute_kb: " + json.dumps(res), flush=True)
         finally:
             if _deadline is not None:
                 _deadline.cancel()
