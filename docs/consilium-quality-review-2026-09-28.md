@@ -270,3 +270,25 @@ while macOS could reclaim 9.8 GiB at warn pressure. Cloud-only jobs are now admi
 figure, and critical pressure still defers. Separately, manual runs of `gap_intake.py` had written
 the gap map to `~/.claude-orchestrator` because the module read its home before loading
 `runner/.env`. The tick uses `.runtime`, so the map was moved there.
+
+## 12. Validation and the next levers (evening, 2026-09-29)
+
+**Measured, not assumed** (`runner/gold_eval.py`, labels from Smarter's statute-derived memberships):
+
+| Signal | Before this session | Now |
+|---|---|---|
+| Citations on new cards | local tier: fabricated or unrelated ("self-referential dossier") | family cards: every quote confirmed by the commission's own fetch (7/7, 8/8) |
+| Docket source | synthetic grid, 93% needing rewrite or retirement | law-app gaps by value; two families = 78% of gap value |
+| Cost per answered jurisdiction | ~95K-token tournament | ~7-24K tokens (one chart call per 4-9 cells) |
+| Family pass vs statute labels | n/a | 67% exact where one test applies, 50% consistent where several do |
+| Commission acceptance, last 7 days | local 0/48 | family 0/2 (both "revise": over-reach), frontier 1/1 |
+
+Where it is not yet better: judgement at the cell level (both reviewed family cards were sent back),
+the firm has never run a live matter, pathways ran once, and calibration has 3 forecasts, none due.
+
+**Shipped in response:** cells settle only on a direct statement of the test; commission critiques
+and statute-label disagreements re-chart the cell (at most twice); derived statutes as leads;
+`statute_definitions` (free, daily); the firm gets its turn after a family pass, with the docket
+batch ramping at night and with EXO; `spine_assist` charts the Smarter spine's stuck cells
+read-only (first live run: CA DFS prohibited per AG Op. 23-1001; PA permitted under its fantasy-
+contests statute; IL contested per *Dew-Becker*).
