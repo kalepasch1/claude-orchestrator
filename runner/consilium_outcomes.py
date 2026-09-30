@@ -28,6 +28,7 @@ SCHEMAS = {
     "gap_writeback": (("written",), ("answered",), ("candidates",)),
     "statute_kb": (("stored",), (), ("searched",)),
     "gold_eval": ((), ("reopened",), ("scored",)),
+    "spine_assist": (("published",), ("charted",), ("cells_stuck",)),
 }
 
 

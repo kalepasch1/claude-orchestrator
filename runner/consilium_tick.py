@@ -116,6 +116,8 @@ JOBS = [
     ("statute_kb",       "statute_kb.py",           [],        86400, 1200),
     # Weekly: every route scored against labels it did not produce (no model calls).
     ("gold_eval",        "gold_eval.py",            [],        604800, 600),
+    # Daily: chart the Smarter spine cells its pipeline could not capture; results published, spine untouched.
+    ("spine_assist",     "spine_assist.py",         [],        86400, 1800),
 ]
 
 # FRONTIER-CAPABLE JOBS (2026-09-28). The host gate deferred 1,366 launches in two weeks: this Mac
@@ -127,7 +129,7 @@ JOBS = [
 FRONTIER_JOBS = {"legal_docket", "publication_commission", "paper_drafter", "theory_lab",
                  "reg_opportunity_scan", "pathway_lab", "docket_triage", "consilium_export",
                  "card_freshness", "ambiguity_miner", "expert_corps", "corpus_forecaster",
-                 "benchmark_ingest", "playbooks", "gap_intake", "gap_writeback", "statute_kb", "gold_eval"}
+                 "benchmark_ingest", "playbooks", "gap_intake", "gap_writeback", "statute_kb", "gold_eval", "spine_assist"}
 # A cloud-only job is a Python process plus a CLI: a few hundred MB. 2 GiB deferred three of four
 # ticks on 2026-09-29 while memory pressure was only at "warn"; critical pressure still defers.
 LIGHT_MIN_FREE_GB = float(os.environ.get("ORCH_CONSILIUM_LIGHT_MIN_FREE_GB", "1"))
