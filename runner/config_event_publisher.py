@@ -45,6 +45,9 @@ def _broadcast(channel, event, payload):
     req.add_header("Content-Type", "application/json")
     req.add_header("apikey", key)
     req.add_header("Authorization", f"Bearer {key}")
+    relay_key = os.environ.get("FLEET_RELAY_KEY", "").strip()
+    if relay_key:  # the fleet relays fail closed without it (2026-10-01)
+        req.add_header("x-fleet-relay-key", relay_key)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status in (200, 201, 202)
