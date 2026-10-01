@@ -27,6 +27,16 @@ RISK BAND. Starts from the export's own tiering (adversary severity, unsettled, 
 a provisional (local-tier) acceptance or a composite under ACCEPT_LOW_COMPOSITE is at least medium;
 fewer than MIN_LOW_CITATIONS fetched citations is at least medium. Only `low` closes a gap.
 
+RISK SCORE (owner decision 2026-09-30; law-project migration al_002, smarter#1177). Every answer carries
+`risk_score`: the MAXIMUM of Smarter's existing intel_propositions.risk_score (0-100) over the propositions
+the answer's gap blocks. The law gap names its Smarter gap (source_system 'smarter', source_gap_id), and
+Smarter's intel_gap_propositions links that gap to its propositions. `risk_score_basis` names the source.
+No score is invented. A gap from another source (corpus-swarm, exo-hivemind), a gap with no linked
+proposition, or propositions without a score give NULL, and the law trigger then treats the answer as
+70+, so a superadmin must review it before client advice. The answer is still written internal_only.
+Until al_002 is applied the law project has no such columns: the insert is retried without them and
+the ledger records `risk_score_unwritten`.
+
 Idempotent: a local ledger (<home>/consilium/gap_writeback.jsonl) records every write; a card is
 written once. Nothing else in the law app is modified.
 """
@@ -49,6 +59,7 @@ ACCEPT_LOW_COMPOSITE = float(os.environ.get("ORCH_GAP_LOW_COMPOSITE", "0.6"))
 MIN_LOW_CITATIONS = int(os.environ.get("ORCH_GAP_LOW_MIN_CITES", "3"))
 PER_RUN = int(os.environ.get("ORCH_GAP_WRITEBACK_PER_RUN", "40"))
 RANK = {"low": 0, "medium": 1, "high": 2}
+RISK_BASIS = "smarter.intel_propositions.risk_score:max"
 
 
 def _written():
@@ -104,6 +115,32 @@ def risk_band(card, review):
     if len(urls) < MIN_LOW_CITATIONS:
         at_least("medium", f"{len(urls)} fetched citations < {MIN_LOW_CITATIONS}")
     return band, why
+
+
+def _valid_score(v):
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 100
+
+
+def gap_risk_score(gap, select=None):
+    """-> (risk_score | None, basis | None) for a law gap, from Smarter's own proposition scores.
+
+    Read-only on Smarter. `select` is db.select (the runner's Smarter connection); injectable for tests.
+    """
+    if _s((gap or {}).get("source_system")) != "smarter" or not (gap or {}).get("source_gap_id"):
+        return None, None
+    select = select or db.select
+    links = select("intel_gap_propositions", {"select": "proposition_id",
+                                              "gap_id": f"eq.{gap['source_gap_id']}", "limit": "1000"}) or []
+    pids = sorted({_s(r.get("proposition_id")) for r in links if r.get("proposition_id")})
+    scores = []
+    for k in range(0, len(pids), 100):
+        chunk = pids[k:k + 100]
+        rows = select("intel_propositions", {"select": "id,risk_score", "id": "in.(" + ",".join(chunk) + ")",
+                                             "risk_score": "not.is.null", "limit": str(len(chunk))}) or []
+        scores += [r["risk_score"] for r in rows if _valid_score(r.get("risk_score"))]
+    if not scores:
+        return None, None
+    return max(scores), RISK_BASIS
 
 
 def answer_row(gap_id, card, review):
@@ -200,7 +237,19 @@ def precedent_candidates(reviews=None, done=None):
     return out
 
 
-def run(limit=PER_RUN, dry_run=False, items=None, req=None):
+def _missing_risk_columns(err):
+    """True when the law project rejected the insert because al_002's columns are not there yet."""
+    text = str(err)
+    body = getattr(err, "read", None)
+    if callable(body):
+        try:
+            text += body().decode("utf-8", "replace")
+        except Exception:
+            pass
+    return "risk_score" in text and ("PGRST204" in text or "column" in text.lower())
+
+
+def run(limit=PER_RUN, dry_run=False, items=None, req=None, smarter_select=None):
     import consilium_export
     req = req or consilium_export._req
     if items is None:
@@ -221,11 +270,27 @@ def run(limit=PER_RUN, dry_run=False, items=None, req=None):
             _log(rec)
             continue
         try:
-            gap = req("GET", "advisory_inquiry_gaps", params={"select": "id,status", "id": f"eq.{gap_id}", "limit": "1"})
+            gap = req("GET", "advisory_inquiry_gaps", params={"select": "id,status,source_system,source_gap_id",
+                                                              "id": f"eq.{gap_id}", "limit": "1"})
             if not gap:
                 raise RuntimeError("gap not found")
-            ins = req("POST", "advisory_inquiry_answers", body=answer_row(gap_id, card, review),
-                      prefer="return=representation")
+            row = answer_row(gap_id, card, review)
+            try:
+                score, basis = gap_risk_score(gap[0], smarter_select)
+            except Exception as e:  # a Smarter read failure leaves the score unknown (= review), never invented
+                score, basis = None, None
+                rec["risk_score_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+            rec["risk_score"] = score
+            if score is not None:
+                row["risk_score"], row["risk_score_basis"] = score, basis
+            try:
+                ins = req("POST", "advisory_inquiry_answers", body=row, prefer="return=representation")
+            except Exception as e:
+                if score is None or not _missing_risk_columns(e):
+                    raise
+                bare = {k: v for k, v in row.items() if k not in ("risk_score", "risk_score_basis")}
+                rec["risk_score_unwritten"] = "law project lacks al_002 columns"
+                ins = req("POST", "advisory_inquiry_answers", body=bare, prefer="return=representation")
             rec["answer_id"] = (ins[0] if isinstance(ins, list) and ins else {}).get("id")
             tally["written"] += 1
             if band == "low" and gap[0].get("status") == "open":
