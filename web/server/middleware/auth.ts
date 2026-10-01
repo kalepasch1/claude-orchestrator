@@ -88,7 +88,7 @@ export default defineEventHandler(async (event) => {
   // Supabase traffic because the operator's LAN blocks *.supabase.co and *.vercel.app
   // while custom domains stay reachable. It deliberately does NOT take the Supabase
   // session path — its callers ARE the runners, presenting their own Supabase service
-  // credentials, which the upstream enforces. The route gates itself on FLEET_RELAY_KEY
+  // credentials, which the upstream enforces. The route refuses every request (401) unless FLEET_RELAY_KEY is set and matches
   // and an allowlist of project refs; it stores no credentials of its own.
   if (pathname.startsWith('/api/_fleet-relay')) return
 
