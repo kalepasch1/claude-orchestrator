@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keeps db-steering/posture posting while the ClaudeRunner fleet is paused.
+
+     WHY THIS EXISTS. db-steering/posture is a REQUIRED status on kalepasch1/smarter and
+     kalepasch1/tomorrow (the script posts for both; see POSTURE_ONLY_PROJECTS).
+     The fleet loop that posts it lives in com.claudeorchestrator.runner, which is
+     deliberately paused by .runtime/maintenance.lock (set 2026-09-22T16:47:36Z at the
+     owner's request, because concurrent orchestrator builds drove load average past
+     240 and OOM-killed a Nuxt build). With nothing posting the status, every pull
+     request in that repo is BLOCKED rather than failing, with the reason nowhere on
+     the page.
+
+     This job runs runner/post_posture_only.py, which is a scan of one project and a
+     status post: Supabase reads and a few GitHub API calls. No remediation, no memo
+     composition, no agent dispatch, no builds -- none of the work that made the
+     machine unusable. It also declines above a load ceiling, because the reason the
+     fleet is paused is load.
+
+     IT IS A STOPGAP. com.claudeorchestrator.runner supersedes it entirely. Once the
+     machine is free, follow the lock's own instructions:
+         rm ~/Documents/beethoven/claude-orchestrator/.runtime/maintenance.lock
+         launchctl kickstart -k gui/501/com.claudeorchestrator.runner
+     and then remove this job:
+         launchctl bootout gui/501/com.claudeorchestrator.posture-only
+         rm ~/Library/LaunchAgents/com.claudeorchestrator.posture-only.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.posture-only</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Homebrew's python3, not /usr/bin/python3. MEASURED 2026-09-22: the Xcode
+             python3 that /usr/bin/python3 resolves to could not even open this script
+             when launchd spawned it -- "[Errno 1] Operation not permitted" -- because
+             macOS TCC blocks a launchd child from ~/Documents without Full Disk
+             Access. com.claudeorchestrator.consilium uses this interpreter for the
+             same reason and reads the same tree. -->
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/post_posture_only.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <!-- Every 15 minutes. The status only has to be fresher than a reviewer's patience,
+         and the scan behind it is the expensive half at roughly a minute. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Deliberately NOT KeepAlive: this is a periodic task, not a daemon, and a
+         restart loop against a paused fleet is the last thing this machine needs. -->
+    <key>StandardOutPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/posture-only.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/posture-only.err</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>
