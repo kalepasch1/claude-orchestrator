@@ -39,7 +39,12 @@ import db_remediate  # noqa: E402 — shared _http/_gh/repo resolution helpers
 
 ENABLED = os.environ.get("ORCH_DB_DEPLOY_GATE", "0") == "1"
 MAX_PROJECTS = int(os.environ.get("ORCH_DB_DEPLOY_GATE_MAX", "10"))
-MAX_PRS = int(os.environ.get("ORCH_DB_DEPLOY_GATE_PRS", "20"))
+# Every open PR needs the status: it is REQUIRED on the repo, so a PR this job never
+# reaches is BLOCKED with every real check green. This was 20 with no paging, and on
+# 2026-09-26 kalepasch1/smarter had 68 open PRs -- the 48 oldest (#798 among them) sat
+# blocked for no reason the PR page could show. Now it pages; this is only a ceiling.
+MAX_PRS = int(os.environ.get("ORCH_DB_DEPLOY_GATE_PRS", "300"))
+PR_PAGE = 100
 CONTEXT = "db-steering/posture"
 SECURITY_CATEGORIES = ("security",)
 DRIFT_BLOCKERS = ("schema_drift_live_ahead",)
@@ -150,12 +155,33 @@ def post_status(repo, sha, decision, target_url=""):
 
 
 def _open_pr_heads(repo):
-    """Head shas of open PRs — required checks bind on PR HEADS, so the posture status has
-    to be propagated there each cycle or every PR sits 'expected' forever."""
-    res = db_remediate._gh("GET", "/repos/%s/pulls?state=open&per_page=%d" % (repo, MAX_PRS))
-    if not isinstance(res, list):
-        return []
-    return [str((p.get("head") or {}).get("sha") or "") for p in res if (p.get("head") or {}).get("sha")]
+    """Head shas of EVERY open PR (up to MAX_PRS) — required checks bind on PR HEADS, so the
+    posture status has to be propagated there each cycle or every PR sits 'expected' forever.
+    Paged: GitHub returns the newest first, and one page left the oldest PRs blocked."""
+    heads = []
+    page = 1
+    per_page = max(1, min(PR_PAGE, MAX_PRS))
+    while len(heads) < MAX_PRS:
+        res = db_remediate._gh("GET", "/repos/%s/pulls?state=open&per_page=%d&page=%d" % (repo, per_page, page))
+        if not isinstance(res, list):
+            break
+        heads.extend(str((p.get("head") or {}).get("sha") or "") for p in res if (p.get("head") or {}).get("sha"))
+        if len(res) < per_page:
+            break
+        page += 1
+    return list(dict.fromkeys(heads))[:MAX_PRS]
+
+
+def _already_posted(repo, sha, decision):
+    """True when `sha` already carries this exact posture (state and description), so a
+    cycle over every open PR does not re-post an unchanged status to each of them --
+    GitHub throttles bursts of writes. Any read failure answers False (post again)."""
+    res = db_remediate._gh("GET", "/repos/%s/commits/%s/status" % (repo, sha))
+    statuses = res.get("statuses") if isinstance(res, dict) else None
+    for st in statuses if isinstance(statuses, list) else []:
+        if st.get("context") == CONTEXT:
+            return st.get("state") == decision["state"] and st.get("description") == decision["description"]
+    return False
 
 
 def check_project(project_row):
@@ -183,10 +209,15 @@ def check_project(project_row):
                 posted.append(("base-head", post_status(repo, head, decision, vurl)))
         pr_ok = True
         n_prs = 0
+        n_current = 0
         for head_sha in _open_pr_heads(repo):
             n_prs += 1
+            if _already_posted(repo, head_sha, decision):
+                n_current += 1
+                continue
             pr_ok = post_status(repo, head_sha, decision, vurl) and pr_ok
         out["prs_covered"] = n_prs
+        out["prs_already_current"] = n_current
         if n_prs:
             posted.append(("prs", pr_ok))
         out["posted"] = bool(posted) and all(p for _w, p in posted)
