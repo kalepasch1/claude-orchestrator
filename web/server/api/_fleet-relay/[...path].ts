@@ -15,9 +15,11 @@
  *   - callers must present their own `apikey`/`Authorization`; Supabase enforces them,
  *   - targets are restricted to a fixed allowlist of this account's project refs, so it
  *     cannot be used as an open proxy,
- *   - a shared secret (`x-fleet-relay-key` vs FLEET_RELAY_KEY) gates use when configured.
+ *   - a shared secret (`x-fleet-relay-key` vs FLEET_RELAY_KEY) gates EVERY request; with the
+ *     key unset the relay refuses everything (fail closed, 2026-10-01).
  * It is a transport, not an authority.
  */
+import { fleetRelayKeyMatches } from '../../utils/fleetRelayKey'
 import {
   defineEventHandler, getRequestHeader, readRawBody, setResponseStatus,
   setResponseHeader, getQuery,
@@ -52,9 +54,10 @@ const FORWARD_RES_HEADERS = [
 ]
 
 export default defineEventHandler(async (event) => {
-  const requiredKey = process.env.FLEET_RELAY_KEY
-  if (requiredKey && getRequestHeader(event, 'x-fleet-relay-key') !== requiredKey) {
-    setResponseStatus(event, 403)
+  // Fail closed: no configured key, or no matching x-fleet-relay-key, is a 401
+  // for every request, healthz included (server/utils/fleetRelayKey.ts).
+  if (!fleetRelayKeyMatches(getRequestHeader(event, 'x-fleet-relay-key'))) {
+    setResponseStatus(event, 401)
     return { error: 'relay key required' }
   }
 
