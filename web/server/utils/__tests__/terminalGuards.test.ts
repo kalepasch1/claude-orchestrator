@@ -4,6 +4,7 @@ import {
   tokenize,
   serverlessRefusal,
   SERVERLESS_ALLOWED_BINARIES,
+  BLOCKED_PATTERNS,
 } from '../terminalGuards'
 
 /**
@@ -76,5 +77,21 @@ describe('resolveInside', () => {
   it('rejects a sibling directory that merely shares the prefix', () => {
     // The old guard was resolved.startsWith(root), so /srv/app-secrets passed.
     expect(resolveInside(root, '../app-secrets/keys.json')).toBeNull()
+  })
+})
+
+describe('migration commands (main-only, owner decision 2026-10-03)', () => {
+  const blocked = (cmd: string) => BLOCKED_PATTERNS.some(p => p.test(cmd))
+
+  it('blocks applying or repairing migrations from the terminal', () => {
+    expect(blocked('supabase db push')).toBe(true)
+    expect(blocked('npx supabase db push --linked')).toBe(true)
+    expect(blocked('supabase migration up')).toBe(true)
+    expect(blocked('supabase migration repair --status applied 20261030020000')).toBe(true)
+  })
+
+  it('leaves read-only supabase commands alone', () => {
+    expect(blocked('supabase migration list')).toBe(false)
+    expect(blocked('supabase db diff')).toBe(false)
   })
 })

@@ -125,7 +125,9 @@ def run():
                                "anon key client-side. Add owner-scoped RLS policies (auth.uid()/household-scoped, "
                                "mirroring apparently which has RLS on all tables) and enable RLS on every public "
                                "table. Do NOT enable RLS without policies (breaks the client). Verify per-user "
-                               "isolation + app still works with tests. Ship in safe batches.")})
+                               "isolation + app still works with tests. Ship in safe batches. Deliver the policies as "
+                               "migration files; do NOT apply them to production from this branch — migrations are "
+                               "applied only after merge to consolidation/main and promotion to main.")})
                 filed += 1
     print(f"rls_guard: rescanned {len(apps)} apps, filed {filed} remediation tasks"
           f"{f', {skipped} allowlisted' if skipped else ''}")

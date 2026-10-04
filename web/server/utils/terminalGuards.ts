@@ -107,4 +107,9 @@ export const BLOCKED_PATTERNS = [
   /\bshutdown\b/i,
   /\breboot\b/i,
   /\bcurl\b.*\|\s*(sh|bash)/i,
+  // Owner decision 2026-10-03: the orchestrator only applies migrations that are already on
+  // main. An LLM-driven terminal applying (or ledger-repairing) migrations from whatever the
+  // checkout happens to be is how branch-only versions reached production. Apply through
+  // runner/migration_main_guard.py's gated paths instead.
+  /\bsupabase\s+(db\s+push|migration\s+(up|repair))\b/i,
 ]

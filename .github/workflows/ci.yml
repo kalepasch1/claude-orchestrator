@@ -137,6 +137,7 @@ jobs:
           tests/test_model_pool_cache.py
           tests/test_local_embeddings_safety.py
           tests/test_knowledge_embed.py
+          tests/test_migration_main_guard.py
           -q --no-header
 
       - name: Syntax-check every runner module

@@ -217,8 +217,9 @@ def _repo_migration_drift(source, facts):
             object_schema="supabase_migrations", object_name="schema_migrations",
             metrics={"repo_latest": repo_latest, "live_latest": live_latest, "pending": len(pending)},
             evidence_kinds=("change_control",),
-            remediation="apply the pending migrations through the normal release path, or delete "
-                        "the ones that were superseded; the live schema and the versioned history must agree"))
+            remediation="apply the pending migrations through the normal release path once they are on "
+                        "main (merge to consolidation/main, promote to main, then apply from origin/main), "
+                        "or delete the ones that were superseded; the live schema and the versioned history must agree"))
     elif live_latest > repo_latest:
         out.append(C.make_finding(
             "schema_drift_live_ahead", "schema_drift", "high",
@@ -788,7 +789,9 @@ def file_remediation(source, new_rows, budget=MAX_TASKS_PER_RUN):
             "DATABASE STEERING (auto-filed from a read-only review of the %s production database; "
             "severity %s).\n\nFinding: %s\n%s\nObjects: %s\n\nRemediation: %s\n\n"
             "Deliver as a versioned migration under supabase/migrations (or the project's migration "
-            "dir) plus the code change it needs, with tests. Do not apply DDL directly to production. "
+            "dir) plus the code change it needs, with tests. Do not apply DDL directly to production "
+            "and do not apply the migration from this branch: it is applied only after it is merged to "
+            "consolidation/main and promoted to main (runner/migration_main_guard.py refuses anything else). "
             "Never enable RLS without policies. Keep the diff minimal and reversible. "
             "Fingerprints: %s" % (
                 project, rows[0].get("severity"), rows[0].get("title"), (rows[0].get("detail") or "")[:600],

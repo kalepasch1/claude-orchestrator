@@ -10,11 +10,23 @@ NEVER runs: secrets/token/key writes, payments/transfers, deletes/drops, force p
 The user must have clicked "Run for me" (which inserts the action_runs row) — nothing auto-executes.
 
 Respects the global kill switch: if the fleet is paused, no actions execute.
+
+MAIN-ONLY MIGRATIONS (owner decision 2026-10-03): a command that applies database migrations
+(`supabase db push`, `supabase migration up`, `prisma migrate deploy`, `npm run migrate`) runs
+only when migration_main_guard.check_checkout() passes — clean checkout, HEAD contained in the
+project's production branch, every migration file byte-identical on that branch, no ledger
+collision, destructive versions owner-approved. Otherwise the run is refused and audited like
+any other refusal.
 """
-import os, sys, subprocess, datetime, json
+import os, re, sys, subprocess, datetime, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 from action_drafter import SAFE_CMD, UNSAFE
+
+#: Commands that apply migrations to the project's database.
+MIGRATION_CMD = re.compile(r"\b(supabase\s+db\s+push|supabase\s+migration\s+up|prisma\s+migrate\s+deploy|"
+                           r"npm\s+run\s+migrate)\b", re.I)
+SUPABASE_MIGRATION_CMD = re.compile(r"\bsupabase\s+(db\s+push|migration\s+up)\b", re.I)
 
 
 def _audit_refused(job, cmd, reason):
@@ -48,6 +60,36 @@ def _repo_for(approval_id):
     return p.get("repo_path", "")
 
 
+def _project_for(approval_id):
+    a = (db.select("approvals", {"select": "project", "id": f"eq.{approval_id}"}) or [{}])[0]
+    return a.get("project") or ""
+
+
+def _migration_gate(job, cmd, repo):
+    """None when `cmd` may run; a refusal reason string otherwise. Fails closed."""
+    if not MIGRATION_CMD.search(cmd):
+        return None
+    try:
+        import migration_main_guard as guard
+        target = (guard.resolve_target(app=_project_for(job.get("approval_id")))
+                  or guard.resolve_target(repo_path=repo))
+        ledger = []
+        if SUPABASE_MIGRATION_CMD.search(cmd):
+            ref = (target or {}).get("supabase_project_ref")
+            ledger = guard.read_ledger(ref) if ref else None
+        decision = guard.check_checkout(repo, target, ledger=ledger)
+    except Exception as e:  # noqa: FAIL_SOFT_ERROR — the gate fails CLOSED: an error refuses the run
+        decision = {"ok": False, "code": "guard_error", "reason": "migration guard error: %s" % str(e)[:200]}
+    if decision.get("ok"):
+        return None
+    try:
+        import migration_main_guard as guard
+        guard.record_refusal(dict(decision, action_run_id=job.get("id")), via="action_runner")
+    except Exception:
+        pass
+    return decision.get("reason") or "refused by migration_main_guard"
+
+
 def run() -> int:
     # honor the global kill switch: no execution while paused
     try:
@@ -76,6 +118,13 @@ def run() -> int:
             db.update("action_runs", {"id": j["id"]},
                       {"status": "failed", "result": "repo not found on this machine",
                        "finished_at": datetime.datetime.utcnow().isoformat()})
+            continue
+        refusal = _migration_gate(j, cmd, repo)
+        if refusal:
+            db.update("action_runs", {"id": j["id"]},
+                      {"status": "failed", "result": f"refused: {refusal}"[:2000],
+                       "finished_at": datetime.datetime.utcnow().isoformat()})
+            _audit_refused(j, cmd, "migration not on production branch: " + refusal[:300])
             continue
         db.update("action_runs", {"id": j["id"]}, {"status": "running"})
         try:
