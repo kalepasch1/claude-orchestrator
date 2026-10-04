@@ -89,7 +89,8 @@
       "repo_path": "/Users/kpasch/Documents/apparently-law",
       "github_repo": "kalepasch1/apparently-law",
       "branch": "main",
-      "vercel_project": "apparently-law"
+      "vercel_project": "apparently-law",
+      "supabase_project_ref": "cwmeqqtvmjbapjsefbfq"
     }
   ],
   "shared_deployments": [

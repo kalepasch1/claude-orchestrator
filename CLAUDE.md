@@ -50,6 +50,33 @@ The guard only reaches a repo whose `core.hooksPath` points at
     git config core.hooksPath /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/hooks
 
 
+## Database migrations: main only (owner decision 2026-10-03)
+
+**The orchestrator only applies migrations that are already on main.** No session, agent,
+loop or script applies a migration to a production database from a feature branch, a
+worktree, or a staging branch.
+
+    write the migration on your branch  ->  merge to consolidation/main (the project's staging branch)
+        ->  promote to main  ->  THEN apply, from a clean checkout of origin/main
+
+- Never use the Supabase MCP `apply_migration` against a production project (smarter
+  `olaxnyrzoptjcntrrjgn`, apparently-law `cwmeqqtvmjbapjsefbfq`, or any ref in
+  `runner/deployment_bindings.json`). It applies whatever SQL you hand it and records a
+  fresh version that has no file on main, which is what broke `check:migration-ledger`
+  and the production builds on 2026-10-03. The same goes for DDL through `execute_sql`,
+  `supabase db push` from a feature checkout, and `supabase migration repair`.
+- Never reuse a migration version. One version means one file on main and one ledger row.
+- A destructive migration (DROP TABLE/SCHEMA/COLUMN, TRUNCATE, DELETE FROM) needs the
+  owner's explicit OK for that version *as well as* being on main.
+
+`runner/migration_main_guard.py` enforces this in `runner/apply_sql_migrations.py` and in
+`runner/action_runner.py` (the "Run for me" / periodic path for `supabase db push`). It
+refuses unless the file exists byte-identical on the target repo's production branch and
+its version does not collide with the production ledger. It also ships a Claude Code
+PreToolUse hook (`python3 runner/migration_main_guard.py claude-hook`) that refuses MCP
+`apply_migration` and DDL `execute_sql` against production refs. See
+`docs/database-steering.md` → "Applying migrations: main only".
+
 ## Operator workflow (manual, not auto-distilled)
 
 Routine strategic/objective prompts belong in the operator drop-box, not a manual serial

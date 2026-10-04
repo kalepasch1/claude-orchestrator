@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Apply selected idempotent SQL migrations through the Supabase Management API."""
+"""Apply selected idempotent SQL migrations through the Supabase Management API.
+
+MAIN-ONLY (owner decision 2026-10-03): every file is checked by migration_main_guard before a
+single statement runs. The target ref must map to a repo + production branch in
+runner/deployment_bindings.json; the file must exist byte-identical on that branch (fetched
+fresh through the checkout the file lives in); its version must not collide with the
+production ledger; destructive SQL also needs --owner-approved <version>. The SQL that runs
+is the verified bytes. Refusals are printed, written to fleet_log, and returned under
+"refused"; nothing is applied from a feature branch.
+
+    python3 runner/apply_sql_migrations.py [--ref REF] [--owner-approved VERSION ...] FILE...
+"""
+import argparse
 import json
 import os
 import re
@@ -8,6 +20,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # loads runner/.env
+import migration_main_guard as guard
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,21 +88,46 @@ def _query(ref, token, sql):
     return json.loads(raw) if raw else None
 
 
-def apply(paths):
+def _read_ledger(ref, token):
+    return guard.read_ledger(ref, query=lambda sql: _query(ref, token, sql))
+
+
+def apply(paths, ref=None, owner_approved=()):
+    """{"applied": [...], "skipped": [...], "refused": [decision, ...]} — a file is applied
+    only when migration_main_guard says it is on the target's production branch."""
     token = os.environ.get("SUPABASE_ACCESS_TOKEN")
-    ref = os.environ.get("SUPABASE_PROJECT_REF")
+    ref = ref or os.environ.get("SUPABASE_PROJECT_REF")
     if not token or not ref:
         raise SystemExit("SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF are required")
-    applied = []
+    target = guard.resolve_target(ref=ref)
+    ledger = _read_ledger(ref, token) if target else None
+    applied, skipped, refused = [], [], []
     for rel in paths:
         path = rel if os.path.isabs(rel) else os.path.join(ROOT, rel)
-        sql = open(path).read()
-        for stmt in _split(sql):
+        decision = guard.check_file(path, target, ledger=ledger, owner_approved=owner_approved)
+        if not decision.get("ok"):
+            if not target:
+                decision["reason"] = ("refused %s: Supabase ref %s has no production repo/branch mapping "
+                                      "in runner/deployment_bindings.json" % (os.path.basename(rel), ref))
+            guard.record_refusal(decision, via="apply_sql_migrations")
+            refused.append({k: v for k, v in decision.items() if k != "sql"})
+            continue
+        if decision.get("already_applied"):
+            skipped.append(rel)
+            continue
+        for stmt in _split(decision["sql"].decode("utf-8")):
             _query(ref, token, stmt)
         applied.append(rel)
-    return applied
+    return {"applied": applied, "skipped": skipped, "refused": refused}
 
 
 if __name__ == "__main__":
-    paths = sys.argv[1:] or DEFAULTS
-    print(json.dumps({"applied": apply(paths)}, indent=2))
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("paths", nargs="*")
+    ap.add_argument("--ref", default=None, help="Supabase project ref (default SUPABASE_PROJECT_REF)")
+    ap.add_argument("--owner-approved", action="append", default=[], metavar="VERSION",
+                    help="owner-approved version for a destructive migration (repeatable)")
+    a = ap.parse_args()
+    result = apply(a.paths or DEFAULTS, ref=a.ref, owner_approved=a.owner_approved)
+    print(json.dumps(result, indent=2, default=str))
+    sys.exit(1 if result["refused"] else 0)
