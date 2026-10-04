@@ -50,6 +50,7 @@ Measured live on apparently-law (Supabase, 28 Postgres probes, ~295 findings):
 | `runner/db_memo.py` | Attaches each finding to the legal-memo argument it supports or undermines, keeps `legal_memo_drafts` current, gauntlet review for material changes, `steering_signals()` for the brief. |
 | `runner/db_remediate.py` | Turns mechanical findings (anon/public grants, unindexed FKs, missing audit columns) into **draft PRs** on the project's own repo — one migration per group, fingerprints in the body, never auto-merged. Plan-only until `ORCH_DB_REMEDIATE=1`. |
 | `runner/db_deploy_gate.py` | Database posture as a deploy signal: evaluates per project (open high-severity security findings or live-ahead schema drift ⇒ fail) and posts a `db-steering/posture` commit status — or a marked commit comment when the GitHub App lacks `statuses:write`. `require_check()`/`apply_required_checks()` promote it to a REQUIRED check on the protected branch, merging with existing rules (needs `Administration: read,write` on the App; 403 is a reason, not an error). Evaluate-only until `ORCH_DB_DEPLOY_GATE=1`; enforcement switch `ORCH_DB_REQUIRED_CHECK` (default on, no-ops without the permission). |
+| `runner/migration_main_guard.py` | Main-only migrations (owner decision 2026-10-03): refuses any migration whose file is not byte-identical on the target repo's production branch, collides with the production ledger, or is destructive without owner approval. Gates `apply_sql_migrations.py` and `action_runner.py`; ships a Claude Code PreToolUse hook. See "Applying migrations: main only". |
 | `runner/db_link.py` | Operator CLI: `discover`, `add`, `test`, `scan`, `list`, `pause`, `resume`, `remove`, `brief`, `memos`, `doctor`, `demand` (unassessed memo arguments = the probe backlog by demand). |
 | `runner/db_learning.py` | Outcome learning: closeout verdicts persist to `db_pr_closeouts`, `efficacy()` ranks fix classes by demonstrated resolve rate (remediation orders by it), recurrence lines (reopened = regressed process), trendlines (score Δ7d, resolve/new per day). |
 | `runner/db_chains.py` | Evidence chains: FK-graph blast radius for grant findings (facts probe `fk_graph_edges`), and cross-project correlation — "worst-quartile on X; peer Y closes it at 0". |
@@ -176,6 +177,64 @@ without affecting any other. Supabase needs no driver at all.
 - Nothing here writes to an application database, a repo, a worktree or the intake
   queue. The only writes are control-plane tables and swarm tasks.
 
+## Applying migrations: main only
+
+**Owner decision (Kale, 2026-10-03): the orchestrator only applies migrations that are already
+on main.** Steering itself never writes to an application database (above); this section is
+the rule for every path that does apply schema changes to a production database.
+
+Why: on 2026-10-03 sessions applied Supabase migrations to smarter (`olaxnyrzoptjcntrrjgn`) and
+apparently-law (`cwmeqqtvmjbapjsefbfq`) straight from unmerged branches (`feat/licensing-vocabulary`,
+`feat/benchmark-library-to-prod`, `fix/prod-posture-drift-1524`). The ledger recorded versions
+with no file on main, which broke `check:migration-ledger` and the production build about eight
+times; version `20261030020000` was used twice; table-dropping migrations ran without the owner's OK.
+
+The flow:
+
+    migration file on a branch -> merge to consolidation/main (the project's staging branch)
+        -> promote to main -> apply from a clean checkout of origin/main
+
+`runner/migration_main_guard.py` refuses a migration unless all of the following hold:
+
+| Check | Refusal code |
+|---|---|
+| The target database maps to a repo + production branch (`runner/deployment_bindings.json`: `supabase_project_ref` → `github_repo` + `branch`; smarter → `kalepasch1/smarter@main`, apparently-law → `kalepasch1/apparently-law@main`) | `no_target` |
+| The production branch was fetched fresh and could be read | `main_unreadable` |
+| `supabase/migrations/<version>_<name>.sql` exists on `origin/<branch>` | `not_on_main` |
+| Its bytes there are identical to the bytes about to run (the verified bytes are what runs) | `content_drift` |
+| No other file on `origin/<branch>` uses the same 14-digit version | `duplicate_version_on_main` |
+| The production ledger could be read | `ledger_unreadable` |
+| The ledger does not hold the version under a different name | `ledger_collision` |
+| The ledger does not hold the name under a different version | `ledger_name_collision` |
+| A destructive migration (DROP TABLE/SCHEMA/VIEW/TYPE/COLUMN, TRUNCATE, DELETE FROM) is owner-approved for that version (`--owner-approved <version>` or `MIGRATION_OWNER_APPROVED_VERSIONS` in the operator's shell; deliberately not an `ORCH_` key, so it cannot be fleet-pushed) | `destructive_unapproved` |
+
+It fails closed: no fetch or no ledger means no apply. Every refusal names the version, the branch
+the migration came from and the production branch it is missing from, is printed, and is written to
+`fleet_log` (level `warn`, source `migration_main_guard`), the same way `action_runner` records its
+refusals. A version already in the ledger under the same name is reported `already_applied` and skipped.
+
+Where it is enforced:
+
+| Path | How |
+|---|---|
+| `runner/apply_sql_migrations.py` (Management API `database/query`) | every file goes through `check_file()` before any statement runs; refusals come back under `"refused"` and the exit code is 1 |
+| `runner/action_runner.py` ("Run for me", email `run`, `periodic.py` auto-exec) for `supabase db push`, `supabase migration up`, `prisma migrate deploy`, `npm run migrate` | `check_checkout()`: clean checkout, HEAD contained in `origin/<branch>`, every file in `supabase/migrations` passes `check_migration()` against the production ledger |
+| `web/server/utils/terminalGuards.ts` (the LLM-driven dev terminal) | `supabase db push`, `supabase migration up` and `supabase migration repair` are blocked commands |
+| Claude Code sessions using the Supabase MCP | `python3 runner/migration_main_guard.py claude-hook` is a PreToolUse hook that refuses `apply_migration`, and DDL through `execute_sql`, against any production ref. MCP `apply_migration` can never satisfy the rule, because it records a fresh version instead of the file's. The hook only acts where it is wired in, which is the session's settings and not this repo (see below) |
+
+To wire the hook into a session's settings (`.claude/settings.json` of the project repo, or the
+user settings):
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "mcp__.*__(apply_migration|execute_sql)",
+  "hooks": [{"type": "command",
+             "command": "python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/migration_main_guard.py claude-hook"}]}]}}
+```
+
+Steering's own outputs follow the rule: swarm remediation prompts, the `rls_guard` task prompt
+and the `add-rls` recipe tell agents to deliver the migration file and not to apply it from their
+branch; `schema_drift_repo_ahead` says to apply pending migrations once they are on main.
+
 ## Operating it
 
 ```bash
@@ -221,5 +280,5 @@ from the Loops page (`enabled=false` on the `db_steering` row).
 
 `runner/tests/test_db_registry.py`, `test_db_steering.py`, `test_db_steering_wiring.py`,
 `test_db_adapters.py`, `test_db_probes.py`, `test_db_probes_engine.py`, `test_db_baselines.py`,
-`test_db_memo.py`, `test_owner_report_db_line.py`;
+`test_db_memo.py`, `test_owner_report_db_line.py`, `test_migration_main_guard.py`;
 `web/server/utils/__tests__/dbSteering.test.ts`. None touches a network or a database.

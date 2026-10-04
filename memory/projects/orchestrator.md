@@ -112,12 +112,12 @@ TEST_CMD="npm test"
 | `cd runner && python3 runner.py` | Start main loop (polls Supabase) |
 | `python3 runner.py --dry-run --task-id <id>` | Test task without committing |
 | `CLAUDE_BIN=claude python3 runner/planner.py "Build X"` | Generate contract-first DAG |
-| `supabase db push` | Apply migrations to Supabase |
+| `supabase db push` | Apply migrations to Supabase — only from a clean checkout of the production branch, after merge → staging → main (owner decision 2026-10-03; `runner/migration_main_guard.py`) |
 | `supabase functions deploy` | Deploy Slack edge functions (optional) |
 
 ## Deployment Checklist
 
-- [ ] Supabase migrations applied
+- [ ] Supabase migrations applied (only migrations already on main/master, byte-identical; never from a feature branch)
 - [ ] Web built + deployed to Vercel (env vars set)
 - [ ] Runner: Python deps installed, `.env` configured, launchd plist created
 - [ ] E2E test: queue task → runner claims → verify → integrate → dashboard updates
