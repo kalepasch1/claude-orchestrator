@@ -258,6 +258,14 @@ _ensure_tool_path()
 
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+
+def _relay_headers():
+    """The fleet relays (*/api/_fleet-relay on madeus.cc, heretomorrow.co, apparently.cc)
+    refuse every request without x-fleet-relay-key since 2026-10-01 (fail closed). Sent on
+    every request when FLEET_RELAY_KEY is set; a direct *.supabase.co endpoint ignores it."""
+    k = os.environ.get("FLEET_RELAY_KEY", "").strip()
+    return {"x-fleet-relay-key": k} if k else {}
 HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
 
 # --- Secret redaction: strip credentials from task fields before DB writes ---
@@ -812,7 +820,7 @@ def _req(method, path, body=None, headers=None, params=None):
         raise RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY")
     qs = ("?" + urllib.parse.urlencode(params)) if params else ""
     h = {"apikey": KEY, "Authorization": f"Bearer {KEY}",
-         "Content-Type": "application/json"}
+         "Content-Type": "application/json", **_relay_headers()}
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
     if _breaker_blocks():
@@ -1198,6 +1206,7 @@ def count(table, params=None):
         "Prefer": "count=exact",
         "Range-Unit": "items",
         "Range": "0-0",
+        **_relay_headers(),
     }
     if _breaker_blocks():
         raise ControlPlaneDown(
