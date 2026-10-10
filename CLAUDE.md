@@ -133,15 +133,22 @@ the `agent/{slug}` branch persists for merge-train pickup.
 
 ## Git identity (required — read before committing)
 
-All commits in this repo MUST be authored as the repo owner:
+Commits in this repo MUST be authored as one of these approved identities:
+
+- kale@smrter.us
+- mandyjustinepasch@gmail.com
+- kale@heretomorrow.us
+- kalepasch@gmail.com (repo owner, `kalepasch1` — the default)
+
+Default to the repo owner:
 
     git config user.name "kalepasch1"
     git config user.email "kalepasch@gmail.com"
 
-Run this immediately after cloning, before your first commit. Vercel blocks
-production deployments whose commit author is anyone else — commits authored
-as e.g. mandyjustinepasch@gmail.com or kale@heretomorrow.us end up in BLOCKED
-state and never deploy. Do not use your platform account identity.
+Run this immediately after cloning, before your first commit. Any of the
+approved emails above is fine as the author (e.g. when a different Claude
+account is committing as mandyjustinepasch@gmail.com). Do not use any other
+identity, including your platform account identity.
 
 
 ## Learned from merged work (auto)
